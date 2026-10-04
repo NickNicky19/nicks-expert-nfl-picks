@@ -1131,7 +1131,7 @@ function gs(id = S.gameView) {
   const g = S.games[id];
   return (S.gs[id] ??= {
     tab: g.state === "pre" ? "props" : g.state === "in" ? "plays" : "box",
-    pbp: "all", team: "", order: "new", drives: null, box: "off", bteam: g.away, pos: "ALL", sort: g.state === "pre" ? "proj" : "live", leans: false,
+    pbp: "all", team: "", q: "", order: "new", drives: null, box: "off", bteam: g.away, pos: "ALL", sort: g.state === "pre" ? "proj" : "live", leans: false,
   });
 }
 
@@ -1159,7 +1159,13 @@ function renderPlays(g, sum, teams) {
   const isFresh = (pl) => seen && !seen.has(pl.id);
   const all = allDrives(sum);
   const newest = all.length ? all[all.length - 1].id : null;
-  const drives = st.team ? all.filter((d) => teamCode(d.team?.abbreviation || "") === st.team) : all;
+  // Quarter filter: a drive that crosses quarters shows only that quarter's plays
+  const inQ = (pl) => !st.q || (st.q === "5" ? (pl.period?.number || 0) >= 5 : String(pl.period?.number) === st.q);
+  const drives = all
+    .filter((d) => !st.team || teamCode(d.team?.abbreviation || "") === st.team)
+    .map((d) => (st.q ? { ...d, plays: (d.plays || []).filter(inQ) } : d))
+    .filter((d) => !st.q || d.plays.length);
+  const quarters = [...new Set(all.flatMap((d) => (d.plays || []).map((pl) => Math.min(5, pl.period?.number || 0))))].filter(Boolean).sort();
   const ordered = (arr) => (st.order === "new" ? arr.slice().reverse() : arr);
   const isOpen = (d) => (st.drives === "all" ? true : st.drives === "none" ? false : d.id === newest) !== S.openDrives.has(d.id);
   const allOpen = drives.length > 0 && drives.every(isOpen);
@@ -1167,6 +1173,7 @@ function renderPlays(g, sum, teams) {
   const toolbar = `<div class="gtool">
     ${seg("data-pbp", st.pbp, PLAY_FILTERS, "Show")}
     ${teamSeg(teams, st.team)}
+    ${quarters.length > 1 ? seg("data-gq", st.q, [["", "All Qs"], ...quarters.map((q) => [String(q), q === 5 ? "OT" : `Q${q}`])], "Quarter") : ""}
     ${seg("data-order", st.order, [["new", "Newest first"], ["old", "Oldest first"]], "Order")}
     ${st.pbp === "all" ? `<button class="tbtn" data-drives="${allOpen ? "none" : "all"}">${allOpen ? "Collapse all" : "Expand all"}</button>` : ""}
   </div>`;
@@ -1760,7 +1767,7 @@ document.addEventListener("click", (e) => {
   const gsub = t.closest("[data-gsub]");
   if (gsub) { setGameTab(gsub.dataset.gsub); return; }
   // game page toolbars
-  for (const [attr, field] of [["data-pbp", "pbp"], ["data-gteam", "team"], ["data-order", "order"], ["data-box", "box"], ["data-bteam", "bteam"], ["data-gpos", "pos"], ["data-gsort", "sort"]]) {
+  for (const [attr, field] of [["data-pbp", "pbp"], ["data-gteam", "team"], ["data-gq", "q"], ["data-order", "order"], ["data-box", "box"], ["data-bteam", "bteam"], ["data-gpos", "pos"], ["data-gsort", "sort"]]) {
     const el = t.closest(`[${attr}]`);
     if (el && S.gameView) { gs()[field] = el.getAttribute(attr); renderGame(); return; }
   }
