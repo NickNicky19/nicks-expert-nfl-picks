@@ -415,3 +415,30 @@ tr.click:hover td { background: #18224a; }
 .drive.lost { box-shadow: inset 3px 0 0 var(--red); }
 .drive.lost .drive-r b { color: var(--red); }
 .drive.scored .drive-r b { color: var(--green); }
+
+/* ---------- my picks */
+.cat-add { display: flex; gap: 6px; margin: 8px 0 2px; }
+.add { border: 1px solid var(--line); background: var(--card-2); color: var(--text-2); border-radius: 8px; padding: 4px 10px; font: 600 12px var(--sans); }
+.add.over:hover, .add.over.on { border-color: var(--green); color: var(--green); }
+.add.under:hover, .add.under.on { border-color: var(--red); color: var(--red); }
+.add.on { background: transparent; }
+.add.mini { padding: 1px 8px; font-size: 14px; line-height: 1.3; margin-bottom: 4px; }
+.add.demo { display: inline-block; padding: 0 6px; cursor: default; }
+.tabs .gbadge { margin-left: 4px; background: var(--cyan); color: var(--bg); }
+.mine-sum { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 12px; }
+.mine-sum .k { color: var(--muted); font-size: 11.5px; font-weight: 600; }
+.mine-sum .v { font: 600 24px var(--num); }
+.mine-sum .entry.won .v { color: var(--green); }
+.mine-sum .entry.lost .v { color: var(--red); }
+@media (max-width: 560px) { .mine-sum { grid-template-columns: repeat(2, 1fr); } .mine-sum .entry { grid-column: 1 / -1; } }
+.pick.mine.hit { box-shadow: inset 3px 0 0 var(--green); }
+.pick.mine.miss { box-shadow: inset 3px 0 0 var(--red); }
+.pick.mine.live { box-shadow: inset 3px 0 0 var(--cyan); }
+.rm { background: none; border: 0; color: var(--faint); font-size: 18px; padding: 0 2px; margin-top: 4px; }
+.rm:hover { color: var(--red); }
+.empty-card p { color: var(--text-2); }
+
+.prog.warn i { background: var(--amber); }
+.prog-note { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.show-sm { display: none; }
+@media (max-width: 560px) { .hide-sm { display: none; } .show-sm { display: inline; } .tabs { gap: 18px; } }

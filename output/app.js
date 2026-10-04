@@ -39,6 +39,7 @@ const S = {
   openDrives: new Set(),
   gs: {},              // game id -> that game page's tab and filters
   favs: new Set(store("favs") || []),
+  mine: store("mine") || [],   // My Picks: [{pid, key, dir, line, season, week, at}]
 };
 
 // ---------------------------------------------------------------- helpers
@@ -442,7 +443,7 @@ function renderScores() {
   $("#scores-status").textContent = anyLive
     ? `Live · updates every 30s${S.liveAt ? ` · ${S.liveAt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" })}` : ""}`
     : "Scores";
-  $("#scores-status").textContent += " \u00b7 tap a game for play-by-play";
+  $("#scores-status").insertAdjacentHTML("beforeend", `<span class="hide-sm"> \u00b7 tap a game for play-by-play</span>`);
   $("#strip").innerHTML = games.map((g) => {
     const live = g.state === "in";
     const started = g.state !== "pre";
@@ -498,11 +499,17 @@ function resBadge(st) {
   return "";
 }
 
-function progress(st, line, dir) {
+function progress(st, line, dir, key) {
   if (!st || st.v == null) return "";
   const pct = Math.min(100, (100 * st.v) / Math.max(line, 0.5));
-  const cls = st.res === "hit" ? "hit" : st.res === "miss" ? "miss" : "";
-  return `<div class="prog ${cls}"><i style="width:${pct}%"></i></div>`;
+  // an under that's most of the way to its line is in danger
+  const cls = st.res === "hit" ? "hit" : st.res === "miss" ? "miss" : dir === "under" && pct >= 75 ? "warn" : "";
+  let note = "";
+  if (st.res === "live" && key) {
+    const gap = line - st.v;
+    note = dir === "under" ? `${fmtStat(key, gap)} to spare` : `needs ${fmtStat(key, Math.max(0, Math.floor(gap) + 1))} more`;
+  }
+  return `<div class="prog ${cls}"><i style="width:${pct}%"></i></div>${note ? `<div class="prog-note">${note}</div>` : ""}`;
 }
 
 // ---------------------------------------------------------------- props tab
@@ -519,9 +526,10 @@ function pickCard(pick) {
       <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)}</div>
       <div class="what">${pick.direction === "over" ? "Over" : "Under"} <b class="num">${pick.line}</b> ${label} <span class="muted">${oppText(p)}</span></div>
       <div class="small">${LINE_FROM[pick.line_from] || "Our"} line, locked at kickoff · ${adj != null ? `our number <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of last ${pick.n}${liveLineText(p, pick.key, pick.line)}</div>
-      ${progress(st, pick.line, pick.direction)}
+      ${progress(st, pick.line, pick.direction, pick.key)}
     </div>
     <div class="side">
+      <button class="add mini ${pick.direction} ${minePick(p.id, pick.key, pick.direction) ? "on" : ""}" data-add="${p.id}|${pick.key}|${pick.direction}|${pick.line}" title="Add to My Picks">${minePick(p.id, pick.key, pick.direction) ? "\u2713" : "+"}</button>
       ${st ? `<div class="big" data-live-pick>${st.v == null ? "-" : fmtStat(pick.key, st.v)}</div>${resBadge(st)}` : `<div class="small">${esc(gameStatus(S.games[p.game_id]))}</div>`}
     </div>
   </div>`;
@@ -587,6 +595,10 @@ function catCard(p, prop) {
 
   return `<div class="cat" data-cat="${k}">
     <div class="cat-h"><span>${cat.label}</span>${leanPill}</div>
+    ${prop.key !== "anytime_td" ? `<div class="cat-add">${["over", "under"].map((d) => {
+      const on = minePick(p.id, prop.key, d);
+      return `<button class="add ${d} ${on ? "on" : ""}" data-add="${p.id}|${prop.key}|${d}|${line}" title="${on ? "Remove from" : "Add to"} My Picks">${on ? "\u2713" : "+"} ${d === "over" ? "Over" : "Under"} ${line}</button>`;
+    }).join("")}</div>` : ""}
     <div class="cat-nums">
       ${lineCell}
       ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection on the same scale as the line">Our number<span class="n">${fmt(prop.adj)}</span></div>` : ""}
@@ -1283,7 +1295,7 @@ function applyHash() {
     if (m[2] && GAME_TABS.some(([k]) => k === m[2])) gs().tab = m[2];
     return true;
   }
-  const t = location.hash.match(/^#\/(props|fantasy|record|about)$/);
+  const t = location.hash.match(/^#\/(props|fantasy|mine|record|about)$/);
   if (t) { S.gameView = null; S.tab = t[1]; return true; }
   return false;
 }
@@ -1325,17 +1337,99 @@ function setTopHeight() {
 }
 window.addEventListener("resize", setTopHeight);
 
+// ---------------------------------------------------------------- my picks
+
+function minePick(pid, key, dir) {
+  return S.mine.find((m) => m.pid === pid && m.key === key && m.dir === dir && m.season === S.data.season && m.week === S.data.week);
+}
+
+function toggleMine(pid, key, dir, line) {
+  const have = minePick(pid, key, dir);
+  if (have) S.mine = S.mine.filter((m) => m !== have);
+  else {
+    // one side per prop: picking the over replaces an under on the same prop
+    S.mine = S.mine.filter((m) => !(m.pid === pid && m.key === key && m.season === S.data.season && m.week === S.data.week));
+    S.mine.push({ pid, key, dir, line: +line, season: S.data.season, week: S.data.week, at: Date.now() });
+  }
+  store("mine", S.mine);
+  updateMineBadge();
+}
+
+function updateMineBadge() {
+  const n = S.data ? S.mine.filter((m) => m.season === S.data.season && m.week === S.data.week).length : 0;
+  const el = $("#mine-n");
+  if (el) { el.textContent = n || ""; el.hidden = !n; }
+}
+
+function renderMine() {
+  const now = S.mine.filter((m) => m.season === S.data.season && m.week === S.data.week && S.byId[m.pid]);
+  const old = S.mine.length - now.length;
+  if (!now.length) {
+    $("#main").innerHTML = `<h2>My Picks</h2><div class="card empty-card">
+      <p><b>Track any prop live.</b> Open a player on the Props tab and tap <span class="add over on demo">+ Over</span> or <span class="add under on demo">+ Under</span> on any line, or tap <b>+</b> on a top pick. Your picks are saved on this device and follow the games live.</p>
+      ${old ? `<p class="note">${old} pick${old === 1 ? "" : "s"} from an earlier week. <button class="tbtn" data-mine-clear="old">Clear them</button></p>` : ""}
+    </div>`;
+    return;
+  }
+  const rows = now.map((m) => {
+    const p = S.byId[m.pid];
+    const g = S.games[p.game_id];
+    return { m, p, g, st: propStatus(p, m.key, m.line, m.dir), prop: p.props.find((x) => x.key === m.key) };
+  });
+  const rank = (r) => (r.g.state === "in" ? 0 : r.g.state === "pre" ? 1 : 2);
+  rows.sort((a, b) => rank(a) - rank(b) || a.g.kickoff.localeCompare(b.g.kickoff) || a.m.at - b.m.at);
+  const hit = rows.filter((r) => r.st?.res === "hit").length;
+  const miss = rows.filter((r) => r.st?.res === "miss").length;
+  const final = rows.filter((r) => r.st?.final).length;
+  const live = rows.filter((r) => r.g.state === "in").length;
+  const entry = miss ? "lost" : hit === rows.length ? "won" : "open";
+  $("#main").innerHTML = `
+    <h2>My Picks <small>${S.data.season} week ${S.data.week}</small></h2>
+    <div class="mine-sum card">
+      <div><div class="k">Hit</div><div class="v num" style="color:var(--green)">${hit}</div></div>
+      <div><div class="k">Missed</div><div class="v num" style="color:var(--red)">${miss}</div></div>
+      <div><div class="k">Live</div><div class="v num" style="color:var(--cyan)">${live}</div></div>
+      <div><div class="k">Not started</div><div class="v num">${rows.filter((r) => r.g.state === "pre").length}</div></div>
+      <div class="entry ${entry}"><div class="k">All ${rows.length} together</div><div class="v">${entry === "won" ? "Won" : entry === "lost" ? "Lost" : `${hit} of ${rows.length}`}</div></div>
+    </div>
+    <div class="plist">${rows.map(({ m, p, g, st, prop }) => {
+      const label = S.data.categories[m.key].label;
+      const lineNow = prop?.line;
+      return `<div class="pick mine ${st?.res || ""}" data-open="${p.id}">
+        ${avatar(p)}
+        <div>
+          <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)} <span class="muted">${oppText(p)}</span></div>
+          <div class="what">${m.dir === "over" ? "Over" : "Under"} <b class="num">${m.line}</b> ${label}${lineNow != null && lineNow !== m.line ? ` <span class="muted">(line now ${lineNow})</span>` : ""}</div>
+          <div class="small">${esc(gameStatus(g))}${liveLineText(p, m.key, m.line)}</div>
+          ${progress(st, m.line, m.dir, m.key)}
+        </div>
+        <div class="side">
+          ${st ? `<div class="big">${st.v == null ? "-" : fmtStat(m.key, st.v)}</div>${resBadge(st)}` : `<div class="small">${esc(kickoffText(g.kickoff))}</div>`}
+          <button class="rm" data-rm="${p.id}|${m.key}|${m.dir}" title="Remove" aria-label="Remove">\u00d7</button>
+        </div>
+      </div>`;
+    }).join("")}</div>
+    <div class="gtool" style="margin-top:12px">
+      ${final ? `<button class="tbtn" data-mine-clear="final">Clear finished</button>` : ""}
+      <button class="tbtn" data-mine-clear="all">Clear all</button>
+      ${old ? `<button class="tbtn" data-mine-clear="old">Clear ${old} from earlier weeks</button>` : ""}
+    </div>
+    <p class="note">Picks keep the line you added them at. Overs show cleared as soon as they pass the line; unders and everything else settle when the game is final.</p>`;
+}
+
 // ---------------------------------------------------------------- render and events
 
 function render() {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", !S.gameView && b.dataset.tab === S.tab));
   if (S.gameView) { renderGame(); renderScores(); return; }
-  ({ props: renderProps, fantasy: renderFantasy, record: renderRecord, about: renderAbout })[S.tab]();
+  ({ props: renderProps, fantasy: renderFantasy, mine: renderMine, record: renderRecord, about: renderAbout })[S.tab]();
+  updateMineBadge();
   renderScores();
 }
 
 // Live ticks update numbers in place, so open cards, focus and scroll position survive
 function renderLiveParts() {
+  if (!S.gameView && S.tab === "mine") { const y = window.scrollY; renderMine(); window.scrollTo(0, y); return; }
   if (S.gameView) {
     if (document.activeElement?.matches("input,select")) return;
     const y = window.scrollY;
@@ -1383,6 +1477,43 @@ document.addEventListener("click", (e) => {
   }
   const go = t.closest("[data-goto]");
   if (go) { e.preventDefault(); S.tab = go.dataset.goto; render(); window.scrollTo(0, 0); return; }
+  const add = t.closest("[data-add]");
+  if (add) {
+    e.stopPropagation();
+    const [pid, key, dir, line] = add.dataset.add.split("|");
+    toggleMine(pid, key, dir, line);
+    if (S.gameView) renderGame();
+    else if (S.tab === "props") {
+      const card = $(`[data-player="${pid}"]`);
+      if (card) card.outerHTML = playerCard(S.byId[pid]);
+      document.querySelectorAll(`.pick [data-add^="${pid}|${key}|"]`).forEach((b) => {
+        const on = !!minePick(pid, key, b.dataset.add.split("|")[2]);
+        b.classList.toggle("on", on);
+        b.textContent = on ? "\u2713" : "+";
+      });
+    } else render();
+    return;
+  }
+  const rm = t.closest("[data-rm]");
+  if (rm) {
+    const [pid, key, dir] = rm.dataset.rm.split("|");
+    toggleMine(pid, key, dir);
+    renderMine();
+    return;
+  }
+  const clr = t.closest("[data-mine-clear]");
+  if (clr) {
+    const kind = clr.dataset.mineClear;
+    const thisWeek = (m) => m.season === S.data.season && m.week === S.data.week;
+    if (kind === "all" && !confirm("Remove all your picks for this week?")) return;
+    S.mine = S.mine.filter((m) => kind === "old" ? thisWeek(m)
+      : kind === "all" ? !thisWeek(m)
+      : !(thisWeek(m) && S.byId[m.pid] && propStatus(S.byId[m.pid], m.key, m.line, m.dir)?.final));
+    store("mine", S.mine);
+    renderMine();
+    updateMineBadge();
+    return;
+  }
   const fav = t.closest("[data-fav]");
   if (fav) {
     const id = fav.dataset.fav;
@@ -1500,7 +1631,7 @@ $("#reload").addEventListener("click", async () => {
 
 (async function start() {
   const saved = store("tab");
-  if (["props", "fantasy", "record", "about"].includes(saved)) S.tab = saved;
+  if (["props", "fantasy", "mine", "record", "about"].includes(saved)) S.tab = saved;
   try {
     await load();
   } catch (err) {
