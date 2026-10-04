@@ -9,7 +9,7 @@ import requests
 
 SLEEPER = "https://api.sleeper.app"
 ESPN = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
-POSITIONS = ["QB", "RB", "WR", "TE"]
+POSITIONS = ["QB", "RB", "WR", "TE", "K", "DEF"]
 
 # ESPN and Sleeper agree on every team code except Washington
 ESPN_TO_SLEEPER = {"WSH": "WAS"}

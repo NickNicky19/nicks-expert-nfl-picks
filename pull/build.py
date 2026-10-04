@@ -13,6 +13,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+import books
 import grade
 import scoring
 import sources
@@ -25,7 +26,11 @@ ARCHIVE = OUT / "archive"
 HISTORY_GAMES = 8  # games behind each line, and shown in each prop's chart and hit rate
 MIN_GAMES_FOR_LINE = 4  # with fewer games, the line comes from the projection and there is no lean
 TOP_N = 12
-MIN_PICK_SCORE = 0.35  # how far (in typical spreads) the projection must be from the line to be a Top pick
+MIN_PICK_SCORE = 0.35
+# Top picks are for players with real roles, not backups whose odd projection makes a big gap
+PICK_MIN_SNAP_SHARE = 0.5          # average share of the team's offensive snaps over his recent games
+PICK_MIN_PROJ_PPR = {"QB": 10, "RB": 6, "WR": 6, "TE": 6}
+PICK_PROJ_RANGE = (0.4, 2.5)       # projection vs the line outside this means Sleeper expects a different role  # how far (in typical spreads) the projection must be from the line to be a Top pick
 UNAVAILABLE = {"Out", "IR", "PUP", "Suspended", "NA", "Doubtful", "COV", "DNR"}
 REGULAR_SEASON_WEEKS = 18
 
@@ -53,6 +58,9 @@ def trim_stats(rows):
         kept = {k: s[k] for k in scoring.STAT_KEYS if s.get(k)}
         if kept:
             out[r["player_id"]] = {"team": r.get("team"), "opp": r.get("opponent"), "stats": kept}
+            pos = (r.get("player") or {}).get("position")
+            if pos in ("K", "DEF"):
+                out[r["player_id"]]["pos"] = pos
     return out
 
 
@@ -67,8 +75,14 @@ def week_stats(season, week, refresh):
 
 
 def load_players():
-    keep = {}
+    """(skill players, kickers and team defenses) by Sleeper id. A team defense's id is its team code."""
+    keep, kdef = {}, {}
     for pid, p in (sources.players() or {}).items():
+        if p.get("position") in ("K", "DEF") and p.get("team") and (p.get("active", True) or p["position"] == "DEF"):
+            name = p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+            kdef[pid] = {"name": name, "pos": p["position"], "team": p["team"], "injury": p.get("injury_status"),
+                         "injury_part": p.get("injury_body_part"), "depth": p.get("depth_chart_order"), "espn_id": p.get("espn_id")}
+            continue
         if p.get("position") not in scoring.POSITION_CATEGORIES or not p.get("team"):
             continue
         keep[pid] = {
@@ -80,8 +94,9 @@ def load_players():
             "depth": p.get("depth_chart_order"),
             "number": p.get("number"),
             "years": p.get("years_exp"),
+            "espn_id": p.get("espn_id"),
         }
-    return keep
+    return keep, kdef
 
 
 def load_games(season, week):
@@ -204,23 +219,65 @@ def player_props(player, proj, games, season):
     return props
 
 
+def apply_book(props, lines, picks_lines=None):
+    """Use a real line wherever there is one: DraftKings first, then Sleeper Picks. Ours stays as our_line.
+
+    Leans are then measured against that line, using our number (Sleeper's projection on the same scale as our
+    line). DraftKings' pregame lines freeze at kickoff, so this is safe to run on games that have started.
+    """
+    picks_lines = picks_lines or {}
+    for p in props:
+        if p["key"] == "anytime_td":
+            continue
+        p.setdefault("our_line", p["line"])
+        dk = lines.get(p["key"])
+        slp = picks_lines.get(p["key"])
+        if slp:
+            p["sleeper"] = slp
+        if dk:
+            line = dk["close"]
+            p.update(line=line, dk_open=dk["open"], line_from="dk")
+        elif slp:
+            line = slp["line"]
+            p.update(line=line, line_from="sleeper")
+        else:
+            p["line_from"] = "ours"
+            continue
+        cat = scoring.CATEGORIES[p["key"]]
+        diff = p["adj"] - line if p.get("adj") is not None else None
+        p["lean"] = None if diff is None else "over" if diff > cat["lean"] else "under" if diff < -cat["lean"] else None
+        p["over"] = sum(1 for x in p["values"] if x["v"] > line)
+    return props
+
+
+def snap_share(games):
+    """Average share of the team's offensive snaps over his last 4 games played (None without snap data)."""
+    shares = [g["stats"]["off_snp"] / g["stats"]["tm_off_snp"] for g in games[-4:]
+              if g["stats"].get("tm_off_snp") and g["stats"].get("off_snp") is not None]
+    return round(statistics.mean(shares), 2) if shares else None
+
+
 def pick_candidates(entry):
-    """The player's single best over and best under, scored in typical spreads."""
+    """The player's single best over and best under against DraftKings' lines, scored in typical spreads."""
     best = {}
     if entry.get("injury") in UNAVAILABLE or entry["games_this_season"] < 2:
         return best
+    if (entry.get("snap_share") or 0) < PICK_MIN_SNAP_SHARE or (entry.get("proj_ppr") or 0) < PICK_MIN_PROJ_PPR[entry["pos"]]:
+        return best
     for p in entry["props"]:
-        if p["key"] not in scoring.PICKABLE or p["proj"] is None or p["source"] != "history" or not p["lean"]:
+        if p["key"] not in scoring.PICKABLE or p["proj"] is None or p.get("line_from") not in ("dk", "sleeper") or not p["lean"]:
             continue
         if p["line"] < scoring.CATEGORIES[p["key"]]["min_pick"]:
             continue
         cat = scoring.CATEGORIES[p["key"]]
+        if p["line"] > 0 and not PICK_PROJ_RANGE[0] <= p["proj"] / p["line"] <= PICK_PROJ_RANGE[1]:
+            continue
         score = (cat["shrink"] * p["proj"] - p["line"]) / cat["scale"]
         side = p["lean"]
         if abs(score) < MIN_PICK_SCORE:
             continue
         if side not in best or abs(score) > abs(best[side]["score"]):
-            best[side] = {"key": p["key"], "line": p["line"], "proj": p["proj"], "adj": p["adj"], "score": round(score, 2), "over": p["over"], "n": p["n"]}
+            best[side] = {"key": p["key"], "line": p["line"], "line_from": p["line_from"], "our_line": p.get("our_line"), "proj": p["proj"], "adj": p["adj"], "score": round(score, 2), "over": p["over"], "n": p["n"]}
     return best
 
 
@@ -228,7 +285,8 @@ def build_picks(entries, frozen_picks, started_games):
     picks = {"over": [], "under": []}
     for side in picks:
         # Picks in games that have kicked off stay exactly as they were
-        kept = [p for p in frozen_picks.get(side, []) if p["game_id"] in started_games]
+        # (only picks against real lines: picks made against our own lines before the switch are dropped)
+        kept = [p for p in frozen_picks.get(side, []) if p["game_id"] in started_games and p.get("line_from") in ("dk", "sleeper")]
         fresh = []
         for e in entries:
             if e["game_id"] in started_games:
@@ -244,7 +302,7 @@ def build_picks(entries, frozen_picks, started_games):
 # ---------------------------------------------------------------- main
 
 
-def assemble(season, week, players, games, proj, history, ranks, weeks_played, previous, started):
+def assemble(season, week, players, games, proj, history, ranks, weeks_played, previous, started, book, picks_lines):
     """Every player's props for one week, plus the Top picks. Entries in games that already started come from
     `previous` unchanged, so nothing about a game moves after kickoff."""
     prev_players = {p["id"]: p for p in previous.get("players", [])}
@@ -260,6 +318,10 @@ def assemble(season, week, players, games, proj, history, ranks, weeks_played, p
         g, opp, home = game_of_team[p["team"]]
         if g["id"] in started and pid in prev_players:
             entry = dict(prev_players[pid], injury=p["injury"])
+            if any("line_from" not in x for x in entry["props"] if x["key"] != "anytime_td"):
+                # Built before DraftKings lines were added: attach the closing lines (fixed at kickoff), leaving
+                # the projection exactly as it was frozen
+                apply_book(entry["props"], book.get(pid, {}))
             entries.append(entry)
             continue
         late = g["id"] in started  # first seen after kickoff: shown, but never graded
@@ -270,7 +332,7 @@ def assemble(season, week, players, games, proj, history, ranks, weeks_played, p
             continue  # nobody expects him to play
         if pr and (pr.get("pts_ppr") or 0) < 0.5 and this_n == 0:
             continue
-        props = player_props(p, pr, hist, season)
+        props = apply_book(player_props(p, pr, hist, season), book.get(pid, {}), picks_lines.get(pid, {}))
         if not props:
             continue
         entries.append({
@@ -280,6 +342,7 @@ def assemble(season, week, players, games, proj, history, ranks, weeks_played, p
             "proj_ppr": pr.get("pts_ppr") if pr else None,
             "proj": {k: v for k, v in (pr or {}).items() if k != "pts_ppr" and v},
             "games_this_season": this_n, "games_last_season": sum(1 for x in hist if x["season"] == season - 1),
+            "snap_share": snap_share(hist),
             "avg_ppr": round(statistics.mean(scoring.ppr_points(x["stats"]) for x in hist if x["season"] == season), 2) if this_n else None,
             "matchup": matchup(ranks, opp, p["pos"], weeks_played),
             "props": props,
@@ -287,6 +350,36 @@ def assemble(season, week, players, games, proj, history, ranks, weeks_played, p
         })
     entries.sort(key=lambda e: -(e["proj_ppr"] or 0))
     return entries, build_picks(entries, previous.get("picks", {}), started)
+
+
+def kdef_entries(season, kdef, games, proj, history, previous, started):
+    """Kickers and team defenses: fantasy points only (no props). Same freezing rule as everyone else."""
+    prev_players = {p["id"]: p for p in previous.get("players", [])}
+    sides = {}
+    for g in games:
+        sides[g["home"]] = (g, g["away"], True)
+        sides[g["away"]] = (g, g["home"], False)
+    out = []
+    for pid, p in kdef.items():
+        if p["team"] not in sides:
+            continue
+        g, opp, home = sides[p["team"]]
+        if g["id"] in started and pid in prev_players:
+            out.append(dict(prev_players[pid], injury=p["injury"]))
+            continue
+        pr = proj.get(pid)
+        hist = [x for x in history.get(pid, []) if x["season"] == season]
+        if not pr and not hist:
+            continue
+        pts = [scoring.fantasy_points(x["stats"], p["pos"], x["season"]) for x in hist]
+        out.append({
+            "id": pid, "name": p["name"], "pos": p["pos"], "team": p["team"], "opp": opp, "home": home, "game_id": g["id"],
+            "injury": p["injury"], "injury_part": p["injury_part"], "depth": p["depth"],
+            "proj_ppr": pr.get("pts_ppr") if pr else None, "games_this_season": len(hist),
+            "avg_ppr": round(statistics.mean(pts), 2) if pts else None, "props": [],
+            **({"late": True} if g["id"] in started else {}),
+        })
+    return out
 
 
 def archive_of(season, week, entries, picks, now):
@@ -325,7 +418,7 @@ def run(refresh_all=False):
     week = max(1, min(week, REGULAR_SEASON_WEEKS))
     print(f"Season {season}, week {week}")
 
-    players = load_players()
+    players, kdef = load_players()
     games = load_games(season, week)
     proj = projections(season, week)
     weeks_by_key = load_stats_through(season, week - 1, refresh_from=1 if refresh_all else week - 2)
@@ -341,10 +434,29 @@ def run(refresh_all=False):
     now = iso(now_utc())
     started = {g["id"] for g in games if g["state"] != "pre" or g["kickoff"] <= now}
 
-    entries, picks = assemble(season, week, players, games, proj, history, ranks, weeks_played, previous, started)
+    try:
+        espn_ids = {}
+        book = books.week_lines(season, week, [g["id"] for g in games], players, espn_ids)
+    except Exception as err:  # a DraftKings outage shouldn't stop the build; lines fall back to ours
+        print("DraftKings lines unavailable:", err)
+        book, espn_ids = {}, {}
+    print(f"DraftKings lines for {len(book)} players")
+    try:
+        picks_lines = books.sleeper_lines()
+    except Exception as err:
+        print("Sleeper Picks lines unavailable:", err)
+        picks_lines = {}
+    print(f"Sleeper Picks lines for {len(picks_lines)} players")
+
+    entries, picks = assemble(season, week, players, games, proj, history, ranks, weeks_played, previous, started, book, picks_lines)
+    entries += kdef_entries(season, kdef, games, proj, history, previous, started)
     for e in entries:
+        # ESPN's id lets the page match DraftKings' live lines to the player
+        espn = espn_ids.get(e["id"]) or players.get(e["id"], {}).get("espn_id")
+        if espn:
+            e["espn_id"] = str(espn)
         actual = this_week_stats.get(e["id"])
-        e["actual"] = {"stats": actual["stats"], "ppr": scoring.ppr_points(actual["stats"])} if actual and played(actual) else None
+        e["actual"] = {"stats": actual["stats"], "ppr": scoring.fantasy_points(actual["stats"], e["pos"], season)} if actual and played(actual) else None
 
     data = {
         "generated_at": now,
@@ -356,6 +468,8 @@ def run(refresh_all=False):
         "defense": ranks,
         "categories": {k: {"label": v["label"], "lean": v["lean"], "shrink": v["shrink"]} for k, v in scoring.CATEGORIES.items()},
         "scoring": scoring.PPR,
+        "scoring_k": scoring.K_SCORING,
+        "scoring_def": scoring.def_scoring(season),
     }
     dump(OUT / "week.json", data)
     # The page polls this small file to tell when a new build is out

@@ -29,15 +29,20 @@ def problem(msg):
 
 def check_ppr():
     n = 0
+    odd = []
     for f in sorted((ROOT / "data" / "cache").glob("stats_*.json")):
         for pid, e in json.loads(f.read_text()).items():
             s = e["stats"]
             if s.get("pts_ppr") is None:
                 continue
             n += 1
-            if abs(scoring.ppr_points(s) - s["pts_ppr"]) > 0.011:
-                problem(f"{f.stem} player {pid}: ppr_points {scoring.ppr_points(s)} vs Sleeper {s['pts_ppr']}")
-    print(f"1. PPR formula checked on {n} player-weeks")
+            season = int(f.stem.split("_")[1])
+            mine = scoring.fantasy_points(s, e.get("pos"), season)
+            if abs(mine - s["pts_ppr"]) > 0.011:
+                (odd.append if e.get("pos") in ("K", "DEF") else problem)(f"{f.stem} {e.get('pos', '')} {pid}: ours {mine} vs Sleeper {s['pts_ppr']}")
+    print(f"1. Fantasy scoring checked on {n} player-weeks (kickers and defenses: {len(odd)} one-off differences allowed, max 10)")
+    if len(odd) > 10:
+        problem(f"{len(odd)} kicker/defense scores differ from Sleeper's")
 
 
 def check_point_in_time(data):
@@ -58,8 +63,9 @@ def check_point_in_time(data):
             values = [scoring.stat_value(prop["key"], g["stats"]) for g in history.get(p["id"], [])]
             expected = scoring.round_to_half(build.line_center(prop["key"], values))
             checked += 1
-            if expected != prop["line"]:
-                problem(f"{p['name']} {prop['key']}: line {prop['line']} but earlier weeks give {expected}")
+            ours = prop.get("our_line", prop["line"])
+            if expected != ours:
+                problem(f"{p['name']} {prop['key']}: our line {ours} but earlier weeks give {expected}")
     print(f"2. {checked} lines rebuilt from earlier weeks only")
 
 
@@ -73,15 +79,22 @@ def check_shape(data):
         if p["team"] not in teams:
             problem(f"{p['name']} plays for {p['team']}, which has no game")
         for prop in p["props"]:
-            if (prop["line"] * 2) % 2 != 1:
-                problem(f"{p['name']} {prop['key']} line {prop['line']} does not end in .5")
+            ours = prop.get("our_line", prop["line"])
+            if (ours * 2) % 2 != 1:
+                problem(f"{p['name']} {prop['key']} our line {ours} does not end in .5")
+            if prop.get("line_from") in ("dk", "sleeper") and prop["lean"] and prop.get("adj") is not None:
+                gap = prop["adj"] - prop["line"]
+                if (prop["lean"] == "over") != (gap > 0):
+                    problem(f"{p['name']} {prop['key']}: lean {prop['lean']} but our number {prop['adj']} vs DraftKings {prop['line']}")
     for side, picks in data["picks"].items():
         for pick in picks:
             p = by_id.get(pick["player_id"])
             cat = scoring.CATEGORIES[pick["key"]]
             if not p:
                 problem(f"{side} pick for unknown player {pick['player_id']}")
-            elif pick["line"] < cat["min_pick"] or p.get("injury") in build.UNAVAILABLE and not p.get("late"):
+            elif ((p.get("snap_share") or 0) < build.PICK_MIN_SNAP_SHARE or (p.get("proj_ppr") or 0) < build.PICK_MIN_PROJ_PPR[p["pos"]]) and not p.get("late"):
+                problem(f"{side} pick for a part-time player: {p['name']} (snap share {p.get('snap_share')}, proj {p.get('proj_ppr')})")
+            elif pick.get("line_from") not in ("dk", "sleeper") or pick["line"] < cat["min_pick"] or p.get("injury") in build.UNAVAILABLE and not p.get("late"):
                 problem(f"{side} pick breaks the rules: {p['name']} {pick['key']} {pick['line']}")
             if pick["direction"] != side:
                 problem(f"{side} list holds a {pick['direction']} pick")
@@ -161,7 +174,7 @@ def check_live(data):
           f"{exact} of {len(diffs)} match Sleeper's final PPR exactly")
     for d, name, live, final in sorted(diffs, reverse=True)[:5]:
         if d >= 0.011:
-            print(f"     {name}: live {live} vs final {final} (special teams plays aren't in ESPN's box score)")
+            print(f"     {name}: live {live} vs final {final} (ESPN's and Sleeper's stat feeds sometimes credit a few yards differently)")
     if rate < 90:
         problem(f"only {rate:.0f}% of ESPN box-score players matched by name")
     if diffs and exact / len(diffs) < 0.9:

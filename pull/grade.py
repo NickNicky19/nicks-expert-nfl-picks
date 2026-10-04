@@ -50,7 +50,7 @@ def grade_week(archive, stats, final_games):
             })
         out[f"top_{side}"] = {**tally([g["result"] for g in graded]), "picks": graded}
 
-    lean_results, by_cat = [], {}
+    lean_results, by_cat, dk_results = [], {}, []
     ppr_errors, line_errors, bias = [], [], []
     match = {"soft": [], "neutral": [], "tough": []}
     for p in archive["players"]:
@@ -60,10 +60,13 @@ def grade_week(archive, stats, final_games):
         if not a:
             continue
         for prop in p["props"]:
-            if prop["lean"] and prop["source"] == "history" and prop["key"] != "anytime_td":
+            dk = prop.get("line_from") in ("dk", "sleeper")  # a real line
+            if prop["lean"] and (dk or prop["source"] == "history") and prop["key"] != "anytime_td":
                 r = result(prop["lean"], scoring.stat_value(prop["key"], a["stats"]), prop["line"])
                 lean_results.append(r)
                 by_cat.setdefault(prop["key"], []).append(r)
+                if dk:
+                    dk_results.append((prop["lean"], r))
         points = scoring.ppr_points(a["stats"])
         fpts = next((x for x in p["props"] if x["key"] == "fpts" and x["source"] == "history"), None)
         if p.get("proj_ppr") is not None and fpts:
@@ -74,6 +77,7 @@ def grade_week(archive, stats, final_games):
             match[p["matchup"]].append(points - fpts["line"])
 
     out["leans"] = {**tally(lean_results), "by_category": {k: tally(v) for k, v in sorted(by_cat.items())}}
+    out["dk_leans"] = {side: tally([r for d, r in dk_results if d == side]) for side in ("over", "under")}
     out["ppr"] = {
         "n": len(ppr_errors),
         "proj_mae": round(statistics.mean(ppr_errors), 2) if ppr_errors else None,
@@ -102,6 +106,11 @@ def combine(weeks):
     pct = lambda h, m: round(100 * h / (h + m), 1) if h + m else None
     total["leans"] = {"hit": hit, "miss": miss, "pct": pct(hit, miss),
                       "by_category": {k: {**v, "pct": pct(v["hit"], v["miss"])} for k, v in sorted(cats.items())}}
+    total["dk_leans"] = {}
+    for side in ("over", "under"):
+        h = sum(w.get("dk_leans", {}).get(side, {}).get("hit", 0) for w in weeks)
+        m = sum(w.get("dk_leans", {}).get(side, {}).get("miss", 0) for w in weeks)
+        total["dk_leans"][side] = {"hit": h, "miss": m, "pct": pct(h, m)}
     n = sum(w["ppr"]["n"] for w in weeks)
     wavg = lambda key: round(sum(w["ppr"][key] * w["ppr"]["n"] for w in weeks if w["ppr"][key] is not None) / n, 2) if n else None
     total["ppr"] = {"n": n, "proj_mae": wavg("proj_mae"), "average_mae": wavg("average_mae"), "proj_bias": wavg("proj_bias")}

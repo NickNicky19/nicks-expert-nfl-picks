@@ -5,6 +5,8 @@ on:
     # A few minutes past the hour: GitHub delays scheduled runs most at the top of the hour.
     # Live scores don't depend on this; the page polls ESPN itself every 30 seconds.
     - cron: "6 * * * *"
+    # and every 30 minutes on game days (Thursday, Sunday, Monday; UTC) so injuries and lines stay fresh
+    - cron: "36 * * * 0,1,4,5"
   workflow_dispatch: {}
 
 # Runs queue instead of cancelling each other, so a run is never killed between its commit and its deploy
@@ -41,6 +43,11 @@ jobs:
       # A failed check is flagged on the run but doesn't hold back fresh data
       - name: Verify
         run: python tools/verify.py
+        continue-on-error: true
+
+      # Our lines vs DraftKings' on every finished game this season (shown on the Track Record tab)
+      - name: Compare with DraftKings
+        run: python tools/compare_lines.py --json output/data/dk_backtest.json
         continue-on-error: true
 
       # The week's file and archives must be committed: they hold the lines and picks frozen at kickoff,

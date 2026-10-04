@@ -6,27 +6,32 @@ a Python build writes static JSON every hour, and a static page on GitHub Pages 
 
 ## What's on the page
 
-- **Live scores**: every game's score, clock, down and distance, and possession, polled from ESPN every 30 seconds
-  while games are on.
-- **Live stats and PPR**: each player's box score from ESPN, scored with Sleeper's standard PPR, including
-  2-point conversions. Props show live progress; an over is marked cleared once it passes the line.
-- **Props**: lines for passing, rushing and receiving categories, anytime TD chance, and fantasy points.
-  Each prop opens to show the player's last 8 games against the line. You can also type in your own line.
-- **Top Overs / Top Unders**: the biggest gaps between Sleeper's projection and the line. They lock at kickoff.
-- **Fantasy**: PPR rankings by position and FLEX, projected and live.
-- **Track Record**: picks and leans graded after each game goes final.
+- **Real lines**: every prop uses DraftKings' line (via ESPN) when posted, then Sleeper Picks' line, and only then our
+  own estimate (labeled "est"). Cards show where DraftKings opened, DraftKings' live line during the game, and our line.
+- **Live scores and play-by-play**: tap a game for the field, last play, quarter scores, win probability, every drive
+  and play (scoring, big plays, turnovers, flags), the box score and fantasy leaders. Polled from ESPN every 15 to
+  30 seconds.
+- **Live stats and fantasy points**: Sleeper's standard PPR for QB, RB, WR, TE, K and team defense, including
+  2-point conversions, field goal distances, sacks, takeaways and points allowed.
+- **Top Overs / Top Unders**: the biggest gaps between our number (Sleeper's projection, adjusted) and the real line.
+  They lock at kickoff.
+- **Fantasy**: rankings by position, FLEX, K and DEF, projected and live.
+- **Injuries**: Sleeper's designations each update, plus ESPN's game-day news (inactives) as soon as it's posted.
+- **Track Record**: picks and leans graded after each game, and our lines compared with DraftKings' on every finished
+  game this season.
 
 ## How lines are made
 
-The line is `k x average of the player's last 8 games`, rounded to a .5. Only games before this week count.
-`k` is set per category (`pull/scoring.py`). A plain average put the result under the line about 63% of the time.
-Each `k` was fit on 2025 to make that 50/50, then checked on 2026 games the fit never saw
-(`python tools/calibrate.py` reruns both steps).
+DraftKings' line is used whenever there is one. Our own line is `k x average of the player's last 8 games`, rounded
+to a .5, using only games before this week. `k` is set per category (`pull/scoring.py`): fit on 2025 to land 50/50,
+then checked on 2026 (`python tools/calibrate.py`). `python tools/compare_lines.py` compares our lines with
+DraftKings' closing lines on every finished 2026 game: DraftKings' are sharper, and unders have hit more often than
+overs at DraftKings' lines.
 
-A lean compares Sleeper's projection, scaled by the same `k`, to the line.
+A lean compares our number (Sleeper's projection, scaled by the same `k`) to the line in use.
 
-Leans can't be backtested. Sleeper revises past weeks' projections after the games, so the track record only
-grades what was saved before kickoff. It starts from the first week this ran live.
+Leans can't be backtested: Sleeper revises past weeks' projections after the games, so the track record only grades
+what was saved before kickoff.
 
 ## Running it
 
@@ -49,13 +54,16 @@ cd output && python3 -m http.server 8000
 | Path | What it does |
 | --- | --- |
 | `pull/sources.py` | Sleeper and ESPN requests |
-| `pull/scoring.py` | PPR scoring, prop categories, line factors |
+| `pull/scoring.py` | fantasy scoring (all positions), prop categories, line factors |
+| `pull/books.py` | DraftKings lines via ESPN, Sleeper Picks lines |
 | `pull/build.py` | builds `output/data/week.json`, the weekly archive and the track record |
 | `pull/grade.py` | grades archived weeks |
-| `tools/verify.py`, `tools/calibrate.py` | checks and line calibration |
+| `tools/verify.py`, `tools/calibrate.py`, `tools/compare_lines.py` | checks, line calibration, DraftKings comparison |
 | `output/` | the site (`index.html`, `app.js`, `style.css`) and its data |
 | `data/cache/` | trimmed weekly stats (finished weeks are fetched once) |
 | `.github/workflows/hourly.yml` | hourly build, commit and Pages deploy |
 
-Data comes from the Sleeper API (projections, stats, players, injuries) and ESPN's public scoreboard and game
-summaries. Lines are not from a sportsbook. This is for fun and practice, not betting advice.
+Data comes from the Sleeper API (projections, stats, players, injuries, Picks lines) and ESPN (scores,
+play-by-play, box scores, injuries, DraftKings lines). This is for fun, not betting advice.
+
+Made by Joshua Moy.

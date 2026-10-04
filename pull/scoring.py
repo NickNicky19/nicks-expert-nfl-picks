@@ -16,8 +16,23 @@ PPR = {
     "fum_rec_td": 6, "idp_blk_kick": 2,
 }
 
+# Kickers (on top of the offensive scoring above, for the odd run or catch)
+K_SCORING = {
+    "fgm_0_19": 3, "fgm_20_29": 3, "fgm_30_39": 3, "fgm_40_49": 4, "fgm_50p": 5,
+    "xpm": 1, "fgmiss": -1, "xpmiss": -1,
+}
+
+# Team defense and special teams. Sleeper scored 14-20 points allowed as 0 in 2025 and 1 from 2026.
+DEF_SCORING = {
+    "sack": 1, "int": 2, "fum_rec": 2, "def_td": 6, "def_st_td": 6, "safe": 2, "blk_kick": 2,
+    "ff": 1, "def_st_ff": 1, "def_st_fum_rec": 1,
+    "pts_allow_0": 10, "pts_allow_1_6": 7, "pts_allow_7_13": 4, "pts_allow_14_20": 1,
+    "pts_allow_21_27": 0, "pts_allow_28_34": -1, "pts_allow_35p": -4,
+}
+
 # The raw stats kept from Sleeper (everything else is dropped to keep files small)
-STAT_KEYS = sorted(set(PPR) | {"pass_cmp", "pass_att", "rush_att", "rec_tgt", "gp", "off_snp", "pts_ppr", "idp_fum_rec"})
+STAT_KEYS = sorted(set(PPR) | set(K_SCORING) | set(DEF_SCORING)
+                   | {"pass_cmp", "pass_att", "rush_att", "rec_tgt", "gp", "off_snp", "pts_ppr", "idp_fum_rec", "pts_allow", "tm_off_snp"})
 
 
 def ppr_points(stats):
@@ -26,6 +41,19 @@ def ppr_points(stats):
         # Sleeper scores a fumble-return TD as defense (not PPR) when the recovery is credited as a defensive one
         total -= PPR["fum_rec_td"] * (stats.get("fum_rec_td") or 0)
     return round(total, 2)
+
+
+def def_scoring(season):
+    return {**DEF_SCORING, "pts_allow_14_20": 0} if season and season <= 2025 else DEF_SCORING
+
+
+def fantasy_points(stats, pos, season=None):
+    """Sleeper's standard PPR for any position, including kickers and team defenses."""
+    if pos == "K":
+        return round(ppr_points(stats) + sum(w * (stats.get(k) or 0) for k, w in K_SCORING.items()), 2)
+    if pos == "DEF":
+        return round(sum(w * (stats.get(k) or 0) for k, w in def_scoring(season).items()), 2)
+    return ppr_points(stats)
 
 
 def stat_value(key, stats):
