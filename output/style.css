@@ -362,3 +362,56 @@ table.box .ppr { color: var(--cyan); }
 .made a { color: var(--cyan); text-decoration: none; }
 .bio p, .bio li { margin: 6px 0; }
 .bio ul { padding-left: 18px; }
+
+/* ---------- game page tabs and toolbars */
+.gnav { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gnav-r { display: flex; gap: 6px; }
+.gtabs {
+  position: sticky; top: var(--top-h, 0px); z-index: 15; background: var(--bg); display: flex; align-items: center; gap: 4px;
+  margin: 14px -16px 0; padding: 0 16px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none;
+}
+.gtabs button {
+  background: none; border: 0; color: var(--muted); font: 600 14px var(--head); padding: 12px 12px 10px; white-space: nowrap;
+  border-bottom: 3px solid transparent; display: inline-flex; align-items: center; gap: 6px;
+}
+.gtabs button.on { color: var(--text); border-bottom-color: var(--cyan); }
+.gtabs button:focus-visible { outline: 2px solid var(--cyan); outline-offset: -4px; border-radius: 6px; }
+.gtabs-note { margin-left: auto; color: var(--faint); font-size: 11px; white-space: nowrap; padding-left: 8px; }
+.gbadge { font: 600 10.5px var(--sans); background: var(--card-2); color: var(--text-2); border-radius: 999px; padding: 1px 6px; }
+.gtabs button.on .gbadge { background: var(--cyan-deep); color: var(--cyan); }
+.ldot { width: 7px; height: 7px; border-radius: 50%; background: var(--red); animation: pulse 1.6s infinite; }
+.gbody { padding-top: 12px; min-height: 50vh; }
+.gtool { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 12px; }
+.seg { display: inline-flex; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 2px; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.seg button { background: none; border: 0; color: var(--text-2); font: 600 12.5px var(--sans); padding: 5px 10px; border-radius: 7px; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+.seg button img { width: 16px; height: 16px; }
+.seg button.on { background: var(--cyan); color: var(--bg); }
+.seg button:not(.on):hover { background: var(--card-2); }
+.tbtn { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; font: 600 12.5px var(--sans); color: var(--text-2); white-space: nowrap; }
+.tbtn:hover:not(:disabled) { border-color: var(--cyan); color: var(--text); }
+.tbtn.on { background: var(--cyan); border-color: var(--cyan); color: var(--bg); }
+.tbtn:disabled { opacity: .35; cursor: default; }
+.gcount { color: var(--muted); font-size: 12px; margin: -4px 0 8px; }
+.play-list { background: var(--card); border-radius: 12px; overflow: hidden; }
+.drive.live { box-shadow: inset 3px 0 0 var(--red); }
+.game-picks { margin-bottom: 12px; }
+.game-picks h3 { font: 700 14px var(--head); margin: 0 0 8px; }
+tr.click { cursor: pointer; }
+tr.click:hover td { background: #18224a; }
+.team-stats .tsr { display: grid; grid-template-columns: 1fr auto 1fr; gap: 4px 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+.team-stats .tsr.head { border-top: 0; font: 700 13px var(--head); padding-top: 0; }
+.team-stats .tsr.head span:last-child { text-align: right; }
+.team-stats .tsr.head img { width: 18px; height: 18px; vertical-align: -4px; }
+.team-stats .tsr .num { font: 600 15px var(--num); }
+.team-stats .tsr .num:last-of-type { text-align: right; }
+.team-stats .tsr .lbl { color: var(--muted); font-size: 12px; text-align: center; }
+.tsb { grid-column: 1 / -1; display: flex; gap: 2px; height: 4px; border-radius: 99px; overflow: hidden; background: var(--card-2); }
+.tsb i { display: block; height: 100%; opacity: .85; }
+@media (max-width: 560px) {
+  .gtabs button { padding: 11px 9px 9px; font-size: 13.5px; }
+  .gtabs-note { display: none; }
+  .gnav-r .tbtn { padding: 6px 9px; }
+}
+.drive.lost { box-shadow: inset 3px 0 0 var(--red); }
+.drive.lost .drive-r b { color: var(--red); }
+.drive.scored .drive-r b { color: var(--green); }
