@@ -314,6 +314,7 @@ async function pollScores() {
       away_score: away.score === "" ? null : +away.score,
       poss: possTeam ? teamCode(possTeam.team.abbreviation) : null,
       dd: e.status.type.state === "in" ? sit.shortDownDistanceText || sit.downDistanceText || "" : "",
+      period: e.status.period, clockSec: e.status.clock,
       rz: e.status.type.state === "in" && !!sit.isRedZone,
     });
   }
@@ -608,6 +609,36 @@ function renderScores() {
 
 // ---------------------------------------------------------------- shared bits
 
+// Share of the game still to play (0 to 1): regulation is four 15-minute quarters, overtime one 10-minute period
+function remaining(g) {
+  if (g.state === "pre") return 1;
+  if (g.state !== "in" || g.period == null) return 0;
+  const clock = g.clockSec ?? 0;
+  if (g.period > 4) return Math.max(0, clock) / 3600;
+  return Math.max(0, (4 - g.period) * 900 + clock) / 3600;
+}
+
+// Ours, live: the score so far plus what's left of our pregame projection for the time remaining
+function oursLive(g) {
+  const u = g.ours;
+  if (!u || g.state !== "in" || g.home_score == null) return null;
+  const r = remaining(g);
+  const home = g.home_score + u.home_pts * r, away = g.away_score + u.away_pts * r;
+  const sd = 13.5 * Math.sqrt(Math.max(r, 0.004));
+  const z = (home - away) / sd;
+  const pHome = 0.5 * (1 + erf(z / Math.SQRT2));
+  return { home_pts: home, away_pts: away, spread: away - home, total: home + away, home_win: pHome };
+}
+
+function erf(x) {
+  // Abramowitz and Stegun 7.1.26
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return x >= 0 ? y : -y;
+}
+
+const fairML = (p) => { p = Math.min(Math.max(p, 0.01), 0.99); return Math.round(p >= 0.5 ? (-100 * p) / (1 - p) : (100 * (1 - p)) / p); };
+
 // "DET -3.5 · 51.5"
 function shortLine(g) {
   const o = g.odds;
@@ -619,38 +650,39 @@ function shortLine(g) {
 const ml = (v) => (v == null ? "-" : v > 0 ? `+${v}` : `${v}`);
 
 function gameLines(g, teams) {
-  const o = g.odds;
-  const u = g.ours;
+  const o = g.odds, u = g.ours;
   if (!o && !u) return "";
   const H = teams.home.abbr, A = teams.away.abbr;
   const spreadText = (sp) => (sp == null ? "-" : Math.abs(sp) < 0.05 ? "Pick'em" : `${sp < 0 ? H : A} -${fmt(Math.abs(sp), Math.abs(sp) % 1 ? 1 : 0)}`);
-  const lv = g.state === "in" ? S.liveOdds[g.id] : null;
-  const leanTag = (txt) => `<span class="glean">Lean ${txt}</span>`;
-  const sub = (cls, label, v) => `<span class="${cls}">${label} ${v}</span>`;
-  const cell = (k, main, rows) => `<div class="gl"><div class="k">${k}</div><div class="v">${main}</div><div class="s">${rows.filter(Boolean).join("")}</div></div>`;
   const pct = (p) => `${Math.round(100 * p)}%`;
-  // the side we like against DraftKings' spread, written the way a bettor would ("MIA +10")
+  const lvDK = g.state === "in" ? S.liveOdds[g.id] : null;
+  const lvUs = oursLive(g);
+  const row = (label, cls, sp, tot, mlText, pts) => `<tr class="${cls}"><th>${label}</th><td>${sp}</td><td>${tot}</td><td>${mlText}</td><td>${pts}</td></tr>`;
+  const rows = [];
+  if (o) rows.push(row("DraftKings", "dk", spreadText(o.spread) + (o.spread_open != null && o.spread_open !== o.spread ? `<span class="opened">opened ${spreadText(o.spread_open)}</span>` : ""),
+    o.total, `${A} ${ml(o.ml_away)} \u00b7 ${H} ${ml(o.ml_home)}`, `${A} ${o.away_pts} \u00b7 ${H} ${o.home_pts}`));
+  if (u) rows.push(row("Ours", "ours", spreadText(u.spread), fmt(u.total),
+    `${A} ${pct(1 - u.home_win)} (${ml(u.ml_away)}) \u00b7 ${H} ${pct(u.home_win)} (${ml(u.ml_home)})`, `${A} ${fmt(u.away_pts)} \u00b7 ${H} ${fmt(u.home_pts)}`));
+  const live = [];
+  if (lvDK) live.push(row("DraftKings", "dk live", spreadText(lvDK.spread), lvDK.total ?? "-", `${A} ${ml(lvDK.ml_away)} \u00b7 ${H} ${ml(lvDK.ml_home)}`, "-"));
+  if (lvUs) live.push(row("Ours", "ours live", spreadText(lvUs.spread), fmt(lvUs.total),
+    `${A} ${pct(1 - lvUs.home_win)} (${ml(fairML(1 - lvUs.home_win))}) \u00b7 ${H} ${pct(lvUs.home_win)} (${ml(fairML(lvUs.home_win))})`,
+    `${A} ${fmt(lvUs.away_pts)} \u00b7 ${H} ${fmt(lvUs.home_pts)}`));
   const spreadLean = u?.lean_spread && o ? `${u.lean_spread} ${u.lean_spread === H ? (o.spread > 0 ? "+" : "") + o.spread : (o.spread < 0 ? "+" : "") + -o.spread}` : null;
-  return `<div class="glines">
-    ${cell("Spread", o ? spreadText(o.spread) : "-", [
-      o?.spread_open != null && o.spread_open !== o.spread ? sub("muted", "opened", spreadText(o.spread_open)) : "",
-      lv ? sub("live-l", "live", spreadText(lv.spread)) : "",
-      u ? sub("ours-l", "ours", spreadText(u.spread)) : "",
-      spreadLean ? leanTag(spreadLean) : "",
-    ])}
-    ${cell("Total", o ? `O/U ${o.total}` : "-", [
-      lv ? sub("live-l", "live", lv.total) : "",
-      u ? sub("ours-l", "ours", fmt(u.total)) : "",
-      u?.lean_total ? leanTag(`${u.lean_total} ${o.total}`) : "",
-    ])}
-    ${cell("Moneyline", o ? `${A} ${ml(o.ml_away)} \u00b7 ${H} ${ml(o.ml_home)}` : "-", [
-      lv ? sub("live-l", "live", `${ml(lv.ml_away)} / ${ml(lv.ml_home)}`) : "",
-      u ? sub("ours-l", "ours", `${A} ${pct(1 - u.home_win)} (${ml(u.ml_away)}) \u00b7 ${H} ${pct(u.home_win)} (${ml(u.ml_home)})`) : "",
-    ])}
-    ${cell("Implied points", o ? `${A} ${o.away_pts} \u00b7 ${H} ${o.home_pts}` : "-", [
-      u ? sub("ours-l", "ours", `${A} ${fmt(u.away_pts)} \u00b7 ${H} ${fmt(u.home_pts)}`) : "",
-    ])}
-    <div class="gl-src">DraftKings pregame${lv ? ", live in amber" : ""}${u ? `, <span class="ours-l">ours</span> from our player projections added up into team scores (fair moneyline, no vig)${g.ours_late ? "; first made after kickoff, so not graded" : ""}` : ""}</div>
+  const leans = [spreadLean, u?.lean_total ? `${u.lean_total} ${o.total}` : null].filter(Boolean);
+  return `<div class="glines2">
+    <div class="tbl-wrap"><table class="gltab">
+      <thead><tr><th></th><th>Spread</th><th>Total</th><th>Moneyline</th><th>Projected score</th></tr></thead>
+      <tbody>
+        <tr class="sec"><td colspan="5">Pregame${g.state === "pre" ? "" : ", locked at kickoff"}</td></tr>
+        ${rows.join("")}
+        ${live.length ? `<tr class="sec"><td colspan="5">Live${g.state === "in" ? ` \u00b7 ${esc(gameStatus(g))}` : ""}</td></tr>${live.join("")}` : ""}
+      </tbody>
+    </table></div>
+    <div class="gl-foot">
+      ${leans.length ? `<span>Our pregame ${leans.length === 1 ? "lean" : "leans"}: ${leans.map((l) => `<span class="glean">${esc(l)}</span>`).join(" ")}</span>` : u ? `<span class="muted">No pregame lean: we're within 2 points of DraftKings' spread and 3 of the total.</span>` : ""}
+      <span class="muted">Ours pregame: our player projections added up into team scores, locked at kickoff and graded${g.ours_late ? " (this one was first made after kickoff, so it isn't graded)" : ""}. Ours live: the score so far plus what's left of our pregame projection for the time remaining. Moneylines for ours are fair odds with no sportsbook margin.${lvDK ? " DraftKings' live odds come through ESPN without a timestamp and can lag a play or two, or freeze while betting is suspended." : ""}</span>
+    </div>
   </div>`;
 }
 
@@ -724,7 +756,7 @@ function pickCard(pick) {
     <div>
       <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)}</div>
       <div class="what">${pick.direction === "over" ? "Over" : "Under"} <b class="num">${pick.line}</b> ${label} <span class="muted">${oppText(p)}</span></div>
-      <div class="small">${LINE_FROM[pick.line_from] || "Our"} line, locked at kickoff · ${adj != null ? `our proj <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}</div>
+      <div class="small">${LINE_FROM[pick.line_from] || "Our"} line, locked at kickoff · ${adj != null ? `our pregame proj <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}</div>
       ${progress(st, pick.line, pick.direction, pick.key)}
     </div>
     <div class="side">
@@ -805,7 +837,8 @@ function catCard(p, raw) {
     }).join("")}</div>` : ""}
     <div class="cat-nums">
       ${lineCell}
-      ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment">Our proj<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
+      ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment, made before kickoff">Our proj (pregame)<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
+      ${st && !st.final && st.v != null && prop.adj != null && prop.key !== "anytime_td" ? `<div title="What he has so far plus our pregame projection for the time left">On pace<span class="n" style="color:var(--amber)">${fmt(st.v + prop.adj * remaining(S.games[p.game_id]), prop.key === "fpts" ? 2 : 1)}</span></div>` : ""}
       ${prop.proj != null ? `<div>Sleeper proj<span class="n">${fmtStat(prop.key, prop.proj)}</span></div>` : ""}
       ${avg != null ? `<div>Season avg<span class="n">${fmt(avg)}</span></div>` : ""}
       ${st ? `<div>${st.final ? "Final" : "Now"}<span class="n" style="color:var(--cyan)">${st.v == null ? "DNP" : fmtStat(prop.key, st.v)}</span></div>` : ""}

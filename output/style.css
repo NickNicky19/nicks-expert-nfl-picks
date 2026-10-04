@@ -515,3 +515,17 @@ tr.click:hover td { background: #18224a; }
 .gl .ours-l { color: var(--cyan); }
 .glean { display: inline-block; margin-top: 3px; font: 700 10.5px var(--sans); color: var(--bg); background: var(--cyan); border-radius: 5px; padding: 1px 6px; align-self: flex-start; }
 .sub-live { color: var(--cyan); }
+
+/* ---------- game lines table */
+.glines2 { margin-top: 14px; }
+.gltab { width: 100%; border-collapse: collapse; font-size: 12.5px; background: var(--card-2); border-radius: 10px; overflow: hidden; }
+.gltab th, .gltab td { padding: 7px 10px; text-align: left; white-space: nowrap; }
+.gltab thead th { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
+.gltab tbody th { font-weight: 700; color: var(--text-2); }
+.gltab tbody td { font: 600 13.5px var(--num); }
+.gltab tr.sec td { font: 700 10.5px var(--sans); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; padding-top: 9px; border-top: 1px solid var(--line); }
+.gltab tr.ours td, .gltab tr.ours th { color: var(--cyan); }
+.gltab tr.dk.live td, .gltab tr.dk.live th { color: var(--amber); }
+.gltab tr.ours.live td, .gltab tr.ours.live th { color: #7efffc; }
+.gltab .opened { display: block; font: 500 10.5px var(--sans); color: var(--muted); }
+.gl-foot { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; margin-top: 6px; }
