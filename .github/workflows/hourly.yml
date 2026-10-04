@@ -1,0 +1,82 @@
+name: Hourly update
+
+on:
+  schedule:
+    # A few minutes past the hour: GitHub delays scheduled runs most at the top of the hour.
+    # Live scores don't depend on this; the page polls ESPN itself every 30 seconds.
+    - cron: "6 * * * *"
+  workflow_dispatch: {}
+
+# Runs queue instead of cancelling each other, so a run is never killed between its commit and its deploy
+concurrency:
+  group: hourly-update
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Fail fast: if the build breaks there's nothing new to deploy
+      - name: Build lines, projections and track record
+        run: python pull/build.py
+
+      # A failed check is flagged on the run but doesn't hold back fresh data
+      - name: Verify
+        run: python tools/verify.py
+        continue-on-error: true
+
+      # The week's file and archives must be committed: they hold the lines and picks frozen at kickoff,
+      # which later runs keep and grade
+      - name: Commit data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/data data/cache
+          git diff --cached --quiet && exit 0
+          git commit -m "Hourly update"
+          for i in 1 2 3 4 5; do
+            git rebase --abort >/dev/null 2>&1 || true
+            if git pull --rebase -X theirs origin main && git push; then exit 0; fi
+            sleep $((i * 5))
+          done
+          git rebase --abort >/dev/null 2>&1 || true
+          echo "::error::Couldn't push after 5 tries; deploying this run's data anyway"
+          exit 1
+
+      - uses: actions/configure-pages@v5
+        if: ${{ !cancelled() }}
+      - uses: actions/upload-pages-artifact@v3
+        if: ${{ !cancelled() }}
+        with:
+          path: output
+
+      # GitHub's Pages backend fails now and then; one retry clears it
+      - name: Deploy to Pages
+        id: deployment
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+      - name: Wait before retry
+        if: ${{ !cancelled() && steps.deployment.outcome == 'failure' }}
+        run: sleep 20
+      - name: Deploy to Pages (retry)
+        if: ${{ !cancelled() && steps.deployment.outcome == 'failure' }}
+        uses: actions/deploy-pages@v4

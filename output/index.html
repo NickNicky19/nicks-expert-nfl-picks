@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NFL Player Props</title>
+<meta name="description" content="NFL player prop lines, PPR fantasy projections and live scoring, rebuilt every hour.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b1028'/%3E%3Cellipse cx='16' cy='16' rx='11' ry='7' transform='rotate(-35 16 16)' fill='%2300e1e0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Oswald:wght@500;600&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=1">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"></span>
+    <div>
+      <h1>NFL Player Props</h1>
+      <div class="sub" id="sub">Loading...</div>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="props" class="on">Props</button>
+    <button role="tab" data-tab="fantasy">Fantasy</button>
+    <button role="tab" data-tab="record">Track Record</button>
+    <button role="tab" data-tab="about">How it works</button>
+  </nav>
+</header>
+
+<div id="banner" class="banner" hidden>
+  New lines are out. <button id="reload">Refresh</button>
+</div>
+
+<section class="scores" aria-label="Scores">
+  <div class="scores-head"><span id="live-dot" class="live-dot" hidden></span><span id="scores-status">Scores</span></div>
+  <div class="strip" id="strip"></div>
+</section>
+
+<main id="main"></main>
+
+<footer class="foot">
+  Lines are built from each player's recent games, not taken from a sportsbook. For practice and fun, not betting advice.
+  Data: Sleeper (projections, stats, injuries) and ESPN (live scores and box scores).
+</footer>
+<script src="app.js?v=1"></script>
+</body>
+</html>
