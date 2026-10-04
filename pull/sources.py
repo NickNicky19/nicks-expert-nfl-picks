@@ -15,7 +15,7 @@ POSITIONS = ["QB", "RB", "WR", "TE", "K", "DEF"]
 ESPN_TO_SLEEPER = {"WSH": "WAS"}
 
 _session = requests.Session()
-_session.headers["User-Agent"] = "nfl-player-props (https://github.com/joshuam0y/nfl-player-props)"
+_session.headers["User-Agent"] = "joshua-moy-expert-nfl-picks (https://github.com/joshuam0y/joshua-moy-expert-nfl-picks)"
 
 
 def get_json(url, params=None, tries=3):

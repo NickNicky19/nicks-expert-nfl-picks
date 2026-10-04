@@ -66,7 +66,7 @@ h1 { font: 700 20px/1.1 var(--head); margin: 0; }
 @keyframes pulse { 50% { opacity: .35; } }
 .strip { display: flex; gap: 8px; overflow-x: auto; padding: 0 16px 8px; scroll-snap-type: x proximity; scroll-padding-inline: 16px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .game {
-  flex: none; width: 168px; background: var(--card); border-radius: 12px; padding: 9px 11px; border: 1px solid transparent;
+  flex: none; width: 178px; background: var(--card); border-radius: 12px; padding: 9px 11px; border: 1px solid transparent;
   scroll-snap-align: start; text-align: left; color: var(--text);
 }
 .game.on { border-color: var(--cyan); }
@@ -169,7 +169,7 @@ h2 small { font: 500 12px var(--sans); color: var(--muted); }
 .src.ours { background: var(--line); color: var(--muted); font-weight: 600; }
 .pchip .cur { color: var(--cyan); font-family: var(--num); margin-left: 4px; }
 
-.pbody { border-top: 1px solid var(--line); padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; background: #10173a; }
+.pbody { border-top: 1px solid var(--line); padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 10px; background: #10173a; }
 .cat { background: var(--card); border-radius: 12px; padding: 11px 12px; }
 .cat-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; }
 .cat-h .lean { font: 700 11px var(--sans); padding: 2px 8px; border-radius: 999px; }
@@ -391,7 +391,7 @@ table.box .ppr { color: var(--cyan); }
 .ldot { width: 7px; height: 7px; border-radius: 50%; background: var(--red); animation: pulse 1.6s infinite; }
 .gbody { padding-top: 12px; min-height: 50vh; }
 .gtool { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 12px; }
-.seg { display: inline-flex; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 2px; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.seg { display: inline-flex; flex-wrap: wrap; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 2px; max-width: 100%; }
 .seg button { background: none; border: 0; color: var(--text-2); font: 600 12.5px var(--sans); padding: 5px 10px; border-radius: 7px; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
 .seg button img { width: 16px; height: 16px; }
 .seg button.on { background: var(--cyan); color: var(--bg); }
@@ -606,3 +606,49 @@ table.cmp .arrow.over { color: var(--green); } table.cmp .arrow.under { color: v
 .idea-team { font: 700 11px var(--sans); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .idea-num .up { color: var(--green); }
 .idea .tbtn { align-self: flex-start; margin-top: 3px; }
+
+/* ---------- sync entry points */
+.sync-btn { margin-left: auto; background: var(--cyan); color: var(--bg); border: 0; border-radius: 10px; padding: 7px 12px; font: 700 13px var(--sans); white-space: nowrap; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; }
+.sync-btn.on { background: var(--card); color: var(--text); border: 1px solid var(--cyan); }
+.brand .scoring { margin-left: 8px; }
+.sync-promo { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--cyan-deep); border: 1px solid rgba(0, 225, 224, .35); border-radius: 14px; padding: 12px 14px; margin: 6px 0 14px; font-size: 13.5px; }
+.sync-promo-btns { display: flex; align-items: center; gap: 6px; flex: none; }
+@media (max-width: 560px) {
+  .sync-promo { flex-direction: column; align-items: flex-start; }
+  .sync-btn { padding: 7px 10px; font-size: 12.5px; }
+  .brand .sc-btn { max-width: 30vw; }
+}
+
+/* phones: title on its own line, the league and scoring buttons on the row under it */
+@media (max-width: 560px) {
+  .brand { flex-wrap: wrap; row-gap: 8px; }
+  .brand > div:nth-child(2) { flex: 1 1 calc(100% - 48px); }
+  .sync-btn { order: 3; margin-left: 0; flex: 1; max-width: none; }
+  .brand .scoring { order: 4; margin-left: 0; flex: 1; }
+  .brand .sc-btn { width: 100%; max-width: none; }
+}
+
+.gl-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; font-size: 12px; }
+.add.gadd { font-size: 12px; }
+.add.gadd.on { border-color: var(--cyan); color: var(--cyan); }
+
+/* phones: every main tab visible (a grid instead of a sideways strip) */
+@media (max-width: 560px) {
+  .tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; overflow: visible; margin-top: 8px; }
+  .tabs button { padding: 8px 2px 9px; font-size: 13px; text-align: center; border-bottom-width: 2px; }
+  .tabs .gbadge { margin-left: 2px; }
+}
+
+/* the smallest phones (320 to 400 px wide) */
+@media (max-width: 400px) {
+  .phead { gap: 8px; padding: 10px; }
+  .pts { min-width: 46px; }
+  .pts .v { font-size: 16px; }
+  .pname { font-size: 13.5px; }
+  .pbody { padding: 10px 8px; }
+  .gtabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; overflow: visible; }
+  .gtabs button { padding: 10px 2px 8px; font-size: 12.5px; justify-content: center; gap: 3px; }
+  .gtabs .gbadge { display: none; }
+  .gtabs-note { display: none; }
+}
+h1 { overflow-wrap: anywhere; }

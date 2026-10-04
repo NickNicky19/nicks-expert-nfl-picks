@@ -694,6 +694,18 @@ function gameLines(g, teams) {
   if (lvUs) live.push(row("Ours", "ours live", spreadText(lvUs.spread), fmt(lvUs.total),
     `${A} ${pct(1 - lvUs.home_win)} (${ml(fairML(1 - lvUs.home_win))}) \u00b7 ${H} ${pct(lvUs.home_win)} (${ml(fairML(lvUs.home_win))})`,
     `${A} ${fmt(lvUs.away_pts)} \u00b7 ${H} ${fmt(lvUs.home_pts)}`));
+  // + buttons: add DraftKings' pregame spread, total or moneyline to My Picks
+  const gb = (market, side, line, odds, text) => {
+    const on = !!mineGame(g.id, market, side);
+    return `<button class="add gadd ${on ? "on" : ""}" data-gadd="${g.id}|${market}|${side}|${line ?? ""}|${odds ?? ""}" title="${on ? "Remove from" : "Add to"} My Picks">${on ? "✓" : "+"} ${text}</button>`;
+  };
+  const sgn = (x) => (x > 0 ? `+${x}` : `${x}`);
+  const addRow = o ? `<div class="gl-add">
+      <span class="muted">Add to My Picks:</span>
+      ${gb("spread", A, -o.spread, null, `${A} ${sgn(-o.spread)}`)}${gb("spread", H, o.spread, null, `${H} ${sgn(o.spread)}`)}
+      ${gb("total", "over", o.total, null, `Over ${o.total}`)}${gb("total", "under", o.total, null, `Under ${o.total}`)}
+      ${gb("ml", A, null, o.ml_away, `${A} ${ml(o.ml_away)}`)}${gb("ml", H, null, o.ml_home, `${H} ${ml(o.ml_home)}`)}
+    </div>` : "";
   const spreadLean = u?.lean_spread && o ? `${u.lean_spread} ${u.lean_spread === H ? (o.spread > 0 ? "+" : "") + o.spread : (o.spread < 0 ? "+" : "") + -o.spread}` : null;
   const leans = [spreadLean, u?.lean_total ? `${u.lean_total} ${o.total}` : null].filter(Boolean);
   return `<div class="glines2">
@@ -705,6 +717,7 @@ function gameLines(g, teams) {
         ${live.length ? `<tr class="sec"><td colspan="5">Live${g.state === "in" ? ` \u00b7 ${esc(gameStatus(g))}` : ""}</td></tr>${live.join("")}` : ""}
       </tbody>
     </table></div>
+    ${addRow}
     <div class="gl-foot">
       ${leans.length ? `<span>Our pregame ${leans.length === 1 ? "lean" : "leans"}: ${leans.map((l) => `<span class="glean">${esc(l)}</span>`).join(" ")}</span>` : u ? `<span class="muted">No pregame lean: we're within 2 points of DraftKings' spread and 3 of the total.</span>` : ""}
       <span class="muted">Ours pregame: our player projections added up into team scores, locked at kickoff and graded${g.ours_late ? " (this one was first made after kickoff, so it isn't graded)" : ""}. Ours live: the score so far plus what's left of our pregame projection for the time remaining. Percentages are win chances: DraftKings' with their built-in margin taken out, so they compare directly with ours. Our moneylines are fair odds (no margin), which is why ours mirror each other (+163 / -163) and DraftKings' don't (+140 / -166).${lvDK ? " DraftKings' live odds come through ESPN without a timestamp and can lag a play or two, or freeze while betting is suspended." : ""}</span>
@@ -752,6 +765,7 @@ function resBadge(st) {
   if (st.res === "hit") return `<span class="res hit">${st.final ? "HIT" : "CLEARED"}</span>`;
   if (st.res === "miss") return `<span class="res miss">${st.final ? "MISS" : "LOST"}</span>`;
   if (st.res === "dnp") return `<span class="res dnp">DNP</span>`;
+  if (st.res === "push") return `<span class="res dnp">PUSH</span>`;
   if (st.res === "live") return `<span class="res live">LIVE</span>`;
   return "";
 }
@@ -930,7 +944,11 @@ function renderProps() {
   const picksFor = (side) => d.picks[side].filter((x) => !f.game || x.game_id === f.game);
   const pickList = (side) => picksFor(side).map(pickCard).join("") || `<div class="empty">No ${side} picks${f.game ? " in this game" : ""}.</div>`;
 
-  $("#main").innerHTML = `
+  const promo = !S.sync && !store("syncPromoHidden")
+    ? `<div class="sync-promo"><div><b>Sync your league</b> <span class="muted">Sleeper username or ESPN league ID: see your best lineup, weak spots and trade ideas with every team. Your league's scoring applies everywhere.</span></div>
+        <div class="sync-promo-btns"><button class="tbtn on" data-go-sync>Sync league</button><button class="rm" data-hide-promo title="Hide" aria-label="Hide">\u00d7</button></div></div>`
+    : "";
+  $("#main").innerHTML = promo + `
     <div class="picks-wrap">
       <div class="picks"><h3>Top Overs <span class="tag over">${picksFor("over").length}</span></h3>${pickList("over")}</div>
       <div class="picks"><h3>Top Unders <span class="tag under">${picksFor("under").length}</span></h3>${pickList("under")}</div>
@@ -1135,6 +1153,7 @@ async function syncLeague(leagueId, userId, source = "sleeper") {
       : "Couldn't load that league from Sleeper.";
   }
   renderTrade();
+  updateSyncBtn();
 }
 
 // ---- ESPN leagues: read with the browser's own ESPN login (ESPN allows this site to ask), then reshaped to look
@@ -1509,7 +1528,7 @@ function renderAbout() {
     <div class="card bio">
       <p>Joshua Moy is a Northeastern University student who builds data tools: hourly data pipelines, sports models that grade themselves in public, and interactive maps and dashboards.</p>
       <ul>
-        <li><b>NFL Player Props</b> (this site): DraftKings and Sleeper lines, PPR projections, live scoring and play-by-play for every game.</li>
+        <li><b>Joshua Moy's Expert NFL Picks</b> (this site): NFL props against DraftKings and Sleeper lines, fantasy projections, live scoring and play-by-play, league sync and trade ideas.</li>
         <li><b><a href="https://joshuam0y.github.io/mlb-player-props/" target="_blank" rel="noopener">MLB Player Props</a></b>: the baseball version, rebuilt hourly from MLB's public data, with its own public track record.</li>
         <li><b><a href="https://joshuam0y.github.io/sustainability-network/" target="_blank" rel="noopener">Sustainability Faculty Network</a></b>: an interactive map of faculty research and courses in sustainability that replaced a Tableau dashboard.</li>
       </ul>
@@ -2252,6 +2271,25 @@ function renderInjuries(head) {
 
 // ---------------------------------------------------------------- scoring menu
 
+function updateSyncBtn() {
+  const b = $("#sync-btn");
+  if (!b) return;
+  b.textContent = S.sync ? `${S.sync.name || "My league"}` : "Sync league";
+  b.classList.toggle("on", !!S.sync);
+  b.title = S.sync ? "Your lineup and trade ideas" : "Sync your Sleeper or ESPN league";
+}
+
+async function goToSync() {
+  S.tab = "trade";
+  S.gameView = null;
+  await loadFuture();     // the Trade tab needs rest-of-season projections; wait so the sync box is there to focus
+  render();
+  syncHash(true);
+  const box = $(".league-sync, .league");
+  if (box) box.scrollIntoView({ block: "start" });
+  $("#sync-q")?.focus();
+}
+
 function applyScoring() {
   S.ideas = null;
   $("#sc-btn").textContent = `${scoringName()} \u25be`;
@@ -2506,6 +2544,53 @@ function toggleMine(pid, key, dir, line) {
   updateMineBadge();
 }
 
+// Game bets: {kind: "game", gid, market: "spread" | "total" | "ml", side: team code or "over"/"under", line, odds}
+function mineGame(gid, market, side) {
+  return S.mine.find((m) => m.kind === "game" && m.gid === gid && m.market === market && m.side === side && m.season === S.data.season && m.week === S.data.week);
+}
+
+function toggleGame(gid, market, side, line, odds) {
+  const have = mineGame(gid, market, side);
+  if (have) S.mine = S.mine.filter((m) => m !== have);
+  else {
+    // one side per market: taking one team's spread replaces the other's
+    S.mine = S.mine.filter((m) => !(m.kind === "game" && m.gid === gid && m.market === market && m.season === S.data.season && m.week === S.data.week));
+    S.mine.push({ kind: "game", gid, market, side, line: line === "" ? null : +line, odds: odds === "" ? null : +odds, season: S.data.season, week: S.data.week, at: Date.now() });
+  }
+  store("mine", S.mine);
+  updateMineBadge();
+}
+
+function gameBetLabel(m, g) {
+  const sign = (x) => (x > 0 ? `+${x}` : `${x}`);
+  if (m.market === "total") return `${m.side === "over" ? "Over" : "Under"} ${m.line} total points`;
+  if (m.market === "spread") return `${m.side} ${m.line === 0 ? "pick'em" : sign(m.line)}`;
+  return `${m.side} to win${m.odds != null ? ` (${ml(m.odds)})` : ""}`;
+}
+
+// Where a game bet stands: live margins and totals, then hit, miss or push at the final
+function gameBetStatus(m) {
+  const g = S.games[m.gid];
+  if (!g || g.state === "pre" || g.home_score == null) return null;
+  const final = g.state === "post";
+  const hs = g.home_score, as = g.away_score;
+  if (m.market === "total") {
+    const t = hs + as;
+    const over = t > m.line;
+    const res = final ? (t === m.line ? "push" : over === (m.side === "over") ? "hit" : "miss") : over ? (m.side === "over" ? "hit" : "miss") : "live";
+    return { res, final, v: t, note: `${t} points${final ? "" : " so far"}${!final && !over ? `, ${fmt(m.line - t, 1)} under the line` : ""}`, pct: Math.min(100, (100 * t) / Math.max(m.line, 1)) };
+  }
+  const mine = m.side === g.home ? hs - as : as - hs;
+  if (m.market === "spread") {
+    const margin = mine + m.line;
+    const res = final ? (margin === 0 ? "push" : margin > 0 ? "hit" : "miss") : "live";
+    return { res, final, v: mine, note: margin > 0 ? `covering by ${fmt(margin, margin % 1 ? 1 : 0)}` : margin < 0 ? `short by ${fmt(-margin, margin % 1 ? 1 : 0)}` : "right on the number" };
+  }
+  const res = final ? (mine === 0 ? "push" : mine > 0 ? "hit" : "miss") : "live";
+  const ahead = final ? ["won by", "lost by", "tied"] : ["leads by", "trails by", "tied"];
+  return { res, final, v: mine, note: mine > 0 ? `${m.side} ${ahead[0]} ${mine}` : mine < 0 ? `${m.side} ${ahead[1]} ${-mine}` : ahead[2] };
+}
+
 function updateMineBadge() {
   const n = S.data ? S.mine.filter((m) => m.season === S.data.season && m.week === S.data.week).length : 0;
   const el = $("#mine-n");
@@ -2513,16 +2598,21 @@ function updateMineBadge() {
 }
 
 function renderMine() {
-  const now = S.mine.filter((m) => m.season === S.data.season && m.week === S.data.week && S.byId[m.pid]);
+  const thisWeek = (m) => m.season === S.data.season && m.week === S.data.week;
+  const now = S.mine.filter((m) => thisWeek(m) && (m.kind === "game" ? S.games[m.gid] : S.byId[m.pid]));
   const old = S.mine.length - now.length;
   if (!now.length) {
     $("#main").innerHTML = `<h2>My Picks</h2><div class="card empty-card">
-      <p><b>Track any prop live.</b> Open a player on the Props tab and tap <span class="add over on demo">+ Over</span> or <span class="add under on demo">+ Under</span> on any line, or tap <b>+</b> on a top pick. Your picks are saved on this device and follow the games live.</p>
+      <p><b>Track any prop or game bet live.</b> Open a player on the Props tab and tap <span class="add over on demo">+ Over</span> or <span class="add under on demo">+ Under</span> on any line, tap <b>+</b> on a top pick, or open a game and tap <b>+</b> on its spread, total or moneyline. Your picks are saved on this device and follow the games live.</p>
       ${old ? `<p class="note">${old} pick${old === 1 ? "" : "s"} from an earlier week. <button class="tbtn" data-mine-clear="old">Clear them</button></p>` : ""}
     </div>`;
     return;
   }
   const rows = now.map((m) => {
+    if (m.kind === "game") {
+      const g = S.games[m.gid];
+      return { m, g, st: gameBetStatus(m) };
+    }
     const p = S.byId[m.pid];
     const g = S.games[p.game_id];
     return { m, p, g, st: propStatus(p, m.key, m.line, m.dir), prop: p.props.find((x) => x.key === m.key) };
@@ -2531,22 +2621,27 @@ function renderMine() {
   rows.sort((a, b) => rank(a) - rank(b) || a.g.kickoff.localeCompare(b.g.kickoff) || a.m.at - b.m.at);
   const hit = rows.filter((r) => r.st?.res === "hit").length;
   const miss = rows.filter((r) => r.st?.res === "miss").length;
+  const push = rows.filter((r) => r.st?.res === "push").length;
   const final = rows.filter((r) => r.st?.final).length;
   const live = rows.filter((r) => r.g.state === "in").length;
-  const entry = miss ? "lost" : hit === rows.length ? "won" : "open";
-  $("#main").innerHTML = `
-    <h2>My Picks <small>${S.data.season} week ${S.data.week}</small></h2>
-    <div class="mine-sum card">
-      <div><div class="k">Hit</div><div class="v num" style="color:var(--green)">${hit}</div></div>
-      <div><div class="k">Missed</div><div class="v num" style="color:var(--red)">${miss}</div></div>
-      <div><div class="k">Live</div><div class="v num" style="color:var(--cyan)">${live}</div></div>
-      <div><div class="k">Not started</div><div class="v num">${rows.filter((r) => r.g.state === "pre").length}</div></div>
-      <div class="entry ${entry}"><div class="k">All ${rows.length} together</div><div class="v">${entry === "won" ? "Won" : entry === "lost" ? "Lost" : `${hit} of ${rows.length}`}</div></div>
-    </div>
-    <div class="plist">${rows.map(({ m, p, g, st, prop }) => {
-      const label = S.data.categories[m.key].label;
-      const lineNow = prop?.line;
-      return `<div class="pick mine ${st?.res || ""}" data-open="${p.id}">
+  const entry = miss ? "lost" : hit + push === rows.length && hit ? "won" : "open";
+  const gameRow = ({ m, g, st }) => `<div class="pick mine ${st?.res || ""}" data-game="${g.id}">
+      <div class="av def"><img src="${logo(m.market === "total" ? g.home : m.side)}" alt=""></div>
+      <div>
+        <div><b>${esc(gameBetLabel(m, g))}</b> <span class="ptag big">${m.market === "ml" ? "MONEYLINE" : m.market.toUpperCase()}</span></div>
+        <div class="what">${g.away} @ ${g.home}${g.state !== "pre" ? ` · <b class="num">${g.away} ${g.away_score} - ${g.home} ${g.home_score}</b>` : ""}</div>
+        <div class="small">${esc(gameStatus(g))}${st?.note ? ` · ${esc(st.note)}` : ""}</div>
+        ${st?.pct != null ? `<div class="prog ${st.res === "hit" ? "hit" : st.res === "miss" ? "miss" : ""}"><i style="width:${st.pct}%"></i></div>` : ""}
+      </div>
+      <div class="side">
+        ${st ? resBadge(st) : ""}
+        <button class="rm" data-rm-game="${g.id}|${m.market}|${m.side}" title="Remove" aria-label="Remove">×</button>
+      </div>
+    </div>`;
+  const propRow = ({ m, p, g, st, prop }) => {
+    const label = S.data.categories[m.key].label;
+    const lineNow = prop?.line;
+    return `<div class="pick mine ${st?.res || ""}" data-open="${p.id}">
         ${avatar(p)}
         <div>
           <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)} <span class="muted">${oppText(p)}</span></div>
@@ -2556,16 +2651,26 @@ function renderMine() {
         </div>
         <div class="side">
           ${st ? `<div class="big">${st.v == null ? "-" : fmtStat(m.key, st.v)}</div>${resBadge(st)}` : `<div class="small">${esc(kickoffText(g.kickoff))}</div>`}
-          <button class="rm" data-rm="${p.id}|${m.key}|${m.dir}" title="Remove" aria-label="Remove">\u00d7</button>
+          <button class="rm" data-rm="${p.id}|${m.key}|${m.dir}" title="Remove" aria-label="Remove">×</button>
         </div>
       </div>`;
-    }).join("")}</div>
+  };
+  $("#main").innerHTML = `
+    <h2>My Picks <small>${S.data.season} week ${S.data.week}</small></h2>
+    <div class="mine-sum card">
+      <div><div class="k">Hit</div><div class="v num" style="color:var(--green)">${hit}</div></div>
+      <div><div class="k">Missed</div><div class="v num" style="color:var(--red)">${miss}</div></div>
+      <div><div class="k">Live</div><div class="v num" style="color:var(--cyan)">${live}</div></div>
+      <div><div class="k">Not started</div><div class="v num">${rows.filter((r) => r.g.state === "pre").length}</div></div>
+      <div class="entry ${entry}"><div class="k">All ${rows.length} together</div><div class="v">${entry === "won" ? "Won" : entry === "lost" ? "Lost" : `${hit} of ${rows.length}`}</div></div>
+    </div>
+    <div class="plist">${rows.map((r) => (r.m.kind === "game" ? gameRow(r) : propRow(r))).join("")}</div>
     <div class="gtool" style="margin-top:12px">
       ${final ? `<button class="tbtn" data-mine-clear="final">Clear finished</button>` : ""}
       <button class="tbtn" data-mine-clear="all">Clear all</button>
       ${old ? `<button class="tbtn" data-mine-clear="old">Clear ${old} from earlier weeks</button>` : ""}
     </div>
-    <p class="note">Picks keep the line you added them at. Overs show cleared as soon as they pass the line; unders and everything else settle when the game is final.</p>`;
+    <p class="note">Picks keep the line you added them at. Overs show cleared as soon as they pass the line; unders, spreads and moneylines settle when the game is final (a push is a tie with the line).</p>`;
 }
 
 // ---------------------------------------------------------------- render and events
@@ -2574,6 +2679,7 @@ function render() {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", !S.gameView && b.dataset.tab === S.tab));
   if (S.gameView) { renderGame(); renderScores(); return; }
   ({ props: renderProps, fantasy: renderFantasy, compare: renderCompare, trade: renderTrade, mine: renderMine, news: renderNews, record: renderRecord, about: renderAbout })[S.tab]();
+  updateSyncBtn();
   updateMineBadge();
   renderScores();
 }
@@ -2695,6 +2801,8 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (t.closest("[data-sync-find]")) { syncFindUser($("#sync-q").value); return; }
+  if (t.closest("[data-go-sync]")) { goToSync(); return; }
+  if (t.closest("[data-hide-promo]")) { store("syncPromoHidden", true); renderProps(); return; }
   const sa = t.closest("[data-sync-app]");
   if (sa) { S.syncApp = sa.dataset.syncApp; S.syncMsg = ""; renderTrade(); return; }
   if (t.closest("[data-espn-find]")) {
@@ -2708,7 +2816,7 @@ document.addEventListener("click", (e) => {
   const st2 = t.closest("[data-sync-team]");
   if (st2) { S.sync.roster_id = +st2.dataset.syncTeam; store("sync", S.sync); S.ideas = null; renderTrade(); return; }
   if (t.closest("[data-sync-refresh]")) { S.leagueData = null; S.syncMsg = ""; renderTrade(); return; }
-  if (t.closest("[data-sync-clear]")) { S.sync = null; S.leagueData = null; S.ideas = null; store("sync", null); renderTrade(); return; }
+  if (t.closest("[data-sync-clear]")) { S.sync = null; S.leagueData = null; S.ideas = null; store("sync", null); renderTrade(); updateSyncBtn(); return; }
   const idea = t.closest("[data-idea]");
   if (idea) {
     const x = S.ideas[+idea.dataset.idea];
@@ -2729,6 +2837,22 @@ document.addEventListener("click", (e) => {
   if (t.closest("[data-trade-clear]")) { S.trade = { give: [], get: [] }; store("trade", S.trade); renderTrade(); return; }
   const cc = t.closest("[data-cmp-clear]");
   if (cc) { setCompare(+cc.dataset.cmpClear, null); renderCompare(); return; }
+  const gadd = t.closest("[data-gadd]");
+  if (gadd) {
+    e.stopPropagation();
+    const [gid, market, side, line, odds] = gadd.dataset.gadd.split("|");
+    toggleGame(gid, market, side, line, odds);
+    if (S.gameView) renderGame();
+    return;
+  }
+  const rmg = t.closest("[data-rm-game]");
+  if (rmg) {
+    e.stopPropagation();
+    const [gid, market, side] = rmg.dataset.rmGame.split("|");
+    toggleGame(gid, market, side);
+    renderMine();
+    return;
+  }
   const add = t.closest("[data-add]");
   if (add) {
     e.stopPropagation();
@@ -2760,7 +2884,7 @@ document.addEventListener("click", (e) => {
     if (kind === "all" && !confirm("Remove all your picks for this week?")) return;
     S.mine = S.mine.filter((m) => kind === "old" ? thisWeek(m)
       : kind === "all" ? !thisWeek(m)
-      : !(thisWeek(m) && S.byId[m.pid] && propStatus(S.byId[m.pid], m.key, m.line, m.dir)?.final));
+      : !(thisWeek(m) && (m.kind === "game" ? gameBetStatus(m)?.final : S.byId[m.pid] && propStatus(S.byId[m.pid], m.key, m.line, m.dir)?.final)));
     store("mine", S.mine);
     renderMine();
     updateMineBadge();
@@ -2884,6 +3008,8 @@ document.addEventListener("change", (e) => {
   if (t.id === "f-out") { S.f.hideOut = t.checked; renderProps(); return; }
   if (t.id === "f-favs") { S.f.favs = t.checked; renderProps(); }
 });
+
+$("#sync-btn").addEventListener("click", goToSync);
 
 $("#all-features").addEventListener("click", (e) => {
   e.preventDefault();

@@ -1,6 +1,8 @@
-# NFL Player Props
+# Joshua Moy's Expert NFL Picks
 
-Player prop lines, PPR fantasy projections and live scoring for every NFL game, styled after Sleeper.
+**Live site:** https://joshuam0y.github.io/joshua-moy-expert-nfl-picks/
+
+NFL props against real sportsbook lines, fantasy projections, live scoring and play-by-play, league sync and trade ideas, styled after Sleeper.
 It's a companion to [mlb-player-props](https://github.com/joshuam0y/mlb-player-props) and is built the same way:
 a Python build writes static JSON every hour, and a static page on GitHub Pages reads it.
 
