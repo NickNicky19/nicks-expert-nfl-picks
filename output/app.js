@@ -500,6 +500,7 @@ async function liveTick() {
     console.warn("live", err);
   }
   ticking = false;
+  updateSub();
   renderScores();
   renderLiveParts();
   const anyLive = Object.values(S.games).some((g) => g.state === "in");
@@ -564,7 +565,17 @@ async function load() {
   }
   for (const g of S.data.games) S.games[g.id] = { ...g, ...(S.games[g.id] || {}) };
   const built = new Date(S.data.generated_at);
-  $("#sub").textContent = `${S.data.season} Week ${S.data.week} · updated ${built.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
+  updateSub();
+}
+
+// Two clocks: live data (every 15 to 30 seconds) and the last rebuild of lines and projections (hourly)
+function updateSub() {
+  const t = (d, sec) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", ...(sec ? { second: "2-digit" } : {}) });
+  const built = new Date(S.data.generated_at);
+  const day = built.toDateString() === new Date().toDateString() ? "" : `${built.toLocaleDateString(undefined, { weekday: "short" })} `;
+  $("#sub").innerHTML = `${S.data.season} Week ${S.data.week}`
+    + (S.liveAt ? ` \u00b7 <span class="sub-live">live ${t(S.liveAt, true)}</span>` : "")
+    + ` \u00b7 <span title="Lines, projections and injuries rebuild about every hour">lines ${day}${t(built)}</span>`;
 }
 
 // ---------------------------------------------------------------- score strip

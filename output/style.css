@@ -514,3 +514,4 @@ tr.click:hover td { background: #18224a; }
 
 .gl .ours-l { color: var(--cyan); }
 .glean { display: inline-block; margin-top: 3px; font: 700 10.5px var(--sans); color: var(--bg); background: var(--cyan); border-radius: 5px; padding: 1px 6px; align-self: flex-start; }
+.sub-live { color: var(--cyan); }
