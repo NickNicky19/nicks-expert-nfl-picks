@@ -49,7 +49,8 @@ const S = {
   sc: store("scoring") || { mode: "sleeper", half: store("half") === true },
   leagues: store("leagues") || [],      // [{id, name, season, settings}]
   scFound: null, scMsg: "",
-  mine: store("mine") || [],   // My Picks: [{pid, key, dir, line, season, week, at}]
+  mine: store("mine") || [],
+  cmp: store("cmp") || [null, null],    // the two players on the Compare tab   // My Picks: [{pid, key, dir, line, season, week, at}]
 };
 
 // ---------------------------------------------------------------- helpers
@@ -868,7 +869,7 @@ function playerCard(p) {
     </div>
     <div class="props-row" data-chips="${p.id}">${props.map((x) => propChip(p, x)).join("")}</div>
     ${open ? `<div class="pbody">${latestBlock(p)}${gameLog(p)}${props.map((x) => catCard(p, x)).join("")}
-      <div class="note" style="grid-column:1/-1">${favBtn(p)} ${p.depth ? `Depth chart: ${p.pos}${p.depth}. ` : ""}${p.late ? "These lines were first built after kickoff, so they aren't graded." : ""}</div></div>` : ""}
+      <div class="note" style="grid-column:1/-1">${favBtn(p)} <button class="tbtn" data-cmp-add="${p.id}">Compare</button> ${p.depth ? `Depth chart: ${p.pos}${p.depth}. ` : ""}${p.late ? "These lines were first built after kickoff, so they aren't graded." : ""}</div></div>` : ""}
   </div>`;
 }
 
@@ -1594,7 +1595,7 @@ function applyHash() {
     if (m[2] && GAME_TABS.some(([k]) => k === m[2])) gs().tab = m[2];
     return true;
   }
-  const t = location.hash.match(/^#\/(props|fantasy|mine|news|record|about)$/);
+  const t = location.hash.match(/^#\/(props|fantasy|compare|mine|news|record|about)$/);
   if (t) { S.gameView = null; S.tab = t[1]; return true; }
   return false;
 }
@@ -1653,7 +1654,7 @@ function dayText(iso) {
 async function loadNews(force) {
   if (!force && S.newsAt && Date.now() - S.newsAt < 300000) return;
   try {
-    const d = await getJSON(`${ESPN}/news?limit=50`);
+    const d = await getJSON(`${ESPN}/news?limit=100`);
     S.news = d.articles || [];
     S.newsAt = Date.now();
   } catch (err) {
@@ -1730,14 +1731,31 @@ function renderNews() {
     loadNews().then(() => { if (S.tab === "news" && !S.gameView) renderNews(); });
     return;
   }
+  // Newest first, optionally only the last few hours or days
+  const within = S.newsWithin || "all";
+  const now = Date.now();
+  const startOfToday = new Date().setHours(0, 0, 0, 0);
+  const keepTime = (t) => within === "all" ? true : within === "today" ? t >= startOfToday : now - t <= { "3h": 3, "72h": 72 }[within] * 3600000;
   const items = S.news.map((a) => {
     const ids = (a.categories || []).filter((c) => c.type === "athlete").map((c) => S.byEspn[String(c.athleteId || c.athlete?.id)]).filter(Boolean);
-    return { a, ids: [...new Set(ids)] };
-  }).filter((x) => !mineOnly || x.ids.some((id) => mine.has(id)));
-  $("#main").innerHTML = head.replace("</div>", ` <button class="tbtn ${mineOnly ? "on" : ""}" data-newsmine>My players</button> <span class="note">ESPN · updated ${S.newsAt ? ago(new Date(S.newsAt).toISOString()) : ""}</span></div>`)
-    + `<div class="news">${items.map(({ a, ids }) => {
+    return { a, ids: [...new Set(ids)], t: new Date(a.published || a.lastModified || 0).getTime() };
+  }).filter((x) => (!mineOnly || x.ids.some((id) => mine.has(id))) && keepTime(x.t))
+    .sort((x, y) => y.t - x.t);
+  const bucket = (t) => {
+    if (now - t < 3600000) return "Last hour";
+    if (t >= startOfToday) return "Today";
+    if (t >= startOfToday - 86400000) return "Yesterday";
+    return "Earlier";
+  };
+  let lastBucket = null;
+  $("#main").innerHTML = head.replace("</div>", ` ${seg("data-newswithin", within, [["3h", "Last 3 hours"], ["today", "Today"], ["72h", "Last 3 days"], ["all", "All"]], "Recency")}
+      <button class="tbtn ${mineOnly ? "on" : ""}" data-newsmine>My players</button> <span class="note">ESPN · newest first · checked ${S.newsAt ? ago(new Date(S.newsAt).toISOString()) : ""}</span></div>`)
+    + `<div class="news">${items.map(({ a, ids, t }) => {
       const img = a.images?.[0]?.url;
-      return `<article class="card nitem">
+      const b = bucket(t);
+      const head2 = b !== lastBucket ? `<h3 class="nbucket">${b}</h3>` : "";
+      lastBucket = b;
+      return `${head2}<article class="card nitem">
         ${img ? `<img class="nimg" src="${esc(img)}" alt="" loading="lazy">` : ""}
         <div>
           <a class="nh" href="${esc(a.links?.web?.href || "#")}" target="_blank" rel="noopener">${esc(a.headline)}</a>
@@ -1746,7 +1764,7 @@ function renderNews() {
             ${ids.map((id) => { const q = S.byId[id]; return `<button class="pl-who" data-open="${id}"><span class="pos ${q.pos}">${q.pos}</span> ${esc(q.name)}</button>`; }).join("")}</div>
         </div>
       </article>`;
-    }).join("") || `<div class="empty">${mineOnly ? "No news about your favorites or picks right now." : "No news."}</div>`}</div>`;
+    }).join("") || `<div class="empty">${mineOnly ? "No news about your favorites or picks in this window." : "No news in this window."}</div>`}</div>`;
 }
 
 function renderInjuries(head) {
@@ -1843,6 +1861,119 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.target.id === "sc-q") findLeagues(e.target.value.trim());
 });
 
+// ---------------------------------------------------------------- compare two players
+
+function playerLabel(p) {
+  return `${p.name} (${p.pos} ${p.team})`;
+}
+
+function seasonPts(p) {
+  return (p.log || []).map((x) => ({ w: x.w, opp: x.opp, v: logPts(p, x) })).filter((x) => x.v != null);
+}
+
+// Our pregame projection in the current scoring: the fantasy points prop (Sleeper x matchup) when he has one
+function ourProj(p) {
+  const f = p.props.find((x) => x.key === "fpts");
+  const v = f ? pv(p, f).adj : null;
+  return v ?? projPts(p);
+}
+
+function renderCompare() {
+  const [a, b] = (S.cmp || []).map((id) => S.byId[id]);
+  const options = S.data.players.filter((p) => projPts(p) != null || p.log?.length)
+    .sort((x, y) => (projPts(y) ?? 0) - (projPts(x) ?? 0)).map((p) => `<option value="${esc(playerLabel(p))}"></option>`).join("");
+  const picker = (slot, p) => `<div class="cmp-pick">
+    <input list="cmp-list" data-cmp-slot="${slot}" placeholder="Search a player" value="${p ? esc(playerLabel(p)) : ""}" autocomplete="off">
+    ${p ? `<button class="rm" data-cmp-clear="${slot}" title="Clear" aria-label="Clear">×</button>` : ""}</div>`;
+  const head = `<h2>Compare players <small>${esc(scoringName())}</small></h2>
+    <datalist id="cmp-list">${options}</datalist>
+    <div class="cmp-pickers">${picker(0, a)}<span class="vs">vs</span>${picker(1, b)}</div>`;
+  if (!a || !b) {
+    $("#main").innerHTML = head + `<div class="card empty-card"><p>Pick two players to compare them side by side. You can also tap <b>Compare</b> on any player card.</p></div>`;
+    return;
+  }
+  const pa = seasonPts(a), pb = seasonPts(b);
+  const avg = (xs) => (xs.length ? xs.reduce((s2, x) => s2 + x.v, 0) / xs.length : null);
+  const last3 = (xs) => avg(xs.slice(-3));
+  const lo = (xs) => (xs.length ? Math.min(...xs.map((x) => x.v)) : null);
+  const hi = (xs) => (xs.length ? Math.max(...xs.map((x) => x.v)) : null);
+  const projA = ourProj(a), projB = ourProj(b);
+  const ga = S.games[a.game_id], gb = S.games[b.game_id];
+  const live = (p) => (current(p) ? livePPR(p) : null);
+  const status = (p) => injOf(p).status || "Healthy";
+  const mrank = (p) => p.matchup?.rank;
+
+  // one row: label, both values, which side is better ("high", "low" or none)
+  const row = (label, va, vb, better, f = fmtPts, title = "") => {
+    let wa = "", wb = "";
+    if (better && va != null && vb != null && va !== vb) {
+      const aWins = better === "high" ? va > vb : va < vb;
+      wa = aWins ? "win" : ""; wb = aWins ? "" : "win";
+    }
+    return `<tr${title ? ` title="${esc(title)}"` : ""}><td class="${wa}">${va == null ? "-" : f(va)}</td><th>${label}</th><td class="${wb}">${vb == null ? "-" : f(vb)}</td></tr>`;
+  };
+  const pctF = (v) => `${Math.round(100 * v)}%`;
+  const rankF = (v) => `#${v} of 32`;
+  const txt = (v) => esc(v);
+  const card = (p, g) => `<div class="cmp-card" data-open="${p.id}">
+    ${avatar(p)}<div><div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)}</div>
+    <div class="pmeta">${p.team} ${oppText(p)} · ${esc(gameStatus(g))}</div></div></div>`;
+
+  // the call: our pregame projections, with a note when they're close
+  let verdict = "";
+  if (projA != null && projB != null) {
+    const d = projA - projB;
+    const fav = d >= 0 ? a : b;
+    verdict = Math.abs(d) < 1
+      ? `<div class="verdict even">Too close to call: our projections are within a point (${fmtPts(projA)} vs ${fmtPts(projB)}).</div>`
+      : `<div class="verdict">We'd start <b>${esc(fav.name)}</b>: projected ${fmtPts(Math.max(projA, projB))} vs ${fmtPts(Math.min(projA, projB))} (+${fmtPts(Math.abs(d))}) in ${esc(scoringName())}.</div>`;
+  }
+
+  const keys = [...new Set([...a.props, ...b.props].map((x) => x.key))].filter((k) => k !== "fpts");
+  const propRow = (k) => {
+    const xa = a.props.find((x) => x.key === k), xb = b.props.find((x) => x.key === k);
+    const cell = (x) => !x ? "-" : k === "anytime_td" ? `${Math.round(100 * (x.td_chance || 0))}% TD chance`
+      : `${x.line} <span class="src ${x.line_from || "ours"}">${LINE_TAG[x.line_from] || "est"}</span> · proj ${fmtStat(k, x.adj)}${x.lean ? ` <span class="arrow ${x.lean}">${x.lean === "over" ? "▲" : "▼"}</span>` : ""}<div class="muted">over in ${x.over} of ${x.n}</div>`;
+    return `<tr><td>${cell(xa)}</td><th>${S.data.categories[k].label}</th><td>${cell(xb)}</td></tr>`;
+  };
+  const weeks = [...new Set([...pa, ...pb].map((x) => x.w))].sort((x, y) => x - y);
+  const wk = (xs, w) => xs.find((x) => x.w === w);
+
+  $("#main").innerHTML = head + `
+    <div class="cmp-heads">${card(a, ga)}${card(b, gb)}</div>
+    ${verdict}
+    <div class="tbl-wrap"><table class="cmp">
+      <tbody>
+        <tr class="sec"><td colspan="3">Fantasy (${esc(scoringName())})</td></tr>
+        ${row("Our projection", projA, projB, "high", fmtPts, "Sleeper's projection adjusted for the matchup, made before kickoff")}
+        ${row("Sleeper projection", projPts(a), projPts(b), "high")}
+        ${ga.state !== "pre" || gb.state !== "pre" ? row(ga.state === "post" && gb.state === "post" ? "Final" : "Live", live(a), live(b), "high") : ""}
+        ${row("Season average", avg(pa), avg(pb), "high")}
+        ${row("Last 3 games", last3(pa), last3(pb), "high")}
+        ${row("Floor (worst game)", lo(pa), lo(pb), "high")}
+        ${row("Ceiling (best game)", hi(pa), hi(pb), "high")}
+        ${row("Snap share", a.snap_share, b.snap_share, "high", pctF)}
+        <tr class="sec"><td colspan="3">Matchup</td></tr>
+        ${row("Opponent", `${a.home ? "vs" : "@"} ${a.opp}`, `${b.home ? "vs" : "@"} ${b.opp}`, null, txt)}
+        ${row(`Points allowed rank`, mrank(a), mrank(b), "low", rankF, "How many fantasy points the opponent allows to the position this season (#1 allows the most)")}
+        ${row("Team implied points", impliedFor(a), impliedFor(b), "high", (v) => fmt(v), "From the DraftKings spread and total")}
+        ${row("Status", status(a), status(b), null, txt)}
+        ${keys.length ? `<tr class="sec"><td colspan="3">Props (line · our pregame projection)</td></tr>${keys.map(propRow).join("")}` : ""}
+        ${weeks.length ? `<tr class="sec"><td colspan="3">Game log (${esc(scoringName())})</td></tr>${weeks.map((w) => {
+          const x = wk(pa, w), y = wk(pb, w);
+          return row(`Week ${w}`, x ? x.v : null, y ? y.v : null, "high", (v) => fmtPts(v)).replace("<th>", `<th title="${x ? `${a.name}: vs ${x.opp}` : ""} ${y ? `${b.name}: vs ${y.opp}` : ""}">`);
+        }).join("")}` : ""}
+      </tbody>
+    </table></div>
+    <p class="note">Green marks the better number in each row. Our projection is pregame (Sleeper's projection adjusted for how similar players have done against that defense this season).</p>`;
+}
+
+function setCompare(slot, id) {
+  S.cmp = [...(S.cmp || [null, null])];
+  S.cmp[slot] = id;
+  store("cmp", S.cmp);
+}
+
 // ---------------------------------------------------------------- my picks
 
 function minePick(pid, key, dir) {
@@ -1928,7 +2059,7 @@ function renderMine() {
 function render() {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", !S.gameView && b.dataset.tab === S.tab));
   if (S.gameView) { renderGame(); renderScores(); return; }
-  ({ props: renderProps, fantasy: renderFantasy, mine: renderMine, news: renderNews, record: renderRecord, about: renderAbout })[S.tab]();
+  ({ props: renderProps, fantasy: renderFantasy, compare: renderCompare, mine: renderMine, news: renderNews, record: renderRecord, about: renderAbout })[S.tab]();
   updateMineBadge();
   renderScores();
 }
@@ -1936,6 +2067,7 @@ function render() {
 // Live ticks update numbers in place, so open cards, focus and scroll position survive
 function renderLiveParts() {
   if (!S.gameView && S.tab === "mine") { const y = window.scrollY; renderMine(); window.scrollTo(0, y); return; }
+  if (!S.gameView && S.tab === "compare") { if (!document.activeElement?.matches("input")) { const y = window.scrollY; renderCompare(); window.scrollTo(0, y); } return; }
   if (!S.gameView && S.tab === "news") {
     if (Date.now() - S.newsAt > 300000) loadNews().then(() => { if (S.tab === "news" && !S.gameView && (S.newsView || "headlines") === "headlines") { const y = window.scrollY; renderNews(); window.scrollTo(0, y); } });
     return;
@@ -1990,6 +2122,8 @@ document.addEventListener("click", (e) => {
   const nv = t.closest("[data-newsview]");
   if (nv) { S.newsView = nv.dataset.newsview; renderNews(); return; }
   if (t.closest("[data-newsmine]")) { S.newsMine = !S.newsMine; renderNews(); return; }
+  const nw = t.closest("[data-newswithin]");
+  if (nw) { S.newsWithin = nw.dataset.newswithin; renderNews(); return; }
   const injf = t.closest("[data-injf]");
   if (injf) { S.injFilter = injf.dataset.injf; renderNews(); return; }
   const injpos = t.closest("[data-injpos]");
@@ -2036,6 +2170,18 @@ document.addEventListener("click", (e) => {
   }
   if (t.closest("[data-sc-find]")) { findLeagues($("#sc-q").value.trim()); return; }
   if (!t.closest("#sc-panel") && $("#sc-panel") && !$("#sc-panel").hidden) $("#sc-panel").hidden = true;
+  const ca = t.closest("[data-cmp-add]");
+  if (ca) {
+    const id = ca.dataset.cmpAdd;
+    const cur = S.cmp || [null, null];
+    // first empty slot; with both filled, he replaces the second player
+    if (!cur.includes(id)) setCompare(cur[0] ? 1 : 0, id);
+    S.tab = "compare"; S.gameView = null;
+    render(); syncHash(true); window.scrollTo(0, 0);
+    return;
+  }
+  const cc = t.closest("[data-cmp-clear]");
+  if (cc) { setCompare(+cc.dataset.cmpClear, null); renderCompare(); return; }
   const add = t.closest("[data-add]");
   if (add) {
     e.stopPropagation();
@@ -2168,6 +2314,11 @@ document.addEventListener("input", (e) => {
 
 document.addEventListener("change", (e) => {
   const t = e.target;
+  if (t.dataset.cmpSlot != null) {
+    const p = S.data.players.find((x) => playerLabel(x) === t.value);
+    if (p) { setCompare(+t.dataset.cmpSlot, p.id); t.blur(); renderCompare(); }
+    return;
+  }
   const set = { "f-game": "game", "f-cat": "cat", "f-sort": "sort" }[t.id];
   if (set) { S.f[set] = t.value; S.shown = 40; render(); return; }
   if (t.id === "f-out") { S.f.hideOut = t.checked; renderProps(); return; }
@@ -2191,7 +2342,7 @@ $("#reload").addEventListener("click", async () => {
 
 (async function start() {
   const saved = store("tab");
-  if (["props", "fantasy", "mine", "news", "record", "about"].includes(saved)) S.tab = saved;
+  if (["props", "fantasy", "compare", "mine", "news", "record", "about"].includes(saved)) S.tab = saved;
   try {
     await load();
   } catch (err) {
