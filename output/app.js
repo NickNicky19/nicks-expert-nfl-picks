@@ -317,6 +317,11 @@ async function pollScores() {
       poss: possTeam ? teamCode(possTeam.team.abbreviation) : null,
       dd: e.status.type.state === "in" ? sit.shortDownDistanceText || sit.downDistanceText || "" : "",
       period: e.status.period, clockSec: e.status.clock,
+      // timeouts (3 per half), the current drive and the ball spot, straight from ESPN's scoreboard
+      homeTO: e.status.type.state === "in" ? sit.homeTimeouts ?? null : null,
+      awayTO: e.status.type.state === "in" ? sit.awayTimeouts ?? null : null,
+      drive: e.status.type.state === "in" ? sit.lastPlay?.drive?.description || "" : "",
+      spot: e.status.type.state === "in" && sit.yardLine != null ? { yardLine: sit.yardLine, down: sit.down, distance: sit.distance, text: sit.downDistanceText, team: sit.possession } : null,
       rz: e.status.type.state === "in" && !!sit.isRedZone,
     });
   }
@@ -599,7 +604,7 @@ function renderScores() {
     const started = g.state !== "pre";
     const row = (team, score, other) => `
       <div class="row ${g.state === "post" && score < other ? "lose" : ""}">
-        <img src="${logo(team)}" alt="" loading="lazy"><span class="abbr ${live && g.poss === team ? "poss" : ""}">${team}</span>
+        <img src="${logo(team)}" alt="" loading="lazy"><span class="abbr ${live && g.poss === team ? "poss" : ""}">${team}${live ? toDots(team === g.home ? g.homeTO : g.awayTO) : ""}</span>
         <span class="sc">${started && score != null ? score : ""}</span>
       </div>`;
     return `<button class="game ${live ? "live" : ""} ${g.rz ? "rz" : ""} ${S.gameView === g.id ? "on" : ""}" data-game="${g.id}">
@@ -641,6 +646,12 @@ function erf(x) {
 
 const fairML = (p) => { p = Math.min(Math.max(p, 0.01), 0.99); return Math.round(p >= 0.5 ? (-100 * p) / (1 - p) : (100 * (1 - p)) / p); };
 
+// Timeouts left, as three dots (filled = still has it)
+function toDots(n) {
+  if (n == null) return "";
+  return `<span class="to" title="${n} timeout${n === 1 ? "" : "s"} left">${[0, 1, 2].map((i) => `<i class="${i < n ? "on" : ""}"></i>`).join("")}</span>`;
+}
+
 // "DET -3.5 · 51.5"
 function shortLine(g) {
   const o = g.odds;
@@ -650,6 +661,13 @@ function shortLine(g) {
 }
 
 const ml = (v) => (v == null ? "-" : v > 0 ? `+${v}` : `${v}`);
+
+// A moneyline's implied chance, and a pair of moneylines with the sportsbook's margin taken out
+const impliedProb = (v) => (v == null ? null : v > 0 ? 100 / (v + 100) : -v / (-v + 100));
+function noVig(mlA, mlB) {
+  const a = impliedProb(mlA), b = impliedProb(mlB);
+  return a == null || b == null ? [null, null] : [a / (a + b), b / (a + b)];
+}
 
 function gameLines(g, teams) {
   const o = g.odds, u = g.ours;
@@ -661,12 +679,13 @@ function gameLines(g, teams) {
   const lvUs = oursLive(g);
   const row = (label, cls, sp, tot, mlText, pts) => `<tr class="${cls}"><th>${label}</th><td>${sp}</td><td>${tot}</td><td>${mlText}</td><td>${pts}</td></tr>`;
   const rows = [];
+  const dkML = (mA, mH) => { const [pa, ph] = noVig(mA, mH); return `${A} ${pa != null ? `${pct(pa)} ` : ""}(${ml(mA)}) \u00b7 ${H} ${ph != null ? `${pct(ph)} ` : ""}(${ml(mH)})`; };
   if (o) rows.push(row("DraftKings", "dk", spreadText(o.spread) + (o.spread_open != null && o.spread_open !== o.spread ? `<span class="opened">opened ${spreadText(o.spread_open)}</span>` : ""),
-    o.total, `${A} ${ml(o.ml_away)} \u00b7 ${H} ${ml(o.ml_home)}`, `${A} ${o.away_pts} \u00b7 ${H} ${o.home_pts}`));
+    o.total, dkML(o.ml_away, o.ml_home), `${A} ${o.away_pts} \u00b7 ${H} ${o.home_pts}`));
   if (u) rows.push(row("Ours", "ours", spreadText(u.spread), fmt(u.total),
     `${A} ${pct(1 - u.home_win)} (${ml(u.ml_away)}) \u00b7 ${H} ${pct(u.home_win)} (${ml(u.ml_home)})`, `${A} ${fmt(u.away_pts)} \u00b7 ${H} ${fmt(u.home_pts)}`));
   const live = [];
-  if (lvDK) live.push(row("DraftKings", "dk live", spreadText(lvDK.spread), lvDK.total ?? "-", `${A} ${ml(lvDK.ml_away)} \u00b7 ${H} ${ml(lvDK.ml_home)}`, "-"));
+  if (lvDK) live.push(row("DraftKings", "dk live", spreadText(lvDK.spread), lvDK.total ?? "-", dkML(lvDK.ml_away, lvDK.ml_home), "-"));
   if (lvUs) live.push(row("Ours", "ours live", spreadText(lvUs.spread), fmt(lvUs.total),
     `${A} ${pct(1 - lvUs.home_win)} (${ml(fairML(1 - lvUs.home_win))}) \u00b7 ${H} ${pct(lvUs.home_win)} (${ml(fairML(lvUs.home_win))})`,
     `${A} ${fmt(lvUs.away_pts)} \u00b7 ${H} ${fmt(lvUs.home_pts)}`));
@@ -683,7 +702,7 @@ function gameLines(g, teams) {
     </table></div>
     <div class="gl-foot">
       ${leans.length ? `<span>Our pregame ${leans.length === 1 ? "lean" : "leans"}: ${leans.map((l) => `<span class="glean">${esc(l)}</span>`).join(" ")}</span>` : u ? `<span class="muted">No pregame lean: we're within 2 points of DraftKings' spread and 3 of the total.</span>` : ""}
-      <span class="muted">Ours pregame: our player projections added up into team scores, locked at kickoff and graded${g.ours_late ? " (this one was first made after kickoff, so it isn't graded)" : ""}. Ours live: the score so far plus what's left of our pregame projection for the time remaining. Moneylines for ours are fair odds with no sportsbook margin.${lvDK ? " DraftKings' live odds come through ESPN without a timestamp and can lag a play or two, or freeze while betting is suspended." : ""}</span>
+      <span class="muted">Ours pregame: our player projections added up into team scores, locked at kickoff and graded${g.ours_late ? " (this one was first made after kickoff, so it isn't graded)" : ""}. Ours live: the score so far plus what's left of our pregame projection for the time remaining. Percentages are win chances: DraftKings' with their built-in margin taken out, so they compare directly with ours. Our moneylines are fair odds (no margin), which is why ours mirror each other (+163 / -163) and DraftKings' don't (+140 / -166).${lvDK ? " DraftKings' live odds come through ESPN without a timestamp and can lag a play or two, or freeze while betting is suspended." : ""}</span>
     </div>
   </div>`;
 }
@@ -1170,6 +1189,21 @@ function renderAbout() {
   ];
   const cats = Object.entries(S.data.categories).filter(([k]) => k !== "anytime_td");
   $("#main").innerHTML = `<div class="about">
+    <h2 id="features">What's here</h2>
+    <div class="feat">
+      <div class="card"><b>Props with real lines</b><p>DraftKings lines (then Sleeper Picks) for every prop, our pregame projection, leans, hit rates this season, and Top Overs / Unders for real starters only.</p></div>
+      <div class="card"><b>Live everything</b><p>Scores, every player's stats and fantasy points from Sleeper's live feed, prop progress (cleared, lost, hit, miss), all refreshing together every 15 to 30 seconds.</p></div>
+      <div class="card"><b>Game pages</b><p>Tap a game: field position, last play, quarter scores, win probability, play-by-play with filters (quarter, scoring, big plays, turnovers, flags), box score, props and fantasy for that game.</p></div>
+      <div class="card"><b>Game lines</b><p>DraftKings spread, total, moneyline and implied points next to ours (player projections added up), pregame and live, with leans that get graded.</p></div>
+      <div class="card"><b>Your scoring</b><p>Sleeper or ESPN, PPR or half, or your own Sleeper league's exact settings. Every number on the site follows it. Kickers and defenses use ESPN scoring.</p></div>
+      <div class="card"><b>Fantasy rankings</b><p>This week or rest of season, by position or FLEX, with live points, snap share and byes.</p></div>
+      <div class="card"><b>Game logs</b><p>Every player's games this season with snaps, then a projection for each remaining week, like Sleeper's.</p></div>
+      <div class="card"><b>Compare</b><p>Two players side by side with a start recommendation, matchup, props and game logs.</p></div>
+      <div class="card"><b>Trade</b><p>Value any trade by rest-of-season points above replacement, sized to your league.</p></div>
+      <div class="card"><b>My Picks</b><p>Track any prop you like, live, with a running record for your slate. Saved on your device.</p></div>
+      <div class="card"><b>News and injuries</b><p>ESPN headlines tagged with players, an injury report by game, game-day inactives as they post, and each player's latest notes.</p></div>
+      <div class="card"><b>Honest track record</b><p>Every pick and lean graded only from what was posted before kickoff, and our numbers checked against DraftKings'.</p></div>
+    </div>
     <h2>Lines</h2>
     <p>Every prop uses the real <b>DraftKings</b> line when DraftKings has posted one (ESPN carries DraftKings' player props). If DraftKings hasn't, it uses <b>Sleeper Picks</b>' line, and only after that our own estimate, which is labeled "est". Each card shows all of them side by side, plus where DraftKings' line opened.</p>
     <h2>Our projection</h2>
@@ -1279,7 +1313,8 @@ function fieldView(g, teams, sum) {
   if (g.state !== "in") return "";
   const drives = allDrives(sum);
   const last = drives.length ? drives[drives.length - 1].plays?.slice(-1)[0] : null;
-  const spot = last?.end;
+  const sb = g.spot;
+  const spot = sb ? { yardLine: sb.yardLine, down: sb.down, distance: sb.distance, downDistanceText: sb.text, team: { id: sb.team }, possessionText: sb.text } : last?.end;
   if (!spot || spot.yardLine == null) return "";
   // ESPN's yardLine is yards from the home team's goal line: home end zone on the left, away on the right
   const x = Math.max(0, Math.min(100, spot.yardLine));
@@ -1618,7 +1653,7 @@ function renderGame() {
     const other = g[`${key === "home" ? "away" : "home"}_score`];
     return `<div class="gt ${key}">
       <img src="${logo(t.abbr)}" alt="">
-      <div class="gt-n"><b class="long">${esc(t.short)}</b><b class="abbr">${t.abbr}</b><span class="muted">${esc(t.record)}</span></div>
+      <div class="gt-n"><b class="long">${esc(t.short)}</b><b class="abbr">${t.abbr}</b><span class="muted">${esc(t.record)}</span>${g.state === "in" ? `<span class="gt-to">${toDots(key === "home" ? g.homeTO : g.awayTO)} <span class="muted">TO</span></span>` : ""}</div>
       <div class="gt-s num ${g.state === "post" && score < other ? "lose" : ""}">${started && score != null ? score : ""}${g.state === "in" && g.poss === t.abbr ? `<i class="poss-dot"></i>` : ""}</div>
     </div>`;
   };
@@ -1645,6 +1680,7 @@ function renderGame() {
         <div class="gh-mid">
           <div class="gh-st ${g.state === "in" ? "live" : ""}">${esc(gameStatus(g))}</div>
           <div class="muted">${esc(g.state === "in" ? g.dd || "" : g.state === "pre" ? [g.tv, g.venue].filter(Boolean).join(" · ") : g.venue || "")}</div>
+          ${g.state === "in" && g.drive ? `<div class="gh-drive">Drive: ${esc(g.drive)}</div>` : ""}
         </div>
         ${side("home")}</div>
       ${fieldView(g, teams, sum)}
@@ -2525,6 +2561,15 @@ document.addEventListener("change", (e) => {
   if (set) { S.f[set] = t.value; S.shown = 40; render(); return; }
   if (t.id === "f-out") { S.f.hideOut = t.checked; renderProps(); return; }
   if (t.id === "f-favs") { S.f.favs = t.checked; renderProps(); }
+});
+
+$("#all-features").addEventListener("click", (e) => {
+  e.preventDefault();
+  S.tab = "about";
+  S.gameView = null;
+  render();
+  syncHash(true);
+  window.scrollTo(0, 0);
 });
 
 $("#made-by").addEventListener("click", (e) => {

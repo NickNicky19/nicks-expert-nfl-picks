@@ -1,0 +1,39 @@
+name: Ticker
+
+# GitHub's own schedule is unreliable (it can skip hours at a time), so this job keeps the site fresh: it starts
+# the update every 30 minutes on game days and every hour otherwise, for about five and a half hours, then starts
+# a fresh copy of itself. The schedule below only restarts it if it ever stops.
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "17 */3 * * *"
+
+concurrency:
+  group: ticker
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Start the update on a timer
+        run: |
+          end=$((SECONDS + 330 * 60))
+          while [ $SECONDS -lt $end ]; do
+            gh workflow run hourly.yml -R "$GITHUB_REPOSITORY" || echo "::warning::couldn't start the update"
+            # game days in UTC: Thursday night games end early Friday UTC, Sunday, Monday night games end early Tuesday
+            case "$(date -u +%u)" in 4|5|7|1|2) wait=1800 ;; *) wait=3600 ;; esac
+            remaining=$((end - SECONDS))
+            [ $remaining -le $wait ] && break
+            sleep $wait
+          done
+      - name: Start the next ticker
+        if: ${{ !cancelled() }}
+        run: gh workflow run ticker.yml -R "$GITHUB_REPOSITORY"

@@ -76,7 +76,7 @@ h1 { font: 700 20px/1.1 var(--head); margin: 0; }
 .game .abbr { font-weight: 700; flex: 1; }
 .game .sc { font: 600 17px var(--num); }
 .game .row.lose { color: var(--muted); }
-.game .poss::after { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); margin-left: 5px; vertical-align: middle; }
+.game .poss::after { content: ""; display: inline-block; width: 10px; height: 6px; border-radius: 50%; background: #a0522d; border: 1px solid #fff; margin-left: 5px; vertical-align: middle; }
 .game .st { font-size: 11px; color: var(--muted); margin-top: 3px; display: flex; justify-content: space-between; gap: 6px; white-space: nowrap; overflow: hidden; }
 .game.live .st .clock { color: var(--red); font-weight: 700; }
 .game .st .dd { overflow: hidden; text-overflow: ellipsis; }
@@ -257,7 +257,7 @@ h2 small { font: 500 12px var(--sans); color: var(--muted); }
 .gt.away .gt-s { text-align: right; }
 .gt.home .gt-s { text-align: left; }
 .gt-s.lose { color: var(--muted); }
-.poss-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); vertical-align: middle; margin: 0 6px; }
+.poss-dot { display: inline-block; width: 14px; height: 9px; border-radius: 50%; background: #a0522d; border: 1.5px solid #fff; vertical-align: middle; margin: 0 6px; }
 .gh-mid { text-align: center; font-size: 12px; min-width: 96px; }
 .gh-st { font: 700 15px var(--head); }
 .gh-st.live { color: var(--red); }
@@ -571,3 +571,16 @@ table.cmp .arrow.over { color: var(--green); } table.cmp .arrow.under { color: v
 .trade-sub { font-size: 12px; }
 .verdict.lose { background: rgba(255, 128, 117, .14); }
 .tbl .small { font-size: 10.5px; }
+
+.feat { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.feat .card { padding: 11px 12px; }
+.feat b { font: 700 14px var(--head); }
+.feat p { margin: 4px 0 0; font-size: 12.5px; color: var(--text-2); }
+
+.to { display: inline-flex; gap: 2px; margin-left: 5px; vertical-align: middle; }
+.to i { width: 5px; height: 5px; border-radius: 50%; background: var(--line); display: block; }
+.to i.on { background: var(--amber); }
+.gt-to { display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px; margin-top: 2px; }
+.gt-to .to i { width: 7px; height: 7px; }
+.gt.home .gt-to { justify-content: flex-end; }
+.gh-drive { font-size: 11.5px; color: var(--text-2); margin-top: 2px; }
