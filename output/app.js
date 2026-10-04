@@ -50,7 +50,8 @@ const S = {
   leagues: store("leagues") || [],      // [{id, name, season, settings}]
   scFound: null, scMsg: "",
   mine: store("mine") || [],
-  cmp: store("cmp") || [null, null],    // the two players on the Compare tab   // My Picks: [{pid, key, dir, line, season, week, at}]
+  cmp: store("cmp") || [null, null],    // the two players on the Compare tab
+  trade: store("trade") || { give: [], get: [] },   // My Picks: [{pid, key, dir, line, season, week, at}]
 };
 
 // ---------------------------------------------------------------- helpers
@@ -935,6 +936,7 @@ function renderProps() {
 
 function renderFantasy() {
   const ff = S.ff;
+  if (ff.view === "ros") return renderRos();
   const pos = ff.pos === "FLEX" ? ["RB", "WR", "TE"] : ff.pos === "ALL" ? ["QB", "RB", "WR", "TE", "K", "DEF"] : [ff.pos];
   const rows = S.data.players.filter((p) => pos.includes(p.pos) && projPts(p) != null && projPts(p) >= 0.5)
     .map((p) => {
@@ -953,7 +955,7 @@ function renderFantasy() {
   const th = (key, label, cls = "") => `<th class="${cls} ${ff.sort === key ? "sorted" : ""}" data-sort="${key}">${label}${ff.sort === key ? (ff.desc ? " ↓" : " ↑") : ""}</th>`;
   $("#main").innerHTML = `
     <h2>Fantasy rankings <small>${esc(scoringName())} \u00b7 K and DEF on ESPN standard scoring</small></h2>
-    <div class="filters"><div class="chips">${["QB", "RB", "WR", "TE", "FLEX", "K", "DEF", "ALL"].map((x) => `<button class="chip ${ff.pos === x ? "on" : ""}" data-fpos="${x}">${x === "ALL" ? "All" : x}</button>`).join("")}</div></div>
+    <div class="filters">${seg("data-fview", ff.view || "week", [["week", "This week"], ["ros", "Rest of season"]], "View")}<div class="chips">${["QB", "RB", "WR", "TE", "FLEX", "K", "DEF", "ALL"].map((x) => `<button class="chip ${ff.pos === x ? "on" : ""}" data-fpos="${x}">${x === "ALL" ? "All" : x}</button>`).join("")}</div></div>
     <div class="tbl-wrap"><table class="tbl">
       <thead><tr><th class="l">#</th>${th("name", "Player", "l")}<th class="l hide-sm">Game</th>${th("proj", "Proj")}${th("live", "Live")}${th("diff", "+/-", "hide-sm")}${th("avg", "Avg", "hide-sm")}${th("snap", "Snap %", "hide-sm")}</tr></thead>
       <tbody>${rows.slice(0, ff.shown).map((r) => {
@@ -975,6 +977,120 @@ function renderFantasy() {
     </table></div>
     ${rows.length > ff.shown ? `<button class="more" data-fmore>Show more (${rows.length - ff.shown})</button>` : ""}
     <p class="note">Proj is Sleeper's projection for this week. Live comes from ESPN's box score every 30 seconds and matches Sleeper's final scoring, except rare plays the box score doesn't show (special teams fumble recoveries and blocked kicks), which catch up at the next hourly update. Kickers score 3 per field goal under 40 yards, 4 from 40 to 49, 5 from 50+, 1 per extra point and -1 per miss. Defenses score for sacks, takeaways, touchdowns, safeties and points allowed. Avg is this season's average.</p>`;
+}
+
+function renderRos() {
+  const ff = S.ff;
+  const head = `<h2>Rest of season <small>${esc(scoringName())} · Sleeper's weekly projections</small></h2>
+    <div class="filters">${seg("data-fview", "ros", [["week", "This week"], ["ros", "Rest of season"]], "View")}<div class="chips">${["QB", "RB", "WR", "TE", "FLEX", "K", "DEF", "ALL"].map((x) => `<button class="chip ${ff.pos === x ? "on" : ""}" data-fpos="${x}">${x === "ALL" ? "All" : x}</button>`).join("")}</div></div>`;
+  if (!S.future) {
+    $("#main").innerHTML = head + `<div class="empty">Loading projections for the rest of the season...</div>`;
+    loadFuture().then(() => { if (S.tab === "fantasy" && S.ff.view === "ros") renderRos(); });
+    return;
+  }
+  const pos = ff.pos === "FLEX" ? ["RB", "WR", "TE"] : ff.pos === "ALL" ? ["QB", "RB", "WR", "TE", "K", "DEF"] : [ff.pos];
+  const nextWeeks = [];
+  for (let w = S.data.week + 1; w <= S.data.week + 4 && w <= 18; w++) nextWeeks.push(w);
+  const rows = S.data.players.filter((p) => pos.includes(p.pos)).map((p) => {
+    const fut = futureRows(p);
+    const n = rosGames(p);
+    const ros = rosPts(p);
+    return { p, ros, per: n ? ros / n : 0, n, fut };
+  }).filter((r) => r.ros >= 5).sort((a, b) => b.ros - a.ros).slice(0, ff.shown);
+  $("#main").innerHTML = head + `<div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th class="l">#</th><th class="l">Player</th><th>Rest of season</th><th>Per game</th>${nextWeeks.map((w) => `<th class="hide-sm">Wk ${w}</th>`).join("")}<th class="hide-sm">Bye</th></tr></thead>
+    <tbody>${rows.map((r, i) => `<tr data-open="${r.p.id}">
+      <td class="rk">${i + 1}</td>
+      <td class="l"><div class="who">${avatar(r.p)}<div><div><b>${esc(r.p.name)}</b>${injBadge(r.p)}</div><div class="pmeta"><span class="pos ${r.p.pos}">${r.p.pos}</span> ${r.p.team}</div></div></div></td>
+      <td class="big">${fmtPts(r.ros)}</td>
+      <td class="muted">${fmtPts(r.per)}</td>
+      ${nextWeeks.map((w) => { const x = r.fut.find((y) => y.w === w); return `<td class="hide-sm">${x ? `${fmtPts(x.pts)}<div class="muted small">${x.opp}</div>` : byesLeft(r.p).includes(w) ? `<span class="muted">BYE</span>` : "-"}</td>`; }).join("")}
+      <td class="hide-sm muted">${byesLeft(r.p).join(", ") || "-"}</td>
+    </tr>`).join("")}</tbody></table></div>
+    <button class="more" data-fmore>Show more</button>
+    <p class="note">Rest of season adds up this week (if his game hasn't started) and every remaining week of Sleeper's projections, scored in ${esc(scoringName())}. Kickers and defenses use ESPN standard scoring.</p>`;
+}
+
+// ---------------------------------------------------------------- trade
+
+// How many starters a league uses at each position (default: 12 teams, QB, 2 RB, 2 WR, TE, FLEX, K, DEF).
+// FLEX spots are split the way they're usually filled.
+function leagueShape() {
+  const lg = currentLeague();
+  const teams = lg?.teams || 12;
+  const slots = lg?.roster_positions || ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "K", "DEF"];
+  const n = { QB: 0, RB: 0, WR: 0, TE: 0, K: 0, DEF: 0 };
+  for (const s2 of slots) {
+    if (n[s2] != null) n[s2] += 1;
+    else if (s2 === "FLEX") { n.RB += 0.45; n.WR += 0.45; n.TE += 0.1; }
+    else if (s2 === "WRRB_FLEX") { n.RB += 0.5; n.WR += 0.5; }
+    else if (s2 === "REC_FLEX") { n.WR += 0.8; n.TE += 0.2; }
+    else if (s2 === "SUPER_FLEX") { n.QB += 0.8; n.RB += 0.1; n.WR += 0.1; }
+  }
+  return { teams, starters: Object.fromEntries(Object.entries(n).map(([k, v]) => [k, Math.round(v * teams)])), name: lg?.name };
+}
+
+// Rest-of-season points above the first player at his position who wouldn't start in this league
+function replacementLevels() {
+  const shape = leagueShape();
+  const out = {};
+  for (const pos of Object.keys(shape.starters)) {
+    const pts = S.data.players.filter((p) => p.pos === pos).map(rosPts).sort((a, b) => b - a);
+    out[pos] = pts[shape.starters[pos]] ?? 0;
+  }
+  return out;
+}
+
+function renderTrade() {
+  const head = `<h2>Trade <small>${esc(scoringName())} · rest of season</small></h2>`;
+  if (!S.future) {
+    $("#main").innerHTML = head + `<div class="empty">Loading projections for the rest of the season...</div>`;
+    loadFuture().then(() => { if (S.tab === "trade") renderTrade(); });
+    return;
+  }
+  const repl = replacementLevels();
+  const shape = leagueShape();
+  const value = (p) => {
+    const ros = rosPts(p);
+    return { ros, vor: ros - (repl[p.pos] ?? 0), n: rosGames(p) };
+  };
+  const options = S.data.players.filter((p) => rosPts(p) >= 5).sort((a, b) => rosPts(b) - rosPts(a))
+    .map((p) => `<option value="${esc(playerLabel(p))}"></option>`).join("");
+  const side = (k, title) => {
+    const ids = S.trade[k].filter((id) => S.byId[id]);
+    const rows = ids.map((id) => { const p = S.byId[id]; return { p, ...value(p) }; });
+    const total = rows.reduce((a, r) => a + Math.max(0, r.vor), 0);
+    const pts = rows.reduce((a, r) => a + r.ros, 0);
+    return { total, pts, html: `<div class="trade-side card">
+      <h3>${title}</h3>
+      ${rows.map((r) => `<div class="trade-row">
+        ${avatar(r.p)}
+        <div><div><b>${esc(r.p.name)}</b> <span class="pos ${r.p.pos}">${r.p.pos}</span>${injBadge(r.p)}</div>
+          <div class="pmeta">${r.p.team} · ${fmtPts(r.ros)} pts over ${r.n} games${byesLeft(r.p).length ? ` · bye wk ${byesLeft(r.p).join(", ")}` : ""}</div></div>
+        <div class="side"><div class="num ${r.vor > 0 ? "" : "muted"}">${r.vor > 0 ? "+" : ""}${fmtPts(r.vor)}</div><div class="small">above repl.</div>
+          <button class="rm" data-trade-rm="${k}|${r.p.id}" title="Remove" aria-label="Remove">×</button></div>
+      </div>`).join("") || `<p class="note">Add players below.</p>`}
+      <div class="trade-add"><input list="trade-list" data-trade-side="${k}" placeholder="Add a player" autocomplete="off"></div>
+      <div class="trade-tot"><span>Value</span><b class="num">${fmtPts(total)}</b></div>
+      <div class="trade-sub muted">${fmtPts(pts)} total rest-of-season points</div>
+    </div>` };
+  };
+  const give = side("give", "You give"), get = side("get", "You get");
+  let verdict = "";
+  if (S.trade.give.length && S.trade.get.length) {
+    const d = get.total - give.total;
+    const big = Math.max(give.total, get.total, 1);
+    verdict = Math.abs(d) / big < 0.08
+      ? `<div class="verdict even">Fair trade: within ${fmtPts(Math.abs(d))} points of value either way.</div>`
+      : d > 0 ? `<div class="verdict">You win this trade by <b>${fmtPts(d)}</b> points of value.</div>`
+      : `<div class="verdict lose">You lose this trade by <b>${fmtPts(-d)}</b> points of value.</div>`;
+  }
+  const replText = Object.entries(repl).map(([pos, v]) => `${pos} ${fmtPts(v)}`).join(" · ");
+  $("#main").innerHTML = head + `<datalist id="trade-list">${options}</datalist>
+    ${verdict}
+    <div class="trade-grid">${give.html}${get.html}</div>
+    <div class="gtool" style="margin-top:10px"><button class="tbtn" data-trade-clear>Clear trade</button></div>
+    <p class="note"><b>Value</b> is each player's rest-of-season points above <b>replacement level</b>: the best player at his position who wouldn't start in ${shape.name ? `<b>${esc(shape.name)}</b>` : "a 12-team league (QB, 2 RB, 2 WR, TE, FLEX, K, DEF)"}. Starters per position: ${Object.entries(shape.starters).map(([k, v]) => `${k} ${v}`).join(", ")}. Replacement levels now: ${replText}. Players below replacement count as zero, since you could pick up someone as good. Projections are Sleeper's for each remaining week, scored in ${esc(scoringName())}${shape.name ? "" : "; pick one of your Sleeper leagues in the scoring menu to use its size and lineup"}.</p>`;
 }
 
 // ---------------------------------------------------------------- track record tab
@@ -1064,6 +1180,9 @@ function renderAbout() {
     <p>See the Track Record tab. In short: DraftKings' lines are sharper than a season average, and three or four weeks in, the matchup adjustment hasn't yet made a season average more accurate. That's why the real line is the one that counts, and why the adjustment is kept small until there's more data.</p>
     <h2>Our game lines</h2>
     <p>Our spread, total and moneyline come from the same player projections, added up: each team's projected touchdowns (passing TDs from the quarterback, rushing TDs from everyone, so no catch is counted twice), 2-point conversions, its kicker's field goals and extra points, and its defense's touchdowns and safeties. Those totals are scaled to this season's real average points per team, then turned into a spread, total and win chance (a fair moneyline with no sportsbook margin). We show a lean when we're 2+ points off DraftKings' spread or 3+ off the total, lock it at kickoff, and grade it on the Track Record tab.</p>
+    <h2>Future weeks and trades</h2>
+    <p>Every player's game log continues past this week with Sleeper's projection for each remaining game (and his bye), scored in whatever scoring you've picked. In Sleeper scoring the totals are Sleeper's own, so they match the app exactly. The Fantasy tab has a rest-of-season ranking.</p>
+    <p>The Trade tab values each player by his rest-of-season points above <b>replacement level</b>: the best player at his position who wouldn't start in your league (12 teams with QB, 2 RB, 2 WR, TE, FLEX, K and DEF unless you've picked one of your Sleeper leagues, which uses its size and lineup). That's why a quarterback's big point total doesn't automatically beat a running back's. Players below replacement count as zero, since a similar player is usually available.</p>
     <h2>Fantasy points</h2>
     <p>QB, RB, WR and TE use Sleeper's standard scoring, in PPR or half PPR (the switch at the top changes every number on the site). Our totals match Sleeper's own on about 6,000 player-weeks from 2025 and 2026, both settings, re-checked every update.</p>
     <table class="ptable">${scoreRows.map(([k, v]) => `<tr><td>${k}</td><td class="num">${v > 0 ? "+" : ""}${v}</td></tr>`).join("")}<tr><td>Reception (half PPR)</td><td class="num">+0.5</td></tr></table>
@@ -1595,7 +1714,7 @@ function applyHash() {
     if (m[2] && GAME_TABS.some(([k]) => k === m[2])) gs().tab = m[2];
     return true;
   }
-  const t = location.hash.match(/^#\/(props|fantasy|compare|mine|news|record|about)$/);
+  const t = location.hash.match(/^#\/(props|fantasy|compare|trade|mine|news|record|about)$/);
   if (t) { S.gameView = null; S.tab = t[1]; return true; }
   return false;
 }
@@ -1686,19 +1805,39 @@ const LOG_LABELS = {
 // This season's games, like Sleeper's game log: snaps (and share of the team's snaps), main stats, points
 function gameLog(p) {
   const keys = S.data.log_stats?.[p.pos];
-  if (!keys || !p.log) return "";
-  const rows = p.log.map((x) => ({ ...x, pts: logPts(p, x) }));
+  if (!keys) return "";
+  const rows = (p.log || []).map((x) => ({ ...x, pts: logPts(p, x) }));
+  const g = S.games[p.game_id];
   const c = current(p);
   if (c && !c.none) {
     const st = c.stats;
     rows.push({ w: S.data.week, opp: p.opp, snp: st.off_snp, tsnp: st.tm_off_snp, s: keys.map((k) => st[k] || 0), pts: livePPR(p), now: true });
+  } else if (g && g.state === "pre" && p.proj) {
+    rows.push({ w: S.data.week, opp: p.opp, s: keys.map((k) => p.proj[k] || 0), pts: projPts(p), proj: true });
+  }
+  if (!S.future) loadFuture().then(refreshOpenCards);
+  if (S.future) {
+    const fut = futureRows(p);
+    const byes = new Set(byesLeft(p));
+    const last = Math.max(S.data.week, ...fut.map((x) => x.w));
+    for (let w = S.data.week + 1; w <= last; w++) {
+      const x = fut.find((y) => y.w === w);
+      if (x) rows.push({ w, opp: x.opp, s: keys.map((k) => x.st[k] || 0), pts: x.pts, proj: true });
+      else if (byes.has(w)) rows.push({ w, bye: true });
+    }
   }
   if (!rows.length) return "";
   const snaps = (r) => (r.snp == null ? "-" : `${r.snp}${r.tsnp ? ` <span class="muted">${Math.round((100 * r.snp) / r.tsnp)}%</span>` : ""}`);
+  const cellv = (v, proj) => (proj ? fmt(v, v < 10 ? 1 : 0) : v);
+  const fut = rows.filter((r) => r.proj);
+  const ros = S.future ? rosPts(p) : null;
   return `<div class="glog" style="grid-column:1/-1"><div class="tbl-wrap"><table class="box">
     <thead><tr><th class="l">Game log</th><th>Opp</th><th>Snaps</th>${keys.map((k) => `<th>${LOG_LABELS[k]}</th>`).join("")}<th class="ppr">Pts</th></tr></thead>
-    <tbody>${rows.map((r) => `<tr class="${r.now ? "now" : ""}"><td class="l">${r.now ? (S.games[p.game_id].state === "post" ? "Final" : "Now") : `Week ${r.w}`}</td><td>${r.opp || ""}</td><td>${snaps(r)}</td>${r.s.map((v) => `<td>${v}</td>`).join("")}<td class="ppr">${fmtPts(r.pts)}</td></tr>`).join("")}</tbody>
-  </table></div></div>`;
+    <tbody>${rows.map((r) => r.bye
+      ? `<tr class="bye"><td class="l">Week ${r.w}</td><td colspan="${keys.length + 3}">Bye</td></tr>`
+      : `<tr class="${r.now ? "now" : r.proj ? "proj" : ""}"><td class="l">${r.now ? (g.state === "post" ? "Final" : "Now") : `Week ${r.w}`}${r.proj ? ` <span class="ptag big">proj</span>` : ""}</td><td>${r.opp || ""}</td><td>${r.proj ? "" : snaps(r)}</td>${r.s.map((v) => `<td>${cellv(v, r.proj)}</td>`).join("")}<td class="ppr">${fmtPts(r.pts)}</td></tr>`).join("")}</tbody>
+  </table></div>
+  <div class="note">${S.future ? `Future weeks are Sleeper's projections, scored in ${esc(scoringName())}. Rest of season: <b>${fmtPts(ros)}</b> over ${rosGames(p)} games${byesLeft(p).length ? `, bye in week ${byesLeft(p).join(", ")}` : ""}.` : "Loading future weeks..."}</div></div>`;
 }
 
 function latestBlock(p) {
@@ -1860,6 +1999,47 @@ async function findLeagues(q) {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.target.id === "sc-q") findLeagues(e.target.value.trim());
 });
+
+// ---------------------------------------------------------------- future weeks and rest of season
+
+async function loadFuture() {
+  if (S.future || S.futureLoading) return S.futureLoading;
+  S.futureLoading = getJSON(`data/future.json?v=${encodeURIComponent(S.data.generated_at)}`)
+    .then((f) => { S.future = f; })
+    .catch((err) => { console.warn("future", err); S.future = { players: {}, byes: {} }; });
+  return S.futureLoading;
+}
+
+// Sleeper's projection for each remaining week, scored the same way as everything else on the site
+function futureRows(p) {
+  const sleeperOwn = isDefault() && p.pos !== "K" && p.pos !== "DEF";
+  return ((S.future?.players || {})[p.id] || []).map((x) => ({
+    ...x, pts: sleeperOwn && x.pp != null ? (S.sc.half ? x.ph ?? x.pp : x.pp) : fantasyPts(x.st, p.pos),
+  }));
+}
+
+function byesLeft(p) {
+  return (S.future?.byes || {})[p.team] || [];
+}
+
+// Rest of season: this week (if his game hasn't started) plus every remaining week
+function rosPts(p) {
+  const g = S.games[p.game_id];
+  const now = g && g.state === "pre" ? projPts(p) || 0 : 0;
+  return futureRows(p).reduce((a, x) => a + x.pts, now);
+}
+
+function rosGames(p) {
+  const g = S.games[p.game_id];
+  return futureRows(p).length + (g && g.state === "pre" ? 1 : 0);
+}
+
+function refreshOpenCards() {
+  for (const id of S.open) {
+    const c = $(`[data-player="${id}"]`);
+    if (c) c.outerHTML = playerCard(S.byId[id]);
+  }
+}
 
 // ---------------------------------------------------------------- compare two players
 
@@ -2059,7 +2239,7 @@ function renderMine() {
 function render() {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", !S.gameView && b.dataset.tab === S.tab));
   if (S.gameView) { renderGame(); renderScores(); return; }
-  ({ props: renderProps, fantasy: renderFantasy, compare: renderCompare, mine: renderMine, news: renderNews, record: renderRecord, about: renderAbout })[S.tab]();
+  ({ props: renderProps, fantasy: renderFantasy, compare: renderCompare, trade: renderTrade, mine: renderMine, news: renderNews, record: renderRecord, about: renderAbout })[S.tab]();
   updateMineBadge();
   renderScores();
 }
@@ -2150,7 +2330,7 @@ document.addEventListener("click", (e) => {
   if (addLg) {
     const l = S.scFound.find((x) => x.league_id === addLg.dataset.scAdd);
     if (l && !S.leagues.some((x) => x.id === l.league_id)) {
-      S.leagues.push({ id: l.league_id, name: l.name, season: l.season, settings: l.scoring_settings });
+      S.leagues.push({ id: l.league_id, name: l.name, season: l.season, settings: l.scoring_settings, teams: l.total_rosters, roster_positions: l.roster_positions });
       store("leagues", S.leagues);
     }
     S.sc = { mode: "league", league: l.league_id, half: false };
@@ -2180,6 +2360,15 @@ document.addEventListener("click", (e) => {
     render(); syncHash(true); window.scrollTo(0, 0);
     return;
   }
+  const fv = t.closest("[data-fview]");
+  if (fv) { S.ff.view = fv.dataset.fview; S.ff.shown = 60; renderFantasy(); return; }
+  const trm = t.closest("[data-trade-rm]");
+  if (trm) {
+    const [k, id] = trm.dataset.tradeRm.split("|");
+    S.trade[k] = S.trade[k].filter((x) => x !== id);
+    store("trade", S.trade); renderTrade(); return;
+  }
+  if (t.closest("[data-trade-clear]")) { S.trade = { give: [], get: [] }; store("trade", S.trade); renderTrade(); return; }
   const cc = t.closest("[data-cmp-clear]");
   if (cc) { setCompare(+cc.dataset.cmpClear, null); renderCompare(); return; }
   const add = t.closest("[data-add]");
@@ -2274,6 +2463,7 @@ document.addEventListener("click", (e) => {
   if (toggle && !t.closest("input")) {
     const id = toggle.dataset.toggle;
     S.open.has(id) ? S.open.delete(id) : S.open.add(id);
+    if (!S.future) loadFuture().then(() => { const c = $(`[data-player="${id}"]`); if (c && S.open.has(id)) c.outerHTML = playerCard(S.byId[id]); });
     const card = $(`[data-player="${id}"]`);
     card.outerHTML = playerCard(S.byId[id]);
     return;
@@ -2314,6 +2504,18 @@ document.addEventListener("input", (e) => {
 
 document.addEventListener("change", (e) => {
   const t = e.target;
+  if (t.dataset.tradeSide) {
+    const p = S.data.players.find((x) => playerLabel(x) === t.value);
+    const k = t.dataset.tradeSide, other = k === "give" ? "get" : "give";
+    if (p && !S.trade[k].includes(p.id)) {
+      S.trade[k].push(p.id);
+      S.trade[other] = S.trade[other].filter((x) => x !== p.id);
+      store("trade", S.trade);
+      renderTrade();
+      $(`[data-trade-side="${k}"]`)?.focus();
+    }
+    return;
+  }
   if (t.dataset.cmpSlot != null) {
     const p = S.data.players.find((x) => playerLabel(x) === t.value);
     if (p) { setCompare(+t.dataset.cmpSlot, p.id); t.blur(); renderCompare(); }
@@ -2342,7 +2544,7 @@ $("#reload").addEventListener("click", async () => {
 
 (async function start() {
   const saved = store("tab");
-  if (["props", "fantasy", "compare", "mine", "news", "record", "about"].includes(saved)) S.tab = saved;
+  if (["props", "fantasy", "compare", "trade", "mine", "news", "record", "about"].includes(saved)) S.tab = saved;
   try {
     await load();
   } catch (err) {

@@ -19,7 +19,11 @@ a Python build writes static JSON every hour, and a static page on GitHub Pages 
 - **Scoring**: Sleeper PPR (default) or half, ESPN PPR or half, or any Sleeper league's exact settings (find leagues by
   username or league ID). Kickers and defenses always use ESPN standard scoring.
 - **News**: ESPN headlines tagged with players, an injury report by game, and each player's latest notes.
-- **Game logs**: each player's games this season with snaps and share of the team's snaps.
+- **Game logs**: each player's games this season with snaps and share of the team's snaps, then Sleeper's projection
+  for every remaining week (and his bye), in the chosen scoring.
+- **Rest of season and trades**: a rest-of-season ranking, and a trade calculator that values players by
+  rest-of-season points above replacement level for your league's size and lineup.
+- **Compare**: two players side by side with a start recommendation.
 - **Top Overs / Top Unders**: the biggest gaps between our number (Sleeper's projection, adjusted) and the real line.
   They lock at kickoff.
 - **Fantasy**: rankings by position, FLEX, K and DEF, projected and live.

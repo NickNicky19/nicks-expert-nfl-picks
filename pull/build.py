@@ -416,6 +416,42 @@ def kdef_entries(season, kdef, games, proj, history, previous, started):
     return out
 
 
+FUTURE_KEYS = set(scoring.PPR) | set(scoring.K_SCORING) | set(scoring.DEF_SCORING) | {
+    "pass_cmp", "pass_att", "rush_att", "rec_tgt", "fgm_50p", "pts_allow", "yds_allow"}
+
+
+def future_weeks(season, week, entries):
+    """Sleeper's projections for every remaining week, for this week's players: [{w, opp, st}], plus each team's
+    bye weeks. Written to output/data/future.json, which the page loads only when it needs it."""
+    ids = {e["id"] for e in entries}
+    team_of = {e["id"]: e["team"] for e in entries}
+    out = {pid: [] for pid in ids}
+    played_weeks = {}
+    for w in range(week + 1, REGULAR_SEASON_WEEKS + 1):
+        try:
+            rows = sources.week_projections(season, w)
+        except Exception as err:
+            print(f"Week {w} projections unavailable:", err)
+            continue
+        for r in rows:
+            if r.get("opponent") and r.get("team"):
+                played_weeks.setdefault(r["team"], set()).add(w)
+            pid = r.get("player_id")
+            if pid not in ids or not r.get("opponent"):
+                continue
+            st = {k: round(v, 2) for k, v in (r.get("stats") or {}).items() if k in FUTURE_KEYS and v}
+            row = {"w": w, "opp": r["opponent"], "st": st}
+            # Sleeper's own totals, so its projections match the Sleeper app exactly (it scores projected fumbles
+            # slightly differently from real games); other scorings score the stats
+            if r.get("stats", {}).get("pts_ppr") is not None:
+                row["pp"], row["ph"] = r["stats"]["pts_ppr"], r["stats"].get("pts_half_ppr")
+            out[pid].append(row)
+    weeks = set(range(week + 1, REGULAR_SEASON_WEEKS + 1))
+    byes = {team: sorted(weeks - ws) for team, ws in played_weeks.items()}
+    return {"season": season, "from_week": week + 1, "players": {pid: v for pid, v in out.items() if v}, "byes": byes,
+            "teams": {pid: team_of[pid] for pid in ids}}
+
+
 def league_points_per_team(season, week):
     """Average points per team in this season's finished games before this week (last season's in week 1)."""
     seasons = [(season, w) for w in range(1, week)] or [(season - 1, w) for w in range(1, REGULAR_SEASON_WEEKS + 1)]
@@ -551,6 +587,7 @@ def run(refresh_all=False):
         "log_stats": LOG_STATS,
     }
     dump(OUT / "week.json", data)
+    dump(OUT / "future.json", future_weeks(season, week, entries))
     # The page polls this small file to tell when a new build is out
     dump(OUT / "meta.json", {"generated_at": now, "season": season, "week": week})
     dump(ARCHIVE / f"{season}_w{week:02d}.json", archive_of(season, week, entries, picks, now, games))

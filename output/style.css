@@ -550,3 +550,24 @@ table.cmp tr.sec td { width: auto; text-align: center; font: 700 10.5px var(--sa
 table.cmp td .muted { font: 500 11px var(--sans); }
 table.cmp .arrow.over { color: var(--green); } table.cmp .arrow.under { color: var(--red); }
 @media (max-width: 560px) { .cmp-pickers { grid-template-columns: 1fr; } .cmp-pickers .vs { text-align: center; } .cmp-heads { grid-template-columns: 1fr; } table.cmp td { font-size: 13.5px; } table.cmp th { white-space: normal; } }
+
+.glog tr.proj td { color: var(--muted); font-style: italic; }
+.glog tr.proj td.ppr { color: var(--cyan); font-style: normal; opacity: .85; }
+.glog tr.bye td { color: var(--faint); text-align: left; }
+.glog .note { margin-top: 6px; }
+
+/* ---------- trade */
+.trade-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 700px) { .trade-grid { grid-template-columns: 1fr; } }
+.trade-side h3 { font: 700 15px var(--head); margin: 0 0 8px; }
+.trade-row { display: grid; grid-template-columns: 40px 1fr auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.trade-row .side { text-align: right; }
+.trade-row .num { font: 600 17px var(--num); color: var(--green); }
+.trade-row .num.muted { color: var(--muted); }
+.trade-row .small { font-size: 10.5px; color: var(--muted); }
+.trade-add input { width: 100%; margin-top: 8px; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; color: var(--text); }
+.trade-tot { display: flex; justify-content: space-between; align-items: baseline; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); font-weight: 700; }
+.trade-tot b { font: 600 24px var(--num); color: var(--cyan); }
+.trade-sub { font-size: 12px; }
+.verdict.lose { background: rgba(255, 128, 117, .14); }
+.tbl .small { font-size: 10.5px; }
