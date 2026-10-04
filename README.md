@@ -23,7 +23,8 @@ a Python build writes static JSON every hour, and a static page on GitHub Pages 
   for every remaining week (and his bye), in the chosen scoring.
 - **Rest of season and trades**: a rest-of-season ranking, and a trade calculator that values players by
   rest-of-season points above waiver-level replacement for your league's size, lineup and bench.
-- **League sync**: enter a Sleeper username (or league ID) to load every roster: your best lineup, your rank at each
+- **League sync**: enter a Sleeper username (or an ESPN league ID; private ESPN leagues work in Chrome when signed in
+  to espn.com) to load every roster: your best lineup, your rank at each
   position, and 1-for-1 / 2-for-1 trades with every team that improve your starting lineup, flagged when theirs
   improves too.
 - **Compare**: two players side by side with a start recommendation.

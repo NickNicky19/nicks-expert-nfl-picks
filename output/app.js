@@ -1100,17 +1100,20 @@ async function syncFindUser(name) {
   renderTrade();
 }
 
-async function syncLeague(leagueId, userId) {
+async function syncLeague(leagueId, userId, source = "sleeper") {
   S.syncMsg = "Loading rosters...";
   renderTrade();
   try {
-    const [league, rosters, users] = await Promise.all([
+    let league, rosters, users;
+    if (source === "espn") ({ league, rosters, users } = await espnLeague(leagueId));
+    else [league, rosters, users] = await Promise.all([
       getJSON(`https://api.sleeper.app/v1/league/${leagueId}`),
       getJSON(`https://api.sleeper.app/v1/league/${leagueId}/rosters`),
       getJSON(`https://api.sleeper.app/v1/league/${leagueId}/users`),
     ]);
     const mine = rosters.find((r) => r.owner_id === userId || (r.co_owners || []).includes(userId));
-    S.sync = { league_id: leagueId, user_id: userId || null, roster_id: mine?.roster_id ?? null, name: league.name };
+    const keep = S.sync?.league_id === leagueId ? S.sync.roster_id : null;
+    S.sync = { league_id: leagueId, user_id: userId || null, roster_id: keep ?? mine?.roster_id ?? null, name: league.name, source };
     S.leagueData = { league, rosters, users };
     store("sync", S.sync);
     // the league's scoring and lineup become the site's
@@ -1124,10 +1127,63 @@ async function syncLeague(leagueId, userId) {
     S.syncFound = null;
     S.syncMsg = "";
     S.ideas = null;
-  } catch {
-    S.syncMsg = "Couldn't load that league from Sleeper.";
+  } catch (err) {
+    S.syncMsg = source === "espn"
+      ? err.message === "private"
+        ? "That ESPN league is private. In Chrome, sign in to espn.com in this browser and try again, or make the league viewable to the public in its ESPN settings."
+        : "Couldn't find that ESPN league. Check the leagueId in your league's ESPN address."
+      : "Couldn't load that league from Sleeper.";
   }
   renderTrade();
+}
+
+// ---- ESPN leagues: read with the browser's own ESPN login (ESPN allows this site to ask), then reshaped to look
+// like a Sleeper league so the lineup and trade finder work the same way
+
+const ESPN_FF = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons";
+const ESPN_POS = { 1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "DEF" };
+// ESPN lineup slot ids -> Sleeper slot names
+const ESPN_SLOT = { 0: "QB", 2: "RB", 4: "WR", 6: "TE", 23: "FLEX", 7: "SUPER_FLEX", 3: "WRRB_FLEX", 5: "REC_FLEX", 16: "DEF", 17: "K", 20: "BN" };
+// ESPN scoring stat ids -> Sleeper stat names (the offensive ones that matter for skill players)
+const ESPN_STAT = { 3: "pass_yd", 4: "pass_td", 19: "pass_2pt", 20: "pass_int", 24: "rush_yd", 25: "rush_td", 26: "rush_2pt",
+  42: "rec_yd", 43: "rec_td", 44: "rec_2pt", 53: "rec", 72: "fum_lost" };
+
+// ESPN team ids (fixed; ESPN's team list doesn't allow browser requests)
+const ESPN_TEAM_IDS = {"1":"ATL","2":"BUF","3":"CHI","4":"CIN","5":"CLE","6":"DAL","7":"DEN","8":"DET","9":"GB","10":"TEN","11":"IND","12":"KC","13":"LV","14":"LAR","15":"MIA","16":"MIN","17":"NE","18":"NO","19":"NYG","20":"NYJ","21":"PHI","22":"ARI","23":"PIT","24":"LAC","25":"SF","26":"SEA","27":"TB","28":"WAS","29":"CAR","30":"JAX","33":"BAL","34":"HOU"};
+
+async function espnTeamCodes() {
+  return ESPN_TEAM_IDS;
+}
+
+async function espnLeague(leagueId) {
+  await loadFuture();
+  const url = `${ESPN_FF}/${S.data.season}/segments/0/leagues/${leagueId}?view=mTeam&view=mRoster&view=mSettings`;
+  const r = await fetch(url, { credentials: "include" });
+  if (r.status === 401 || r.status === 403) throw new Error("private");
+  if (!r.ok) throw new Error("missing");
+  const d = await r.json();
+  const teams = await espnTeamCodes();
+  const byName = {};
+  for (const p of rosPool()) byName[`${normName(p.name)}|${p.team}`] = p.id;
+  const toSleeper = (pl) => {
+    const pos = ESPN_POS[pl.defaultPositionId];
+    const team = teams[pl.proTeamId];
+    if (pos === "DEF") return team && S.byId[team] ? team : null;
+    return S.byEspn[String(pl.id)] || byName[`${normName(pl.fullName || "")}|${team}`] || null;
+  };
+  const counts = d.settings?.rosterSettings?.lineupSlotCounts || {};
+  const roster_positions = Object.entries(counts).flatMap(([slot, n]) => (ESPN_SLOT[slot] ? Array(n).fill(ESPN_SLOT[slot]) : []));
+  const scoring_settings = {};
+  for (const item of d.settings?.scoringSettings?.scoringItems || []) {
+    const k = ESPN_STAT[item.statId];
+    if (k) scoring_settings[k] = item.points;
+  }
+  const members = Object.fromEntries((d.members || []).map((m) => [m.id, m.displayName]));
+  return {
+    league: { league_id: String(leagueId), name: d.settings?.name || `ESPN league ${leagueId}`, season: String(S.data.season), total_rosters: d.teams.length, roster_positions, scoring_settings, source: "espn" },
+    rosters: d.teams.map((t) => ({ roster_id: t.id, owner_id: t.primaryOwner || (t.owners || [])[0], players: (t.roster?.entries || []).map((e) => toSleeper(e.playerPoolEntry?.player || {})).filter(Boolean) })),
+    users: d.teams.map((t) => ({ user_id: t.primaryOwner || (t.owners || [])[0], display_name: members[t.primaryOwner] || "", metadata: { team_name: t.name || [t.location, t.nickname].filter(Boolean).join(" ") || t.abbrev } })),
+  };
 }
 
 function teamName(rosterId) {
@@ -1213,16 +1269,25 @@ function findTradeIdeas() {
 function renderLeague() {
   const ld = S.leagueData;
   if (!S.sync) {
+    const app = S.syncApp || "sleeper";
+    const body = app === "sleeper"
+      ? `<p class="note">Just your Sleeper username: we'll find your leagues and your team.</p>
+        <div class="sc-find"><input id="sync-q" placeholder="Sleeper username (or a league ID)" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="tbtn" data-sync-find>Find</button></div>`
+      : app === "espn"
+      ? `<p class="note">Paste your ESPN league ID: it's the number after <code>leagueId=</code> in your league's address on espn.com. Private leagues work in Chrome when you're signed in to espn.com in this browser; otherwise make the league viewable to the public in its settings.</p>
+        <div class="sc-find"><input id="espn-q" placeholder="ESPN league ID" inputmode="numeric" autocomplete="off"><button class="tbtn" data-espn-find>Sync</button></div>`
+      : `<p class="note">Yahoo only shares league data with apps that sign you in through Yahoo and run their own server, which this site doesn't have. You can still add your players to the calculator below by name.</p>`;
     return `<div class="card league-sync">
-      <b>Sync your Sleeper league</b>
+      <b>Sync your league</b>
       <p class="note">See your best lineup, your weakest spots, and trades with each team that improve your starters.</p>
-      <div class="sc-find"><input id="sync-q" placeholder="Sleeper username or league ID" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="tbtn" data-sync-find>Find</button></div>
+      ${seg("data-sync-app", app, [["sleeper", "Sleeper"], ["espn", "ESPN"], ["yahoo", "Yahoo"]], "App")}
+      ${body}
       ${S.syncMsg ? `<p class="note">${esc(S.syncMsg)}</p>` : ""}
-      ${(S.syncFound || []).map((l) => `<div class="sc-lg"><span><b>${esc(l.name)}</b> <span class="muted">${l.total_rosters} teams · ${leagueSummary(l.scoring_settings)}</span></span><button class="tbtn" data-sync-pick="${l.league_id}">Sync</button></div>`).join("")}
+      ${app === "sleeper" ? (S.syncFound || []).map((l) => `<div class="sc-lg"><span><b>${esc(l.name)}</b> <span class="muted">${l.total_rosters} teams · ${leagueSummary(l.scoring_settings)}</span></span><button class="tbtn" data-sync-pick="${l.league_id}">Sync</button></div>`).join("") : ""}
     </div>`;
   }
   if (!ld) {
-    if (!S.syncMsg) syncLeague(S.sync.league_id, S.sync.user_id);
+    if (!S.syncMsg) syncLeague(S.sync.league_id, S.sync.user_id, S.sync.source || "sleeper");
     return `<div class="card league-sync"><p class="note">${esc(S.syncMsg || "Loading your league...")}</p></div>`;
   }
   const slots = ld.league.roster_positions.filter((x) => SLOT_ELIG[x]);
@@ -1247,7 +1312,7 @@ function renderLeague() {
   if (!S.ideas) S.ideas = findTradeIdeas();
   const nameList = (ids) => ids.map((id) => `<b>${esc(S.byId[id]?.name || id)}</b> <span class="pos ${S.byId[id]?.pos}">${S.byId[id]?.pos}</span>`).join(" + ");
   return `<div class="card league">
-    <div class="league-h"><div><b>${esc(ld.league.name)}</b> <span class="muted">· ${esc(teamName(me.roster_id))} · ${n} teams</span></div>
+    <div class="league-h"><div><b>${esc(ld.league.name)}</b> <span class="muted">· ${esc(teamName(me.roster_id))} · ${n} teams · ${S.sync.source === "espn" ? "ESPN" : "Sleeper"}</span></div>
       <div><button class="tbtn" data-sync-refresh>Refresh rosters</button> <button class="tbtn" data-sync-clear>Change</button></div></div>
     <div class="needs">${positions.map((pos) => { const r = rankOf(pos); return `<span class="need ${r > n * 0.66 ? "weak" : r <= n * 0.33 ? "strong" : ""}">${pos} <b>${r}</b>/${n}</span>`; }).join("")}
       <span class="note">your starters' rank by rest-of-season points (1 = best)</span></div>
@@ -1412,7 +1477,7 @@ function renderAbout() {
       <div class="card"><b>Fantasy rankings</b><p>This week or rest of season, by position or FLEX, with live points, snap share and byes.</p></div>
       <div class="card"><b>Game logs</b><p>Every player's games this season with snaps, then a projection for each remaining week, like Sleeper's.</p></div>
       <div class="card"><b>Compare</b><p>Two players side by side with a start recommendation, matchup, props and game logs.</p></div>
-      <div class="card"><b>Trade and league sync</b><p>Value any trade by rest-of-season points above replacement. Sync your Sleeper league to see your best lineup, your weakest positions, and trades with every team that improve your starters (and theirs).</p></div>
+      <div class="card"><b>Trade and league sync</b><p>Value any trade by rest-of-season points above replacement. Sync your Sleeper league with just your username (or an ESPN league by its ID) to see your best lineup, your weakest positions, and trades with every team that improve your starters (and theirs).</p></div>
       <div class="card"><b>My Picks</b><p>Track any prop you like, live, with a running record for your slate. Saved on your device.</p></div>
       <div class="card"><b>News and injuries</b><p>ESPN headlines tagged with players, an injury report by game, game-day inactives as they post, and each player's latest notes.</p></div>
       <div class="card"><b>Honest track record</b><p>Every pick and lean graded only from what was posted before kickoff, and our numbers checked against DraftKings'.</p></div>
@@ -2249,6 +2314,7 @@ async function findLeagues(q) {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.target.id === "sc-q") findLeagues(e.target.value.trim());
   if (e.key === "Enter" && e.target.id === "sync-q") syncFindUser(e.target.value);
+  if (e.key === "Enter" && e.target.id === "espn-q") $("[data-espn-find]")?.click();
 });
 
 // ---------------------------------------------------------------- future weeks and rest of season
@@ -2629,6 +2695,14 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (t.closest("[data-sync-find]")) { syncFindUser($("#sync-q").value); return; }
+  const sa = t.closest("[data-sync-app]");
+  if (sa) { S.syncApp = sa.dataset.syncApp; S.syncMsg = ""; renderTrade(); return; }
+  if (t.closest("[data-espn-find]")) {
+    const id = $("#espn-q").value.trim();
+    if (/^\d+$/.test(id)) syncLeague(id, null, "espn");
+    else { S.syncMsg = "That doesn't look like an ESPN league ID (it's a number)."; renderTrade(); }
+    return;
+  }
   const sp = t.closest("[data-sync-pick]");
   if (sp) { syncLeague(sp.dataset.syncPick, S.syncUser?.id); return; }
   const st2 = t.closest("[data-sync-team]");
