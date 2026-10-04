@@ -11,8 +11,12 @@ a Python build writes static JSON every hour, and a static page on GitHub Pages 
 - **Live scores and play-by-play**: tap a game for the field, last play, quarter scores, win probability, every drive
   and play (scoring, big plays, turnovers, flags), the box score and fantasy leaders. Polled from ESPN every 15 to
   30 seconds.
-- **Live stats and fantasy points**: Sleeper's standard PPR for QB, RB, WR, TE, K and team defense, including
-  2-point conversions, field goal distances, sacks, takeaways and points allowed.
+- **Live stats and fantasy points**: Sleeper's live feed (one small request for every player), scored with Sleeper's
+  standard PPR or half PPR (a switch on the page) for QB, RB, WR and TE, and ESPN's standard scoring for kickers and
+  defenses. Checked against Sleeper's and ESPN's own totals.
+- **Game lines**: DraftKings spread, total, moneylines and implied team points, plus live odds during games.
+- **News**: ESPN headlines tagged with players, an injury report by game, and each player's latest notes.
+- **Game logs**: each player's games this season with snaps and share of the team's snaps.
 - **Top Overs / Top Unders**: the biggest gaps between our number (Sleeper's projection, adjusted) and the real line.
   They lock at kickoff.
 - **Fantasy**: rankings by position, FLEX, K and DEF, projected and live.
@@ -22,13 +26,12 @@ a Python build writes static JSON every hour, and a static page on GitHub Pages 
 
 ## How lines are made
 
-DraftKings' line is used whenever there is one. Our own line is `k x average of the player's last 8 games`, rounded
-to a .5, using only games before this week. `k` is set per category (`pull/scoring.py`): fit on 2025 to land 50/50,
-then checked on 2026 (`python tools/calibrate.py`). `python tools/compare_lines.py` compares our lines with
-DraftKings' closing lines on every finished 2026 game: DraftKings' are sharper, and unders have hit more often than
-overs at DraftKings' lines.
-
-A lean compares our number (Sleeper's projection, scaled by the same `k`) to the line in use.
+DraftKings' line is used whenever there is one, then Sleeper Picks'. Our projection is Sleeper's projection times a
+matchup factor: how players at the same position with a similar season average have done against this defense this
+season, compared with their own averages (`pull/matchup.py`), pulled toward neutral when there are few games. Last
+season is never used. A lean compares our projection with the real line; without a real line there's no lean.
+`python tools/compare_lines.py` compares DraftKings' closing lines with a matchup-adjusted season average on every
+finished game this season.
 
 Leans can't be backtested: Sleeper revises past weeks' projections after the games, so the track record only grades
 what was saved before kickoff.
@@ -58,7 +61,9 @@ cd output && python3 -m http.server 8000
 | `pull/books.py` | DraftKings lines via ESPN, Sleeper Picks lines |
 | `pull/build.py` | builds `output/data/week.json`, the weekly archive and the track record |
 | `pull/grade.py` | grades archived weeks |
-| `tools/verify.py`, `tools/calibrate.py`, `tools/compare_lines.py` | checks, line calibration, DraftKings comparison |
+| `pull/matchup.py` | matchup factors from this season's games |
+| `pull/news.py` | ESPN's injury report |
+| `tools/verify.py`, `tools/compare_lines.py` | checks, DraftKings comparison |
 | `output/` | the site (`index.html`, `app.js`, `style.css`) and its data |
 | `data/cache/` | trimmed weekly stats (finished weeks are fetched once) |
 | `.github/workflows/hourly.yml` | hourly build, commit and Pages deploy |

@@ -1,13 +1,11 @@
-"""Compare our lines with DraftKings' real lines (via ESPN) on finished weeks.
+"""Compare our numbers with DraftKings' real lines (via ESPN) on finished weeks of this season.
 
 Run: python tools/compare_lines.py [--json output/data/dk_backtest.json]
 
-For every finished 2026 week, each DraftKings player prop is matched to the player's actual result and to the
-line we would have set before that week (point-in-time: only earlier games). It reports, per category:
-  - how far our line sits from DraftKings' closing line
-  - how often the result went under each line (a fair line is about 50%)
-  - which line was closer to the result
-  - whether the gap is a signal: when our line is well above DraftKings', did the over hit? Well below, the under?
+For every DraftKings player prop in a finished game, "ours" is the player's average so far this season (2+ earlier
+games) times the matchup factor (how similar players did against that defense this season, pull/matchup.py), using
+only games before that week. It reports how far ours sits from DraftKings, which was closer to the result, whether
+the matchup adjustment beat the plain average, and whether big gaps between ours and DraftKings' line were a signal.
 
 Sleeper's projections can't be tested this way: its numbers for past weeks were revised after kickoff.
 """
@@ -20,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "pull"))
 import books  # noqa: E402
+import matchup  # noqa: E402
 import build  # noqa: E402
 import scoring  # noqa: E402
 import sources  # noqa: E402
@@ -37,8 +36,10 @@ def load_weeks():
 
 def rows_for_week(season, week, weeks, all_players):
     stats = weeks[(season, week)]
-    earlier = {k: v for k, v in weeks.items() if k < (season, week)}
-    history = build.build_history(earlier)
+    earlier = {w: v for (s, w), v in weeks.items() if s == season and w < week}
+    history = build.build_history({(season, w): v for w, v in earlier.items()})
+    positions = {pid: p.get("position") for pid, p in all_players.items() if p.get("position") in scoring.POSITION_CATEGORIES}
+    mx = matchup.Matchups(earlier, positions)
     games = [e["id"] for e in sources.scoreboard(season, week).get("events", []) if e["status"]["type"]["completed"]]
     players = {pid: {"name": all_players.get(pid, {}).get("full_name"), "team": e.get("team"), "espn_id": all_players.get(pid, {}).get("espn_id")}
                for pid, e in stats.items()}
@@ -49,12 +50,15 @@ def rows_for_week(season, week, weeks, all_players):
         if not entry or not build.played(entry):
             continue
         past = history.get(pid, [])
+        pos = positions.get(pid)
         for key, dk in props.items():
             values = [scoring.stat_value(key, g["stats"]) for g in past]
-            center = build.line_center(key, values)
-            ours = scoring.round_to_half(center) if center is not None else None
+            plain = statistics.mean(values) if len(values) >= 2 else None
+            ours = None
+            if plain is not None and pos and key in scoring.POSITION_CATEGORIES[pos]:
+                ours = plain * mx.factor(entry.get("opp"), pos, key, plain)[0]
             rows.append({"week": week, "pid": pid, "key": key, "dk": dk["close"], "dk_open": dk["open"], "ours": ours,
-                         "actual": scoring.stat_value(key, entry["stats"])})
+                         "plain": plain, "actual": scoring.stat_value(key, entry["stats"])})
     return rows, len(games), len(lines)
 
 
@@ -115,7 +119,11 @@ def main():
         print(f"{key:<13}{len(rs):>5}{statistics.mean(diff):>+9.1f}{statistics.mean(map(abs, diff)):>7.1f}"
               f"{pct(dk_under, dk_decided):>10}{pct(our_under, len(rs)):>11}{pct(dk_closer, len(rs) - ties):>11}"
               f"{pct(hi_hit, len(hi)):>8} /{len(hi):<3}{pct(lo_hit, len(lo)):>9} /{len(lo):<3}")
-    print(f"\nDraftKings' line was closer to the result {pct(totals['dk_closer'], totals['n'] - totals['ties']).strip()} of the time ({totals['n']} props, ties left out).")
+    graded = [r for r in rows if r["ours"] is not None]
+    mae = lambda f: statistics.mean(abs(f(r) - r["actual"]) for r in graded) if graded else None
+    totals["mae_plain"], totals["mae_ours"], totals["mae_dk"] = mae(lambda r: r["plain"]), mae(lambda r: r["ours"]), mae(lambda r: r["dk"])
+    print(f"\nAverage miss: season average {totals['mae_plain']:.2f}, adjusted for the matchup {totals['mae_ours']:.2f}, DraftKings {totals['mae_dk']:.2f}")
+    print(f"DraftKings' line was closer to the result {pct(totals['dk_closer'], totals['n'] - totals['ties']).strip()} of the time ({totals['n']} props, ties left out).")
     print(f"When our line was well above DraftKings', the over hit {pct(totals['hi_hit'], totals['hi']).strip()} ({totals['hi']} props).")
     print(f"When our line was well below DraftKings', the under hit {pct(totals['lo_hit'], totals['lo']).strip()} ({totals['lo']} props).")
     if args.json:
@@ -127,11 +135,12 @@ def main():
             "below_under": r1(totals["lo_hit"], totals["lo"]), "below_n": totals["lo"],
             "above_over": r1(totals["hi_hit"], totals["hi"]), "above_n": totals["hi"],
             "categories": table,
+            "mae_plain": round(totals["mae_plain"], 2), "mae_ours": round(totals["mae_ours"], 2), "mae_dk": round(totals["mae_dk"], 2),
         }, separators=(",", ":")))
         print("Wrote", args.json)
     no_line = sum(1 for r in rows if r["ours"] is None)
     if no_line:
-        print(f"({no_line} props had no line of ours: fewer than 4 earlier games.)")
+        print(f"({no_line} props had no number of ours: fewer than 2 earlier games this season.)")
 
 
 if __name__ == "__main__":

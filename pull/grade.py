@@ -60,21 +60,22 @@ def grade_week(archive, stats, final_games):
         if not a:
             continue
         for prop in p["props"]:
-            dk = prop.get("line_from") in ("dk", "sleeper")  # a real line
-            if prop["lean"] and (dk or prop["source"] == "history") and prop["key"] != "anytime_td":
+            dk = prop.get("line_from") in ("dk", "sleeper")  # a real line; leans are only called against real lines
+            if prop["lean"] and dk and prop["key"] != "anytime_td":
                 r = result(prop["lean"], scoring.stat_value(prop["key"], a["stats"]), prop["line"])
                 lean_results.append(r)
                 by_cat.setdefault(prop["key"], []).append(r)
                 if dk:
                     dk_results.append((prop["lean"], r))
         points = scoring.ppr_points(a["stats"])
-        fpts = next((x for x in p["props"] if x["key"] == "fpts" and x["source"] == "history"), None)
+        # Sleeper's PPR projection vs ours (Sleeper's adjusted for the matchup)
+        fpts = next((x for x in p["props"] if x["key"] == "fpts" and x.get("adj") is not None and x.get("source") == "model"), None)
         if p.get("proj_ppr") is not None and fpts:
             ppr_errors.append(abs(p["proj_ppr"] - points))
-            line_errors.append(abs(fpts["line"] - points))
+            line_errors.append(abs(fpts["adj"] - points))
             bias.append(p["proj_ppr"] - points)
         if fpts and p.get("matchup") in match:
-            match[p["matchup"]].append(points - fpts["line"])
+            match[p["matchup"]].append(points - p["proj_ppr"])
 
     out["leans"] = {**tally(lean_results), "by_category": {k: tally(v) for k, v in sorted(by_cat.items())}}
     out["dk_leans"] = {side: tally([r for d, r in dk_results if d == side]) for side in ("over", "under")}

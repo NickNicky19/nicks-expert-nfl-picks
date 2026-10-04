@@ -9,6 +9,9 @@ Exits 1 on any failure.
 """
 import json
 import re
+
+import requests
+import statistics
 import sys
 import unicodedata
 from pathlib import Path
@@ -16,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "pull"))
 import build  # noqa: E402
+import matchup  # noqa: E402
 import scoring  # noqa: E402
 import sources  # noqa: E402
 
@@ -28,45 +32,106 @@ def problem(msg):
 
 
 def check_ppr():
+    """Skill players: our PPR and half PPR must equal Sleeper's own totals on every cached player-week."""
     n = 0
-    odd = []
     for f in sorted((ROOT / "data" / "cache").glob("stats_*.json")):
         for pid, e in json.loads(f.read_text()).items():
             s = e["stats"]
-            if s.get("pts_ppr") is None:
+            if e.get("pos") in ("K", "DEF") or s.get("pts_ppr") is None:
                 continue
             n += 1
-            season = int(f.stem.split("_")[1])
-            mine = scoring.fantasy_points(s, e.get("pos"), season)
-            if abs(mine - s["pts_ppr"]) > 0.011:
-                (odd.append if e.get("pos") in ("K", "DEF") else problem)(f"{f.stem} {e.get('pos', '')} {pid}: ours {mine} vs Sleeper {s['pts_ppr']}")
-    print(f"1. Fantasy scoring checked on {n} player-weeks (kickers and defenses: {len(odd)} one-off differences allowed, max 10)")
-    if len(odd) > 10:
-        problem(f"{len(odd)} kicker/defense scores differ from Sleeper's")
+            for half, theirs in ((False, s.get("pts_ppr")), (True, s.get("pts_half_ppr"))):
+                if theirs is None:
+                    continue
+                mine = scoring.fantasy_points(s, None, half=half)
+                if abs(mine - theirs) > 0.011:
+                    problem(f"{f.stem} {pid}: ours {mine} vs Sleeper {theirs} ({'half PPR' if half else 'PPR'})")
+    print(f"1. PPR and half PPR checked on {n} player-weeks")
+
+
+def check_espn_kdef(data):
+    """Kickers and defenses: our ESPN-standard points must equal ESPN's own default-league totals (last finished week)."""
+    week = data["week"] - 1
+    if week < 1:
+        return
+    try:
+        url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{data['season']}/segments/0/leaguedefaults/3"
+        flt = {"players": {"filterSlotIds": {"value": [16, 17]}, "limit": 150, "sortPercOwned": {"sortPriority": 1, "sortAsc": False}}}
+        r = requests.get(url, params={"view": "kona_player_info", "scoringPeriodId": week},
+                         headers={"X-Fantasy-Filter": json.dumps(flt), "User-Agent": "Mozilla/5.0"}, timeout=60)
+        players = r.json()["players"]
+    except Exception as err:
+        print(f"1b. ESPN kicker/defense totals unavailable ({err}); skipped")
+        return
+    teams = {}
+    for e in sources.scoreboard(data["season"], week)["events"]:
+        for c in e["competitions"][0]["competitors"]:
+            teams[int(c["team"]["id"])] = sources.team_code(c["team"]["abbreviation"])
+    espn = {}
+    for x in players:
+        pl = x["player"]
+        st = next((s for s in pl.get("stats", []) if s.get("scoringPeriodId") == week and s.get("seasonId") == data["season"]
+                   and s.get("statSourceId") == 0 and s.get("statSplitTypeId") == 1), None)
+        if st is not None:
+            team = teams.get(pl.get("proTeamId"))
+            espn[("DEF", team) if pl.get("defaultPositionId") == 16 else ("K", norm_name(pl["fullName"]), team)] = st["appliedTotal"]
+    cache = json.loads((ROOT / "data" / "cache" / f"stats_{data['season']}_{week:02d}.json").read_text())
+    names = {p["id"]: p["name"] for p in data["players"]}
+    same = total = 0
+    for pid, e in cache.items():
+        if e.get("pos") not in ("K", "DEF") or not e["stats"].get("gp"):
+            continue
+        key = ("DEF", pid) if e["pos"] == "DEF" else ("K", norm_name(names.get(pid, "")), e.get("team"))
+        if key not in espn:
+            continue
+        total += 1
+        mine = scoring.fantasy_points(e["stats"], e["pos"])
+        if abs(mine - espn[key]) < 0.011:
+            same += 1
+        else:
+            print(f"     {key}: ours {mine} vs ESPN {espn[key]}")
+    print(f"1b. Kickers and defenses, week {week}: {same} of {total} match ESPN's standard scoring")
+    if total and same < total:
+        problem(f"{total - same} kicker/defense scores differ from ESPN's")
 
 
 def check_point_in_time(data):
+    """Matchup factors rebuilt from this season's earlier weeks only must match; no game from last season or from
+    this week may appear in a player's chart."""
     season, week = data["season"], data["week"]
     weeks = {}
-    for f in (ROOT / "data" / "cache").glob("stats_*.json"):
-        _, s, w = f.stem.split("_")
-        if int(s) < season or (int(s) == season and int(w) < week):
-            weeks[(int(s), int(w))] = json.loads(f.read_text())
-    history = build.build_history(weeks)
+    for f in (ROOT / "data" / "cache").glob(f"stats_{season}_*.json"):
+        w = int(f.stem.split("_")[2])
+        if w < week:
+            weeks[w] = json.loads(f.read_text())
+    positions = {p["id"]: p["pos"] for p in data["players"] if p["pos"] in scoring.POSITION_CATEGORIES}
+    mx = matchup.Matchups(weeks, positions)
     checked = 0
     for p in data["players"]:
-        if p.get("late"):
-            continue
         for prop in p["props"]:
-            if prop["source"] != "history" or prop["key"] == "anytime_td":
+            if any(v["s"] != season or v["w"] >= week for v in prop.get("values", [])):
+                problem(f"{p['name']} {prop['key']}: chart includes a game from another season or this week")
+            if p.get("late") or "mf" not in prop:
                 continue
-            values = [scoring.stat_value(prop["key"], g["stats"]) for g in history.get(p["id"], [])]
-            expected = scoring.round_to_half(build.line_center(prop["key"], values))
+            avg = statistics.mean(v["v"] for v in prop["values"]) if prop["values"] else None
+            f, n = mx.factor(p["opp"], p["pos"], prop["key"], avg)
             checked += 1
-            ours = prop.get("our_line", prop["line"])
-            if expected != ours:
-                problem(f"{p['name']} {prop['key']}: our line {ours} but earlier weeks give {expected}")
-    print(f"2. {checked} lines rebuilt from earlier weeks only")
+            if (f, n) != (prop["mf"], prop["mf_n"]):
+                problem(f"{p['name']} {prop['key']}: matchup factor {prop['mf']} ({prop['mf_n']} games) but earlier weeks give {f} ({n})")
+    print(f"2. {checked} matchup factors rebuilt from this season's earlier weeks only")
+
+
+def check_lean_balance(data):
+    """A guard against a biased projection: leans against real lines shouldn't be nearly all one way."""
+    leans = [x["lean"] for p in data["players"] if not p.get("late") for x in p["props"]
+             if x.get("line_from") in ("dk", "sleeper") and x["lean"]]
+    if len(leans) >= 40:
+        share = max(leans.count("over"), leans.count("under")) / len(leans)
+        print(f"5. Leans against real lines: {leans.count('over')} over, {leans.count('under')} under")
+        if share > 0.8:
+            problem(f"{share:.0%} of leans go one way: the projection may be biased")
+    else:
+        print(f"5. Only {len(leans)} leans against real lines in unstarted games; balance not checked")
 
 
 def check_shape(data):
@@ -185,9 +250,11 @@ def main():
     data = json.loads((ROOT / "output" / "data" / "week.json").read_text())
     print(f"Verifying season {data['season']} week {data['week']}")
     check_ppr()
+    check_espn_kdef(data)
     check_point_in_time(data)
     check_shape(data)
     check_live(data)
+    check_lean_balance(data)
     if problems:
         print(f"\nFAILED: {len(problems)} problem(s)")
         sys.exit(1)

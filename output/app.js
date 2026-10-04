@@ -11,7 +11,7 @@ const UNAVAILABLE = new Set(["Out", "IR", "PUP", "Suspended", "NA", "Doubtful", 
 const SHORT = {
   pass_yd: "Pass Yds", pass_td: "Pass TD", pass_cmp: "Comp", pass_att: "Pass Att", pass_int: "INT",
   rush_yd: "Rush Yds", rush_att: "Rush Att", rec: "Rec", rec_yd: "Rec Yds", rush_rec_yd: "Rush+Rec",
-  anytime_td: "Anytime TD", fpts: "PPR Pts",
+  anytime_td: "Anytime TD", fpts: "Fantasy Pts",
 };
 const LINE_FROM = { dk: "DraftKings", sleeper: "Sleeper Picks", ours: "Our estimate" };
 const LINE_TAG = { dk: "DK", sleeper: "SLP", ours: "est" };
@@ -33,12 +33,18 @@ const S = {
   gsub: "plays",       // that page's section: plays, box or props
   sum: {},             // game id -> latest ESPN summary
   liveLines: {},       // player id -> {key: DraftKings in-game line}
+  slp: {},             // player id -> Sleeper live stats
+  liveOdds: {},        // game id -> DraftKings live spread, total and moneylines
+  news: null, newsAt: 0, newsView: "headlines", newsMine: false,
+  pnews: {},           // player id -> notes and headlines loaded from ESPN
+  slpOk: false,
   injNews: {},         // player id -> injury news from ESPN newer than our build
   injAt: {},           // game id -> when its pregame injury news was last checked
   seenPlays: {},       // game id -> play ids already shown
   openDrives: new Set(),
   gs: {},              // game id -> that game page's tab and filters
   favs: new Set(store("favs") || []),
+  half: store("half") === true,       // PPR or half PPR, everywhere
   mine: store("mine") || [],   // My Picks: [{pid, key, dir, line, season, week, at}]
 };
 
@@ -53,7 +59,9 @@ function store(key, value) {
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const fmt = (v, d = 1) => (v == null || Number.isNaN(v) ? "-" : (Math.round(v * 10 ** d) / 10 ** d).toFixed(d));
-const fmtStat = (key, v) => (v == null ? "-" : key.endsWith("_yd") || key === "fpts" ? fmt(v, key === "fpts" ? 1 : 0) : fmt(v, Number.isInteger(v) ? 0 : 1));
+// Fantasy points to the hundredth, like Sleeper and ESPN
+const fmtPts = (v) => fmt(v, 2);
+const fmtStat = (key, v) => (v == null ? "-" : key.endsWith("_yd") || key === "fpts" ? fmt(v, key === "fpts" ? 2 : 0) : fmt(v, Number.isInteger(v) ? 0 : 1));
 const teamCode = (abbr) => ESPN_TO_SLEEPER[abbr] || abbr;
 const photo = (id) => `https://sleepercdn.com/content/nfl/players/thumb/${id}.jpg`;
 const logo = (team) => `https://sleepercdn.com/images/team_logos/nfl/${team.toLowerCase()}.png`;
@@ -80,7 +88,7 @@ function ppr(s) {
 function statValue(key, s) {
   if (key === "rush_rec_yd") return (s.rush_yd || 0) + (s.rec_yd || 0);
   if (key === "anytime_td") return (s.rush_td || 0) + (s.rec_td || 0);
-  if (key === "fpts") return ppr(s);
+  if (key === "fpts") return fantasyPts(s, "WR");
   return s[key] || 0;
 }
 
@@ -101,13 +109,19 @@ function gameStatus(g) {
 
 // A player's stat line this week: ESPN's live box score first, then Sleeper's (from the last build).
 // null before kickoff. {none: true} when the game is final and the player never showed up in the box score.
+// Live stats: Sleeper's own feed first (what the Sleeper app shows), then ESPN's box score, then the last build.
 function current(p) {
   const g = S.games[p.game_id];
   if (!g || g.state === "pre") return null;
-  const stats = S.live[p.id] || p.actual?.stats;
+  const slp = S.slp[p.id];
+  const stats = (slp && slpPlayed(slp) ? slp : null) || S.live[p.id] || p.actual?.stats;
   if (stats) return { stats, none: false };
-  if (g.state === "post" && S.boxLoaded.has(p.game_id)) return { stats: {}, none: true };
+  if (g.state === "post" && (S.slpOk || S.boxLoaded.has(p.game_id))) return { stats: {}, none: true };
   return { stats: {}, none: false };
+}
+
+function slpPlayed(s) {
+  return (s.gp || 0) > 0 || (s.off_snp || 0) > 0 || s.pts_ppr != null;
 }
 
 function livePPR(p) {
@@ -115,12 +129,32 @@ function livePPR(p) {
   return c && !c.none ? fantasyPts(c.stats, p.pos) : null;
 }
 
-// Same as fantasy_points() in pull/scoring.py
+// Same as fantasy_points() in pull/scoring.py: Sleeper PPR or half PPR for skill players, ESPN standard for K and DEF
 function fantasyPts(s, pos) {
-  const table = (t) => Object.entries(t).reduce((a, [k, w]) => a + w * (s[k] || 0), 0);
-  if (pos === "K") return Math.round((ppr(s) + table(S.data.scoring_k)) * 100) / 100;
-  if (pos === "DEF") return Math.round(table(S.data.scoring_def) * 100) / 100;
-  return ppr(s);
+  const table = (t, x = s) => Object.entries(t).reduce((a, [k, w]) => a + w * (x[k] || 0), 0);
+  const tier = (v, tiers) => tiers.find(([most]) => v <= most)[1];
+  if (pos === "K") {
+    const k = { ...s };
+    // Sleeper reports one of the 50-59 / 60+ splits; derive the other (projections have neither: 50-59)
+    const fifty = k.fgm_50p || 0;
+    if (k.fgm_60p == null) k.fgm_60p = k.fgm_50_59 != null ? fifty - k.fgm_50_59 : 0;
+    if (k.fgm_50_59 == null) k.fgm_50_59 = Math.max(0, fifty - k.fgm_60p);
+    return Math.round((ppr(s) + table(S.data.scoring_k, k)) * 100) / 100;
+  }
+  if (pos === "DEF") {
+    return Math.round((table(S.data.scoring_def) + tier(s.pts_allow || 0, S.data.def_tiers.pts) + tier(s.yds_allow || 0, S.data.def_tiers.yds)) * 100) / 100;
+  }
+  return Math.round((ppr(s) - (S.half ? 0.5 * (s.rec || 0) : 0)) * 100) / 100;
+}
+
+const projPts = (p) => (S.half ? p.proj_half ?? p.proj_ppr : p.proj_ppr);
+const avgPts = (p) => (S.half ? p.avg_half ?? p.avg_ppr : p.avg_ppr);
+const scoringName = () => (S.half ? "Half PPR" : "PPR");
+
+// The fantasy points prop in the current scoring (half PPR swaps in its own numbers)
+function pv(prop) {
+  if (prop.key !== "fpts" || !S.half || prop.adj_h == null) return prop;
+  return { ...prop, line: prop.line_h, adj: prop.adj_h, proj: prop.proj_h, over: prop.over_h, values: prop.values.map((x) => ({ ...x, v: x.h ?? x.v })) };
 }
 
 // Where a prop stands. dir is the side being tracked (a pick or lean), or null.
@@ -227,6 +261,13 @@ const DK_MARKETS = {
 async function pollLiveLines(ids) {
   await Promise.all(ids.map(async (id) => {
     try {
+      const d = await getJSON(`${CORE}/events/${id}/competitions/${id}/odds`);
+      const it = (d.items || []).find((x) => x.provider?.id === "200");
+      if (it && it.spread != null) S.liveOdds[id] = { spread: +it.spread, total: it.overUnder, ml_home: it.homeTeamOdds?.moneyLine, ml_away: it.awayTeamOdds?.moneyLine };
+    } catch { /* live odds are optional */ }
+  }));
+  await Promise.all(ids.map(async (id) => {
+    try {
       const d = await getJSON(`${CORE}/events/${id}/competitions/${id}/odds/200/propBets?limit=1000`);
       for (const item of d.items || []) {
         const key = DK_MARKETS[item.type?.name];
@@ -247,11 +288,30 @@ function liveLineText(p, key, line) {
   return ` · <span style="color:var(--amber)">DK live ${v}</span>`;
 }
 
+// Every player's live stats in one small request (about 90 KB), keyed by Sleeper id
+async function pollSleeper() {
+  if (!Object.values(S.games).some((g) => g.state !== "pre")) return;
+  const pos = ["QB", "RB", "WR", "TE", "K", "DEF"].map((x) => `position[]=${x}`).join("&");
+  try {
+    const rows = await getJSON(`https://api.sleeper.app/stats/nfl/${S.data.season}/${S.data.week}?season_type=regular&${pos}`);
+    const next = {};
+    for (const r of rows || []) if (S.byId[r.player_id] && r.stats) next[r.player_id] = r.stats;
+    S.slp = next;
+    S.slpOk = true;
+  } catch (err) {
+    S.slpOk = false;   // fall back to ESPN box scores for every live game
+    console.warn("sleeper live", err);
+  }
+}
+
+// ESPN game summaries: the open game is handled by gameTick. Here: pregame injury news for games kicking off
+// soon, and box scores for live games only when Sleeper's feed is down.
 async function pollBoxScores() {
   const now = Date.now();
   const soon = (g) => g.state === "pre" && new Date(g.kickoff) - now < 4 * 3600000 && now - (S.injAt[g.id] || 0) > 300000;
+  const backup = (g) => !S.slpOk && (g.state === "in" || (g.state === "post" && !S.boxFinal.has(g.id)));
   const ids = Object.values(S.games)
-    .filter((g) => g.state === "in" || (g.state === "post" && !S.boxFinal.has(g.id)) || soon(g))
+    .filter((g) => g.id !== S.gameView && (backup(g) || soon(g)))
     .map((g) => { if (g.state === "pre") S.injAt[g.id] = now; return g.id; });
   await Promise.all(ids.map(async (id) => {
     try {
@@ -353,40 +413,45 @@ function defenseFromSummary(summary) {
 }
 
 let liveTimer = null;
+// Everything live refreshes together, then the page redraws once, so the score, stats, plays and odds always agree
+let ticking = false;
 async function liveTick() {
   clearTimeout(liveTimer);
+  if (ticking) return;
+  ticking = true;
   try {
     await pollScores();
-    await pollBoxScores();
-    await pollLiveLines(Object.values(S.games).filter((g) => g.state === "in").map((g) => g.id));
+    await pollSleeper();     // first, so the ESPN backup only runs if Sleeper's feed is actually down
+    const live = Object.values(S.games).filter((g) => g.state === "in").map((g) => g.id);
+    await Promise.all([pollBoxScores(), pollOpenGame(), pollLiveLines(live)]);
     S.liveAt = new Date();
   } catch (err) {
     console.warn("live", err);
   }
+  ticking = false;
   renderScores();
   renderLiveParts();
   const anyLive = Object.values(S.games).some((g) => g.state === "in");
   const soon = Object.values(S.games).some((g) => g.state === "pre" && new Date(g.kickoff) - Date.now() < 10 * 60000);
-  if (!document.hidden) liveTimer = setTimeout(liveTick, anyLive || soon ? LIVE_MS : IDLE_MS);
+  const watching = S.gameView && S.games[S.gameView]?.state === "in";
+  if (!document.hidden) liveTimer = setTimeout(liveTick, watching ? GAME_MS : anyLive || soon ? LIVE_MS : IDLE_MS);
 }
 
-// The open game's play-by-play refreshes faster than everything else
-let gameTimer = null;
-async function gameTick() {
-  clearTimeout(gameTimer);
+async function pollOpenGame() {
   const id = S.gameView;
-  if (!id) return;
-  const g = S.games[id];
-  if (g.state !== "pre" && (g.state === "in" || !S.sum[id])) {
-    try {
-      applySummary(id, await getJSON(`${ESPN}/summary?event=${id}`));
-      syncGameFromSummary(id);
-    } catch (err) {
-      console.warn("game", id, err);
-    }
-    if (S.gameView === id) renderLiveParts();
+  const g = id && S.games[id];
+  if (!g || g.state === "pre" || (g.state === "post" && S.sum[id])) return;
+  try {
+    applySummary(id, await getJSON(`${ESPN}/summary?event=${id}`));
+    syncGameFromSummary(id);
+  } catch (err) {
+    console.warn("game", id, err);
   }
-  if (!document.hidden && S.gameView === id && g.state === "in") gameTimer = setTimeout(gameTick, GAME_MS);
+}
+
+// Opening a game starts a fresh update right away (which then repeats every 15 seconds while it's live)
+function gameTick() {
+  liveTick();
 }
 
 // Score and clock from the summary, so the open game is never behind its own play-by-play
@@ -401,7 +466,7 @@ function syncGameFromSummary(id) {
   if (st) Object.assign(g, { state: st.state, detail: st.shortDetail || g.detail });
 }
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && S.data) { liveTick(); gameTick(); checkMeta(); }
+  if (!document.hidden && S.data) { liveTick(); checkMeta(); }
 });
 
 async function checkMeta() {
@@ -428,7 +493,7 @@ async function load() {
   }
   for (const g of S.data.games) S.games[g.id] = { ...g, ...(S.games[g.id] || {}) };
   const built = new Date(S.data.generated_at);
-  $("#sub").textContent = `${S.data.season} Week ${S.data.week} · PPR · updated ${built.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
+  $("#sub").textContent = `${S.data.season} Week ${S.data.week} · updated ${built.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
 }
 
 // ---------------------------------------------------------------- score strip
@@ -454,12 +519,45 @@ function renderScores() {
       </div>`;
     return `<button class="game ${live ? "live" : ""} ${g.rz ? "rz" : ""} ${S.gameView === g.id ? "on" : ""}" data-game="${g.id}">
       ${row(g.away, g.away_score, g.home_score)}${row(g.home, g.home_score, g.away_score)}
-      <div class="st"><span class="clock">${esc(gameStatus(g))}</span><span class="dd">${esc(live ? g.dd || "" : g.state === "pre" ? g.tv || "" : "")}</span></div>
+      <div class="st"><span class="clock">${esc(gameStatus(g))}</span><span class="dd">${esc(live ? g.dd || "" : g.state === "pre" ? shortLine(g) || g.tv || "" : "")}</span></div>
     </button>`;
   }).join("");
 }
 
 // ---------------------------------------------------------------- shared bits
+
+// "DET -3.5 · 51.5"
+function shortLine(g) {
+  const o = g.odds;
+  if (!o) return "";
+  const fav = o.spread < 0 ? g.home : g.away;
+  return `${o.spread === 0 ? "PK" : `${fav} -${Math.abs(o.spread)}`} \u00b7 ${o.total}`;
+}
+
+const ml = (v) => (v == null ? "-" : v > 0 ? `+${v}` : `${v}`);
+
+function gameLines(g, teams) {
+  const o = g.odds;
+  if (!o) return "";
+  const fav = o.spread < 0 ? teams.home.abbr : teams.away.abbr;
+  const spreadText = (sp, f) => (sp === 0 ? "Pick'em" : `${f} -${Math.abs(sp)}`);
+  const open = o.spread_open != null && o.spread_open !== o.spread ? `<span class="muted"> opened ${spreadText(o.spread_open, o.spread_open < 0 ? teams.home.abbr : teams.away.abbr)}</span>` : "";
+  const lv = g.state === "in" ? S.liveOdds[g.id] : null;
+  const cell = (k, v, sub = "") => `<div class="gl"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
+  return `<div class="glines">
+    ${cell("Spread", spreadText(o.spread, fav), open + (lv ? `<span class="live-l">live ${spreadText(lv.spread, lv.spread < 0 ? teams.home.abbr : teams.away.abbr)}</span>` : ""))}
+    ${cell("Total", `O/U ${o.total}`, lv ? `<span class="live-l">live ${lv.total}</span>` : "")}
+    ${cell("Moneyline", `${teams.away.abbr} ${ml(o.ml_away)} \u00b7 ${teams.home.abbr} ${ml(o.ml_home)}`, lv ? `<span class="live-l">live ${ml(lv.ml_away)} / ${ml(lv.ml_home)}</span>` : "")}
+    ${cell("Implied points", `${teams.away.abbr} ${o.away_pts} \u00b7 ${teams.home.abbr} ${o.home_pts}`)}
+    <div class="gl-src">DraftKings pregame${lv ? ", live odds in amber" : ""}</div>
+  </div>`;
+}
+
+// The player's team total implied by the DraftKings spread and total
+function impliedFor(p) {
+  const o = S.games[p.game_id]?.odds;
+  return o ? (p.home ? o.home_pts : o.away_pts) : null;
+}
 
 function avatar(p) {
   if (p.pos === "DEF") return `<div class="av def"><img src="${logo(p.team)}" alt="" loading="lazy"></div>`;
@@ -525,7 +623,7 @@ function pickCard(pick) {
     <div>
       <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)}</div>
       <div class="what">${pick.direction === "over" ? "Over" : "Under"} <b class="num">${pick.line}</b> ${label} <span class="muted">${oppText(p)}</span></div>
-      <div class="small">${LINE_FROM[pick.line_from] || "Our"} line, locked at kickoff · ${adj != null ? `our number <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of last ${pick.n}${liveLineText(p, pick.key, pick.line)}</div>
+      <div class="small">${LINE_FROM[pick.line_from] || "Our"} line, locked at kickoff · ${adj != null ? `our proj <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}</div>
       ${progress(st, pick.line, pick.direction, pick.key)}
     </div>
     <div class="side">
@@ -535,7 +633,8 @@ function pickCard(pick) {
   </div>`;
 }
 
-function propChip(p, prop) {
+function propChip(p, raw) {
+  const prop = pv(raw);
   const line = S.lines[`${p.id}|${prop.key}`] ?? prop.line;
   const st = propStatus(p, prop.key, line, prop.lean);
   const arrow = prop.key === "anytime_td"
@@ -547,7 +646,9 @@ function propChip(p, prop) {
   return `<span class="pchip ${cls}">${SHORT[prop.key]}${lineText}${arrow}${cur}</span>`;
 }
 
-function catCard(p, prop) {
+function catCard(p, raw) {
+  const prop = pv(raw);
+  const from = prop.line_from || "ours";
   const cat = S.data.categories[prop.key];
   const k = `${p.id}|${prop.key}`;
   const line = S.lines[k] ?? prop.line;
@@ -567,8 +668,8 @@ function catCard(p, prop) {
   }
   const leanPill = prop.key === "anytime_td"
     ? `<span class="lean ${prop.lean ? "over" : "none"}">${Math.round(100 * (prop.td_chance || 0))}% TD chance</span>`
-    : prop.source !== "history" && from === "ours"
-      ? `<span class="lean none">No lean</span>`
+    : from === "ours"
+      ? `<span class="lean none" title="Leans are only called against real sportsbook lines">No book line</span>`
       : `<span class="lean ${lean || "none"}">${lean ? `Lean ${lean}` : "No lean"}</span>`;
 
   const bars = vals.map((x) => `<div class="b ${x.v > line ? "o" : ""}" title="${x.s} week ${x.w} vs ${x.opp}: ${x.v}"><span>${fmtStat(prop.key, x.v)}</span><i style="height:${(100 * x.v) / top}%"></i></div>`).join("")
@@ -576,7 +677,6 @@ function catCard(p, prop) {
   const xs = vals.map((x) => `<span>${x.s !== S.data.season ? "'" + String(x.s).slice(2) + " " : ""}W${x.w}</span>`).join("")
     + (nowV != null ? `<span style="color:var(--cyan)">Now</span>` : "");
 
-  const from = prop.line_from || "ours";
   const liveLine = S.liveLines[p.id]?.[prop.key];
   const lineCell = prop.key === "anytime_td"
     ? `<div>Line<span class="n">0.5</span></div>`
@@ -584,26 +684,29 @@ function catCard(p, prop) {
       + (prop.dk_open != null && prop.dk_open !== prop.line ? `<div>DK opened<span class="n">${prop.dk_open}</span></div>` : "")
       + (liveLine != null && S.games[p.game_id]?.state === "in" ? `<div title="DraftKings' in-game line right now">DK live<span class="n" style="color:var(--amber)">${liveLine}</span></div>` : "")
       + (prop.sleeper && from !== "sleeper" ? `<div>Sleeper Picks<span class="n">${prop.sleeper.line}</span></div>` : "")
-      + (from !== "ours" && prop.our_line != null ? `<div title="${prop.source === "history" ? "From his last 8 games" : "From Sleeper's projection"}">Our line<span class="n">${prop.our_line}</span></div>` : "");
+      ;
+  const gamesText = vals.length ? `${vals.length} game${vals.length === 1 ? "" : "s"} this season` : "";
+  const mfText = prop.mf_n
+    ? ` Matchup vs ${p.opp}: <b>${prop.mf >= 1 ? "+" : ""}${fmt(100 * (prop.mf - 1))}%</b> (similar ${p.pos}s against them this season, ${prop.mf_n} game${prop.mf_n === 1 ? "" : "s"}).`
+    : prop.mf != null ? ` No similar ${p.pos}s have faced ${p.opp} yet, so no matchup adjustment.` : "";
   const note = prop.key === "anytime_td"
-    ? `Scored in ${vals.filter((x) => x.v > 0).length} of last ${vals.length}. Chance comes from Sleeper's projected TDs.`
-    : prop.source === "projection"
-      ? (from === "ours" ? "Fewer than 4 games played and no sportsbook line, so this is Sleeper's projection and has no lean." : `Over in <b>${over}</b> of last ${vals.length}.`)
-      : `Over in <b>${over}</b> of last ${vals.length}${edited ? ` at your line (the ${LINE_FROM[from]} line is ${prop.line})` : ""}.`
-        + (from === "ours" && prop.key !== "fpts" ? " No sportsbook line yet, so this is our estimate." : "")
+    ? `${vals.length ? `Scored in ${vals.filter((x) => x.v > 0).length} of ${gamesText}. ` : ""}Chance comes from Sleeper's projected TDs.`
+    : (vals.length ? `Over in <b>${over}</b> of ${gamesText}${edited ? ` at your line (the ${LINE_FROM[from]} line is ${prop.line})` : ""}.` : "No games yet this season.")
+        + mfText
+        + (from === "ours" && prop.key !== "fpts" ? " No sportsbook line yet, so this line is our projection." : "")
         + (prop.sleeper?.over ? ` Sleeper Picks pays ${prop.sleeper.over}x over, ${prop.sleeper.under}x under.` : "");
 
   return `<div class="cat" data-cat="${k}">
-    <div class="cat-h"><span>${cat.label}</span>${leanPill}</div>
+    <div class="cat-h"><span>${prop.key === "fpts" ? `Fantasy Points (${scoringName()})` : cat.label}</span>${leanPill}</div>
     ${prop.key !== "anytime_td" ? `<div class="cat-add">${["over", "under"].map((d) => {
       const on = minePick(p.id, prop.key, d);
       return `<button class="add ${d} ${on ? "on" : ""}" data-add="${p.id}|${prop.key}|${d}|${line}" title="${on ? "Remove from" : "Add to"} My Picks">${on ? "\u2713" : "+"} ${d === "over" ? "Over" : "Under"} ${line}</button>`;
     }).join("")}</div>` : ""}
     <div class="cat-nums">
       ${lineCell}
-      ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection on the same scale as the line">Our number<span class="n">${fmt(prop.adj)}</span></div>` : ""}
+      ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment">Our proj<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
       ${prop.proj != null ? `<div>Sleeper proj<span class="n">${fmtStat(prop.key, prop.proj)}</span></div>` : ""}
-      ${avg != null ? `<div>Last ${vals.length} avg<span class="n">${fmt(avg)}</span></div>` : ""}
+      ${avg != null ? `<div>Season avg<span class="n">${fmt(avg)}</span></div>` : ""}
       ${st ? `<div>${st.final ? "Final" : "Now"}<span class="n" style="color:var(--cyan)">${st.v == null ? "DNP" : fmtStat(prop.key, st.v)}</span></div>` : ""}
     </div>
     ${vals.length ? `<div class="bars">${bars}<div class="lineat" style="bottom:${(100 * line) / top}%"></div></div><div class="bars-x">${xs}</div>` : ""}
@@ -623,14 +726,14 @@ function playerCard(p) {
       ${avatar(p)}
       <div>
         <div class="pname">${esc(p.name)}${injBadge(p)}</div>
-        <div class="pmeta"><span class="pos ${p.pos}">${p.pos}</span> ${p.team} ${oppText(p)} ${matchupText(p)} <span>· ${esc(gameStatus(g))}</span></div>
+        <div class="pmeta"><span class="pos ${p.pos}">${p.pos}</span> ${p.team} ${oppText(p)} ${matchupText(p)} <span>· ${esc(gameStatus(g))}</span>${impliedFor(p) != null ? `<span class="muted" title="${p.team}'s points implied by the DraftKings spread and total">· ${p.team} ${impliedFor(p)} pts</span>` : ""}</div>
       </div>
-      <div class="pts"><div class="lbl">Proj</div><div class="v">${fmt(p.proj_ppr)}</div></div>
+      <div class="pts"><div class="lbl">Proj</div><div class="v">${fmtPts(projPts(p))}</div></div>
       <div class="pts"><div class="lbl">${g?.state === "post" ? "Final" : g?.state === "in" ? "Live" : "Avg"}</div>
-        <div class="v ${c ? "live" : ""}" data-live-ppr="${p.id}">${c ? (c.none ? "DNP" : fmt(live)) : fmt(p.avg_ppr)}</div></div>
+        <div class="v ${c ? "live" : ""}" data-live-ppr="${p.id}">${c ? (c.none ? "DNP" : fmtPts(live)) : fmtPts(avgPts(p))}</div></div>
     </div>
     <div class="props-row" data-chips="${p.id}">${props.map((x) => propChip(p, x)).join("")}</div>
-    ${open ? `<div class="pbody">${props.map((x) => catCard(p, x)).join("")}
+    ${open ? `<div class="pbody">${latestBlock(p)}${gameLog(p)}${props.map((x) => catCard(p, x)).join("")}
       <div class="note" style="grid-column:1/-1">${favBtn(p)} ${p.depth ? `Depth chart: ${p.pos}${p.depth}. ` : ""}${p.late ? "These lines were first built after kickoff, so they aren't graded." : ""}</div></div>` : ""}
   </div>`;
 }
@@ -647,7 +750,7 @@ function filteredPlayers() {
     && p.props.length
     && (!f.favs || S.favs.has(p.id)));
   const key = {
-    proj: (p) => -(p.proj_ppr ?? -1),
+    proj: (p) => -(projPts(p) ?? -1),
     live: (p) => -(livePPR(p) ?? -1),
     name: (p) => p.name,
     edge: (p) => -Math.max(0, ...p.props.filter((x) => x.lean && x.adj != null && (!f.cat || x.key === f.cat))
@@ -672,7 +775,7 @@ function renderProps() {
       <div class="picks"><h3>Top Overs <span class="tag over">${picksFor("over").length}</span></h3>${pickList("over")}</div>
       <div class="picks"><h3>Top Unders <span class="tag under">${picksFor("under").length}</span></h3>${pickList("under")}</div>
     </div>
-    <p class="note">Top picks are the biggest gaps between our number (Sleeper's projection, adjusted) and the real DraftKings line, for players with 2+ games this season who aren't ruled out. They lock at kickoff with the pregame line; during the game you'll also see DraftKings' live line. <a href="#" data-goto="about">How it works</a></p>
+    <p class="note">Top picks are the biggest gaps between our projection (Sleeper's, adjusted for how similar players have done against this defense this season) and the real DraftKings line, for players with 2+ games this season who aren't ruled out. They lock at kickoff with the pregame line; during the game you'll also see DraftKings' live line. <a href="#" data-goto="about">How it works</a></p>
 
     <h2>Players <small>${list.length} shown</small></h2>
     <div class="filters">
@@ -680,8 +783,8 @@ function renderProps() {
       <select id="f-game" aria-label="Game"><option value="">All games</option>${gameOpts}</select>
       <select id="f-cat" aria-label="Prop"><option value="">All props</option>${catOpts}</select>
       <select id="f-sort" aria-label="Sort">
-        <option value="proj" ${f.sort === "proj" ? "selected" : ""}>Sort: Projected PPR</option>
-        <option value="live" ${f.sort === "live" ? "selected" : ""}>Sort: Live PPR</option>
+        <option value="proj" ${f.sort === "proj" ? "selected" : ""}>Sort: Projected points</option>
+        <option value="live" ${f.sort === "live" ? "selected" : ""}>Sort: Live points</option>
         <option value="edge" ${f.sort === "edge" ? "selected" : ""}>Sort: Biggest lean</option>
         <option value="name" ${f.sort === "name" ? "selected" : ""}>Sort: Name</option>
       </select>
@@ -698,10 +801,10 @@ function renderProps() {
 function renderFantasy() {
   const ff = S.ff;
   const pos = ff.pos === "FLEX" ? ["RB", "WR", "TE"] : ff.pos === "ALL" ? ["QB", "RB", "WR", "TE", "K", "DEF"] : [ff.pos];
-  const rows = S.data.players.filter((p) => pos.includes(p.pos) && p.proj_ppr != null && p.proj_ppr >= 0.5)
+  const rows = S.data.players.filter((p) => pos.includes(p.pos) && projPts(p) != null && projPts(p) >= 0.5)
     .map((p) => {
       const live = livePPR(p);
-      return { p, proj: p.proj_ppr, live, diff: live != null ? live - p.proj_ppr : null, avg: p.avg_ppr, name: p.name };
+      return { p, proj: projPts(p), live, diff: live != null ? live - projPts(p) : null, avg: avgPts(p), name: p.name, snap: p.snap_share ?? null };
     });
   const projRank = new Map([...rows].sort((a, b) => b.proj - a.proj).map((r, i) => [r.p.id, i + 1]));
   const dir = ff.desc ? -1 : 1;
@@ -714,10 +817,10 @@ function renderFantasy() {
   });
   const th = (key, label, cls = "") => `<th class="${cls} ${ff.sort === key ? "sorted" : ""}" data-sort="${key}">${label}${ff.sort === key ? (ff.desc ? " ↓" : " ↑") : ""}</th>`;
   $("#main").innerHTML = `
-    <h2>Fantasy rankings <small>PPR, Sleeper's standard scoring</small></h2>
+    <h2>Fantasy rankings <small>${scoringName()}, Sleeper's standard scoring \u00b7 K and DEF on ESPN standard scoring</small></h2>
     <div class="filters"><div class="chips">${["QB", "RB", "WR", "TE", "FLEX", "K", "DEF", "ALL"].map((x) => `<button class="chip ${ff.pos === x ? "on" : ""}" data-fpos="${x}">${x === "ALL" ? "All" : x}</button>`).join("")}</div></div>
     <div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th class="l">#</th>${th("name", "Player", "l")}<th class="l hide-sm">Game</th>${th("proj", "Proj")}${th("live", "Live")}${th("diff", "+/-", "hide-sm")}${th("avg", "Avg", "hide-sm")}</tr></thead>
+      <thead><tr><th class="l">#</th>${th("name", "Player", "l")}<th class="l hide-sm">Game</th>${th("proj", "Proj")}${th("live", "Live")}${th("diff", "+/-", "hide-sm")}${th("avg", "Avg", "hide-sm")}${th("snap", "Snap %", "hide-sm")}</tr></thead>
       <tbody>${rows.slice(0, ff.shown).map((r) => {
         const p = r.p;
         const g = S.games[p.game_id];
@@ -727,10 +830,11 @@ function renderFantasy() {
           <td class="l"><div class="who">${avatar(p)}<div><div><b>${esc(p.name)}</b>${injBadge(p)}</div>
             <div class="pmeta"><span class="pos ${p.pos}">${p.pos}</span> ${p.team} ${oppText(p)} ${matchupText(p)}</div></div></div></td>
           <td class="l hide-sm muted">${esc(gameStatus(g))}</td>
-          <td class="big">${fmt(r.proj)}</td>
-          <td class="big" style="color:var(--cyan)">${c ? (c.none ? "DNP" : fmt(r.live)) : "-"}</td>
-          <td class="hide-sm ${r.diff > 0 ? "up" : r.diff < 0 ? "down" : ""}">${r.diff == null ? "-" : (r.diff > 0 ? "+" : "") + fmt(r.diff)}</td>
-          <td class="hide-sm muted">${fmt(r.avg)}</td>
+          <td class="big">${fmtPts(r.proj)}</td>
+          <td class="big" style="color:var(--cyan)">${c ? (c.none ? "DNP" : fmtPts(r.live)) : "-"}</td>
+          <td class="hide-sm ${r.diff > 0 ? "up" : r.diff < 0 ? "down" : ""}">${r.diff == null ? "-" : (r.diff > 0 ? "+" : "") + fmtPts(r.diff)}</td>
+          <td class="hide-sm muted">${fmtPts(r.avg)}</td>
+          <td class="hide-sm muted">${r.snap != null ? `${Math.round(100 * r.snap)}%` : "-"}</td>
         </tr>`;
       }).join("")}</tbody>
     </table></div>
@@ -750,18 +854,19 @@ function dkSection(c) {
   const leanStat = (side) => `<div class="card stat"><div class="k">Leans ${side} the real line</div><div class="v">${pctText(dl[side])}</div><div class="d">${dl[side] ? `${dl[side].hit}-${dl[side].miss}` : "0-0"}, DraftKings or Sleeper Picks lines</div></div>`;
   return `<h2>Against real lines</h2>
     <div class="stats">${leanStat("over")}${leanStat("under")}</div>
-    ${b ? `<h2>Our lines vs DraftKings <small>${b.season} weeks ${b.weeks[0]}-${b.weeks[b.weeks.length - 1]}, ${b.props.toLocaleString()} props</small></h2>
+    ${b ? `<h2>Our numbers vs DraftKings <small>${b.season} weeks ${b.weeks[0]}-${b.weeks[b.weeks.length - 1]}, ${b.props.toLocaleString()} props</small></h2>
     <div class="stats">
-      <div class="card stat"><div class="k">DraftKings closer to the result</div><div class="v">${fmt(b.dk_closer)}%</div><div class="d">vs our line built from recent games</div></div>
+      <div class="card stat"><div class="k">Average miss</div><div class="v">${fmt(b.mae_dk)}</div><div class="d">DraftKings, vs ${fmt(b.mae_ours)} for a season average adjusted for the matchup and ${fmt(b.mae_plain)} unadjusted</div></div>
+      <div class="card stat"><div class="k">DraftKings closer to the result</div><div class="v">${fmt(b.dk_closer)}%</div><div class="d">vs the matchup-adjusted season average</div></div>
       <div class="card stat"><div class="k">Unders at DraftKings' line</div><div class="v">${fmt(b.dk_under)}%</div><div class="d">a fair line would be 50%</div></div>
-      <div class="card stat"><div class="k">Our line well below DK: under hit</div><div class="v">${fmt(b.below_under)}%</div><div class="d">${b.below_n} props</div></div>
-      <div class="card stat"><div class="k">Our line well above DK: over hit</div><div class="v">${fmt(b.above_over)}%</div><div class="d">${b.above_n} props</div></div>
+      <div class="card stat"><div class="k">Ours well below DK: under hit</div><div class="v">${fmt(b.below_under)}%</div><div class="d">${b.below_n} props</div></div>
+      <div class="card stat"><div class="k">Ours well above DK: over hit</div><div class="v">${fmt(b.above_over)}%</div><div class="d">${b.above_n} props</div></div>
     </div>
     <div class="tbl-wrap"><table class="tbl">
       <thead><tr><th class="l">Category</th><th>Props</th><th>Ours minus DK</th><th>Unders at DK</th><th>DK closer</th></tr></thead>
       <tbody>${b.categories.filter((x) => x.dk_under != null).map((x) => `<tr><td class="l">${S.data.categories[x.key].label}</td><td>${x.n}</td><td>${x.gap > 0 ? "+" : ""}${fmt(x.gap)}</td><td>${fmt(x.dk_under)}%</td><td>${x.dk_closer != null ? fmt(x.dk_closer) + "%" : "-"}</td></tr>`).join("")}</tbody>
     </table></div>
-    <p class="note">DraftKings' closing lines, via ESPN, for every finished game this season, compared with the line we would have set from earlier games only (tools/compare_lines.py). DraftKings is sharper, which is why its line is the one used on this site.</p>` : ""}`;
+    <p class="note">DraftKings' closing lines, via ESPN, for every finished game this season, compared with each player's average so far this season adjusted for the matchup, using only earlier games (tools/compare_lines.py). Players need 2+ earlier games, so week 1 and 2 have few props. Sleeper's projections can't be tested on past weeks (Sleeper revises them after the games), so this tests the matchup adjustment on its own.</p>` : ""}`;
 }
 
 function renderRecord() {
@@ -780,7 +885,7 @@ function renderRecord() {
       <summary>${w.season} Week ${w.week} ${w.complete ? "" : `<span class="res live">IN PROGRESS</span>`}
         <span class="muted" style="font-weight:500"> · Overs ${w.top_over.hit}-${w.top_over.miss} · Unders ${w.top_under.hit}-${w.top_under.miss} · Leans ${w.leans.hit}-${w.leans.miss}</span></summary>
       ${picks.length ? `<div class="glist">${picks.map((x) => `<div class="g"><span>${esc(x.name)} ${x.direction === "over" ? "o" : "u"}${x.line} ${SHORT[x.key]}</span><span><span class="num">${x.actual ?? "-"}</span> <span class="res ${x.result}">${x.result.toUpperCase()}</span></span></div>`).join("")}</div>` : `<p class="note">No picks graded yet this week (they're graded when each game goes final).</p>`}
-      ${w.ppr.n ? `<p class="note">PPR projection error: Sleeper ${w.ppr.proj_mae} pts per player vs ${w.ppr.average_mae} for our fantasy points line (${w.ppr.n} players).</p>` : ""}
+      ${w.ppr.n ? `<p class="note">PPR projection error: Sleeper ${w.ppr.proj_mae} pts per player, ours (matchup-adjusted) ${w.ppr.average_mae} (${w.ppr.n} players).</p>` : ""}
     </details>`;
   }).join("");
   const nothing = graded(c.top_over) + graded(c.top_under) + graded(c.leans) === 0;
@@ -791,7 +896,7 @@ function renderRecord() {
       ${stat("Top Overs", c.top_over, `${c.top_over.hit}-${c.top_over.miss}${c.top_over.dnp ? `, ${c.top_over.dnp} DNP` : ""}`)}
       ${stat("Top Unders", c.top_under, `${c.top_under.hit}-${c.top_under.miss}${c.top_under.dnp ? `, ${c.top_under.dnp} DNP` : ""}`)}
       ${stat("Every lean", c.leans, `${c.leans.hit}-${c.leans.miss}, all categories`)}
-      <div class="card stat"><div class="k">PPR projection error</div><div class="v">${c.ppr.proj_mae ?? "-"}</div><div class="d">${c.ppr.n ? `pts per player, vs ${c.ppr.average_mae} for our line (${c.ppr.n} players)` : "graded once games go final"}</div></div>
+      <div class="card stat"><div class="k">PPR projection error</div><div class="v">${c.ppr.proj_mae ?? "-"}</div><div class="d">${c.ppr.n ? `pts per player for Sleeper, ${c.ppr.average_mae} for ours (${c.ppr.n} players)` : "graded once games go final"}</div></div>
     </div>
     ${cats.length ? `<h2>Leans by category</h2><div class="glist">${cats.map(([k, v]) => `<div class="g"><span>${S.data.categories[k].label}</span><span class="num">${v.hit}-${v.miss} · ${pctText(v)}</span></div>`).join("")}</div>` : ""}
     ${dkSection(c)}
@@ -812,18 +917,20 @@ function renderAbout() {
   $("#main").innerHTML = `<div class="about">
     <h2>Lines</h2>
     <p>Every prop uses the real <b>DraftKings</b> line when DraftKings has posted one (ESPN carries DraftKings' player props). If DraftKings hasn't, it uses <b>Sleeper Picks</b>' line, and only after that our own estimate, which is labeled "est". Each card shows all of them side by side, plus where DraftKings' line opened.</p>
-    <p>Our own line is built from the player's last 8 games (only games before this week count), scaled down per category so it lands 50/50 on past games, and rounded to a .5. It's shown for comparison and as a fallback.</p>
+    <h2>Our projection</h2>
+    <p>Our projection starts from Sleeper's projection for the week and adjusts it for the matchup: we look at every player at the same position with a similar season average who has faced this defense <b>this season</b>, and compare what they did against it with what they usually do. With only a few games that adjustment is pulled toward zero, so early in the season it's small. Last season's games are never used, and every chart and hit rate shows this season only.</p>
     <h2>Leans and top picks</h2>
-    <p>"Our number" is Sleeper's projection for this week on the same scale as our line. A lean means our number is far enough above (over) or below (under) the real line. Top Overs and Top Unders are the biggest gaps, measured in each category's typical spread, and only use real sportsbook lines. They include players with 2+ games this season who aren't out, doubtful or on IR, and lock at kickoff. During a game, cards also show DraftKings' live line.</p>
+    <p>A lean means our projection is far enough above (over) or below (under) a real sportsbook line. There are no leans against our own estimate. Top Overs and Top Unders are the biggest gaps, measured in each category's typical spread, and only use real sportsbook lines. They include players with 2+ games this season who aren't out, doubtful or on IR, and lock at kickoff. During a game, cards also show DraftKings' live line.</p>
     <h2>How our lines compare with DraftKings</h2>
-    <p>See the Track Record tab. In short: DraftKings' lines are sharper than ours, and unders have hit more often than overs at DraftKings' lines this season. That's why the real line is the one that counts.</p>
+    <p>See the Track Record tab. In short: DraftKings' lines are sharper than a season average, and three or four weeks in, the matchup adjustment hasn't yet made a season average more accurate. That's why the real line is the one that counts, and why the adjustment is kept small until there's more data.</p>
     <h2>Fantasy points</h2>
-    <p>PPR with Sleeper's standard settings, for every position including kickers and team defenses. The formula reproduces Sleeper's own totals on about 7,400 player-weeks from 2025 and 2026, re-checked on every update.</p>
-    <table class="ptable">${scoreRows.map(([k, v]) => `<tr><td>${k}</td><td class="num">${v > 0 ? "+" : ""}${v}</td></tr>`).join("")}</table>
+    <p>QB, RB, WR and TE use Sleeper's standard scoring, in PPR or half PPR (the switch at the top changes every number on the site). Our totals match Sleeper's own on about 6,000 player-weeks from 2025 and 2026, both settings, re-checked every update.</p>
+    <table class="ptable">${scoreRows.map(([k, v]) => `<tr><td>${k}</td><td class="num">${v > 0 ? "+" : ""}${v}</td></tr>`).join("")}<tr><td>Reception (half PPR)</td><td class="num">+0.5</td></tr></table>
+    <p>Kickers and team defenses use <b>ESPN's standard scoring</b>: field goals 3 (under 40 yards), 4 (40-49), 5 (50-59), 6 (60+), -1 per miss, 1 per extra point; defenses get 1 per sack, 2 per interception, fumble recovery, safety or blocked kick, 6 per touchdown, plus points-allowed and yards-allowed tiers. Every kicker and defense matches ESPN's own totals each week we've checked.</p>
     <h2>Live</h2>
     <p>Scores, box scores and play-by-play come straight from ESPN every 30 seconds while games are on (every 15 seconds for the game you have open), paused when this tab is hidden. Live points use the same scoring, including 2-point conversions and field goal distances. An over is marked cleared the moment it passes the line, since stats only go up; an under is only a hit once the game is final.</p>
-    <h2>Injuries</h2>
-    <p>Injury designations come from Sleeper with each update. On game days the page also checks ESPN's latest injury news for games kicking off within 4 hours, so game-day inactives show up right away (outlined badges, with the time ESPN posted them).</p>
+    <h2>News and injuries</h2>
+    <p>Injury designations come from Sleeper with each update, along with ESPN's injury report (notes, body part and expected return). On game days the page also checks ESPN's latest news for games kicking off within 4 hours, so game-day inactives show up right away (outlined badges, with the time ESPN posted them). The News tab has ESPN's latest headlines, tagged with the players they mention, and an injury report by game. Opening a player and tapping More news loads his latest Rotowire note and headlines.</p>
     <h2>Updates and honest grading</h2>
     <p>Lines, projections and injuries rebuild every hour (every 30 minutes on game days). Once a game kicks off, its lines and picks freeze. The track record only grades what was posted before kickoff, and it isn't backfilled: Sleeper revises past weeks' projections after the games, so grading old weeks with them would use information nobody had beforehand.</p>
     <h2 id="maker">Made by Joshua Moy</h2>
@@ -850,6 +957,7 @@ function gameTeams(g) {
       abbr: g[side], id: c?.team?.id, name: c?.team?.displayName || g[side],
       short: c?.team?.name || c?.team?.shortDisplayName || g[side],
       color: c?.team?.color ? `#${c.team.color}` : "#344677",
+      alt: c?.team?.alternateColor ? `#${c.team.alternateColor}` : null,
       record: c?.record?.find((r) => r.type === "total")?.summary || c?.record?.[0]?.summary || "",
     };
   }
@@ -902,7 +1010,7 @@ function playRow(play, teams, roster = [], fresh = false) {
       ${dd ? `<div class="pl-dd">${esc(dd)}</div>` : ""}
       <div class="pl-text">${esc(play.text || play.type?.text || "")}</div>
       ${tags.length || score || who.length ? `<div class="pl-tags">${tags.map(([k, v]) => `<span class="ptag ${k}">${v}</span>`).join("")}${score}
-        ${who.map(({ p }) => `<button class="pl-who ${S.favs.has(p.id) ? "fav-on" : ""}" data-open="${p.id}" title="Open ${esc(p.name)}"><span class="pos ${p.pos}">${p.pos}</span> ${esc(p.name.split(" ").slice(1).join(" "))} <b class="num">${fmt(livePPR(p))}</b></button>`).join("")}</div>` : ""}
+        ${who.map(({ p }) => `<button class="pl-who ${S.favs.has(p.id) ? "fav-on" : ""}" data-open="${p.id}" title="Open ${esc(p.name)}"><span class="pos ${p.pos}">${p.pos}</span> ${esc(p.name.split(" ").slice(1).join(" "))} <b class="num">${fmtPts(livePPR(p))}</b></button>`).join("")}</div>` : ""}
     </div>
   </div>`;
 }
@@ -935,18 +1043,61 @@ function winProb(sum, teams) {
   const wp = sum?.winprobability || [];
   if (wp.length < 2) return "";
   const home = wp[wp.length - 1].homeWinPercentage;
-  const leader = home >= 0.5 ? teams.home : teams.away;
-  const pct = Math.round(100 * Math.max(home, 1 - home));
-  const w = 300, h = 54;
-  const pts = wp.map((x, i) => `${(i / (wp.length - 1)) * w},${(h * (1 - x.homeWinPercentage)).toFixed(1)}`).join(" ");
+  const hp = Math.round(100 * home), ap = 100 - hp;
+  const hc = readable(teams.home), ac = readable(teams.away);
+  const w = 600, h = 96, mid = h / 2;
+  const x = (i) => (i / (wp.length - 1)) * w;
+  const y = (v) => h * (1 - v);
+  const line = wp.map((p, i) => `${x(i).toFixed(1)},${y(p.homeWinPercentage).toFixed(1)}`).join(" ");
+  const area = `0,${mid} ${line} ${w},${mid}`;
+  // Quarter markers, from the play each probability belongs to
+  const period = {};
+  for (const d of allDrives(sum)) for (const pl of d.plays || []) period[pl.id] = pl.period?.number;
+  const marks = [];
+  let last = null;
+  wp.forEach((p, i) => {
+    const q = period[p.playId];
+    if (q && q !== last) { if (last != null) marks.push([x(i), q]); last = q; }
+  });
+  const qLabel = (q) => (q <= 4 ? `Q${q}` : "OT");
   return `<div class="wp">
-    <div class="wp-h"><span>Win probability</span><span><b class="num">${pct}%</b> ${leader.abbr}</span></div>
-    <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-label="Win probability over the game">
-      <line x1="0" x2="${w}" y1="${h / 2}" y2="${h / 2}" class="mid"/>
-      <polyline points="${pts}" fill="none" stroke="var(--cyan)" stroke-width="2" vector-effect="non-scaling-stroke"/>
-    </svg>
-    <div class="wp-x"><span>${teams.home.abbr}</span><span>${teams.away.abbr}</span></div>
+    <div class="wp-top">
+      <span class="wp-team"><img src="${logo(teams.away.abbr)}" alt=""> ${teams.away.abbr} <b class="num" style="color:${ac}">${ap}%</b></span>
+      <span class="wp-title">Win probability</span>
+      <span class="wp-team right"><b class="num" style="color:${hc}">${hp}%</b> ${teams.home.abbr} <img src="${logo(teams.home.abbr)}" alt=""></span>
+    </div>
+    <div class="wp-bar"><i style="width:${ap}%;background:${ac}"></i><i style="width:${hp}%;background:${hc}"></i></div>
+    <div class="wp-chart">
+      <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-label="${teams.home.abbr} win probability over the game">
+        <defs>
+          <clipPath id="wp-top"><rect x="0" y="0" width="${w}" height="${mid}"/></clipPath>
+          <clipPath id="wp-bot"><rect x="0" y="${mid}" width="${w}" height="${mid}"/></clipPath>
+        </defs>
+        <polygon points="${area}" fill="${hc}" fill-opacity=".35" clip-path="url(#wp-top)"/>
+        <polygon points="${area}" fill="${ac}" fill-opacity=".35" clip-path="url(#wp-bot)"/>
+        <line x1="0" x2="${w}" y1="${mid}" y2="${mid}" class="mid"/>
+        ${marks.map(([mx]) => `<line x1="${mx}" x2="${mx}" y1="0" y2="${h}" class="q"/>`).join("")}
+        <polyline points="${line}" fill="none" stroke="#fff" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+      </svg>
+      <span class="wp-lab top"><img src="${logo(teams.home.abbr)}" alt=""> ${teams.home.abbr}</span>
+      <span class="wp-lab bot"><img src="${logo(teams.away.abbr)}" alt=""> ${teams.away.abbr}</span>
+      <span class="wp-lab fifty">50%</span>
+      ${marks.map(([mx, q]) => `<span class="wp-q" style="left:${(100 * mx) / w}%">${qLabel(q)}</span>`).join("")}
+    </div>
   </div>`;
+}
+
+// A team color that shows up on the dark background (falls back to the team's alternate color, then a light gray)
+function readable(t) {
+  const lum = (hex) => {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+    if (!m) return 0;
+    const n = parseInt(m[1], 16);
+    return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+  };
+  if (lum(t.color) >= 0.3) return t.color;
+  if (lum(t.alt) >= 0.3) return t.alt;
+  return "#c7d0dc";
 }
 
 
@@ -1101,7 +1252,7 @@ function renderBox(g, sum, teams) {
       <thead><tr><th class="l"><img src="${logo(abbr)}" alt=""> ${abbr} ${esc(title)}</th>${labels.map((l) => `<th>${esc(l)}</th>`).join("")}${withPts ? `<th class="ppr">PPR</th>` : ""}</tr></thead>
       <tbody>${grp.athletes.map((at) => {
         const pid = S.byKey[`${normName(at.athlete.displayName)}|${abbr}`];
-        return `<tr ${pid && S.byId[pid].props.length ? `data-open="${pid}" class="click"` : ""}><td class="l">${esc(at.athlete.displayName)}</td>${(at.stats || []).map((v) => `<td>${esc(v)}</td>`).join("")}${withPts ? `<td class="ppr">${fmt(pprOf(at.athlete.displayName, abbr))}</td>` : ""}</tr>`;
+        return `<tr ${pid && S.byId[pid].props.length ? `data-open="${pid}" class="click"` : ""}><td class="l">${esc(at.athlete.displayName)}</td>${(at.stats || []).map((v) => `<td>${esc(v)}</td>`).join("")}${withPts ? `<td class="ppr">${fmtPts(pprOf(at.athlete.displayName, abbr))}</td>` : ""}</tr>`;
       }).join("")}</tbody>
     </table></div>`;
   }).join("")).join("");
@@ -1113,19 +1264,19 @@ function renderBox(g, sum, teams) {
     const pid = S.byKey[key];
     const p = pid ? S.byId[pid] : null;
     if (p) seenIds.add(pid);
-    const pts = p ? livePPR(p) : ppr(st2);
-    if (pts) leaders.push({ name: p?.name || boxName(sum, key), team: key.split("|")[1], pos: p?.pos, pid, proj: p?.proj_ppr, pts, props: p?.props.length });
+    const pts = p ? livePPR(p) : fantasyPts(st2, "WR");
+    if (pts) leaders.push({ name: p?.name || boxName(sum, key), team: key.split("|")[1], pos: p?.pos, pid, proj: p ? projPts(p) : null, pts, props: p?.props.length });
   }
   for (const p of S.data.players) {
     if (p.game_id !== g.id || seenIds.has(p.id) || !["K", "DEF"].includes(p.pos)) continue;
     const pts = livePPR(p);
-    if (pts) leaders.push({ name: p.name, team: p.team, pos: p.pos, pid: p.id, proj: p.proj_ppr, pts, props: 0 });
+    if (pts) leaders.push({ name: p.name, team: p.team, pos: p.pos, pid: p.id, proj: projPts(p), pts, props: 0 });
   }
   leaders.sort((x, y) => y.pts - x.pts);
-  const leaderCard = `<div class="card"><div class="cat-h" style="margin-bottom:6px"><span>Fantasy leaders (PPR)</span><span class="muted" style="font-weight:500;font-size:12px">both teams</span></div>
+  const leaderCard = `<div class="card"><div class="cat-h" style="margin-bottom:6px"><span>Fantasy leaders (${scoringName()})</span><span class="muted" style="font-weight:500;font-size:12px">both teams</span></div>
     ${leaders.slice(0, 12).map((x, i) => `<div class="fl" ${x.props ? `data-open="${x.pid}"` : ""}>
       <span><span class="muted num">${i + 1}</span> ${esc(x.name)} <span class="muted">${x.team}${x.pos ? ` ${x.pos}` : ""}</span></span>
-      <span>${x.proj != null ? `<span class="muted">proj ${fmt(x.proj)}</span> ` : ""}<b class="num">${fmt(x.pts)}</b></span></div>`).join("") || `<div class="note">No points yet.</div>`}
+      <span>${x.proj != null ? `<span class="muted">proj ${fmtPts(x.proj)}</span> ` : ""}<b class="num">${fmtPts(x.pts)}</b></span></div>`).join("") || `<div class="note">No points yet.</div>`}
   </div>`;
 
   const teamToggle = seg("data-bteam", st.bteam, [...["away", "home"].map((sd) => [teams[sd].abbr, `<img src="${logo(teams[sd].abbr)}" alt="">${teams[sd].abbr}`]), ["", "Both"]], "Team");
@@ -1145,7 +1296,7 @@ function renderGameProps(g, teams) {
     && (!st.team || p.team === st.team) && (st.pos === "ALL" || p.pos === st.pos)
     && (!st.leans || p.props.some((x) => x.lean && x.line_from !== "ours")));
   const leanSize = (p) => Math.max(0, ...p.props.filter((x) => x.lean && x.adj != null).map((x) => Math.abs(x.adj - x.line) / Math.max(1, x.line)));
-  const key = { proj: (p) => -(p.proj_ppr ?? -1), live: (p) => -(livePPR(p) ?? -1), lean: (p) => -leanSize(p) }[st.sort];
+  const key = { proj: (p) => -(projPts(p) ?? -1), live: (p) => -(livePPR(p) ?? -1), lean: (p) => -leanSize(p) }[st.sort];
   list = list.sort((a, b) => key(a) - key(b));
   const picks = [...S.data.picks.over, ...S.data.picks.under].filter((x) => x.game_id === g.id);
   return `<div class="gtool">
@@ -1165,7 +1316,7 @@ function renderGameFantasy(g, teams) {
   const st = gs(g.id);
   const started = g.state !== "pre";
   const rows = S.data.players.filter((p) => p.game_id === g.id && (!st.team || p.team === st.team) && (st.pos === "ALL" || p.pos === st.pos))
-    .map((p) => ({ p, proj: p.proj_ppr, live: livePPR(p) }))
+    .map((p) => ({ p, proj: projPts(p), live: livePPR(p) }))
     .filter((r) => (r.proj ?? 0) >= 0.5 || (r.live ?? 0) !== 0)
     .sort((a, b) => (started ? (b.live ?? -99) - (a.live ?? -99) : 0) || (b.proj ?? -1) - (a.proj ?? -1));
   return `<div class="gtool">
@@ -1178,9 +1329,9 @@ function renderGameFantasy(g, teams) {
         const diff = live != null && proj != null ? live - proj : null;
         return `<tr ${p.props.length ? `data-open="${p.id}" class="click"` : ""}>
           <td class="l"><div class="who">${avatar(p)}<div><div><b>${esc(p.name)}</b>${injBadge(p)}</div><div class="pmeta"><span class="pos ${p.pos}">${p.pos}</span> ${p.team}</div></div></div></td>
-          <td class="big">${fmt(proj)}</td>
-          <td class="big" style="color:var(--cyan)">${started ? (current(p)?.none ? "DNP" : fmt(live)) : "-"}</td>
-          <td class="${diff > 0 ? "up" : diff < 0 ? "down" : ""}">${diff == null ? "-" : (diff > 0 ? "+" : "") + fmt(diff)}</td>
+          <td class="big">${fmtPts(proj)}</td>
+          <td class="big" style="color:var(--cyan)">${started ? (current(p)?.none ? "DNP" : fmtPts(live)) : "-"}</td>
+          <td class="${diff > 0 ? "up" : diff < 0 ? "down" : ""}">${diff == null ? "-" : (diff > 0 ? "+" : "") + fmtPts(diff)}</td>
         </tr>`;
       }).join("") || `<tr><td class="l" colspan="4">No players match.</td></tr>`}</tbody>
     </table></div>`;
@@ -1231,6 +1382,7 @@ function renderGame() {
         ${side("home")}</div>
       ${fieldView(g, teams, sum)}
       ${lastPlay ? `<div class="last-play"><span class="muted">Last play</span> ${esc(lastPlay.text || "")}</div>` : ""}
+      ${gameLines(g, teams)}
       ${linescore(sum, teams)}
       ${winProb(sum, teams)}
     </div>
@@ -1295,7 +1447,7 @@ function applyHash() {
     if (m[2] && GAME_TABS.some(([k]) => k === m[2])) gs().tab = m[2];
     return true;
   }
-  const t = location.hash.match(/^#\/(props|fantasy|mine|record|about)$/);
+  const t = location.hash.match(/^#\/(props|fantasy|mine|news|record|about)$/);
   if (t) { S.gameView = null; S.tab = t[1]; return true; }
   return false;
 }
@@ -1336,6 +1488,149 @@ function setTopHeight() {
   document.documentElement.style.setProperty("--top-h", `${$(".top")?.offsetHeight || 0}px`);
 }
 window.addEventListener("resize", setTopHeight);
+
+// ---------------------------------------------------------------- news and injuries
+
+function ago(iso) {
+  const m = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  if (m < 48 * 60) return `${Math.round(m / 60)}h ago`;
+  return `${Math.round(m / 1440)}d ago`;
+}
+
+function dayText(iso) {
+  return new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+async function loadNews(force) {
+  if (!force && S.newsAt && Date.now() - S.newsAt < 300000) return;
+  try {
+    const d = await getJSON(`${ESPN}/news?limit=50`);
+    S.news = d.articles || [];
+    S.newsAt = Date.now();
+  } catch (err) {
+    console.warn("news", err);
+  }
+}
+
+// A player's latest notes from ESPN (Rotowire blurb and headlines), loaded when asked for
+async function loadPlayerNews(pid) {
+  const p = S.byId[pid];
+  if (!p?.espn_id || S.pnews[pid]) return;
+  S.pnews[pid] = { loading: true };
+  try {
+    const d = await getJSON(`https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/${p.espn_id}/overview`);
+    S.pnews[pid] = {
+      note: d.rotowire ? { headline: d.rotowire.headline, story: d.rotowire.story, date: d.rotowire.published || d.rotowire.lastModified } : null,
+      news: (d.news || []).slice(0, 5).map((n) => ({ headline: n.headline, date: n.lastModified || n.published, href: n.links?.web?.href })),
+    };
+  } catch (err) {
+    S.pnews[pid] = { error: true };
+  }
+}
+
+const LOG_LABELS = {
+  pass_cmp: "Cmp", pass_att: "Att", pass_yd: "Pass Yds", pass_td: "Pass TD", pass_int: "Int", rush_att: "Car",
+  rush_yd: "Rush Yds", rush_td: "Rush TD", rec_tgt: "Tgt", rec: "Rec", rec_yd: "Rec Yds", rec_td: "Rec TD",
+};
+
+// This season's games, like Sleeper's game log: snaps (and share of the team's snaps), main stats, points
+function gameLog(p) {
+  const keys = S.data.log_stats?.[p.pos];
+  if (!keys || !p.log) return "";
+  const rows = p.log.map((x) => ({ ...x, pts: S.half ? x.h : x.pts }));
+  const c = current(p);
+  if (c && !c.none) {
+    const st = c.stats;
+    rows.push({ w: S.data.week, opp: p.opp, snp: st.off_snp, tsnp: st.tm_off_snp, s: keys.map((k) => st[k] || 0), pts: livePPR(p), now: true });
+  }
+  if (!rows.length) return "";
+  const snaps = (r) => (r.snp == null ? "-" : `${r.snp}${r.tsnp ? ` <span class="muted">${Math.round((100 * r.snp) / r.tsnp)}%</span>` : ""}`);
+  return `<div class="glog" style="grid-column:1/-1"><div class="tbl-wrap"><table class="box">
+    <thead><tr><th class="l">Game log</th><th>Opp</th><th>Snaps</th>${keys.map((k) => `<th>${LOG_LABELS[k]}</th>`).join("")}<th class="ppr">${S.half ? "Half" : "PPR"}</th></tr></thead>
+    <tbody>${rows.map((r) => `<tr class="${r.now ? "now" : ""}"><td class="l">${r.now ? (S.games[p.game_id].state === "post" ? "Final" : "Now") : `Week ${r.w}`}</td><td>${r.opp || ""}</td><td>${snaps(r)}</td>${r.s.map((v) => `<td>${v}</td>`).join("")}<td class="ppr">${fmtPts(r.pts)}</td></tr>`).join("")}</tbody>
+  </table></div></div>`;
+}
+
+function latestBlock(p) {
+  const r = p.inj_report;
+  const inj = injOf(p);
+  const extra = S.pnews[p.id];
+  const status = inj.status || (r?.status && r.status !== "Active" ? r.status : null);
+  if (!r && !inj.news && !p.espn_id) return "";
+  return `<div class="latest" style="grid-column:1/-1">
+    <div class="latest-h"><b>Latest</b>${status ? ` ${injBadge(p)}` : ""}${r?.part && status ? ` <span class="muted">${esc(r.part)}${r.detail ? `, ${esc(r.detail)}` : ""}</span>` : ""}
+      ${r?.ret && status ? `<span class="ret">Expected back ${esc(dayText(r.ret))}</span>` : ""}
+      ${r?.date ? `<span class="muted when">${ago(r.date)}</span>` : ""}</div>
+    ${inj.news ? `<p class="gd">Game day (ESPN, ${ago(inj.news.date)}): <b>${inj.news.inactive ? "Inactive" : esc(inj.news.status || "Active")}</b></p>` : ""}
+    ${r?.short ? `<p>${esc(r.short)}</p>` : ""}
+    ${r?.long ? `<details><summary>More</summary><p>${esc(r.long)}</p></details>` : ""}
+    ${extra?.note && extra.note.headline !== r?.short ? `<p class="rw"><span class="muted">Rotowire${extra.note.date ? `, ${ago(extra.note.date)}` : ""}:</span> ${esc(extra.note.headline)}</p>` : ""}
+    ${extra?.news?.length ? `<ul class="hl">${extra.news.map((n) => `<li><a href="${esc(n.href || "#")}" target="_blank" rel="noopener">${esc(n.headline)}</a> <span class="muted">${n.date ? ago(n.date) : ""}</span></li>`).join("")}</ul>` : ""}
+    ${p.espn_id && !extra ? `<button class="tbtn" data-pnews="${p.id}">More news</button>` : extra?.loading ? `<span class="muted">Loading...</span>` : extra?.error ? `<span class="muted">Couldn't load more news.</span>` : ""}
+  </div>`;
+}
+
+function renderNews() {
+  const view = S.newsView || "headlines";
+  const head = `<h2>News</h2><div class="gtool">${seg("data-newsview", view, [["headlines", "Headlines"], ["injuries", "Injury report"]], "View")}</div>`;
+  if (view === "injuries") return renderInjuries(head);
+  const mine = new Set([...S.favs, ...S.mine.map((m) => m.pid)]);
+  const mineOnly = S.newsMine;
+  if (!S.news) {
+    $("#main").innerHTML = head + `<div class="empty">Loading news...</div>`;
+    loadNews().then(() => { if (S.tab === "news" && !S.gameView) renderNews(); });
+    return;
+  }
+  const items = S.news.map((a) => {
+    const ids = (a.categories || []).filter((c) => c.type === "athlete").map((c) => S.byEspn[String(c.athleteId || c.athlete?.id)]).filter(Boolean);
+    return { a, ids: [...new Set(ids)] };
+  }).filter((x) => !mineOnly || x.ids.some((id) => mine.has(id)));
+  $("#main").innerHTML = head.replace("</div>", ` <button class="tbtn ${mineOnly ? "on" : ""}" data-newsmine>My players</button> <span class="note">ESPN · updated ${S.newsAt ? ago(new Date(S.newsAt).toISOString()) : ""}</span></div>`)
+    + `<div class="news">${items.map(({ a, ids }) => {
+      const img = a.images?.[0]?.url;
+      return `<article class="card nitem">
+        ${img ? `<img class="nimg" src="${esc(img)}" alt="" loading="lazy">` : ""}
+        <div>
+          <a class="nh" href="${esc(a.links?.web?.href || "#")}" target="_blank" rel="noopener">${esc(a.headline)}</a>
+          <p class="nd">${esc(a.description || "")}</p>
+          <div class="nmeta"><span class="muted">${a.published ? ago(a.published) : ""}${a.byline ? ` · ${esc(a.byline)}` : ""}</span>
+            ${ids.map((id) => { const q = S.byId[id]; return `<button class="pl-who" data-open="${id}"><span class="pos ${q.pos}">${q.pos}</span> ${esc(q.name)}</button>`; }).join("")}</div>
+        </div>
+      </article>`;
+    }).join("") || `<div class="empty">${mineOnly ? "No news about your favorites or picks right now." : "No news."}</div>`}</div>`;
+}
+
+function renderInjuries(head) {
+  const st = S.injFilter || "ALL";
+  const pos = S.injPos || "ALL";
+  const statusOf = (p) => injOf(p).status || (p.inj_report?.status !== "Active" ? p.inj_report?.status : null);
+  const want = (status) => st === "ALL" || (st === "Q" ? status === "Questionable" : st === "D" ? status === "Doubtful" : st === "O" ? ["Out", "Suspended", "PUP", "NA", "DNR", "COV"].includes(status) : st === "IR" ? status === "IR" || status === "Injured Reserve" : true);
+  const rows = S.data.players.filter((p) => {
+    const status = statusOf(p);
+    return status && want(status) && (pos === "ALL" || p.pos === pos) && ((projPts(p) ?? 0) >= 2 || p.depth === 1);
+  });
+  const byGame = {};
+  for (const p of rows) (byGame[p.game_id] ??= []).push(p);
+  const games = gamesInOrder().filter((g) => byGame[g.id]);
+  $("#main").innerHTML = head.replace("</div>", ` ${seg("data-injf", st, [["ALL", "All"], ["Q", "Questionable"], ["D", "Doubtful"], ["O", "Out"], ["IR", "IR"]], "Status")}
+      ${seg("data-injpos", pos, ["ALL", "QB", "RB", "WR", "TE", "K"].map((x) => [x, x === "ALL" ? "All" : x]), "Position")}</div>`)
+    + `<p class="note">Fantasy-relevant players only (projected 2+ points or a starter). Status from Sleeper and ESPN, plus game-day news from ESPN as it's posted.</p>`
+    + (games.map((g) => `<section class="inj-game">
+        <h3><button class="linkbtn" data-game="${g.id}">${g.away} @ ${g.home}</button> <span class="muted">${esc(gameStatus(g))}</span></h3>
+        ${byGame[g.id].sort((a, b) => a.team.localeCompare(b.team) || (projPts(b) ?? 0) - (projPts(a) ?? 0)).map((p) => {
+          const r = p.inj_report || {};
+          return `<div class="inj-row" data-open="${p.id}">
+            ${avatar(p)}
+            <div><div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span> <span class="muted">${p.team}</span> ${injBadge(p)}
+              ${r.part ? `<span class="muted">${esc(r.part)}</span>` : ""}${r.ret ? ` <span class="ret">back ${esc(dayText(r.ret))}</span>` : ""}</div>
+              ${r.short ? `<div class="inj-note">${esc(r.short)}</div>` : ""}</div>
+            <div class="side"><div class="small">proj</div><div class="num">${fmtPts(projPts(p))}</div><div class="small">${r.date ? ago(r.date) : ""}</div></div>
+          </div>`;
+        }).join("")}
+      </section>`).join("") || `<div class="empty">No injuries match.</div>`);
+}
 
 // ---------------------------------------------------------------- my picks
 
@@ -1422,7 +1717,7 @@ function renderMine() {
 function render() {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", !S.gameView && b.dataset.tab === S.tab));
   if (S.gameView) { renderGame(); renderScores(); return; }
-  ({ props: renderProps, fantasy: renderFantasy, mine: renderMine, record: renderRecord, about: renderAbout })[S.tab]();
+  ({ props: renderProps, fantasy: renderFantasy, mine: renderMine, news: renderNews, record: renderRecord, about: renderAbout })[S.tab]();
   updateMineBadge();
   renderScores();
 }
@@ -1430,6 +1725,10 @@ function render() {
 // Live ticks update numbers in place, so open cards, focus and scroll position survive
 function renderLiveParts() {
   if (!S.gameView && S.tab === "mine") { const y = window.scrollY; renderMine(); window.scrollTo(0, y); return; }
+  if (!S.gameView && S.tab === "news") {
+    if (Date.now() - S.newsAt > 300000) loadNews().then(() => { if (S.tab === "news" && !S.gameView && (S.newsView || "headlines") === "headlines") { const y = window.scrollY; renderNews(); window.scrollTo(0, y); } });
+    return;
+  }
   if (S.gameView) {
     if (document.activeElement?.matches("input,select")) return;
     const y = window.scrollY;
@@ -1477,6 +1776,31 @@ document.addEventListener("click", (e) => {
   }
   const go = t.closest("[data-goto]");
   if (go) { e.preventDefault(); S.tab = go.dataset.goto; render(); window.scrollTo(0, 0); return; }
+  const nv = t.closest("[data-newsview]");
+  if (nv) { S.newsView = nv.dataset.newsview; renderNews(); return; }
+  if (t.closest("[data-newsmine]")) { S.newsMine = !S.newsMine; renderNews(); return; }
+  const injf = t.closest("[data-injf]");
+  if (injf) { S.injFilter = injf.dataset.injf; renderNews(); return; }
+  const injpos = t.closest("[data-injpos]");
+  if (injpos) { S.injPos = injpos.dataset.injpos; renderNews(); return; }
+  const pn = t.closest("[data-pnews]");
+  if (pn) {
+    const id = pn.dataset.pnews;
+    const redraw = () => { const c = $(`[data-player="${id}"]`); if (c) c.outerHTML = playerCard(S.byId[id]); };
+    loadPlayerNews(id).then(redraw);
+    redraw();
+    return;
+  }
+  const sc = t.closest("[data-scoring]");
+  if (sc) {
+    S.half = sc.dataset.scoring === "half";
+    store("half", S.half);
+    document.querySelectorAll("[data-scoring]").forEach((b) => b.classList.toggle("on", (b.dataset.scoring === "half") === S.half));
+    const y = window.scrollY;
+    render();
+    window.scrollTo(0, y);
+    return;
+  }
   const add = t.closest("[data-add]");
   if (add) {
     e.stopPropagation();
@@ -1561,6 +1885,7 @@ document.addEventListener("click", (e) => {
     S.f = { ...S.f, pos: "ALL", game: "", cat: "", q: p.name, favs: false, hideOut: false };
     S.open.add(p.id);
     render();
+    syncHash(true);
     $(`[data-player="${p.id}"]`)?.scrollIntoView({ block: "center" });
     return;
   }
@@ -1631,7 +1956,7 @@ $("#reload").addEventListener("click", async () => {
 
 (async function start() {
   const saved = store("tab");
-  if (["props", "fantasy", "mine", "record", "about"].includes(saved)) S.tab = saved;
+  if (["props", "fantasy", "mine", "news", "record", "about"].includes(saved)) S.tab = saved;
   try {
     await load();
   } catch (err) {
@@ -1640,10 +1965,10 @@ $("#reload").addEventListener("click", async () => {
     return;
   }
   applyHash();
+  document.querySelectorAll("[data-scoring]").forEach((b) => b.classList.toggle("on", (b.dataset.scoring === "half") === S.half));
   setTopHeight();
   render();
   syncHash(false);
   liveTick();
-  if (S.gameView) gameTick();
   setInterval(() => { if (!document.hidden) checkMeta(); }, META_MS);
 })();

@@ -167,3 +167,35 @@ def sleeper_lines():
         mult = lambda side: float(by_side[side]["payout_multiplier"]) if side in by_side and by_side[side].get("payout_multiplier") else None
         out.setdefault(str(o["subject_id"]), {})[key] = {"line": line, "over": mult("over"), "under": mult("under")}
     return out
+
+
+# ---------------------------------------------------------------- game lines
+
+def _american(x):
+    try:
+        return int(float(str(x).replace("+", "")))
+    except (TypeError, ValueError):
+        return None
+
+
+def game_odds(game_id):
+    """DraftKings' pregame game lines for one game (frozen at kickoff), or None.
+
+    spread is the home team's (negative = home favored); implied points split the total by the spread.
+    """
+    try:
+        data = sources.get_json(f"{CORE}/events/{game_id}/competitions/{game_id}/odds")
+    except Exception:
+        return None
+    item = next((i for i in (data or {}).get("items", []) if i.get("provider", {}).get("id") == PREGAME), None)
+    if not item or item.get("overUnder") is None or item.get("spread") is None:
+        return None
+    home, away = item.get("homeTeamOdds") or {}, item.get("awayTeamOdds") or {}
+    spread, total = float(item["spread"]), float(item["overUnder"])
+    opened = ((home.get("open") or {}).get("pointSpread") or {}).get("american")
+    return {
+        "spread": spread, "total": total, "details": item.get("details"),
+        "spread_open": float(opened) if opened not in (None, "") else None,
+        "ml_home": _american(home.get("moneyLine")), "ml_away": _american(away.get("moneyLine")),
+        "home_pts": round((total - spread) / 2, 1), "away_pts": round((total + spread) / 2, 1),
+    }
