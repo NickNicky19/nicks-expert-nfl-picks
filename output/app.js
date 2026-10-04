@@ -1046,16 +1046,21 @@ function leagueShape() {
     else if (s2 === "REC_FLEX") { n.WR += 0.8; n.TE += 0.2; }
     else if (s2 === "SUPER_FLEX") { n.QB += 0.8; n.RB += 0.1; n.WR += 0.1; }
   }
-  return { teams, starters: Object.fromEntries(Object.entries(n).map(([k, v]) => [k, Math.round(v * teams)])), name: lg?.name };
+  // Bench spots get filled mostly with running backs and receivers
+  const bench = lg?.roster_positions ? slots.filter((x) => x === "BN").length : 6;
+  const share = { QB: 0.1, RB: 0.38, WR: 0.38, TE: 0.1, K: 0.02, DEF: 0.02 };
+  const rostered = Object.fromEntries(Object.entries(n).map(([k, v]) => [k, Math.round((v + bench * share[k]) * teams)]));
+  return { teams, bench, starters: Object.fromEntries(Object.entries(n).map(([k, v]) => [k, Math.round(v * teams)])), rostered, name: lg?.name };
 }
 
-// Rest-of-season points above the first player at his position who wouldn't start in this league
+// Replacement level: the best player at each position likely to be on waivers once every team has filled its
+// starters and bench. A player's value is how many rest-of-season points he adds over that.
 function replacementLevels() {
   const shape = leagueShape();
   const out = {};
-  for (const pos of Object.keys(shape.starters)) {
+  for (const pos of Object.keys(shape.rostered)) {
     const pts = S.data.players.filter((p) => p.pos === pos).map(rosPts).sort((a, b) => b - a);
-    out[pos] = pts[shape.starters[pos]] ?? 0;
+    out[pos] = pts[shape.rostered[pos]] ?? pts[pts.length - 1] ?? 0;
   }
   return out;
 }
@@ -1069,9 +1074,14 @@ function renderTrade() {
   }
   const repl = replacementLevels();
   const shape = leagueShape();
+  // position ranks by rest-of-season points
+  const ranks = {};
+  for (const pos of Object.keys(repl)) {
+    S.data.players.filter((p) => p.pos === pos).map((p) => [p.id, rosPts(p)]).sort((a, b) => b[1] - a[1]).forEach(([id], i) => { ranks[id] = i + 1; });
+  }
   const value = (p) => {
     const ros = rosPts(p);
-    return { ros, vor: ros - (repl[p.pos] ?? 0), n: rosGames(p) };
+    return { ros, vor: ros - (repl[p.pos] ?? 0), n: rosGames(p), rank: ranks[p.id] };
   };
   const options = S.data.players.filter((p) => rosPts(p) >= 5).sort((a, b) => rosPts(b) - rosPts(a))
     .map((p) => `<option value="${esc(playerLabel(p))}"></option>`).join("");
@@ -1085,8 +1095,8 @@ function renderTrade() {
       ${rows.map((r) => `<div class="trade-row">
         ${avatar(r.p)}
         <div><div><b>${esc(r.p.name)}</b> <span class="pos ${r.p.pos}">${r.p.pos}</span>${injBadge(r.p)}</div>
-          <div class="pmeta">${r.p.team} · ${fmtPts(r.ros)} pts over ${r.n} games${byesLeft(r.p).length ? ` · bye wk ${byesLeft(r.p).join(", ")}` : ""}</div></div>
-        <div class="side"><div class="num ${r.vor > 0 ? "" : "muted"}">${r.vor > 0 ? "+" : ""}${fmtPts(r.vor)}</div><div class="small">above repl.</div>
+          <div class="pmeta">${r.p.team} · <b>${r.p.pos}${r.rank}</b> rest of season · ${fmtPts(r.ros)} pts over ${r.n} games (${fmtPts(r.n ? r.ros / r.n : 0)} a game)${byesLeft(r.p).length ? ` · bye wk ${byesLeft(r.p).join(", ")}` : ""}</div></div>
+        <div class="side"><div class="num ${r.vor > 0 ? "" : "muted"}">${r.vor > 0 ? "+" : ""}${fmtPts(r.vor)}</div><div class="small">over waivers</div>
           <button class="rm" data-trade-rm="${k}|${r.p.id}" title="Remove" aria-label="Remove">×</button></div>
       </div>`).join("") || `<p class="note">Add players below.</p>`}
       <div class="trade-add"><input list="trade-list" data-trade-side="${k}" placeholder="Add a player" autocomplete="off"></div>
@@ -1109,7 +1119,7 @@ function renderTrade() {
     ${verdict}
     <div class="trade-grid">${give.html}${get.html}</div>
     <div class="gtool" style="margin-top:10px"><button class="tbtn" data-trade-clear>Clear trade</button></div>
-    <p class="note"><b>Value</b> is each player's rest-of-season points above <b>replacement level</b>: the best player at his position who wouldn't start in ${shape.name ? `<b>${esc(shape.name)}</b>` : "a 12-team league (QB, 2 RB, 2 WR, TE, FLEX, K, DEF)"}. Starters per position: ${Object.entries(shape.starters).map(([k, v]) => `${k} ${v}`).join(", ")}. Replacement levels now: ${replText}. Players below replacement count as zero, since you could pick up someone as good. Projections are Sleeper's for each remaining week, scored in ${esc(scoringName())}${shape.name ? "" : "; pick one of your Sleeper leagues in the scoring menu to use its size and lineup"}.</p>`;
+    <p class="note"><b>Value</b> is how many rest-of-season points a player adds over the best player you could likely pick up at his position (<b>replacement level</b>: once every team in ${shape.name ? `<b>${esc(shape.name)}</b>` : "a 12-team league (QB, 2 RB, 2 WR, TE, FLEX, K, DEF, 6 bench spots)"} has filled its starters and bench). That's why a quarterback's big point total isn't automatically worth more: there are good quarterbacks on waivers. Rostered per position: ${Object.entries(shape.rostered).map(([k, v]) => `${k} ${v}`).join(", ")}. Replacement level now (rest-of-season points): ${replText}. A player below it counts as zero. Projections are Sleeper's for each remaining week, scored in ${esc(scoringName())}${shape.name ? "" : "; pick one of your Sleeper leagues in the scoring menu to use its size and lineup"}.</p>`;
 }
 
 // ---------------------------------------------------------------- track record tab
@@ -1216,7 +1226,7 @@ function renderAbout() {
     <p>Our spread, total and moneyline come from the same player projections, added up: each team's projected touchdowns (passing TDs from the quarterback, rushing TDs from everyone, so no catch is counted twice), 2-point conversions, its kicker's field goals and extra points, and its defense's touchdowns and safeties. Those totals are scaled to this season's real average points per team, then turned into a spread, total and win chance (a fair moneyline with no sportsbook margin). We show a lean when we're 2+ points off DraftKings' spread or 3+ off the total, lock it at kickoff, and grade it on the Track Record tab.</p>
     <h2>Future weeks and trades</h2>
     <p>Every player's game log continues past this week with Sleeper's projection for each remaining game (and his bye), scored in whatever scoring you've picked. In Sleeper scoring the totals are Sleeper's own, so they match the app exactly. The Fantasy tab has a rest-of-season ranking.</p>
-    <p>The Trade tab values each player by his rest-of-season points above <b>replacement level</b>: the best player at his position who wouldn't start in your league (12 teams with QB, 2 RB, 2 WR, TE, FLEX, K and DEF unless you've picked one of your Sleeper leagues, which uses its size and lineup). That's why a quarterback's big point total doesn't automatically beat a running back's. Players below replacement count as zero, since a similar player is usually available.</p>
+    <p>The Trade tab values each player by his rest-of-season points above <b>replacement level</b>: the best player at his position you could likely pick up once every team has filled its starters and bench (12 teams with QB, 2 RB, 2 WR, TE, FLEX, K, DEF and 6 bench spots, unless you've picked one of your Sleeper leagues, which uses its size and lineup). That's why a quarterback's big point total doesn't automatically beat a running back's.</p>
     <h2>Fantasy points</h2>
     <p>QB, RB, WR and TE use Sleeper's standard scoring, in PPR or half PPR (the switch at the top changes every number on the site). Our totals match Sleeper's own on about 6,000 player-weeks from 2025 and 2026, both settings, re-checked every update.</p>
     <table class="ptable">${scoreRows.map(([k, v]) => `<tr><td>${k}</td><td class="num">${v > 0 ? "+" : ""}${v}</td></tr>`).join("")}<tr><td>Reception (half PPR)</td><td class="num">+0.5</td></tr></table>
