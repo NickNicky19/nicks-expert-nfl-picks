@@ -51,7 +51,9 @@ const S = {
   scFound: null, scMsg: "",
   mine: store("mine") || [],
   cmp: store("cmp") || [null, null],    // the two players on the Compare tab
-  trade: store("trade") || { give: [], get: [] },   // My Picks: [{pid, key, dir, line, season, week, at}]
+  trade: store("trade") || { give: [], get: [] },
+  sync: store("sync") || null,         // the synced Sleeper league: {league_id, user_id, roster_id, name}
+  leagueData: null, ideas: null, syncMsg: "", syncFound: null, syncUser: null,   // My Picks: [{pid, key, dir, line, season, week, at}]
 };
 
 // ---------------------------------------------------------------- helpers
@@ -106,7 +108,7 @@ function kickoffText(iso) {
 }
 
 function gameStatus(g) {
-  if (!g) return "";
+  if (!g) return "Not playing this week";
   if (g.state === "pre") return kickoffText(g.kickoff);
   return g.detail || (g.state === "post" ? "Final" : "Live");
 }
@@ -508,6 +510,7 @@ async function liveTick() {
     console.warn("live", err);
   }
   ticking = false;
+  S.rosKey = null;     // games may have kicked off: recount rest-of-season points
   updateSub();
   renderScores();
   renderLiveParts();
@@ -560,6 +563,8 @@ async function checkMeta() {
 
 async function load() {
   S.data = await getJSON(`data/week.json?t=${Date.now()}`);
+  S.rosKey = null;
+  S.future = null; S.futureLoading = null; S.ideas = null;
   S.generatedAt = S.data.generated_at;
   try { S.track = await getJSON(`data/track_record.json?t=${Date.now()}`); } catch { S.track = null; }
   try { S.dk = await getJSON(`data/dk_backtest.json?t=${Date.now()}`); } catch { S.dk = null; }
@@ -1010,7 +1015,7 @@ function renderRos() {
   const pos = ff.pos === "FLEX" ? ["RB", "WR", "TE"] : ff.pos === "ALL" ? ["QB", "RB", "WR", "TE", "K", "DEF"] : [ff.pos];
   const nextWeeks = [];
   for (let w = S.data.week + 1; w <= S.data.week + 4 && w <= 18; w++) nextWeeks.push(w);
-  const rows = S.data.players.filter((p) => pos.includes(p.pos)).map((p) => {
+  const rows = rosPool().filter((p) => pos.includes(p.pos)).map((p) => {
     const fut = futureRows(p);
     const n = rosGames(p);
     const ros = rosPts(p);
@@ -1059,10 +1064,208 @@ function replacementLevels() {
   const shape = leagueShape();
   const out = {};
   for (const pos of Object.keys(shape.rostered)) {
-    const pts = S.data.players.filter((p) => p.pos === pos).map(rosPts).sort((a, b) => b - a);
+    const pts = rosPool().filter((p) => p.pos === pos).map(rosPts).sort((a, b) => b - a);
     out[pos] = pts[shape.rostered[pos]] ?? pts[pts.length - 1] ?? 0;
   }
   return out;
+}
+
+// ---- syncing a Sleeper league
+
+const SLOT_ELIG = {
+  QB: ["QB"], RB: ["RB"], WR: ["WR"], TE: ["TE"], K: ["K"], DEF: ["DEF"],
+  FLEX: ["RB", "WR", "TE"], WRRB_FLEX: ["RB", "WR"], REC_FLEX: ["WR", "TE"], SUPER_FLEX: ["QB", "RB", "WR", "TE"],
+};
+
+async function syncFindUser(name) {
+  S.syncMsg = "Looking...";
+  S.syncFound = null;
+  renderTrade();
+  try {
+    const q = name.trim();
+    if (/^\d{8,}$/.test(q)) {
+      const l = await getJSON(`https://api.sleeper.app/v1/league/${q}`);
+      S.syncFound = l?.league_id ? [l] : [];
+      S.syncUser = null;
+    } else {
+      const u = await getJSON(`https://api.sleeper.app/v1/user/${encodeURIComponent(q)}`);
+      if (!u?.user_id) throw new Error("no user");
+      S.syncUser = { id: u.user_id, name: u.display_name };
+      S.syncFound = ((await getJSON(`https://api.sleeper.app/v1/user/${u.user_id}/leagues/nfl/${S.data.season}`)) || []);
+    }
+    S.syncMsg = S.syncFound.length ? "" : "No leagues found for that.";
+  } catch {
+    S.syncMsg = "Couldn't find that Sleeper user or league.";
+  }
+  renderTrade();
+}
+
+async function syncLeague(leagueId, userId) {
+  S.syncMsg = "Loading rosters...";
+  renderTrade();
+  try {
+    const [league, rosters, users] = await Promise.all([
+      getJSON(`https://api.sleeper.app/v1/league/${leagueId}`),
+      getJSON(`https://api.sleeper.app/v1/league/${leagueId}/rosters`),
+      getJSON(`https://api.sleeper.app/v1/league/${leagueId}/users`),
+    ]);
+    const mine = rosters.find((r) => r.owner_id === userId || (r.co_owners || []).includes(userId));
+    S.sync = { league_id: leagueId, user_id: userId || null, roster_id: mine?.roster_id ?? null, name: league.name };
+    S.leagueData = { league, rosters, users };
+    store("sync", S.sync);
+    // the league's scoring and lineup become the site's
+    if (!S.leagues.some((l) => l.id === leagueId)) {
+      S.leagues.push({ id: leagueId, name: league.name, season: league.season, settings: league.scoring_settings, teams: league.total_rosters, roster_positions: league.roster_positions });
+      store("leagues", S.leagues);
+    }
+    S.sc = { mode: "league", league: leagueId, half: false };
+    store("scoring", S.sc);
+    $("#sc-btn").textContent = `${scoringName()} ▾`;
+    S.syncFound = null;
+    S.syncMsg = "";
+    S.ideas = null;
+  } catch {
+    S.syncMsg = "Couldn't load that league from Sleeper.";
+  }
+  renderTrade();
+}
+
+function teamName(rosterId) {
+  const ld = S.leagueData;
+  const r = ld.rosters.find((x) => x.roster_id === rosterId);
+  const u = ld.users.find((x) => x.user_id === r?.owner_id);
+  return u?.metadata?.team_name || u?.display_name || `Team ${rosterId}`;
+}
+
+// Best lineup from a set of players by rest-of-season points, filling the strictest slots first
+function bestLineup(ids, slots) {
+  const pool = ids.map((id) => S.byId[id]).filter(Boolean).map((p) => ({ p, v: rosPts(p) })).sort((a, b) => b.v - a.v);
+  const used = new Set();
+  const order = slots.map((slot, i) => ({ slot, i })).sort((a, b) => (SLOT_ELIG[a.slot]?.length ?? 9) - (SLOT_ELIG[b.slot]?.length ?? 9));
+  const starters = new Array(slots.length);
+  let total = 0;
+  for (const { slot, i } of order) {
+    const pick = pool.find((x) => !used.has(x.p.id) && (SLOT_ELIG[slot] || []).includes(x.p.pos));
+    if (pick) { used.add(pick.p.id); total += pick.v; }
+    starters[i] = { slot, pick };
+  }
+  return { total, starters, bench: pool.filter((x) => !used.has(x.p.id)) };
+}
+
+// Trades that make your starting lineup better: 1-for-1, 2-for-1 and 1-for-2 with every other team.
+// "They gain" says whether their lineup improves too (a deal they'd plausibly take).
+function findTradeIdeas() {
+  const ld = S.leagueData;
+  const slots = ld.league.roster_positions.filter((x) => SLOT_ELIG[x]);
+  const me = ld.rosters.find((r) => r.roster_id === S.sync.roster_id);
+  const usable = (ids) => (ids || []).filter((id) => S.byId[id] && rosPts(S.byId[id]) >= 15);
+  const myIds = me.players || [];
+  const baseMe = bestLineup(myIds, slots).total;
+  const mineC = usable(myIds);
+  const pairs = (xs) => xs.flatMap((a, i) => xs.slice(i + 1).map((b) => [a, b]));
+  const ideas = [];
+  for (const r of ld.rosters) {
+    if (r.roster_id === me.roster_id) continue;
+    const theirIds = r.players || [];
+    const baseThem = bestLineup(theirIds, slots).total;
+    const theirC = usable(theirIds);
+    const deals = [
+      ...mineC.flatMap((g) => theirC.map((t) => [[g], [t]])),
+      ...pairs(mineC).flatMap((g) => theirC.map((t) => [g, [t]])),
+      ...mineC.flatMap((g) => pairs(theirC).map((t) => [[g], t])),
+    ];
+    for (const [give, get] of deals) {
+      const newMine = myIds.filter((id) => !give.includes(id)).concat(get);
+      const dMe = bestLineup(newMine, slots).total - baseMe;
+      if (dMe < 8) continue;
+      const newThem = theirIds.filter((id) => !get.includes(id)).concat(give);
+      const dThem = bestLineup(newThem, slots).total - baseThem;
+      if (dThem < -5) continue;
+      ideas.push({ roster: r.roster_id, give, get, dMe, dThem });
+    }
+  }
+  // Drop deals padded with a throw-in that doesn't help either side: a 2-player version has to beat the
+  // simpler deal inside it by more than a couple of points for someone
+  const key = (x) => `${x.roster}|${[...x.give].sort().join(",")}|${[...x.get].sort().join(",")}`;
+  const byKey = new Map(ideas.map((x) => [key(x), x]));
+  const subsets = (x) => [
+    ...(x.give.length > 1 ? x.give.map((g) => ({ ...x, give: [g] })) : []),
+    ...(x.get.length > 1 ? x.get.map((g) => ({ ...x, get: [g] })) : []),
+  ];
+  const lean = ideas.filter((x) => !subsets(x).some((sub) => {
+    const y = byKey.get(key(sub));
+    return y && x.dMe <= y.dMe + 2 && x.dThem <= y.dThem + 2;
+  }));
+  ideas.length = 0;
+  ideas.push(...lean);
+  // win-win first, then by how much you gain; no more than three per team or two per target
+  ideas.sort((a, b) => (b.dThem >= 0) - (a.dThem >= 0) || b.dMe - a.dMe);
+  const perTeam = {}, perTarget = {};
+  return ideas.filter((x) => {
+    const tk = x.get.join("+");
+    if ((perTeam[x.roster] || 0) >= 3 || (perTarget[tk] || 0) >= 2) return false;
+    perTeam[x.roster] = (perTeam[x.roster] || 0) + 1;
+    perTarget[tk] = (perTarget[tk] || 0) + 1;
+    return true;
+  }).slice(0, 15);
+}
+
+function renderLeague() {
+  const ld = S.leagueData;
+  if (!S.sync) {
+    return `<div class="card league-sync">
+      <b>Sync your Sleeper league</b>
+      <p class="note">See your best lineup, your weakest spots, and trades with each team that improve your starters.</p>
+      <div class="sc-find"><input id="sync-q" placeholder="Sleeper username or league ID" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="tbtn" data-sync-find>Find</button></div>
+      ${S.syncMsg ? `<p class="note">${esc(S.syncMsg)}</p>` : ""}
+      ${(S.syncFound || []).map((l) => `<div class="sc-lg"><span><b>${esc(l.name)}</b> <span class="muted">${l.total_rosters} teams · ${leagueSummary(l.scoring_settings)}</span></span><button class="tbtn" data-sync-pick="${l.league_id}">Sync</button></div>`).join("")}
+    </div>`;
+  }
+  if (!ld) {
+    if (!S.syncMsg) syncLeague(S.sync.league_id, S.sync.user_id);
+    return `<div class="card league-sync"><p class="note">${esc(S.syncMsg || "Loading your league...")}</p></div>`;
+  }
+  const slots = ld.league.roster_positions.filter((x) => SLOT_ELIG[x]);
+  if (S.sync.roster_id == null) {
+    return `<div class="card league-sync"><b>${esc(ld.league.name)}</b><p class="note">Which team is yours?</p>
+      <div class="chips">${ld.rosters.map((r) => `<button class="chip" data-sync-team="${r.roster_id}">${esc(teamName(r.roster_id))}</button>`).join("")}</div>
+      <p><button class="tbtn" data-sync-clear>Use a different league</button></p></div>`;
+  }
+  const me = ld.rosters.find((r) => r.roster_id === S.sync.roster_id);
+  const lineup = bestLineup(me.players || [], slots);
+  // how each team's starters at each position compare (rest-of-season points)
+  const posTotals = (ids) => {
+    const lu = bestLineup(ids || [], slots);
+    const t = {};
+    for (const s2 of lu.starters) if (s2.pick) t[s2.pick.p.pos] = (t[s2.pick.p.pos] || 0) + s2.pick.v;
+    return t;
+  };
+  const all = ld.rosters.map((r) => ({ id: r.roster_id, t: posTotals(r.players) }));
+  const positions = ["QB", "RB", "WR", "TE"].filter((x) => slots.some((s2) => (SLOT_ELIG[s2] || []).includes(x)));
+  const rankOf = (pos) => 1 + all.filter((x) => (x.t[pos] || 0) > (all.find((y) => y.id === me.roster_id).t[pos] || 0)).length;
+  const n = ld.rosters.length;
+  if (!S.ideas) S.ideas = findTradeIdeas();
+  const nameList = (ids) => ids.map((id) => `<b>${esc(S.byId[id]?.name || id)}</b> <span class="pos ${S.byId[id]?.pos}">${S.byId[id]?.pos}</span>`).join(" + ");
+  return `<div class="card league">
+    <div class="league-h"><div><b>${esc(ld.league.name)}</b> <span class="muted">· ${esc(teamName(me.roster_id))} · ${n} teams</span></div>
+      <div><button class="tbtn" data-sync-refresh>Refresh rosters</button> <button class="tbtn" data-sync-clear>Change</button></div></div>
+    <div class="needs">${positions.map((pos) => { const r = rankOf(pos); return `<span class="need ${r > n * 0.66 ? "weak" : r <= n * 0.33 ? "strong" : ""}">${pos} <b>${r}</b>/${n}</span>`; }).join("")}
+      <span class="note">your starters' rank by rest-of-season points (1 = best)</span></div>
+    <div class="league-grid">
+      <div><h3>Your best lineup</h3>${lineup.starters.map((s2) => `<div class="lu"><span class="slot">${s2.slot.replace("SUPER_FLEX", "SF").replace("WRRB_FLEX", "W/R").replace("REC_FLEX", "W/T")}</span>${s2.pick ? `<span>${esc(s2.pick.p.name)} <span class="muted">${s2.pick.p.pos} ${s2.pick.p.team}</span></span><span class="num">${fmtPts(s2.pick.v)}</span>` : `<span class="muted">empty</span>`}</div>`).join("")}
+        <div class="lu tot"><span></span><span>Lineup, rest of season</span><span class="num">${fmtPts(lineup.total)}</span></div>
+        ${lineup.bench.length ? `<p class="note">Bench: ${lineup.bench.map((x) => `${esc(x.p.name)} (${fmtPts(x.v)})`).join(", ")}</p>` : ""}</div>
+      <div><h3>Trade ideas</h3>
+        ${S.ideas.length ? S.ideas.map((x, i) => `<div class="idea">
+          <div class="idea-team">${esc(teamName(x.roster))}</div>
+          <div>You give ${nameList(x.give)}</div>
+          <div>You get ${nameList(x.get)}</div>
+          <div class="idea-num"><span class="up">Your lineup +${fmtPts(x.dMe)}</span> · <span class="${x.dThem >= 0 ? "up" : "muted"}">theirs ${x.dThem >= 0 ? "+" : ""}${fmtPts(x.dThem)}</span>${x.dThem >= 0 ? ` <span class="glean">both teams gain</span>` : ""}</div>
+          <button class="tbtn" data-idea="${i}">Open in calculator</button>
+        </div>`).join("") : `<p class="note">No trades found that clearly improve your starters without hurting theirs much. Try the calculator below with anyone you like.</p>`}
+        <p class="note">Gains are rest-of-season points in each team's best lineup (bench players don't count), in ${esc(scoringName())}.</p></div>
+    </div>
+  </div>`;
 }
 
 function renderTrade() {
@@ -1077,13 +1280,13 @@ function renderTrade() {
   // position ranks by rest-of-season points
   const ranks = {};
   for (const pos of Object.keys(repl)) {
-    S.data.players.filter((p) => p.pos === pos).map((p) => [p.id, rosPts(p)]).sort((a, b) => b[1] - a[1]).forEach(([id], i) => { ranks[id] = i + 1; });
+    rosPool().filter((p) => p.pos === pos).map((p) => [p.id, rosPts(p)]).sort((a, b) => b[1] - a[1]).forEach(([id], i) => { ranks[id] = i + 1; });
   }
   const value = (p) => {
     const ros = rosPts(p);
     return { ros, vor: ros - (repl[p.pos] ?? 0), n: rosGames(p), rank: ranks[p.id] };
   };
-  const options = S.data.players.filter((p) => rosPts(p) >= 5).sort((a, b) => rosPts(b) - rosPts(a))
+  const options = rosPool().filter((p) => rosPts(p) >= 5).sort((a, b) => rosPts(b) - rosPts(a))
     .map((p) => `<option value="${esc(playerLabel(p))}"></option>`).join("");
   const side = (k, title) => {
     const ids = S.trade[k].filter((id) => S.byId[id]);
@@ -1115,7 +1318,7 @@ function renderTrade() {
       : `<div class="verdict lose">You lose this trade by <b>${fmtPts(-d)}</b> points of value.</div>`;
   }
   const replText = Object.entries(repl).map(([pos, v]) => `${pos} ${fmtPts(v)}`).join(" · ");
-  $("#main").innerHTML = head + `<datalist id="trade-list">${options}</datalist>
+  $("#main").innerHTML = head + renderLeague() + `<h2 id="calc">Trade calculator</h2><datalist id="trade-list">${options}</datalist>
     ${verdict}
     <div class="trade-grid">${give.html}${get.html}</div>
     <div class="gtool" style="margin-top:10px"><button class="tbtn" data-trade-clear>Clear trade</button></div>
@@ -1209,7 +1412,7 @@ function renderAbout() {
       <div class="card"><b>Fantasy rankings</b><p>This week or rest of season, by position or FLEX, with live points, snap share and byes.</p></div>
       <div class="card"><b>Game logs</b><p>Every player's games this season with snaps, then a projection for each remaining week, like Sleeper's.</p></div>
       <div class="card"><b>Compare</b><p>Two players side by side with a start recommendation, matchup, props and game logs.</p></div>
-      <div class="card"><b>Trade</b><p>Value any trade by rest-of-season points above replacement, sized to your league.</p></div>
+      <div class="card"><b>Trade and league sync</b><p>Value any trade by rest-of-season points above replacement. Sync your Sleeper league to see your best lineup, your weakest positions, and trades with every team that improve your starters (and theirs).</p></div>
       <div class="card"><b>My Picks</b><p>Track any prop you like, live, with a running record for your slate. Saved on your device.</p></div>
       <div class="card"><b>News and injuries</b><p>ESPN headlines tagged with players, an injury report by game, game-day inactives as they post, and each player's latest notes.</p></div>
       <div class="card"><b>Honest track record</b><p>Every pick and lean graded only from what was posted before kickoff, and our numbers checked against DraftKings'.</p></div>
@@ -1985,6 +2188,7 @@ function renderInjuries(head) {
 // ---------------------------------------------------------------- scoring menu
 
 function applyScoring() {
+  S.ideas = null;
   $("#sc-btn").textContent = `${scoringName()} \u25be`;
   setTopHeight();
   const y = window.scrollY;
@@ -2044,6 +2248,7 @@ async function findLeagues(q) {
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.target.id === "sc-q") findLeagues(e.target.value.trim());
+  if (e.key === "Enter" && e.target.id === "sync-q") syncFindUser(e.target.value);
 });
 
 // ---------------------------------------------------------------- future weeks and rest of season
@@ -2051,7 +2256,15 @@ document.addEventListener("keydown", (e) => {
 async function loadFuture() {
   if (S.future || S.futureLoading) return S.futureLoading;
   S.futureLoading = getJSON(`data/future.json?v=${encodeURIComponent(S.data.generated_at)}`)
-    .then((f) => { S.future = f; })
+    .then((f) => {
+      S.future = f;
+      // players not in this week's data (on bye or hurt), so league rosters and rankings still include them
+      S.extra = Object.entries(f.meta || {}).filter(([id]) => !S.byId[id]).map(([id, [name, pos, team, injury]]) => {
+        const p = { id, name, pos, team, injury, props: [], log: [], extra: true };
+        S.byId[id] = p;
+        return p;
+      });
+    })
     .catch((err) => { console.warn("future", err); S.future = { players: {}, byes: {} }; });
   return S.futureLoading;
 }
@@ -2070,10 +2283,19 @@ function byesLeft(p) {
 
 // Rest of season: this week (if his game hasn't started) plus every remaining week
 function rosPts(p) {
+  // memoized per scoring choice: the trade finder asks for these thousands of times
+  const key = `${S.sc.mode}|${S.sc.half}|${S.sc.league || ""}|${S.future ? 1 : 0}`;
+  if (S.rosKey !== key) { S.rosKey = key; S.rosMemo = new Map(); }
+  if (S.rosMemo.has(p.id)) return S.rosMemo.get(p.id);
   const g = S.games[p.game_id];
   const now = g && g.state === "pre" ? projPts(p) || 0 : 0;
-  return futureRows(p).reduce((a, x) => a + x.pts, now);
+  const v = futureRows(p).reduce((a, x) => a + x.pts, now);
+  S.rosMemo.set(p.id, v);
+  return v;
 }
+
+// Everyone with rest-of-season projections: this week's players plus those on bye or hurt this week
+const rosPool = () => [...S.data.players, ...(S.extra || [])];
 
 function rosGames(p) {
   const g = S.games[p.game_id];
@@ -2406,6 +2628,22 @@ document.addEventListener("click", (e) => {
     render(); syncHash(true); window.scrollTo(0, 0);
     return;
   }
+  if (t.closest("[data-sync-find]")) { syncFindUser($("#sync-q").value); return; }
+  const sp = t.closest("[data-sync-pick]");
+  if (sp) { syncLeague(sp.dataset.syncPick, S.syncUser?.id); return; }
+  const st2 = t.closest("[data-sync-team]");
+  if (st2) { S.sync.roster_id = +st2.dataset.syncTeam; store("sync", S.sync); S.ideas = null; renderTrade(); return; }
+  if (t.closest("[data-sync-refresh]")) { S.leagueData = null; S.syncMsg = ""; renderTrade(); return; }
+  if (t.closest("[data-sync-clear]")) { S.sync = null; S.leagueData = null; S.ideas = null; store("sync", null); renderTrade(); return; }
+  const idea = t.closest("[data-idea]");
+  if (idea) {
+    const x = S.ideas[+idea.dataset.idea];
+    S.trade = { give: [...x.give], get: [...x.get] };
+    store("trade", S.trade);
+    renderTrade();
+    $("#calc")?.scrollIntoView({ block: "start" });
+    return;
+  }
   const fv = t.closest("[data-fview]");
   if (fv) { S.ff.view = fv.dataset.fview; S.ff.shown = 60; renderFantasy(); return; }
   const trm = t.closest("[data-trade-rm]");
@@ -2551,7 +2789,7 @@ document.addEventListener("input", (e) => {
 document.addEventListener("change", (e) => {
   const t = e.target;
   if (t.dataset.tradeSide) {
-    const p = S.data.players.find((x) => playerLabel(x) === t.value);
+    const p = rosPool().find((x) => playerLabel(x) === t.value);
     const k = t.dataset.tradeSide, other = k === "give" ? "get" : "give";
     if (p && !S.trade[k].includes(p.id)) {
       S.trade[k].push(p.id);

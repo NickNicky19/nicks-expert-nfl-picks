@@ -22,7 +22,10 @@ a Python build writes static JSON every hour, and a static page on GitHub Pages 
 - **Game logs**: each player's games this season with snaps and share of the team's snaps, then Sleeper's projection
   for every remaining week (and his bye), in the chosen scoring.
 - **Rest of season and trades**: a rest-of-season ranking, and a trade calculator that values players by
-  rest-of-season points above replacement level for your league's size and lineup.
+  rest-of-season points above waiver-level replacement for your league's size, lineup and bench.
+- **League sync**: enter a Sleeper username (or league ID) to load every roster: your best lineup, your rank at each
+  position, and 1-for-1 / 2-for-1 trades with every team that improve your starting lineup, flagged when theirs
+  improves too.
 - **Compare**: two players side by side with a start recommendation.
 - **Top Overs / Top Unders**: the biggest gaps between our number (Sleeper's projection, adjusted) and the real line.
   They lock at kickoff.

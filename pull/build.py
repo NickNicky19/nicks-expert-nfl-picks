@@ -420,11 +420,15 @@ FUTURE_KEYS = set(scoring.PPR) | set(scoring.K_SCORING) | set(scoring.DEF_SCORIN
     "pass_cmp", "pass_att", "rush_att", "rec_tgt", "fgm_50p", "pts_allow", "yds_allow"}
 
 
-def future_weeks(season, week, entries):
-    """Sleeper's projections for every remaining week, for this week's players: [{w, opp, st}], plus each team's
-    bye weeks. Written to output/data/future.json, which the page loads only when it needs it."""
-    ids = {e["id"] for e in entries}
-    team_of = {e["id"]: e["team"] for e in entries}
+def future_weeks(season, week, entries, everyone):
+    """Sleeper's projections for every remaining week: [{w, opp, st}] per player, plus each team's bye weeks.
+
+    Covers this week's players and anyone else with a real projection (players on bye or hurt this week still
+    matter for rest-of-season values and league rosters); `meta` names the ones not in week.json.
+    Written to output/data/future.json, which the page loads only when it needs it."""
+    in_week = {e["id"] for e in entries}
+    ids = set(everyone)
+    team_of = {pid: p["team"] for pid, p in everyone.items()}
     out = {pid: [] for pid in ids}
     played_weeks = {}
     for w in range(week + 1, REGULAR_SEASON_WEEKS + 1):
@@ -448,8 +452,11 @@ def future_weeks(season, week, entries):
             out[pid].append(row)
     weeks = set(range(week + 1, REGULAR_SEASON_WEEKS + 1))
     byes = {team: sorted(weeks - ws) for team, ws in played_weeks.items()}
-    return {"season": season, "from_week": week + 1, "players": {pid: v for pid, v in out.items() if v}, "byes": byes,
-            "teams": {pid: team_of[pid] for pid in ids}}
+    # keep players projected for something real; everyone in this week's data stays regardless
+    keep = {pid: v for pid, v in out.items() if v and (pid in in_week or sum(x.get("pp") or 0 for x in v) >= 10)}
+    meta = {pid: [everyone[pid]["name"], everyone[pid]["pos"], everyone[pid]["team"], everyone[pid].get("injury")]
+            for pid in keep if pid not in in_week}
+    return {"season": season, "from_week": week + 1, "players": keep, "byes": byes, "meta": meta}
 
 
 def league_points_per_team(season, week):
@@ -587,7 +594,7 @@ def run(refresh_all=False):
         "log_stats": LOG_STATS,
     }
     dump(OUT / "week.json", data)
-    dump(OUT / "future.json", future_weeks(season, week, entries))
+    dump(OUT / "future.json", future_weeks(season, week, entries, {**players, **kdef}))
     # The page polls this small file to tell when a new build is out
     dump(OUT / "meta.json", {"generated_at": now, "season": season, "week": week})
     dump(ARCHIVE / f"{season}_w{week:02d}.json", archive_of(season, week, entries, picks, now, games))
