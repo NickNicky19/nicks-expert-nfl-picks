@@ -14,7 +14,10 @@ a Python build writes static JSON every hour, and a static page on GitHub Pages 
 - **Live stats and fantasy points**: Sleeper's live feed (one small request for every player), scored with Sleeper's
   standard PPR or half PPR (a switch on the page) for QB, RB, WR and TE, and ESPN's standard scoring for kickers and
   defenses. Checked against Sleeper's and ESPN's own totals.
-- **Game lines**: DraftKings spread, total, moneylines and implied team points, plus live odds during games.
+- **Game lines**: DraftKings spread, total, moneylines and implied team points, live odds during games, and ours next
+  to them: every player's projection added up into team scores (`pull/gamemodel.py`), with leans graded at the final.
+- **Scoring**: Sleeper PPR (default) or half, ESPN PPR or half, or any Sleeper league's exact settings (find leagues by
+  username or league ID). Kickers and defenses always use ESPN standard scoring.
 - **News**: ESPN headlines tagged with players, an injury report by game, and each player's latest notes.
 - **Game logs**: each player's games this season with snaps and share of the team's snaps.
 - **Top Overs / Top Unders**: the biggest gaps between our number (Sleeper's projection, adjusted) and the real line.
@@ -62,6 +65,7 @@ cd output && python3 -m http.server 8000
 | `pull/build.py` | builds `output/data/week.json`, the weekly archive and the track record |
 | `pull/grade.py` | grades archived weeks |
 | `pull/matchup.py` | matchup factors from this season's games |
+| `pull/gamemodel.py` | our game projection: team scores, spread, total, moneyline |
 | `pull/news.py` | ESPN's injury report |
 | `tools/verify.py`, `tools/compare_lines.py` | checks, DraftKings comparison |
 | `output/` | the site (`index.html`, `app.js`, `style.css`) and its data |

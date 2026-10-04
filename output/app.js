@@ -44,7 +44,11 @@ const S = {
   openDrives: new Set(),
   gs: {},              // game id -> that game page's tab and filters
   favs: new Set(store("favs") || []),
-  half: store("half") === true,       // PPR or half PPR, everywhere
+  // Scoring for QB/RB/WR/TE: a preset (Sleeper or ESPN, PPR or half) or a saved Sleeper league's exact settings.
+  // Kickers and defenses always use ESPN standard scoring.
+  sc: store("scoring") || { mode: "sleeper", half: store("half") === true },
+  leagues: store("leagues") || [],      // [{id, name, season, settings}]
+  scFound: null, scMsg: "",
   mine: store("mine") || [],   // My Picks: [{pid, key, dir, line, season, week, at}]
 };
 
@@ -144,17 +148,84 @@ function fantasyPts(s, pos) {
   if (pos === "DEF") {
     return Math.round((table(S.data.scoring_def) + tier(s.pts_allow || 0, S.data.def_tiers.pts) + tier(s.yds_allow || 0, S.data.def_tiers.yds)) * 100) / 100;
   }
-  return Math.round((ppr(s) - (S.half ? 0.5 * (s.rec || 0) : 0)) * 100) / 100;
+  return skillPts(s, pos);
 }
 
-const projPts = (p) => (S.half ? p.proj_half ?? p.proj_ppr : p.proj_ppr);
-const avgPts = (p) => (S.half ? p.avg_half ?? p.avg_ppr : p.avg_ppr);
-const scoringName = () => (S.half ? "Half PPR" : "PPR");
+function currentLeague() {
+  return S.sc.mode === "league" ? S.leagues.find((l) => l.id === S.sc.league) : null;
+}
+
+// QB/RB/WR/TE points in the chosen scoring
+function skillPts(s, pos) {
+  const lg = currentLeague();
+  if (lg) return scoreWith(lg.settings, s, pos);
+  let t = ppr(s);
+  if (S.sc.mode === "espn") t -= s.pass_int || 0;          // ESPN takes 2 per interception, Sleeper 1
+  if (S.sc.half) t -= 0.5 * (s.rec || 0);
+  return Math.round(t * 100) / 100;
+}
+
+// Score a stat line with Sleeper league settings: each setting's weight times the matching stat. Bonuses Sleeper
+// keeps as their own stats (TE premium, 100-yard games and so on) are derived from the base stats when missing.
+function scoreWith(w, s, pos) {
+  let t = 0;
+  for (const [k, v] of Object.entries(w || {})) {
+    if (!v) continue;
+    const x = s[k] != null ? s[k] : derivedStat(k, s, pos);
+    if (x) t += v * x;
+  }
+  return Math.round(t * 100) / 100;
+}
+
+function derivedStat(k, s, pos) {
+  let m = k.match(/^bonus_rec_(te|rb|wr|qb)$/);
+  if (m) return (pos || "").toLowerCase() === m[1] ? s.rec || 0 : 0;
+  m = k.match(/^bonus_(pass|rush|rec)_yd_(\d+)$/);
+  if (m) return (s[`${m[1]}_yd`] || 0) >= +m[2] ? 1 : 0;
+  m = k.match(/^bonus_rush_rec_yd_(\d+)$/);
+  if (m) return (s.rush_yd || 0) + (s.rec_yd || 0) >= +m[1] ? 1 : 0;
+  if (k === "bonus_pass_cmp_25") return (s.pass_cmp || 0) >= 25 ? 1 : 0;
+  if (k === "bonus_rush_att_20") return (s.rush_att || 0) >= 20 ? 1 : 0;
+  return 0;
+}
+
+const isDefault = () => S.sc.mode === "sleeper";
+
+function projPts(p) {
+  if (p.pos === "K" || p.pos === "DEF") return p.proj_ppr;
+  if (isDefault()) return S.sc.half ? p.proj_half ?? p.proj_ppr : p.proj_ppr;
+  return p.proj && Object.keys(p.proj).length ? skillPts(p.proj, p.pos) : null;
+}
+
+function logPts(p, x) {
+  if (isDefault()) return S.sc.half ? x.h : x.pts;
+  return x.st ? skillPts(x.st, p.pos) : null;
+}
+
+function avgPts(p) {
+  if (p.pos === "K" || p.pos === "DEF") return p.avg_ppr;
+  if (isDefault()) return S.sc.half ? p.avg_half ?? p.avg_ppr : p.avg_ppr;
+  const pts = (p.log || []).map((x) => logPts(p, x)).filter((v) => v != null);
+  return pts.length ? Math.round((pts.reduce((a, b) => a + b, 0) / pts.length) * 100) / 100 : null;
+}
+
+function scoringName() {
+  const lg = currentLeague();
+  if (lg) return lg.name;
+  return `${S.sc.mode === "espn" ? "ESPN" : "Sleeper"} ${S.sc.half ? "Half PPR" : "PPR"}`;
+}
 
 // The fantasy points prop in the current scoring (half PPR swaps in its own numbers)
-function pv(prop) {
-  if (prop.key !== "fpts" || !S.half || prop.adj_h == null) return prop;
-  return { ...prop, line: prop.line_h, adj: prop.adj_h, proj: prop.proj_h, over: prop.over_h, values: prop.values.map((x) => ({ ...x, v: x.h ?? x.v })) };
+function pv(p, prop) {
+  if (prop.key !== "fpts" || (isDefault() && !S.sc.half)) return prop;
+  if (isDefault()) return prop.adj_h == null ? prop : { ...prop, line: prop.line_h, adj: prop.adj_h, proj: prop.proj_h, over: prop.over_h, values: prop.values.map((x) => ({ ...x, v: x.h ?? x.v })) };
+  // Any other scoring: re-score his games and his projection, keep the matchup adjustment
+  const byWeek = Object.fromEntries((p.log || []).map((x) => [x.w, x]));
+  const values = prop.values.map((x) => { const g = byWeek[x.w]; const v = g ? logPts(p, g) : null; return { ...x, v: v ?? x.v }; });
+  const proj = projPts(p);
+  const adj = proj != null ? Math.round(proj * (prop.mf ?? 1) * 100) / 100 : prop.adj;
+  const line = adj != null ? Math.floor(adj) + 0.5 : prop.line;
+  return { ...prop, values, proj, adj, line, over: values.filter((x) => x.v > line).length };
 }
 
 // Where a prop stands. dir is the side being tracked (a pick or lean), or null.
@@ -538,18 +609,37 @@ const ml = (v) => (v == null ? "-" : v > 0 ? `+${v}` : `${v}`);
 
 function gameLines(g, teams) {
   const o = g.odds;
-  if (!o) return "";
-  const fav = o.spread < 0 ? teams.home.abbr : teams.away.abbr;
-  const spreadText = (sp, f) => (sp === 0 ? "Pick'em" : `${f} -${Math.abs(sp)}`);
-  const open = o.spread_open != null && o.spread_open !== o.spread ? `<span class="muted"> opened ${spreadText(o.spread_open, o.spread_open < 0 ? teams.home.abbr : teams.away.abbr)}</span>` : "";
+  const u = g.ours;
+  if (!o && !u) return "";
+  const H = teams.home.abbr, A = teams.away.abbr;
+  const spreadText = (sp) => (sp == null ? "-" : Math.abs(sp) < 0.05 ? "Pick'em" : `${sp < 0 ? H : A} -${fmt(Math.abs(sp), Math.abs(sp) % 1 ? 1 : 0)}`);
   const lv = g.state === "in" ? S.liveOdds[g.id] : null;
-  const cell = (k, v, sub = "") => `<div class="gl"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
+  const leanTag = (txt) => `<span class="glean">Lean ${txt}</span>`;
+  const sub = (cls, label, v) => `<span class="${cls}">${label} ${v}</span>`;
+  const cell = (k, main, rows) => `<div class="gl"><div class="k">${k}</div><div class="v">${main}</div><div class="s">${rows.filter(Boolean).join("")}</div></div>`;
+  const pct = (p) => `${Math.round(100 * p)}%`;
+  // the side we like against DraftKings' spread, written the way a bettor would ("MIA +10")
+  const spreadLean = u?.lean_spread && o ? `${u.lean_spread} ${u.lean_spread === H ? (o.spread > 0 ? "+" : "") + o.spread : (o.spread < 0 ? "+" : "") + -o.spread}` : null;
   return `<div class="glines">
-    ${cell("Spread", spreadText(o.spread, fav), open + (lv ? `<span class="live-l">live ${spreadText(lv.spread, lv.spread < 0 ? teams.home.abbr : teams.away.abbr)}</span>` : ""))}
-    ${cell("Total", `O/U ${o.total}`, lv ? `<span class="live-l">live ${lv.total}</span>` : "")}
-    ${cell("Moneyline", `${teams.away.abbr} ${ml(o.ml_away)} \u00b7 ${teams.home.abbr} ${ml(o.ml_home)}`, lv ? `<span class="live-l">live ${ml(lv.ml_away)} / ${ml(lv.ml_home)}</span>` : "")}
-    ${cell("Implied points", `${teams.away.abbr} ${o.away_pts} \u00b7 ${teams.home.abbr} ${o.home_pts}`)}
-    <div class="gl-src">DraftKings pregame${lv ? ", live odds in amber" : ""}</div>
+    ${cell("Spread", o ? spreadText(o.spread) : "-", [
+      o?.spread_open != null && o.spread_open !== o.spread ? sub("muted", "opened", spreadText(o.spread_open)) : "",
+      lv ? sub("live-l", "live", spreadText(lv.spread)) : "",
+      u ? sub("ours-l", "ours", spreadText(u.spread)) : "",
+      spreadLean ? leanTag(spreadLean) : "",
+    ])}
+    ${cell("Total", o ? `O/U ${o.total}` : "-", [
+      lv ? sub("live-l", "live", lv.total) : "",
+      u ? sub("ours-l", "ours", fmt(u.total)) : "",
+      u?.lean_total ? leanTag(`${u.lean_total} ${o.total}`) : "",
+    ])}
+    ${cell("Moneyline", o ? `${A} ${ml(o.ml_away)} \u00b7 ${H} ${ml(o.ml_home)}` : "-", [
+      lv ? sub("live-l", "live", `${ml(lv.ml_away)} / ${ml(lv.ml_home)}`) : "",
+      u ? sub("ours-l", "ours", `${A} ${pct(1 - u.home_win)} (${ml(u.ml_away)}) \u00b7 ${H} ${pct(u.home_win)} (${ml(u.ml_home)})`) : "",
+    ])}
+    ${cell("Implied points", o ? `${A} ${o.away_pts} \u00b7 ${H} ${o.home_pts}` : "-", [
+      u ? sub("ours-l", "ours", `${A} ${fmt(u.away_pts)} \u00b7 ${H} ${fmt(u.home_pts)}`) : "",
+    ])}
+    <div class="gl-src">DraftKings pregame${lv ? ", live in amber" : ""}${u ? `, <span class="ours-l">ours</span> from our player projections added up into team scores (fair moneyline, no vig)${g.ours_late ? "; first made after kickoff, so not graded" : ""}` : ""}</div>
   </div>`;
 }
 
@@ -634,7 +724,7 @@ function pickCard(pick) {
 }
 
 function propChip(p, raw) {
-  const prop = pv(raw);
+  const prop = pv(p, raw);
   const line = S.lines[`${p.id}|${prop.key}`] ?? prop.line;
   const st = propStatus(p, prop.key, line, prop.lean);
   const arrow = prop.key === "anytime_td"
@@ -647,7 +737,7 @@ function propChip(p, raw) {
 }
 
 function catCard(p, raw) {
-  const prop = pv(raw);
+  const prop = pv(p, raw);
   const from = prop.line_from || "ours";
   const cat = S.data.categories[prop.key];
   const k = `${p.id}|${prop.key}`;
@@ -817,7 +907,7 @@ function renderFantasy() {
   });
   const th = (key, label, cls = "") => `<th class="${cls} ${ff.sort === key ? "sorted" : ""}" data-sort="${key}">${label}${ff.sort === key ? (ff.desc ? " ↓" : " ↑") : ""}</th>`;
   $("#main").innerHTML = `
-    <h2>Fantasy rankings <small>${scoringName()}, Sleeper's standard scoring \u00b7 K and DEF on ESPN standard scoring</small></h2>
+    <h2>Fantasy rankings <small>${esc(scoringName())} \u00b7 K and DEF on ESPN standard scoring</small></h2>
     <div class="filters"><div class="chips">${["QB", "RB", "WR", "TE", "FLEX", "K", "DEF", "ALL"].map((x) => `<button class="chip ${ff.pos === x ? "on" : ""}" data-fpos="${x}">${x === "ALL" ? "All" : x}</button>`).join("")}</div></div>
     <div class="tbl-wrap"><table class="tbl">
       <thead><tr><th class="l">#</th>${th("name", "Player", "l")}<th class="l hide-sm">Game</th>${th("proj", "Proj")}${th("live", "Live")}${th("diff", "+/-", "hide-sm")}${th("avg", "Avg", "hide-sm")}${th("snap", "Snap %", "hide-sm")}</tr></thead>
@@ -899,6 +989,10 @@ function renderRecord() {
       <div class="card stat"><div class="k">PPR projection error</div><div class="v">${c.ppr.proj_mae ?? "-"}</div><div class="d">${c.ppr.n ? `pts per player for Sleeper, ${c.ppr.average_mae} for ours (${c.ppr.n} players)` : "graded once games go final"}</div></div>
     </div>
     ${cats.length ? `<h2>Leans by category</h2><div class="glist">${cats.map(([k, v]) => `<div class="g"><span>${S.data.categories[k].label}</span><span class="num">${v.hit}-${v.miss} · ${pctText(v)}</span></div>`).join("")}</div>` : ""}
+    ${c.games ? `<h2>Game leans vs DraftKings</h2><div class="stats">
+      <div class="card stat"><div class="k">Against the spread</div><div class="v">${pctText(c.games.spread)}</div><div class="d">${c.games.spread.hit}-${c.games.spread.miss}, when our spread is 2+ points off DraftKings'</div></div>
+      <div class="card stat"><div class="k">Totals</div><div class="v">${pctText(c.games.total)}</div><div class="d">${c.games.total.hit}-${c.games.total.miss}, when our total is 3+ points off DraftKings'</div></div>
+    </div>` : ""}
     ${dkSection(c)}
     <h2>By week</h2>${weeks}
     <p class="note">A hit needs the result strictly over or under the line (lines end in .5, so there are no pushes). Players who didn't play are DNP, not misses. Lines first built after a game kicked off are never graded.</p>`;
@@ -923,6 +1017,8 @@ function renderAbout() {
     <p>A lean means our projection is far enough above (over) or below (under) a real sportsbook line. There are no leans against our own estimate. Top Overs and Top Unders are the biggest gaps, measured in each category's typical spread, and only use real sportsbook lines. They include players with 2+ games this season who aren't out, doubtful or on IR, and lock at kickoff. During a game, cards also show DraftKings' live line.</p>
     <h2>How our lines compare with DraftKings</h2>
     <p>See the Track Record tab. In short: DraftKings' lines are sharper than a season average, and three or four weeks in, the matchup adjustment hasn't yet made a season average more accurate. That's why the real line is the one that counts, and why the adjustment is kept small until there's more data.</p>
+    <h2>Our game lines</h2>
+    <p>Our spread, total and moneyline come from the same player projections, added up: each team's projected touchdowns (passing TDs from the quarterback, rushing TDs from everyone, so no catch is counted twice), 2-point conversions, its kicker's field goals and extra points, and its defense's touchdowns and safeties. Those totals are scaled to this season's real average points per team, then turned into a spread, total and win chance (a fair moneyline with no sportsbook margin). We show a lean when we're 2+ points off DraftKings' spread or 3+ off the total, lock it at kickoff, and grade it on the Track Record tab.</p>
     <h2>Fantasy points</h2>
     <p>QB, RB, WR and TE use Sleeper's standard scoring, in PPR or half PPR (the switch at the top changes every number on the site). Our totals match Sleeper's own on about 6,000 player-weeks from 2025 and 2026, both settings, re-checked every update.</p>
     <table class="ptable">${scoreRows.map(([k, v]) => `<tr><td>${k}</td><td class="num">${v > 0 ? "+" : ""}${v}</td></tr>`).join("")}<tr><td>Reception (half PPR)</td><td class="num">+0.5</td></tr></table>
@@ -1546,7 +1642,7 @@ const LOG_LABELS = {
 function gameLog(p) {
   const keys = S.data.log_stats?.[p.pos];
   if (!keys || !p.log) return "";
-  const rows = p.log.map((x) => ({ ...x, pts: S.half ? x.h : x.pts }));
+  const rows = p.log.map((x) => ({ ...x, pts: logPts(p, x) }));
   const c = current(p);
   if (c && !c.none) {
     const st = c.stats;
@@ -1555,7 +1651,7 @@ function gameLog(p) {
   if (!rows.length) return "";
   const snaps = (r) => (r.snp == null ? "-" : `${r.snp}${r.tsnp ? ` <span class="muted">${Math.round((100 * r.snp) / r.tsnp)}%</span>` : ""}`);
   return `<div class="glog" style="grid-column:1/-1"><div class="tbl-wrap"><table class="box">
-    <thead><tr><th class="l">Game log</th><th>Opp</th><th>Snaps</th>${keys.map((k) => `<th>${LOG_LABELS[k]}</th>`).join("")}<th class="ppr">${S.half ? "Half" : "PPR"}</th></tr></thead>
+    <thead><tr><th class="l">Game log</th><th>Opp</th><th>Snaps</th>${keys.map((k) => `<th>${LOG_LABELS[k]}</th>`).join("")}<th class="ppr">Pts</th></tr></thead>
     <tbody>${rows.map((r) => `<tr class="${r.now ? "now" : ""}"><td class="l">${r.now ? (S.games[p.game_id].state === "post" ? "Final" : "Now") : `Week ${r.w}`}</td><td>${r.opp || ""}</td><td>${snaps(r)}</td>${r.s.map((v) => `<td>${v}</td>`).join("")}<td class="ppr">${fmtPts(r.pts)}</td></tr>`).join("")}</tbody>
   </table></div></div>`;
 }
@@ -1638,6 +1734,70 @@ function renderInjuries(head) {
         }).join("")}
       </section>`).join("") || `<div class="empty">No injuries match.</div>`);
 }
+
+// ---------------------------------------------------------------- scoring menu
+
+function applyScoring() {
+  $("#sc-btn").textContent = `${scoringName()} \u25be`;
+  setTopHeight();
+  const y = window.scrollY;
+  render();
+  window.scrollTo(0, y);
+}
+
+function renderScoringPanel() {
+  const on = (mode, x) => (S.sc.mode === mode && (mode === "league" ? S.sc.league === x : !!S.sc.half === (x === "half")) ? "on" : "");
+  const preset = (mode, half, label, note) => `<button class="sc-opt ${on(mode, half ? "half" : "ppr")}" data-sc="${mode}|${half ? "half" : "ppr"}"><b>${label}</b><span>${note}</span></button>`;
+  $("#sc-panel").innerHTML = `
+    <div class="sc-h">Scoring for QB, RB, WR, TE</div>
+    <div class="sc-grid">
+      ${preset("sleeper", false, "Sleeper PPR", "default")}
+      ${preset("sleeper", true, "Sleeper Half PPR", "0.5 per catch")}
+      ${preset("espn", false, "ESPN PPR", "INT -2")}
+      ${preset("espn", true, "ESPN Half PPR", "INT -2, 0.5 per catch")}
+    </div>
+    <div class="sc-h">My Sleeper leagues</div>
+    ${S.leagues.map((l) => `<div class="sc-lg"><button class="sc-opt ${on("league", l.id)}" data-sc="league|${l.id}"><b>${esc(l.name)}</b><span>${esc(l.season || "")} \u00b7 ${leagueSummary(l.settings)}</span></button><button class="rm" data-sc-rm="${l.id}" title="Remove" aria-label="Remove">\u00d7</button></div>`).join("") || `<p class="note">Use your league's exact scoring: enter your Sleeper username (or a league ID).</p>`}
+    <div class="sc-find"><input id="sc-q" placeholder="Sleeper username or league ID" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="tbtn" data-sc-find>Find</button></div>
+    ${S.scMsg ? `<p class="note">${esc(S.scMsg)}</p>` : ""}
+    ${S.scFound?.length ? S.scFound.map((l) => `<div class="sc-lg"><span><b>${esc(l.name)}</b> <span class="muted">${esc(l.season || "")} \u00b7 ${leagueSummary(l.scoring_settings)}</span></span><button class="tbtn" data-sc-add="${l.league_id}">Use</button></div>`).join("") : ""}
+    <p class="note">Kickers and defenses always use ESPN standard scoring. Your choices are saved on this device.</p>`;
+}
+
+function leagueSummary(w = {}) {
+  const bits = [w.rec === 1 ? "PPR" : w.rec === 0.5 ? "Half PPR" : w.rec ? `${w.rec} per catch` : "Standard"];
+  if (w.pass_td && w.pass_td !== 4) bits.push(`${w.pass_td}-pt pass TD`);
+  if (w.bonus_rec_te) bits.push(`TE +${w.bonus_rec_te}`);
+  if (w.pass_int != null && w.pass_int !== -1) bits.push(`INT ${w.pass_int}`);
+  return bits.join(", ");
+}
+
+async function findLeagues(q) {
+  if (!q) return;
+  S.scMsg = "Looking...";
+  S.scFound = null;
+  renderScoringPanel();
+  try {
+    let found = [];
+    if (/^\d{8,}$/.test(q)) {
+      const l = await getJSON(`https://api.sleeper.app/v1/league/${q}`);
+      if (l?.league_id) found = [l];
+    } else {
+      const u = await getJSON(`https://api.sleeper.app/v1/user/${encodeURIComponent(q)}`);
+      if (u?.user_id) found = (await getJSON(`https://api.sleeper.app/v1/user/${u.user_id}/leagues/nfl/${S.data.season}`)) || [];
+    }
+    S.scFound = found.filter((l) => l.scoring_settings);
+    S.scMsg = S.scFound.length ? "" : "No Sleeper leagues found for that.";
+  } catch {
+    S.scMsg = "Couldn't reach Sleeper. Try again.";
+  }
+  renderScoringPanel();
+  $("#sc-q").value = q;
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.id === "sc-q") findLeagues(e.target.value.trim());
+});
 
 // ---------------------------------------------------------------- my picks
 
@@ -1798,16 +1958,40 @@ document.addEventListener("click", (e) => {
     redraw();
     return;
   }
-  const sc = t.closest("[data-scoring]");
-  if (sc) {
-    S.half = sc.dataset.scoring === "half";
-    store("half", S.half);
-    document.querySelectorAll("[data-scoring]").forEach((b) => b.classList.toggle("on", (b.dataset.scoring === "half") === S.half));
-    const y = window.scrollY;
-    render();
-    window.scrollTo(0, y);
+  if (t.closest("#sc-btn")) { const panel = $("#sc-panel"); panel.hidden = !panel.hidden; if (!panel.hidden) renderScoringPanel(); return; }
+  const pick = t.closest("[data-sc]");
+  if (pick) {
+    const [mode, x] = pick.dataset.sc.split("|");
+    S.sc = mode === "league" ? { mode, league: x, half: false } : { mode, half: x === "half" };
+    store("scoring", S.sc);
+    $("#sc-panel").hidden = true;
+    applyScoring();
     return;
   }
+  const addLg = t.closest("[data-sc-add]");
+  if (addLg) {
+    const l = S.scFound.find((x) => x.league_id === addLg.dataset.scAdd);
+    if (l && !S.leagues.some((x) => x.id === l.league_id)) {
+      S.leagues.push({ id: l.league_id, name: l.name, season: l.season, settings: l.scoring_settings });
+      store("leagues", S.leagues);
+    }
+    S.sc = { mode: "league", league: l.league_id, half: false };
+    store("scoring", S.sc);
+    S.scFound = null;
+    $("#sc-panel").hidden = true;
+    applyScoring();
+    return;
+  }
+  const rmLg = t.closest("[data-sc-rm]");
+  if (rmLg) {
+    S.leagues = S.leagues.filter((l) => l.id !== rmLg.dataset.scRm);
+    store("leagues", S.leagues);
+    if (S.sc.mode === "league" && S.sc.league === rmLg.dataset.scRm) { S.sc = { mode: "sleeper", half: false }; store("scoring", S.sc); applyScoring(); }
+    renderScoringPanel();
+    return;
+  }
+  if (t.closest("[data-sc-find]")) { findLeagues($("#sc-q").value.trim()); return; }
+  if (!t.closest("#sc-panel") && $("#sc-panel") && !$("#sc-panel").hidden) $("#sc-panel").hidden = true;
   const add = t.closest("[data-add]");
   if (add) {
     e.stopPropagation();
@@ -1972,7 +2156,8 @@ $("#reload").addEventListener("click", async () => {
     return;
   }
   applyHash();
-  document.querySelectorAll("[data-scoring]").forEach((b) => b.classList.toggle("on", (b.dataset.scoring === "half") === S.half));
+  if (S.sc.mode === "league" && !currentLeague()) S.sc = { mode: "sleeper", half: false };
+  $("#sc-btn").textContent = `${scoringName()} \u25be`;
   setTopHeight();
   render();
   syncHash(false);

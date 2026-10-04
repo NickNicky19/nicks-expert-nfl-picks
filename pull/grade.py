@@ -7,6 +7,7 @@ not a miss.
 import json
 import statistics
 
+import gamemodel
 import scoring
 
 
@@ -23,6 +24,20 @@ def tally(results):
     hit = sum(1 for r in results if r == "hit")
     miss = sum(1 for r in results if r == "miss")
     return {"hit": hit, "miss": miss, "dnp": sum(1 for r in results if r == "dnp"), "pct": round(100 * hit / (hit + miss), 1) if hit + miss else None}
+
+
+def grade_games(archive, scores):
+    """Our spread and total leans against DraftKings, for games final in `scores` ({game_id: (home, away)})."""
+    spread, total = [], []
+    for g in archive.get("games", []):
+        if not g.get("ours") or g.get("ours_late") or g["id"] not in scores:
+            continue
+        s_res, t_res = gamemodel.grade(g, g["ours"], *scores[g["id"]])
+        if s_res:
+            spread.append(s_res)
+        if t_res:
+            total.append(t_res)
+    return {"spread": tally(spread), "total": tally(total)}
 
 
 def grade_week(archive, stats, final_games):
@@ -112,6 +127,9 @@ def combine(weeks):
         h = sum(w.get("dk_leans", {}).get(side, {}).get("hit", 0) for w in weeks)
         m = sum(w.get("dk_leans", {}).get(side, {}).get("miss", 0) for w in weeks)
         total["dk_leans"][side] = {"hit": h, "miss": m, "pct": pct(h, m)}
+    for kind in ("spread", "total"):
+        rs = {k: sum(w.get("games", {}).get(kind, {}).get(k, 0) for w in weeks) for k in ("hit", "miss")}
+        total.setdefault("games", {})[kind] = {**rs, "pct": round(100 * rs["hit"] / (rs["hit"] + rs["miss"]), 1) if rs["hit"] + rs["miss"] else None}
     n = sum(w["ppr"]["n"] for w in weeks)
     wavg = lambda key: round(sum(w["ppr"][key] * w["ppr"]["n"] for w in weeks if w["ppr"][key] is not None) / n, 2) if n else None
     total["ppr"] = {"n": n, "proj_mae": wavg("proj_mae"), "average_mae": wavg("average_mae"), "proj_bias": wavg("proj_bias")}
@@ -122,7 +140,7 @@ def combine(weeks):
     return total
 
 
-def grade_all(archive_dir, stats_for, current, final_games):
+def grade_all(archive_dir, stats_for, current, final_games, scores_for=None):
     weeks = []
     for path in sorted(archive_dir.glob("*.json")):
         archive = json.loads(path.read_text())
@@ -131,6 +149,9 @@ def grade_all(archive_dir, stats_for, current, final_games):
         stats = stats_for(*key)
         if not stats:
             continue
-        weeks.append(grade_week(archive, stats, final_games if is_current else None))
+        week = grade_week(archive, stats, final_games if is_current else None)
+        if scores_for:
+            week["games"] = grade_games(archive, scores_for(*key))
+        weeks.append(week)
     weeks.sort(key=lambda w: (w["season"], w["week"]), reverse=True)
     return {"cumulative": combine(weeks), "weeks": weeks}

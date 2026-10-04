@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import books
+import gamemodel
 import grade
 import news
 from matchup import Matchups
@@ -263,7 +264,12 @@ def game_log(pos, games):
     keys = LOG_STATS[pos]
     return [{"w": g["week"], "opp": g["opp"], "snp": g["stats"].get("off_snp"), "tsnp": g["stats"].get("tm_off_snp"),
              "s": [g["stats"].get(k) or 0 for k in keys], "pts": scoring.ppr_points(g["stats"]),
-             "h": scoring.fantasy_points(g["stats"], pos, half=True)} for g in games]
+             "h": scoring.fantasy_points(g["stats"], pos, half=True),
+             # the full scoring stat line, so the page can score any league's settings
+             "st": {k: v for k, v in g["stats"].items() if v and k in SCORING_STATS}} for g in games]
+
+
+SCORING_STATS = set(scoring.PPR) | {"pass_cmp", "pass_att", "rush_att", "rec_tgt", "idp_fum_rec"}
 
 
 def snap_share(games):
@@ -336,7 +342,7 @@ def assemble(season, week, players, games, proj, history, ranks, weeks_played, p
             entry = dict(prev_players[pid], injury=p["injury"])
             # Fill in display-only fields added after this entry was frozen (they describe past games only)
             this_games = [x for x in history.get(pid, []) if x["season"] == season]
-            entry.setdefault("log", game_log(p["pos"], this_games))
+            entry["log"] = game_log(p["pos"], this_games)
             entry.setdefault("snap_share", snap_share(this_games))
             if this_games:
                 entry.setdefault("avg_half", round(statistics.mean(scoring.fantasy_points(x["stats"], p["pos"], half=True) for x in this_games), 2))
@@ -410,14 +416,26 @@ def kdef_entries(season, kdef, games, proj, history, previous, started):
     return out
 
 
-def archive_of(season, week, entries, picks, now):
+def league_points_per_team(season, week):
+    """Average points per team in this season's finished games before this week (last season's in week 1)."""
+    seasons = [(season, w) for w in range(1, week)] or [(season - 1, w) for w in range(1, REGULAR_SEASON_WEEKS + 1)]
+    pts = []
+    for s_, w in seasons:
+        for e in sources.scoreboard(s_, w).get("events", []):
+            if e["status"]["type"].get("completed"):
+                pts += [int(c["score"]) for c in e["competitions"][0]["competitors"] if c.get("score") not in (None, "")]
+    return sum(pts) / len(pts) if pts else 22.0
+
+
+def archive_of(season, week, entries, picks, now, games):
     return {
         "season": season, "week": week, "saved_at": now,
         "picks": picks,
+        "games": [{k: g.get(k) for k in ("id", "home", "away", "kickoff", "odds", "ours", "ours_late")} for g in games],
         "players": [{
             "id": e["id"], "name": e["name"], "pos": e["pos"], "team": e["team"], "opp": e["opp"], "game_id": e["game_id"],
             "proj_ppr": e["proj_ppr"], "matchup": (e.get("matchup") or {}).get("label"), "late": e.get("late", False),
-            "props": [{k: p[k] for k in ("key", "line", "proj", "lean", "source")} for p in e["props"]],
+            "props": [{k: p.get(k) for k in ("key", "line", "proj", "adj", "lean", "source", "line_from", "mf")} for p in e["props"]],
         } for e in entries],
     }
 
@@ -485,6 +503,18 @@ def run(refresh_all=False):
 
     entries, picks = assemble(season, week, players, games, proj, history, ranks, weeks_played, previous, started, book, picks_lines, mx)
     entries += kdef_entries(season, kdef, games, proj, history, previous, started)
+
+    # Our game projection (see gamemodel.py); a started game keeps the numbers it had at kickoff
+    pos_team = {pid: (p["pos"], p["team"]) for pid, p in {**players, **kdef}.items()}
+    ours = gamemodel.finish(games, gamemodel.rollup(proj, pos_team), league_points_per_team(season, week))
+    prev_games = {g["id"]: g for g in previous.get("games", [])}
+    for g in games:
+        old = prev_games.get(g["id"], {})
+        if g["id"] in started and old.get("ours"):
+            g["ours"], g["ours_late"] = old["ours"], old.get("ours_late", False)
+        else:
+            g["ours"] = ours.get(g["id"])
+            g["ours_late"] = g["id"] in started
     try:
         reports = news.injury_report([{**e, "espn_id": espn_ids.get(e["id"]) or (players.get(e["id"]) or kdef.get(e["id"]) or {}).get("espn_id")} for e in entries])
     except Exception as err:
@@ -523,10 +553,17 @@ def run(refresh_all=False):
     dump(OUT / "week.json", data)
     # The page polls this small file to tell when a new build is out
     dump(OUT / "meta.json", {"generated_at": now, "season": season, "week": week})
-    dump(ARCHIVE / f"{season}_w{week:02d}.json", archive_of(season, week, entries, picks, now))
+    dump(ARCHIVE / f"{season}_w{week:02d}.json", archive_of(season, week, entries, picks, now, games))
 
     stats_for = lambda s, w: this_week_stats if (s, w) == (season, week) else week_stats(s, w, refresh=False)
-    record = grade.grade_all(ARCHIVE, stats_for, current=(season, week), final_games={g["id"] for g in games if g["state"] == "post"})
+    finals = {}
+    def scores_for(s_, w):
+        if (s_, w) not in finals:
+            board = games if (s_, w) == (season, week) else load_games(s_, w)
+            finals[(s_, w)] = {g["id"]: (g["home_score"], g["away_score"]) for g in board if g["state"] == "post"}
+        return finals[(s_, w)]
+    record = grade.grade_all(ARCHIVE, stats_for, current=(season, week), final_games={g["id"] for g in games if g["state"] == "post"},
+                             scores_for=scores_for)
     dump(OUT / "track_record.json", record)
     print(f"{len(entries)} players, {len(games)} games, {len(picks['over'])} top overs, {len(picks['under'])} top unders")
     return data
