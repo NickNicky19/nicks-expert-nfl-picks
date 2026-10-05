@@ -89,7 +89,7 @@ def load_players():
     for pid, p in (sources.players() or {}).items():
         if p.get("position") in ("QB", "RB", "WR", "TE", "K", "DEF"):
             EVERYONE[pid] = {"name": p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip(),
-                             "pos": p["position"], "espn_id": p.get("espn_id")}
+                             "pos": p["position"], "espn_id": p.get("espn_id"), "team": p.get("team")}
         if p.get("position") in ("QB", "RB", "WR", "TE", "K") and not p.get("team") and p.get("active") and (p.get("search_rank") or 9999) < 1500:
             FREE_AGENTS[pid] = {"name": p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip(),
                                 "pos": p["position"], "injury": p.get("injury_status") or None}
@@ -535,6 +535,73 @@ def past_week(season, week, stats):
     return {"season": season, "week": week, "games": games, "players": list(rows.values())}
 
 
+# ---------------------------------------------------------------- teams: schedule and depth charts
+
+ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
+# offense in the order people read it; ESPN's keys for the 3WR 1TE formation
+OFFENSE_ORDER = ["qb", "rb", "wr1", "wr2", "wr3", "te", "lt", "lg", "c", "rg", "rt"]
+SLOT_NAMES = {"qb": "QB", "rb": "RB", "wr1": "WR", "wr2": "WR", "wr3": "WR", "te": "TE", "lt": "LT", "lg": "LG", "c": "C", "rg": "RG",
+              "rt": "RT", "pk": "K", "p": "P", "h": "Holder", "pr": "PR", "kr": "KR", "ls": "LS"}
+
+
+def season_schedule(season):
+    """Every regular season game (weeks 1 to 18) with kickoff, TV, score and DraftKings' line once it's posted."""
+    games = []
+    def week_games(w):
+        out = []
+        for e in sources.scoreboard(season, w).get("events", []):
+            comp = e["competitions"][0]
+            st = comp["status"]["type"]
+            sides = {c["homeAway"]: c for c in comp["competitors"]}
+            score = lambda side: int(sides[side]["score"]) if st["state"] != "pre" and sides[side].get("score") not in (None, "") else None
+            odds = (comp.get("odds") or [{}])[0]
+            out.append({"w": w, "id": e["id"], "kickoff": e["date"], "state": st["state"], "detail": st.get("shortDetail"),
+                        "home": sources.team_code(sides["home"]["team"]["abbreviation"]), "away": sources.team_code(sides["away"]["team"]["abbreviation"]),
+                        "home_score": score("home"), "away_score": score("away"),
+                        "tv": ", ".join(b for g in comp.get("broadcasts", []) for b in g.get("names", [])), "venue": (comp.get("venue") or {}).get("fullName"),
+                        "line": odds.get("details"), "total": odds.get("overUnder")})
+        return out
+    with ThreadPoolExecutor(6) as pool:
+        for rows in pool.map(week_games, range(1, REGULAR_SEASON_WEEKS + 1)):
+            games += rows
+    return sorted(games, key=lambda g: (g["w"], g["kickoff"], g["id"]))
+
+
+def depth_charts(espn_to_sleeper, by_name=None):
+    """Each team's ESPN depth chart (offense, defense, special teams) plus its record and standing."""
+    teams = sources.get_json(f"{ESPN_SITE}/teams") or {}
+    ids = [t["team"]["id"] for sp in teams.get("sports", []) for lg in sp.get("leagues", []) for t in lg.get("teams", [])]
+    def one(tid):
+        d = sources.get_json(f"{ESPN_SITE}/teams/{tid}/depthcharts") or {}
+        t = d.get("team") or {}
+        code = sources.team_code(t.get("abbreviation", ""))
+        # ESPN id first; Sleeper doesn't have every player's ESPN id, so fall back to name and team
+        sid = lambda a: espn_to_sleeper.get(str(a.get("id"))) or (by_name or {}).get((books.norm_name(a.get("displayName") or ""), code))
+        groups = []
+        for g in d.get("depthchart", []):
+            name = g.get("name") or ""
+            kind = "special" if "Special" in name else "offense" if any(k in g.get("positions", {}) for k in ("qb", "wr1")) else "defense"
+            keys = list(g.get("positions", {}))
+            if kind == "offense":
+                keys = [k for k in OFFENSE_ORDER if k in keys] + [k for k in keys if k not in OFFENSE_ORDER]
+            rows = []
+            for k in keys:
+                pos = g["positions"][k]
+                rows.append({"slot": SLOT_NAMES.get(k, k.upper()), "label": pos["position"].get("displayName"),
+                             "players": [{"n": a.get("displayName"), "id": sid(a)} for a in pos.get("athletes", [])][:4]})
+            groups.append({"kind": kind, "formation": name, "rows": rows})
+        groups.sort(key=lambda g: ["offense", "defense", "special"].index(g["kind"]))
+        return code, {
+            "name": t.get("displayName"), "short": t.get("name"), "color": t.get("color"), "record": t.get("recordSummary"),
+            "standing": t.get("standingSummary"), "depth": groups}
+    out = {}
+    with ThreadPoolExecutor(8) as pool:
+        for code, info in pool.map(one, ids):
+            if code:
+                out[code] = info
+    return out
+
+
 def load_stats_through(season, last_week, refresh_from):
     """Last season plus this season's weeks 1..last_week."""
     weeks_by_key = {}
@@ -658,6 +725,14 @@ def run(refresh_all=False):
     dump(OUT / "meta.json", {"generated_at": now, "season": season, "week": week})
     dump(ARCHIVE / f"{season}_w{week:02d}.json", archive_of(season, week, entries, picks, now, games))
 
+    # The whole season's schedule and every team's depth chart, for future weeks, team pages and game previews
+    try:
+        espn_to_sleeper = {str(p["espn_id"]): pid for pid, p in EVERYONE.items() if p.get("espn_id")}
+        by_name = {(books.norm_name(p["name"]), p["team"]): pid for pid, p in EVERYONE.items() if p.get("team")}
+        dump(OUT / "teams.json", {"season": season, "week": week, "generated_at": now,
+                                  "schedule": season_schedule(season), "teams": depth_charts(espn_to_sleeper, by_name)})
+    except Exception as err:   # ESPN being down shouldn't stop the build; the page keeps the last file
+        print("Schedule and depth charts unavailable:", err)
     # Finished weeks for the week picker; older ones are final, so they're only built once
     for w in range(1, week):
         path = WEEKS / f"{season}_w{w:02d}.json"

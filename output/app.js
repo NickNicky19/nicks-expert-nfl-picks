@@ -49,6 +49,9 @@ const S = {
   viewWeek: null,      // a finished week shown in the scores bar (null = this week)
   weeks: {},           // week -> that finished week's data (data/weeks/)
   pastGames: {},       // game id -> a game from a finished week
+  futureGames: {},     // game id -> an upcoming game in a later week (data/teams.json)
+  teamsData: null,     // the season schedule and every team's depth chart
+  teamView: null,      // Teams tab: the team open (null = all teams)
   favs: new Set(store("favs") || []),
   // Scoring for QB/RB/WR/TE: a preset (Sleeper or ESPN, PPR or half) or a saved Sleeper league's exact settings.
   // Kickers and defenses always use ESPN standard scoring.
@@ -611,15 +614,17 @@ function updateSub() {
 // ---------------------------------------------------------------- score strip
 
 function renderScores() {
-  const pastWk = S.viewWeek && S.weeks[S.viewWeek];
-  const games = pastWk ? pastWk.games.map((g) => S.pastGames[g.id]).sort((a, b) => a.kickoff.localeCompare(b.kickoff) || a.id.localeCompare(b.id))
+  const pastWk = S.viewWeek && S.viewWeek < S.data.week && S.weeks[S.viewWeek];
+  const futWk = S.viewWeek && S.viewWeek > S.data.week && S.teamsData ? S.viewWeek : null;
+  const games = futWk ? Object.values(S.futureGames).filter((g) => g.futureWeek === futWk).sort((a, b) => a.kickoff.localeCompare(b.kickoff) || a.id.localeCompare(b.id))
+    : pastWk ? pastWk.games.map((g) => S.pastGames[g.id]).sort((a, b) => a.kickoff.localeCompare(b.kickoff) || a.id.localeCompare(b.id))
     : Object.values(S.games).sort((a, b) => {
       const order = { in: 0, pre: 1, post: 2 };
       return order[a.state] - order[b.state] || a.kickoff.localeCompare(b.kickoff);
     });
   const anyLive = !pastWk && games.some((g) => g.state === "in");
   $("#live-dot").hidden = !anyLive;
-  $("#scores-status").textContent = pastWk ? `Week ${S.viewWeek} \u00b7 final scores`
+  $("#scores-status").textContent = futWk ? `Week ${futWk} \u00b7 upcoming` : pastWk ? `Week ${S.viewWeek} \u00b7 final scores`
     : anyLive ? `Live${innerWidth < 560 ? "" : ` · updates every 30s${S.liveAt ? ` · ${S.liveAt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" })}` : ""}`}`
     : `Week ${S.data.week} \u00b7 scores`;
   renderWeekPick();
@@ -634,8 +639,8 @@ function renderScores() {
       </div>`;
     return `<button class="game ${live ? "live" : ""} ${g.rz ? "rz" : ""} ${S.gameView === g.id ? "on" : ""}" data-game="${g.id}">
       ${row(g.away, g.away_score, g.home_score)}${row(g.home, g.home_score, g.away_score)}
-      ${(() => { const n = S.sync ? (g.pastWeek ? pastRows(g) : S.data.players.filter((p) => p.game_id === g.id)).filter((p) => isMine(p.id)).length : 0; return n ? `<div class="yours-n">${n} of yours</div>` : ""; })()}
-      <div class="st"><span class="clock">${esc(gameStatus(g))}</span><span class="dd">${esc(live ? g.dd || "" : g.state === "pre" ? shortLine(g) || g.tv || "" : dayShort(g.kickoff))}</span></div>
+      ${(() => { const n = S.sync ? (g.pastWeek ? pastRows(g) : g.futureWeek ? [...mySet()].map((id) => S.byId[id]).filter((p) => p && (p.team === g.home || p.team === g.away)) : S.data.players.filter((p) => p.game_id === g.id)).filter((p) => isMine(p.id)).length : 0; return n ? `<div class="yours-n">${n} of yours</div>` : ""; })()}
+      <div class="st"><span class="clock">${esc(gameStatus(g))}</span><span class="dd">${esc(live ? g.dd || "" : g.futureWeek ? g.line || g.tv || "" : g.state === "pre" ? shortLine(g) || g.tv || "" : dayShort(g.kickoff))}</span></div>
     </button>`;
   }).join("");
 }
@@ -973,7 +978,7 @@ function filteredPlayers() {
   const f = S.f;
   const q = normName(f.q);
   let list = S.data.players.filter((p) =>
-    (f.pos === "ALL" || p.pos === f.pos)
+    posMatch(p.pos, f.pos)
     && (!f.game || p.game_id === f.game)
     && (!f.cat || p.props.some((x) => x.key === f.cat))
     && (!q || normName(p.name).includes(q) || p.team.toLowerCase() === q)
@@ -1014,7 +1019,7 @@ function renderProps() {
 
     <h2>Players <small>${list.length} shown</small></h2>
     <div class="filters">
-      <div class="chips">${["ALL", "QB", "RB", "WR", "TE"].map((x) => `<button class="chip ${f.pos === x ? "on" : ""}" data-pos="${x}">${x === "ALL" ? "All" : x}</button>`).join("")}</div>
+      <div class="chips">${withFlex(["ALL", "QB", "RB", "WR", "TE"]).map((x) => `<button class="chip ${f.pos === x ? "on" : ""}" data-pos="${x}">${x === "ALL" ? "All" : x}</button>`).join("")}</div>
       <select id="f-game" aria-label="Game"><option value="">All games</option>${gameOpts}</select>
       <select id="f-cat" aria-label="Prop"><option value="">All props</option>${catOpts}</select>
       <select id="f-sort" aria-label="Sort">
@@ -1037,7 +1042,7 @@ function renderFantasy() {
   const ff = S.ff;
   if (ff.view === "ros") return renderRos();
   if (!posOk(ff.pos)) ff.pos = "FLEX";
-  const pos = ff.pos === "FLEX" ? ["RB", "WR", "TE"] : ff.pos === "ALL" ? usePositions(["QB", "RB", "WR", "TE", "K", "DEF"]) : [ff.pos];
+  const pos = ff.pos === "FLEX" ? flexPositions() : ff.pos === "ALL" ? usePositions(["QB", "RB", "WR", "TE", "K", "DEF"]) : [ff.pos];
   const rows = S.data.players.filter((p) => pos.includes(p.pos) && projPts(p) != null && projPts(p) >= 0.5)
     .map((p) => {
       const live = livePPR(p);
@@ -1089,7 +1094,7 @@ function renderRos() {
     return;
   }
   if (!posOk(ff.pos)) ff.pos = "FLEX";
-  const pos = ff.pos === "FLEX" ? ["RB", "WR", "TE"] : ff.pos === "ALL" ? usePositions(["QB", "RB", "WR", "TE", "K", "DEF"]) : [ff.pos];
+  const pos = ff.pos === "FLEX" ? flexPositions() : ff.pos === "ALL" ? usePositions(["QB", "RB", "WR", "TE", "K", "DEF"]) : [ff.pos];
   const nextWeeks = [];
   for (let w = S.data.week + 1; w <= S.data.week + 4 && w <= 18; w++) nextWeeks.push(w);
   const rows = rosPool().filter((p) => pos.includes(p.pos)).map((p) => {
@@ -1429,6 +1434,10 @@ const STAR_POWER = 1.3;
 //    a little extra to fix a hole);
 //  - their best lineup doesn't get meaningfully worse.
 // Ideas are ranked by your lineup gain, their lineup gain and how well the deal fits both teams' needs.
+// Starting spots a roster couldn't fill (["QB"] if it has no quarterback left)
+const lineupHoles = (ids) => bestLineup(ids || [], leagueSlots()).starters.filter((x) => !x.pick).map((x) => x.slot);
+const posCounts = (ids) => { const c = {}; for (const id of ids || []) { const p = S.byId[id]; if (p) c[p.pos] = (c[p.pos] || 0) + 1; } return c; };
+
 function findTradeIdeas() {
   const ld = S.leagueData;
   const slots = leagueSlots();
@@ -1456,7 +1465,7 @@ function findTradeIdeas() {
     return inn - out;   // -1 .. 1
   };
   const wantPos = S.ideaGet || "ANY", givePos = S.ideaGive || "ANY";
-  const okPos = (ids, want) => want === "ANY" || ids.some((id) => S.byId[id]?.pos === want);
+  const okPos = (ids, want) => want === "ANY" || ids.some((id) => posMatch(S.byId[id]?.pos, want));
   const ideas = [];
   for (const r of ld.rosters) {
     if (r.roster_id === me.roster_id) continue;
@@ -1478,6 +1487,9 @@ function findTradeIdeas() {
       const allowed = 0.15 + Math.max(0, theirFit) * 0.2; // up to about 30% when it fixes a hole for them
       if (edge > allowed || edge < -0.3) continue;        // too lopsided either way
       const newMine = myIds.filter((id) => !give.includes(id)).concat(get);
+      // never leave either team unable to fill a starting spot (giving away your only QB, say)
+      if (lineupHoles(newMine).length > lineupHoles(myIds).length) continue;
+      if (lineupHoles(theirIds.filter((id) => !get.includes(id)).concat(give)).length > lineupHoles(theirIds).length) continue;
       const luMe = bestLineup(newMine, slots);
       const dMe = luMe.total - baseMe;
       if (dMe < 8) continue;
@@ -1676,7 +1688,7 @@ function loadLeagueExtras() {
     safe(`${SLEEPER}/league/${id}/winners_bracket`),
     loadTrending(),
   ]).then(async ([mw, tw, drafts, traded, bracket]) => {
-    ld.weekly = Object.fromEntries(weeks.map((w, i) => [w, mw[i] || []]));
+    ld.weekly = { ...(ld.weekly || {}), ...Object.fromEntries(weeks.map((w, i) => [w, mw[i] || []])) };   // keep future weeks already loaded
     ld.tx = tw.flat().filter((t) => t && t.status === "complete").sort((a, b) => (b.created || 0) - (a.created || 0));
     ld.traded = traded || [];
     ld.bracket = bracket || [];
@@ -1695,7 +1707,8 @@ async function ensureLeague() {
   await loadFuture();
   if (!S.leagueData) await syncLeague(S.sync.league_id, S.sync.user_id, S.sync.source || "sleeper");
   if (!S.leagueData) return false;
-  await loadLeagueExtras();
+  await Promise.all([loadLeagueExtras(), loadTeams()]);
+  if (S.sync.source === "sleeper" || !S.sync.source) await Promise.all(Array.from({ length: 4 }, (_, i) => S.data.week + 1 + i).filter((w) => w <= 17).map(loadLeagueWeek));
   return true;
 }
 
@@ -1774,7 +1787,9 @@ function leagueMatchups() {
   const ld = S.leagueData;
   if (S.sync.source === "espn" || S.sync.source === "yahoo") return `<p class="note">Weekly matchups are available for Sleeper leagues for now.</p>`;
   const wk = S.muWeek || S.data.week;
-  const pick = `<div class="gtool"><label class="wk-l">Week <select data-mu-week>${Array.from({ length: S.data.week }, (_, i) => i + 1).map((w) => `<option value="${w}" ${w === wk ? "selected" : ""}>${w}${w === S.data.week ? " (now)" : ""}</option>`).join("")}</select></label></div>`;
+  if (!S.teamsData) loadTeams().then(() => S.tab === "league" && renderLeagueTab());
+  const pick = `<div class="gtool"><label class="wk-l">Week <select data-mu-week>${Array.from({ length: Math.min(lastWeek(), 17) }, (_, i) => i + 1).map((w) => `<option value="${w}" ${w === wk ? "selected" : ""}>${w}${w === S.data.week ? " (now)" : ""}</option>`).join("")}</select></label></div>`;
+  if (wk > S.data.week) return futureMatchups(wk, pick);
   if (wk !== S.data.week) {
     if (!ld.extras) { loadLeagueExtras().then(() => S.tab === "league" && renderLeagueTab()); return pick + `<div class="empty">Loading week ${wk}...</div>`; }
     const groups = {};
@@ -1810,14 +1825,16 @@ function leagueFreeAgents() {
   if (!S.trend) loadTrending().then(() => S.tab === "league" && renderLeagueTab());
   const rostered = new Set(ld.rosters.flatMap((r) => [...(r.players || []), ...(r.reserve || []), ...(r.taxi || [])]));
   const okPos = usePositions(["QB", "RB", "WR", "TE", "K", "DEF"]).filter((x) => leagueSlots().some((s2) => (SLOT_ELIG[s2] || []).includes(x)));
-  const pos = okPos.includes(S.faPos) ? S.faPos : "ALL";
+  const flexPos = [...new Set(leagueSlots().filter((x) => x.includes("FLEX") && x !== "SUPER_FLEX").flatMap((x) => SLOT_ELIG[x] || []))].filter((x) => okPos.includes(x));
+  const pos = okPos.includes(S.faPos) || (S.faPos === "FLEX" && flexPos.length) ? S.faPos : "ALL";
   const sort = S.faSort || "fit";
   // your players expected to play (someone out for the year or without a team isn't a fair comparison)
   const mineAt = (ps) => (myRoster().players || []).map((id) => S.byId[id]).filter((q) => q && q.pos === ps && rosPerGame(q) >= 1).sort((a, b) => rosPerGame(a) - rosPerGame(b));
   const adds = (id) => S.trend?.add[id] || 0;
-  const pool = rosPool().filter((p) => !rostered.has(p.id) && okPos.includes(p.pos) && (pos === "ALL" || p.pos === pos) && (rosPts(p) >= 5 || adds(p.id) > 0));
-  // the weakest player of yours he beats
-  const beats = (p) => mineAt(p.pos).find((q) => rosPerGame(p) > rosPerGame(q) + 0.5) || null;
+  const pool = rosPool().filter((p) => !rostered.has(p.id) && okPos.includes(p.pos) && (pos === "ALL" || p.pos === pos || (pos === "FLEX" && flexPos.includes(p.pos))) && (rosPts(p) >= 5 || adds(p.id) > 0));
+  // the weakest player of yours he beats: at his position, or (FLEX) among all your flex players
+  const mineFlex = flexPos.flatMap(mineAt).sort((a, b) => rosPerGame(a) - rosPerGame(b));
+  const beats = (p) => (pos === "FLEX" ? mineFlex : mineAt(p.pos)).find((q) => rosPerGame(p) > rosPerGame(q) + 0.5) || null;
   const rows = pool.map((p) => ({ p, beat: beats(p), add: adds(p.id), pg: rosPerGame(p) }))
     .sort(sort === "adds" ? (a, b) => b.add - a.add : sort === "proj" ? (a, b) => b.pg - a.pg
       : (a, b) => (!!b.beat - !!a.beat) || (b.beat ? (b.pg - rosPerGame(b.beat)) - (a.pg - rosPerGame(a.beat)) : 0) || b.pg - a.pg)
@@ -1829,7 +1846,7 @@ function leagueFreeAgents() {
   return `${ups.length ? `<div class="fa-ups"><b>${ups.length} free agent${ups.length === 1 ? " is" : "s are"} projected to score more than someone on your team</b>
       <ul>${ups.slice(0, 5).map((x) => `<li><span data-open="${x.p.id}" class="linkish">${esc(x.p.name)}</span> (${x.p.pos}, ${fmt(x.pg, 1)} a game) over your <span data-open="${x.beat.id}" class="linkish">${esc(x.beat.name)}</span> (${fmt(rosPerGame(x.beat), 1)} a game)${x.add ? `, added by ${addsText(x.add)} Sleeper users today` : ""}</li>`).join("")}</ul></div>`
       : `<div class="fa-ups none">No free agent is projected to score more than the players you have at ${pos === "ALL" ? "any position" : `${pos}`}.</div>`}
-    <div class="gtool">${seg("data-fa-pos", pos, ["ALL", ...okPos].map((x) => [x, x === "ALL" ? "All" : x]), "Position")}
+    <div class="gtool">${seg("data-fa-pos", pos, ["ALL", ...okPos, ...(flexPos.length ? ["FLEX"] : [])].map((x) => [x, x === "ALL" ? "All" : x === "FLEX" ? `FLEX (${flexPos.join("/")})` : x]), "Position")}
       ${seg("data-fa-sort", sort, [["fit", "Best for you"], ["proj", "Projection"], ["adds", "Most added"]], "Sort")}</div>
     <div class="fa-list">${rows.map(({ p, beat, add, pg }) => {
       const fut = futureRows(p);
@@ -2049,7 +2066,8 @@ function leagueMyTeam() {
   if (!S.leagueData.extras) loadLeagueExtras().then(() => S.tab === "league" && (S.leagueView || "team") === "team" && renderLeagueTab());
   return myTeamSummary() + needsBar() + `<div class="league-grid"><div>${startSit()}</div>
     <div>${lineupHtml(myRoster().players, "Best lineup, rest of season")}
-      <p class="note">See <a href="#" data-go-trade>trade ideas and top targets</a> for your weak spots, or the <a href="#" data-league-view="fa">best free agents</a>.</p></div></div>`;
+      <p class="note">See <a href="#" data-go-trade>trade ideas and top targets</a> for your weak spots, or the <a href="#" data-league-view="fa">best free agents</a>.</p>
+      ${myScheduleHtml()}</div></div>`;
 }
 
 
@@ -2106,7 +2124,7 @@ function topTargets() {
     if (r.roster_id === me.roster_id) continue;
     for (const id of r.players || []) {
       const p = S.byId[id];
-      if (!p || !["QB", "RB", "WR", "TE"].includes(p.pos) || (want && p.pos !== want)) continue;
+      if (!p || !["QB", "RB", "WR", "TE"].includes(p.pos) || (want && !posMatch(p.pos, want))) continue;
       const gain = bestLineup([...(me.players || []), id], slots).total - base;
       if (gain >= 10) out.push({ p, r, gain, week: weeklyPts(bestLineup([...(me.players || []), id], slots)) - weeklyPts(bestLineup(me.players || [], slots)), price: Math.max(0, rosPts(p) - (repl[p.pos] ?? 0)) });
     }
@@ -2142,7 +2160,10 @@ function afterTradeHtml() {
       ${lineupHtml(afterIds, "Lineup after the trade", incoming)}
     </div>`;
   };
-  return `<h2>After the trade</h2><div class="after-grid">
+  // a trade that empties one of your starting spots (your only QB, say) gets a plain warning first
+  const holes = lineupHoles(myAfter).filter((x, k, a) => a.indexOf(x) === k && !lineupHoles(me.players).includes(x));
+  const warn = holes.length ? `<div class="verdict bad">This trade leaves you without a starting ${holes.map(slotLabel).join(" or ")}. You'd need to pick one up or get one back in the deal.</div>` : "";
+  return warn + `<h2>After the trade</h2><div class="after-grid">
     ${side(me.roster_id, me.players || [], myAfter, `Your team (${esc(teamName(me.roster_id))})`)}
     ${other ? side(other.roster_id, other.players || [], (other.players || []).filter((id) => !S.trade.get.includes(id)).concat(S.trade.give), esc(teamName(other.roster_id))) : ""}
   </div><p class="note">New starters are highlighted. Position ranks show where each team would stand in your league (1 = best). Weekly points are each starter's projected points per game when he plays.</p>`;
@@ -2164,10 +2185,11 @@ async function buildAiTrades() {
     `Trade value = rest-of-season points over a waiver player (the higher, the more valuable). A rank like WR14 means the 14th-best receiver by projected points per game.`,
     `MY TEAM (${teamName(me.roster_id)}), my position ranks (1 = best of ${n}): ${Object.entries(ranks[me.roster_id] || {}).map(([k, v]) => `${k} ${v}`).join(", ")}.`,
     `My players: ${(me.players || []).map(line).filter(Boolean).join("; ")}`,
+    `My roster counts: ${Object.entries(posCounts(me.players)).map(([k, v]) => `${v} ${k}`).join(", ")}. Starting spots: ${lineupSummary()}.`,
     ...ld.rosters.filter((r) => r.roster_id !== me.roster_id).map((r) => `TEAM "${teamName(r.roster_id)}" ranks: ${Object.entries(ranks[r.roster_id] || {}).map(([k, v]) => `${k} ${v}`).join(", ")}. Players: ${(r.players || []).map(line).filter(Boolean).join("; ")}`),
   ].join("\n");
-  const ask = `Propose 4 realistic trades for MY TEAM${pos ? ` that bring back a ${pos}` : ""}${want ? `. What I want: ${want}` : ""}.
-Rules: each trade is with one other team; 1-for-1 or 2-for-1 (either way); the trade values on both sides should be within about 15% (a bit more is fine if it fills a position where the other team ranks poorly); help my weakest positions without creating a new hole; only use players listed for those teams, spelled exactly.
+  const ask = `Propose 4 realistic trades for MY TEAM${pos ? ` that bring back ${pos === "FLEX" ? `a flex player (${flexPositions().join(", ")})` : `a ${pos}`}` : ""}${want ? `. What I want: ${want}` : ""}.
+Rules: each trade is with one other team; 1-for-1 or 2-for-1 (either way); the trade values on both sides should be within about 15% (a bit more is fine if it fills a position where the other team ranks poorly); help my weakest positions without creating a new hole; never leave either team without enough players to fill its starting lineup (for example, don't trade away my only QB or TE unless one comes back); my starting lineup must get better; only use players listed for those teams, spelled exactly.
 Reply with JSON only: {"trades":[{"team":"<team name exactly>","give":["<my player>"],"get":["<their player>"],"why":"<one or two sentences>"}]}`;
   S.aiBusy = true; S.aiTrades = null; S.aiMsg = "";
   renderTrade();
@@ -2191,9 +2213,17 @@ Reply with JSON only: {"trades":[{"team":"<team name exactly>","give":["<my play
       const dMe = bestLineup((me.players || []).filter((id) => !give.includes(id)).concat(get), slots).total - baseMe;
       const dThem = bestLineup((r.players || []).filter((id) => !get.includes(id)).concat(give), slots).total - bestLineup(r.players || [], slots).total;
       const fair = edge <= 0.25 && edge >= -0.3 && dThem >= -2 && (dThem >= 0 || edge < -0.1);
-      return { roster: r.roster_id, give, get, why: t.why, vGive, vGet, edge, dMe, dThem, fair, theirFit: 0 };
-    }).filter(Boolean).sort((a, b) => b.fair - a.fair || b.dMe - a.dMe);
-    if (!S.aiTrades.length) S.aiMsg = "The AI's suggestions didn't match players in your league. Try again.";
+      const myAfter = (me.players || []).filter((id) => !give.includes(id)).concat(get);
+      const theirAfter = (r.players || []).filter((id) => !get.includes(id)).concat(give);
+      const holes = lineupHoles(myAfter).length > lineupHoles(me.players).length || lineupHoles(theirAfter).length > lineupHoles(r.players).length;
+      return { roster: r.roster_id, give, get, why: t.why, vGive, vGet, edge, dMe, dThem, fair, holes, theirFit: 0 };
+    }).filter(Boolean);
+    // the site has the last word: no deal that leaves a starting spot empty or makes your lineup worse
+    const kept = S.aiTrades.filter((x) => !x.holes && x.dMe > 0).sort((a, b) => b.fair - a.fair || b.dMe - a.dMe);
+    const dropped = S.aiTrades.length - kept.length;
+    S.aiTrades = kept;
+    if (!kept.length) S.aiMsg = dropped ? `The AI's ${dropped} idea${dropped === 1 ? "" : "s"} would have left a starting spot empty or made your lineup worse, so they're hidden. Try again.` : "The AI's suggestions didn't match players in your league. Try again.";
+    else if (dropped) S.aiMsg = `${dropped} more idea${dropped === 1 ? " was" : "s were"} hidden: ${dropped === 1 ? "it" : "they"} would have left a starting spot empty or made your lineup worse.`;
   } catch (err) {
     S.aiMsg = `Couldn't build trades right now (${err.message}).`;
   }
@@ -2239,8 +2269,8 @@ function tradeIdeasSection() {
     <p class="note">How many more points a week your starting lineup would score with him. Trade value is what he's worth in a deal; send back about that much.</p>
     ${aiTradesHtml()}
     <h3>Trade ideas</h3>
-    <div class="gtool idea-filters"><span class="muted">I want</span>${seg("data-idea-get", S.ideaGet || "ANY", ["ANY", "QB", "RB", "WR", "TE"].map((x) => [x, x === "ANY" ? "Any" : x]), "Want")}
-      <span class="muted">I'll give</span>${seg("data-idea-give", S.ideaGive || "ANY", ["ANY", "QB", "RB", "WR", "TE"].map((x) => [x, x === "ANY" ? "Any" : x]), "Give")}</div>
+    <div class="gtool idea-filters"><span class="muted">I want</span>${seg("data-idea-get", S.ideaGet || "ANY", withFlex(["ANY", "QB", "RB", "WR", "TE"]).map((x) => [x, x === "ANY" ? "Any" : x]), "Want")}
+      <span class="muted">I'll give</span>${seg("data-idea-give", S.ideaGive || "ANY", withFlex(["ANY", "QB", "RB", "WR", "TE"]).map((x) => [x, x === "ANY" ? "Any" : x]), "Give")}</div>
     <div class="ideas">${S.ideas.length ? S.ideas.map((x, i) => `<div class="idea">
       <div class="idea-team">${esc(teamName(x.roster))}</div>
       <div>You give ${nameList(x.give)}</div>
@@ -2289,7 +2319,11 @@ function leagueContext() {
   const one = (p) => {
     const g = gradeOf(p), inj = injOf(p).status, gm = S.games[p.game_id];
     const wk = gm ? gm.state === "pre" ? `proj ${fmt(projPts(p) || 0, 1)} this week vs ${p.opp}` : `${fmt(livePPR(p) || 0, 1)} so far this week` : "no game this week";
-    return `${p.name} ${p.pos} ${p.team}${g ? ` (${g.label})` : ""}: ${fmt(rosPerGame(p), 1)} pts a game rest of season, ${wk}${byesLeft(p).length ? `, bye wk ${byesLeft(p).join("/")}` : ""}${inj ? `, ${inj}` : ""}`;
+    const form = recentForm(p), role = depthRole(p), d = gm && p.opp ? defRank(p.opp, p.pos) : null;
+    const note = p.inj_report?.short;
+    return `${p.name} ${p.pos} ${p.team}${g ? ` (${g.label})` : ""}${role ? `, ${role} on depth chart` : ""}: ${fmt(rosPerGame(p), 1)} pts a game rest of season, ${wk}`
+      + `${d ? ` (opponent #${d.rank} of ${d.n} toughest vs ${p.pos})` : ""}${form?.pts != null ? `, last ${form.n} games ${fmt(form.pts, 1)} a game` : ""}${form?.snap != null ? `, ${Math.round(100 * form.snap)}% of snaps` : ""}`
+      + `${byesLeft(p).length ? `, bye wk ${byesLeft(p).join("/")}` : ""}${inj ? `, ${inj}` : ""}${note ? ` (${note.slice(0, 140)})` : ""}`;
   };
   out.push(`MY LEAGUE: "${L.name}" on ${{ espn: "ESPN", yahoo: "Yahoo" }[S.sync.source] || "Sleeper"}, ${ld.rosters.length} teams, ${{ 0: "redraft", 1: "keeper", 2: "dynasty" }[st.type] || "redraft"}. Lineup: ${lineupSummary()}. Scoring: ${leagueSummary(L.scoring_settings)}.`
     + `${st.waiver_type != null ? ` Waivers: ${{ 0: "rolling", 1: "reverse standings", 2: `FAAB, $${st.waiver_budget} budget` }[st.waiver_type]}.` : ""}${st.trade_deadline && st.trade_deadline < 99 ? ` Trade deadline: week ${st.trade_deadline}.` : ""}${st.playoff_teams ? ` Playoffs: top ${st.playoff_teams}, starting week ${st.playoff_week_start}.` : ""}`);
@@ -2338,6 +2372,14 @@ function leagueContext() {
     const list = fa.filter((p) => p.pos === pos).sort((a, b) => rosPerGame(b) - rosPerGame(a)).slice(0, 6);
     if (list.length) out.push(`${pos}: ${list.map((p) => `${one(p)}${S.trend?.add[p.id] ? `, ${S.trend.add[p.id]} adds` : ""}`).join("; ")}`);
   }
+  // the rest of my fantasy schedule, with projected lineups
+  const me = myRoster(), sched = [];
+  for (let w = S.data.week + 1; w <= S.data.week + 4; w++) {
+    const mine = ld.weekly?.[w]?.find((m) => m.roster_id === me.roster_id);
+    const opp = mine && ld.weekly[w].find((m) => m.matchup_id === mine.matchup_id && m.roster_id !== me.roster_id);
+    if (opp) sched.push(`week ${w} vs ${teamName(opp.roster_id)}: me ${fmt(projLineup(me, w).total, 1)} projected, them ${fmt(projLineup(ld.rosters.find((r) => r.roster_id === opp.roster_id), w).total, 1)}`);
+  }
+  if (sched.length) out.push(`MY UPCOMING MATCHUPS: ${sched.join("; ")}.`);
   if (ld.draft?.picks?.length) out.push(`MY DRAFT PICKS: ${ld.draft.picks.filter((pk) => pk.roster_id === S.sync.roster_id).map((pk) => `round ${pk.round} ${pname(pk.player_id)}`).join(", ")}.`);
   return out.join("\n");
 }
@@ -2597,6 +2639,8 @@ function renderAbout() {
       <div class="card"><b>Live everything</b><p>Scores, every player's stats and fantasy points from Sleeper's live feed, prop progress (cleared, lost, hit, miss), all refreshing together every 15 to 30 seconds.</p></div>
       <div class="card"><b>Game pages</b><p>Tap a game: field position, last play, quarter scores, win probability, play-by-play with filters (quarter, scoring, big plays, turnovers, flags), box score, props and fantasy for that game.</p></div>
       <div class="card"><b>Past weeks</b><p>Pick any earlier week above the scores: final scores, box scores, play-by-play, fantasy points and every player against DraftKings' closing lines.</p></div>
+      <div class="card"><b>Future weeks and teams</b><p>Pick any week through 18 above the scores: upcoming games with DraftKings' line once it's posted and a preview of who matters (projection, recent form, snap share, depth chart role, matchup). The Teams tab has every team's schedule, ESPN depth chart (offense, defense, special teams), fantasy players and injuries.</p></div>
+      <div class="card"><b>Rest of your fantasy season</b><p>Your schedule for every remaining week with projected scores, and any future week's matchups across your league.</p></div>
       <div class="card"><b>Injuries by game</b><p>Each game page has both teams' injury lists: every position from ESPN's report plus IR and fantasy statuses from Sleeper.</p></div>
       <div class="card"><b>Game lines</b><p>DraftKings spread, total, moneyline and implied points next to ours (player projections added up), pregame and live, with leans that get graded.</p></div>
       <div class="card"><b>Your scoring</b><p>Sleeper or ESPN, PPR or half, or your own Sleeper league's exact settings. Every number on the site follows it. Kickers and defenses use ESPN scoring.</p></div>
@@ -2651,7 +2695,7 @@ function renderAbout() {
 
 // ---- finished weeks (data/weeks/, built by pull/build.py): final scores, DraftKings' closing lines, every stat line
 
-const gameOf = (id) => S.games[id] || S.pastGames[id];
+const gameOf = (id) => S.games[id] || S.pastGames[id] || S.futureGames[id];
 const pastRows = (g) => S.weeks[g.pastWeek]?.byGame[g.id] || [];
 const dayShort = (iso) => new Date(iso).toLocaleDateString(undefined, { weekday: "short", month: "numeric", day: "numeric" });
 
@@ -2671,14 +2715,18 @@ function renderWeekPick() {
   const el = $("#wkpick");
   if (!el) return;
   const w = S.viewWeek || S.data.week;
+  if (!S.teamsData && !S.teamsLoading) loadTeams().then(renderWeekPick);
+  const last = lastWeek();
   el.innerHTML = `<button class="wkb" data-wk="${w - 1}" ${w <= 1 ? "disabled" : ""} aria-label="Previous week">‹</button>
-    <select class="wks" data-wksel aria-label="Week">${Array.from({ length: S.data.week }, (_, i) => i + 1).map((x) => `<option value="${x}" ${x === w ? "selected" : ""}>${x === S.data.week ? `Week ${x} (now)` : `Week ${x}`}</option>`).join("")}</select>
-    <button class="wkb" data-wk="${w + 1}" ${w >= S.data.week ? "disabled" : ""} aria-label="Next week">›</button>`;
+    <select class="wks" data-wksel aria-label="Week">${Array.from({ length: last }, (_, i) => i + 1).map((x) => `<option value="${x}" ${x === w ? "selected" : ""}>${x === S.data.week ? `Week ${x} (now)` : `Week ${x}`}</option>`).join("")}</select>
+    <button class="wkb" data-wk="${w + 1}" ${w >= last ? "disabled" : ""} aria-label="Next week">›</button>`;
 }
 
 async function setWeek(w) {
-  w = Math.max(1, Math.min(S.data.week, w));
+  await loadTeams();
+  w = Math.max(1, Math.min(lastWeek(), w));
   if (w === S.data.week) { S.viewWeek = null; renderScores(); return; }
+  if (w > S.data.week) { S.viewWeek = w; renderScores(); return; }
   S.viewWeek = w;
   if (!S.weeks[w]) {
     $("#strip").innerHTML = `<div class="muted small" style="padding:8px 16px">Loading week ${w}...</div>`;
@@ -2690,7 +2738,7 @@ async function setWeek(w) {
 // A finished game's players against DraftKings' closing lines
 function renderPastProps(g, teams) {
   const st = gs(g.id);
-  const rows = pastRows(g).filter((r) => r.lines && (!st.team || r.team === st.team) && (st.pos === "ALL" || r.pos === st.pos))
+  const rows = pastRows(g).filter((r) => r.lines && (!st.team || r.team === st.team) && posMatch(r.pos, st.pos))
     .sort((a, b) => fantasyPts(b.st, b.pos) - fantasyPts(a.st, a.pos));
   let over = 0, under = 0;
   const body = rows.map((r) => {
@@ -2704,7 +2752,7 @@ function renderPastProps(g, teams) {
       <div class="pp-who"><span class="pos ${r.pos}">${r.pos}</span> <b>${esc(r.name)}</b> <span class="muted">${r.team}</span>${S.byId[r.id] ? mineTag(r) : ""}<span class="num pp-pts">${fmtPts(fantasyPts(r.st, r.pos))} pts</span></div>
       <div class="pp-lines">${cells}</div></div>`;
   }).join("");
-  return `<div class="gtool">${teamSeg(teams, st.team)}${seg("data-gpos", st.pos, ["ALL", "QB", "RB", "WR", "TE"].map((x) => [x, x === "ALL" ? "All" : x]), "Position")}</div>
+  return `<div class="gtool">${teamSeg(teams, st.team)}${seg("data-gpos", st.pos, withFlex(["ALL", "QB", "RB", "WR", "TE"]).map((x) => [x, x === "ALL" ? "All" : x]), "Position")}</div>
     ${rows.length ? `<div class="gcount">${rows.length} players \u00b7 overs hit ${over}, unders hit ${under}</div>` : ""}
     <div class="pp-list">${body || `<div class="empty">No DraftKings player lines for this game.</div>`}</div>
     <p class="note">DraftKings' closing lines (via ESPN) against what each player actually did. Points in ${esc(scoringName())}.</p>`;
@@ -2713,9 +2761,9 @@ function renderPastProps(g, teams) {
 // A finished game's fantasy points, scored with the current settings
 function renderPastFantasy(g, teams) {
   const st = gs(g.id);
-  const rows = pastRows(g).filter((r) => posOk(r.pos) && (!st.team || r.team === st.team) && (st.pos === "ALL" || r.pos === st.pos))
+  const rows = pastRows(g).filter((r) => posOk(r.pos) && (!st.team || r.team === st.team) && posMatch(r.pos, st.pos))
     .map((r) => ({ r, pts: fantasyPts(r.st, r.pos) })).filter((x) => x.pts !== 0 || x.r.pos === "DEF").sort((a, b) => b.pts - a.pts);
-  return `<div class="gtool">${teamSeg(teams, st.team)}${seg("data-gpos", st.pos, usePositions(["ALL", "QB", "RB", "WR", "TE", "K", "DEF"]).map((x) => [x, x === "ALL" ? "All" : x]), "Position")}</div>
+  return `<div class="gtool">${teamSeg(teams, st.team)}${seg("data-gpos", st.pos, usePositions(withFlex(["ALL", "QB", "RB", "WR", "TE", "K", "DEF"])).map((x) => [x, x === "ALL" ? "All" : x]), "Position")}</div>
     <div class="tbl-wrap"><table class="tbl">
       <thead><tr><th class="l">Player</th><th>Snaps</th><th>Final</th></tr></thead>
       <tbody>${rows.map(({ r, pts }) => {
@@ -2730,17 +2778,214 @@ function renderPastFantasy(g, teams) {
     <p class="note">Week ${g.pastWeek} points in ${esc(scoringName())}.</p>`;
 }
 
+// ---------------------------------------------------------------- teams: schedules, depth charts, future games
+
+// data/teams.json (pull/build.py): the season schedule (weeks 1 to 18) and every team's ESPN depth chart
+function loadTeams() {
+  if (S.teamsData) return Promise.resolve(S.teamsData);
+  if (S.teamsLoading) return S.teamsLoading;
+  S.teamsLoading = getJSON(`data/teams.json?v=${encodeURIComponent(S.data.generated_at)}`).then((d) => {
+    S.teamsData = d;
+    for (const g of d.schedule) if (g.w > S.data.week) S.futureGames[g.id] = { ...g, state: "pre", futureWeek: g.w };
+    return d;
+  }).catch(() => { S.teamsData = { schedule: [], teams: {} }; return S.teamsData; });
+  return S.teamsLoading;
+}
+
+const lastWeek = () => Math.max(S.data.week, ...(S.teamsData?.schedule || []).map((g) => g.w));
+const teamInfo = (abbr) => S.teamsData?.teams?.[abbr] || null;
+
+// A player's recent form: average points and snap share over his last 3 games
+function recentForm(p) {
+  const log = (p.log || []).slice(-3);
+  if (!log.length) return null;
+  const pts = log.map((x) => logPts(p, x)).filter((v) => v != null);
+  const snaps = log.filter((x) => x.snp != null && x.tsnp).map((x) => x.snp / x.tsnp);
+  return { pts: pts.length ? pts.reduce((a, b) => a + b, 0) / pts.length : null, snap: snaps.length ? snaps.reduce((a, b) => a + b, 0) / snaps.length : null, n: log.length };
+}
+
+// Where he sits on his team's depth chart ("WR2"), from ESPN
+function depthRole(p) {
+  const t = teamInfo(p.team);
+  if (!t) return null;
+  const off = t.depth.find((g) => g.kind === "offense");
+  if (!off) return null;
+  if (p.pos === "WR") {
+    const wrs = off.rows.filter((r) => r.slot === "WR");
+    for (let i = 0; i < wrs.length; i++) if (wrs[i].players[0]?.id === p.id) return `WR${i + 1}`;
+    for (const r of wrs) { const k = r.players.findIndex((x) => x.id === p.id); if (k > 0) return "WR backup"; }
+    return null;
+  }
+  for (const r of off.rows) {
+    const k = r.players.findIndex((x) => x.id === p.id);
+    if (k >= 0) return `${r.slot}${k + 1}`;
+  }
+  return null;
+}
+
+// This player's projection for a given week (Sleeper's, scored like everything else)
+const weekProjOf = (p, w) => (w === S.data.week ? (S.games[p.game_id]?.state === "pre" ? projPts(p) : null) : futureRows(p).find((x) => x.w === w)?.pts ?? null);
+
+// One team's depth chart, easy to read: each spot with its starter first
+function depthHtml(abbr, kind = "offense") {
+  const t = teamInfo(abbr);
+  if (!S.teamsData) { loadTeams().then(() => S.gameView ? renderGame() : render()); return `<div class="empty">Loading depth charts...</div>`; }
+  if (!t) return `<p class="note">No depth chart for ${abbr}.</p>`;
+  const g = t.depth.find((x) => x.kind === kind);
+  if (!g) return `<p class="note">ESPN hasn't posted this part of the depth chart.</p>`;
+  let wr = 0;
+  return `<div class="depth"><div class="depth-h"><img src="${logo(abbr)}" alt=""> <b>${esc(t.short || abbr)}</b> <span class="muted small">${esc(g.formation)}</span></div>
+    ${g.rows.map((r) => {
+      const slot = r.slot === "WR" ? `WR${++wr}` : r.slot;
+      return `<div class="depth-row"><span class="depth-slot" title="${esc(r.label || "")}">${esc(slot)}</span><span class="depth-ps">${r.players.map((x, i) => {
+        const p = x.id && S.byId[x.id];
+        const inj = p ? injBadge(p) : "";
+        return `<span class="dpl ${i === 0 ? "start" : ""} ${p && isMine(p.id) ? "is-mine" : ""}" ${p ? `data-open="${p.id}"` : ""}>${esc(x.n)}${inj}</span>`;
+      }).join("")}</span></div>`;
+    }).join("")}</div>`;
+}
+
+function depthSection(teams, st, key = "dkind") {
+  const kind = st.depthKind || "offense";
+  const tabs = seg("data-depth-kind", kind, [["offense", "Offense"], ["defense", "Defense"], ["special", "Special teams"]], "Unit");
+  return `<div class="gtool">${tabs}</div><div class="depth-grid">${teams.map((abbr) => depthHtml(abbr, kind)).join("")}</div>
+    <p class="note">From ESPN. The first name at each spot is the starter; tap a fantasy player for his page. Injury tags are today's.</p>`;
+}
+
+// A future game: who matters for fantasy that week, and more than projections: recent form, role, matchup, injuries
+function renderPreview(g, teams) {
+  const st = gs(g.id);
+  if (!S.future) { loadFuture().then(() => S.gameView === g.id && renderGame()); return `<div class="empty">Loading projections...</div>`; }
+  const list = rosPool().filter((p) => (p.team === g.home || p.team === g.away) && posOk(p.pos) && (!st.team || p.team === st.team) && posMatch(p.pos, st.pos))
+    .map((p) => ({ p, proj: weekProjOf(p, g.futureWeek), form: recentForm(p), role: depthRole(p), opp: p.team === g.home ? g.away : g.home }))
+    .filter((x) => (x.proj ?? 0) >= 1).sort((a, b) => (b.proj ?? 0) - (a.proj ?? 0)).slice(0, 40);
+  return `<div class="gtool">${teamSeg(teams, st.team)}${seg("data-gpos", st.pos, usePositions(withFlex(["ALL", "QB", "RB", "WR", "TE", "K", "DEF"])).map((x) => [x, x === "ALL" ? "All" : x]), "Position")}</div>
+    <div class="pv-list">${list.map(({ p, proj, form, role, opp }) => `<div class="pv-row ${isMine(p.id) ? "is-mine" : ""}" data-open="${p.id}">
+      ${avatar(p)}
+      <div class="pv-main"><div><b>${esc(p.name)}</b>${injBadge(p)}${mineTag(p)} <span class="muted small">${p.pos} ${p.team}${role ? ` · ${role} on the depth chart` : ""}</span></div>
+        <div class="pv-facts">${form?.pts != null ? `<span>Last ${form.n}: <b>${fmt(form.pts, 1)}</b> a game</span>` : `<span class="muted">No games yet</span>`}${form?.snap != null ? `<span>Snaps <b>${Math.round(100 * form.snap)}%</b></span>` : ""}${rankChip(opp, p.pos, true)}</div></div>
+      <div class="pv-side"><b class="num">${fmtPts(proj)}</b><span class="small muted">proj</span></div>
+    </div>`).join("") || `<div class="empty">No projections for this game yet.</div>`}</div>
+    <p class="note">Week ${g.futureWeek} projections are Sleeper's, in ${esc(scoringName())}. "Last 3" is his recent scoring and snap share, the depth chart role is ESPN's, and the matchup rank is how that defense has played his position this season (#1 = toughest). Injury tags are today's.</p>`;
+}
+
+// ---- Teams tab: every team, then one team's schedule, depth chart, injuries and fantasy players
+
+function renderTeams() {
+  if (!S.teamsData) { $("#main").innerHTML = `<h2>Teams</h2><div class="empty">Loading teams...</div>`; loadTeams().then(() => S.tab === "teams" && renderTeams()); return; }
+  if (S.teamView && teamInfo(S.teamView)) return renderTeamPage(S.teamView);
+  const codes = Object.keys(S.teamsData.teams).sort((a, b) => (S.teamsData.teams[a].name || a).localeCompare(S.teamsData.teams[b].name || b));
+  $("#main").innerHTML = `<h2>Teams <small>schedule, depth chart and injuries</small></h2>
+    <div class="team-grid">${codes.map((c) => { const t = S.teamsData.teams[c]; return `<button class="team-card" data-team="${c}"><img src="${logo(c)}" alt=""><span><b>${esc(t.name || c)}</b><span class="small muted">${esc(t.record || "")}${t.standing ? ` · ${esc(t.standing)}` : ""}</span></span></button>`; }).join("")}</div>`;
+}
+
+function renderTeamPage(code) {
+  const t = teamInfo(code);
+  const view = S.teamTab || "schedule";
+  if (!S.future) loadFuture().then(() => S.tab === "teams" && renderTeams());
+  const games = S.teamsData.schedule.filter((g) => g.home === code || g.away === code);
+  const byWeek = Object.fromEntries(games.map((g) => [g.w, g]));
+  const sched = Array.from({ length: lastWeek() }, (_, i) => i + 1).map((w) => {
+    const g = S.games[byWeek[w]?.id] || byWeek[w];
+    if (!g) return `<div class="ts-row bye"><span class="ts-w">Wk ${w}</span><span>Bye</span></div>`;
+    const home = g.home === code, opp = home ? g.away : g.home;
+    const us = home ? g.home_score : g.away_score, them = home ? g.away_score : g.home_score;
+    const res = g.state === "post" && us != null ? `<b class="${us > them ? "win" : us < them ? "loss" : ""}">${us > them ? "W" : us < them ? "L" : "T"} ${us}-${them}</b>` : g.state === "in" ? `<b class="live">Live ${us ?? 0}-${them ?? 0}</b>` : `<span class="muted">${esc(kickoffText(g.kickoff))}</span>`;
+    const tough = ["QB", "RB", "WR", "TE"].map((pos) => defRank(opp, pos)).filter(Boolean);
+    return `<div class="ts-row ${w === S.data.week ? "now" : ""}" data-game="${g.id}"><span class="ts-w">Wk ${w}</span>
+      <span class="ts-opp">${home ? "vs" : "@"} <img src="${logo(opp)}" alt=""> <b>${opp}</b> <span class="muted small">${esc(teamInfo(opp)?.record || "")}</span></span>
+      <span class="ts-res">${res}${g.state === "pre" && g.line ? `<span class="small muted">${esc(g.line)}${g.total ? ` · ${g.total}` : ""}</span>` : ""}</span></div>`;
+  }).join("");
+  const players = rosPool().filter((p) => p.team === code && posOk(p.pos)).map((p) => ({ p, form: recentForm(p), role: depthRole(p) }))
+    .filter((x) => rosPts(x.p) > 5 || x.form).sort((a, b) => rosPerGame(b.p) - rosPerGame(a.p)).slice(0, 25);
+  const injured = rosPool().filter((p) => p.team === code && injOf(p).status);
+  const body = view === "schedule" ? `<div class="ts-list">${sched}</div><p class="note">Tap a game for its page. Upcoming games show DraftKings' line once it's posted.</p>`
+    : view === "depth" ? depthSection([code], S.teamPageSt ??= {})
+    : view === "injuries" ? (injured.length ? `<div class="ginj-wrap one">${injured.map((p) => `<div class="ginj-row tap" data-open="${p.id}"><span class="pos ${p.pos}">${p.pos}</span><span class="ginj-n"><b>${esc(p.name)}</b>${p.inj_report?.part || injOf(p).part ? ` <span class="muted">${esc(p.inj_report?.part || injOf(p).part)}</span>` : ""}</span><span class="ginj-s">${injBadge(p)}${p.inj_report?.ret ? `<span class="muted small">back ${esc(dayText(p.inj_report.ret))}</span>` : ""}</span></div>`).join("")}</div>` : `<div class="empty">No fantasy players on the injury report.</div>`)
+      + `<p class="note">Fantasy players only. A game page's Injuries tab has ESPN's full report for every position.</p>`
+    : `<div class="pv-list">${players.map(({ p, form, role }) => `<div class="pv-row ${isMine(p.id) ? "is-mine" : ""}" data-open="${p.id}">${avatar(p)}
+        <div class="pv-main"><div><b>${esc(p.name)}</b>${injBadge(p)}${mineTag(p)} <span class="muted small">${p.pos}${role ? ` · ${role}` : ""}</span></div>
+          <div class="pv-facts">${gradeChip(p)}${form?.pts != null ? `<span>Last ${form.n}: <b>${fmt(form.pts, 1)}</b> a game</span>` : ""}${form?.snap != null ? `<span>Snaps <b>${Math.round(100 * form.snap)}%</b></span>` : ""}</div></div>
+        <div class="pv-side"><b class="num">${fmt(rosPerGame(p), 1)}</b><span class="small muted">a game rest of season</span></div></div>`).join("") || `<div class="empty">No fantasy players.</div>`}</div>`;
+  $("#main").innerHTML = `<div class="gnav"><button class="back" data-team="">← All teams</button></div>
+    <div class="team-h"><img src="${logo(code)}" alt=""><div><h2>${esc(t.name || code)}</h2><div class="muted">${esc(t.record || "")}${t.standing ? ` · ${esc(t.standing)}` : ""}</div></div></div>
+    ${seg("data-team-tab", view, [["schedule", "Schedule"], ["depth", "Depth chart"], ["players", "Fantasy players"], ["injuries", "Injuries"]], "Section")}
+    <div class="team-body">${body}</div>`;
+}
+
+// ---- League: your fantasy schedule for the rest of the season, with projected scores
+
+function loadLeagueWeek(w) {
+  const ld = S.leagueData;
+  ld.weekly ??= {};
+  if (ld.weekly[w]) return Promise.resolve();
+  if (ld.weekLoading?.[w]) return ld.weekLoading[w];
+  (ld.weekLoading ??= {})[w] = getJSON(`${SLEEPER}/league/${ld.league.league_id}/matchups/${w}`).then((m) => { ld.weekly[w] = m || []; }).catch(() => { ld.weekly[w] = []; });
+  return ld.weekLoading[w];
+}
+
+// Each roster's best lineup for a future week, from that week's projections
+const projLineup = (r, w) => bestLineup(r.players || [], leagueSlots(), (p) => weekProjOf(p, w) || 0);
+
+function futureMatchups(w, pick) {
+  const ld = S.leagueData;
+  if (!S.future) { loadFuture().then(() => S.tab === "league" && renderLeagueTab()); return pick + `<div class="empty">Loading projections...</div>`; }
+  if (!ld.weekly?.[w]) { loadLeagueWeek(w).then(() => S.tab === "league" && renderLeagueTab()); return pick + `<div class="empty">Loading week ${w}...</div>`; }
+  const groups = {};
+  for (const m of ld.weekly[w]) if (m.matchup_id != null) (groups[m.matchup_id] ??= []).push(m);
+  const cards = Object.values(groups).filter((g) => g.length === 2).sort((a, b) => (b.some((x) => x.roster_id === S.sync.roster_id)) - (a.some((x) => x.roster_id === S.sync.roster_id)));
+  if (!cards.length) return pick + `<p class="note">No matchups scheduled for week ${w} yet (playoff weeks fill in once the regular season ends).</p>`;
+  const rec = Object.fromEntries(standingsRows().map((x) => [x.id, x]));
+  return pick + cards.map(([a, b]) => {
+    const la = projLineup(ld.rosters.find((r) => r.roster_id === a.roster_id), w), lb = projLineup(ld.rosters.find((r) => r.roster_id === b.roster_id), w);
+    const col = (m, lu, other) => `<div class="mu-side ${m.roster_id === S.sync.roster_id ? "me" : ""}">
+      <div class="mu-name">${esc(teamName(m.roster_id))}</div><div class="muted small">${rec[m.roster_id] ? recText(rec[m.roster_id]) : ""}</div>
+      <div class="mu-pts num ${lu.total > other.total ? "lead" : ""}">${fmtPts(lu.total)}</div>
+      <div class="muted small">projected${lu.total > other.total ? ", favored" : ""}</div>
+      ${lu.starters.filter((s2) => s2.pick).map((s2) => `<div class="mu-row" data-open="${s2.pick.p.id}"><span><span class="pos ${s2.pick.p.pos}">${s2.pick.p.pos}</span> ${esc(s2.pick.p.name)}${injBadge(s2.pick.p)}</span><span class="num muted">${fmtPts(s2.pick.v)}</span></div>`).join("")}
+    </div>`;
+    return `<div class="mu-card">${col(a, la, lb)}${col(b, lb, la)}</div>`;
+  }).join("") + `<p class="note">Week ${w} lineups are each team's best lineup from Sleeper's projections for that week (byes and injuries included as Sleeper has them). Records and form matter too: tap a player for his recent games.</p>`;
+}
+
+// My team: the rest of my fantasy schedule
+function myScheduleHtml() {
+  const ld = S.leagueData;
+  if (S.sync.source && S.sync.source !== "sleeper") return "";
+  const end = Math.min(lastWeek(), (ld.league.settings?.playoff_week_start || 15) - 1);
+  const weeks = [];
+  for (let w = S.data.week + 1; w <= end; w++) weeks.push(w);
+  if (!weeks.length || !S.future) return "";
+  const missing = weeks.filter((w) => !ld.weekly?.[w]);
+  if (missing.length) {
+    // redraw once they're all in (never in a loop: a week that fails to load is stored as empty)
+    Promise.all(missing.map(loadLeagueWeek)).then(() => { if (S.tab === "league" && (S.leagueView || "team") === "team" && weeks.every((w) => ld.weekly?.[w])) renderLeagueTab(); });
+    return `<h3>Your schedule</h3><div class="empty small">Loading...</div>`;
+  }
+  const rec = Object.fromEntries(standingsRows().map((x) => [x.id, x]));
+  const me = myRoster();
+  const rows = weeks.map((w) => {
+    const mine = ld.weekly[w].find((m) => m.roster_id === me.roster_id);
+    const opp = mine && ld.weekly[w].find((m) => m.matchup_id === mine.matchup_id && m.roster_id !== me.roster_id);
+    if (!opp) return `<div class="ts-row bye"><span class="ts-w">Wk ${w}</span><span class="muted">No matchup</span></div>`;
+    const a = projLineup(me, w).total, b = projLineup(ld.rosters.find((r) => r.roster_id === opp.roster_id), w).total;
+    return `<div class="ts-row" data-mu-go="${w}"><span class="ts-w">Wk ${w}</span><span class="ts-opp">vs <b>${esc(teamName(opp.roster_id))}</b> <span class="muted small">${rec[opp.roster_id] ? recText(rec[opp.roster_id]) : ""}</span></span>
+      <span class="ts-res"><b class="${a > b ? "win" : a < b ? "loss" : ""}">${fmt(a, 1)} - ${fmt(b, 1)}</b><span class="small muted">${a >= b ? "favored" : "underdog"}</span></span></div>`;
+  }).join("");
+  return `<h3>Your schedule</h3><div class="ts-list">${rows}</div><p class="note">Projected best lineups for each week (Sleeper's projections). Tap a week to see the whole matchup.</p>`;
+}
+
 function gameTeams(g) {
   const comp = S.sum[g.id]?.header?.competitions?.[0];
   const out = {};
   for (const side of ["away", "home"]) {
     const c = comp?.competitors?.find((x) => x.homeAway === side);
     out[side] = {
-      abbr: g[side], id: c?.team?.id, name: c?.team?.displayName || g[side],
-      short: c?.team?.name || c?.team?.shortDisplayName || g[side],
+      abbr: g[side], id: c?.team?.id, name: c?.team?.displayName || teamInfo(g[side])?.name || g[side],
+      short: c?.team?.name || c?.team?.shortDisplayName || teamInfo(g[side])?.short || g[side],
       color: c?.team?.color ? `#${c.team.color}` : "#344677",
       alt: c?.team?.alternateColor ? `#${c.team.alternateColor}` : null,
-      record: c?.record?.find((r) => r.type === "total")?.summary || c?.record?.[0]?.summary || "",
+      record: c?.record?.find((r) => r.type === "total")?.summary || c?.record?.[0]?.summary || teamInfo(g[side])?.record || "",
     };
   }
   return out;
@@ -2904,7 +3149,9 @@ function linescore(sum, teams) {
 
 // ---- game page: tabs, toolbars and their state
 
-const GAME_TABS = [["plays", "Plays"], ["box", "Box Score"], ["props", "Props"], ["fantasy", "Fantasy"], ["injuries", "Injuries"]];
+const GAME_TABS = [["plays", "Plays"], ["box", "Box Score"], ["props", "Props"], ["fantasy", "Fantasy"], ["injuries", "Injuries"], ["depth", "Depth chart"], ["preview", "Preview"]];
+// an upcoming game in a later week has no plays, box score or props yet
+const gameTabs = (g) => GAME_TABS.filter(([k]) => (g?.futureWeek ? ["preview", "depth", "injuries"].includes(k) : k !== "preview"));
 const PLAY_FILTERS = [["all", "All"], ["scoring", "Scoring"], ["big", "Big plays"], ["to", "Turnovers"], ["flag", "Flags"]];
 const BOX_SECTIONS = [["off", "Offense", ["passing", "rushing", "receiving", "fumbles"]], ["def", "Defense", ["defensive", "interceptions"]],
   ["st", "Special teams", ["kicking", "punting", "kickReturns", "puntReturns"]]];
@@ -2913,7 +3160,7 @@ const BOX_SECTIONS = [["off", "Offense", ["passing", "rushing", "receiving", "fu
 function gs(id = S.gameView) {
   const g = gameOf(id);
   return (S.gs[id] ??= {
-    tab: g.state === "pre" ? "props" : g.state === "in" ? "plays" : "box",
+    tab: g.futureWeek ? "preview" : g.state === "pre" ? "props" : g.state === "in" ? "plays" : "box",
     pbp: "all", team: "", q: "", order: "new", drives: null, box: "off", bteam: g.away, pos: "ALL", sort: g.state === "pre" ? "proj" : "live", leans: false,
   });
 }
@@ -2928,6 +3175,7 @@ function teamSeg(teams, cur) {
 }
 
 function gamesInOrder(g) {
+  if (g?.futureWeek) return Object.values(S.futureGames).filter((x) => x.futureWeek === g.futureWeek).sort((a, b) => a.kickoff.localeCompare(b.kickoff) || a.id.localeCompare(b.id));
   if (g?.pastWeek) return S.weeks[g.pastWeek].games.map((x) => S.pastGames[x.id]).sort((a, b) => a.kickoff.localeCompare(b.kickoff) || a.id.localeCompare(b.id));
   return Object.values(S.games).sort((a, b) => a.kickoff.localeCompare(b.kickoff) || a.id.localeCompare(b.id));
 }
@@ -3096,7 +3344,7 @@ function renderBox(g, sum, teams) {
 function renderGameProps(g, teams) {
   const st = gs(g.id);
   let list = S.data.players.filter((p) => p.game_id === g.id && p.props.length
-    && (!st.team || p.team === st.team) && (st.pos === "ALL" || p.pos === st.pos)
+    && (!st.team || p.team === st.team) && posMatch(p.pos, st.pos)
     && (!st.leans || p.props.some((x) => x.lean && x.line_from !== "ours")));
   const leanSize = (p) => Math.max(0, ...p.props.filter((x) => x.lean && x.adj != null).map((x) => Math.abs(x.adj - x.line) / Math.max(1, x.line)));
   const key = { proj: (p) => -(projPts(p) ?? -1), live: (p) => -(livePPR(p) ?? -1), lean: (p) => -leanSize(p) }[st.sort];
@@ -3104,7 +3352,7 @@ function renderGameProps(g, teams) {
   const picks = [...S.data.picks.over, ...S.data.picks.under].filter((x) => x.game_id === g.id);
   return `<div class="gtool">
       ${teamSeg(teams, st.team)}
-      ${seg("data-gpos", st.pos, ["ALL", "QB", "RB", "WR", "TE"].map((x) => [x, x === "ALL" ? "All" : x]), "Position")}
+      ${seg("data-gpos", st.pos, withFlex(["ALL", "QB", "RB", "WR", "TE"]).map((x) => [x, x === "ALL" ? "All" : x]), "Position")}
       ${seg("data-gsort", st.sort, [["proj", "Projected"], ["live", "Live pts"], ["lean", "Biggest lean"]], "Sort")}
       <button class="tbtn ${st.leans ? "on" : ""}" data-gleans aria-pressed="${st.leans}">Leans only</button>
     </div>
@@ -3170,13 +3418,13 @@ function renderGameInjuries(g, sum, teams) {
 function renderGameFantasy(g, teams) {
   const st = gs(g.id);
   const started = g.state !== "pre";
-  const rows = S.data.players.filter((p) => p.game_id === g.id && posOk(p.pos) && (!st.team || p.team === st.team) && (st.pos === "ALL" || p.pos === st.pos))
+  const rows = S.data.players.filter((p) => p.game_id === g.id && posOk(p.pos) && (!st.team || p.team === st.team) && posMatch(p.pos, st.pos))
     .map((p) => ({ p, proj: projPts(p), live: livePPR(p) }))
     .filter((r) => (r.proj ?? 0) >= 0.5 || (r.live ?? 0) !== 0)
     .sort((a, b) => (started ? (b.live ?? -99) - (a.live ?? -99) : 0) || (b.proj ?? -1) - (a.proj ?? -1));
   return `<div class="gtool">
       ${teamSeg(teams, st.team)}
-      ${seg("data-gpos", st.pos, usePositions(["ALL", "QB", "RB", "WR", "TE", "K", "DEF"]).map((x) => [x, x === "ALL" ? "All" : x]), "Position")}
+      ${seg("data-gpos", st.pos, usePositions(withFlex(["ALL", "QB", "RB", "WR", "TE", "K", "DEF"])).map((x) => [x, x === "ALL" ? "All" : x]), "Position")}
     </div>
     <div class="tbl-wrap"><table class="tbl">
       <thead><tr><th class="l">Player</th><th>Proj</th><th>${g.state === "post" ? "Final" : "Live"}</th><th>+/-</th></tr></thead>
@@ -3205,7 +3453,7 @@ function renderGame() {
     const t = teams[key];
     const score = g[`${key}_score`];
     const other = g[`${key === "home" ? "away" : "home"}_score`];
-    return `<div class="gt ${key}">
+    return `<div class="gt ${key}" data-team="${t.abbr}" title="${esc(t.name)}: schedule and depth chart">
       <img src="${logo(t.abbr)}" alt="">
       <div class="gt-n"><b class="long">${esc(t.short)}</b><b class="abbr">${t.abbr}</b><span class="muted">${esc(t.record)}</span>${g.state === "in" ? `<span class="gt-to">${toDots(key === "home" ? g.homeTO : g.awayTO)} <span class="muted">TO</span></span>` : ""}</div>
       <div class="gt-s num ${g.state === "post" && score < other ? "lose" : ""}">${started && score != null ? score : ""}${g.state === "in" && g.poss === t.abbr ? `<i class="poss-dot"></i>` : ""}</div>
@@ -3220,12 +3468,12 @@ function renderGame() {
   const nPlays = allDrives(sum).reduce((a, d) => a + (d.plays?.length || 0), 0);
   const nProps = past ? pastRows(g).filter((r) => r.lines).length : S.data.players.filter((p) => p.game_id === g.id && p.props.length).length;
   const nInj = gameInjuries(g, sum).length;
-  const badge = { plays: started && nPlays ? nPlays : "", props: nProps || "", box: "", fantasy: "", injuries: nInj || "" };
-  const body = { plays: () => renderPlays(g, sum, teams), box: () => renderBox(g, sum, teams), props: () => (past ? renderPastProps(g, teams) : renderGameProps(g, teams)), fantasy: () => (past ? renderPastFantasy(g, teams) : renderGameFantasy(g, teams)), injuries: () => renderGameInjuries(g, sum, teams) }[st.tab]();
+  const badge = { plays: started && nPlays ? nPlays : "", props: nProps || "", box: "", fantasy: "", injuries: nInj || "", depth: "", preview: "" };
+  const body = { plays: () => renderPlays(g, sum, teams), box: () => renderBox(g, sum, teams), props: () => (past ? renderPastProps(g, teams) : renderGameProps(g, teams)), fantasy: () => (past ? renderPastFantasy(g, teams) : renderGameFantasy(g, teams)), depth: () => depthSection([teams.away.abbr, teams.home.abbr], st), preview: () => renderPreview(g, teams), injuries: () => renderGameInjuries(g, sum, teams) }[st.tab]();
 
   $("#main").innerHTML = `
     <div class="gnav">
-      <button class="back" data-back>← ${past ? `Week ${g.pastWeek}` : "All games"}</button>
+      <button class="back" data-back>← ${past ? `Week ${g.pastWeek}` : g.futureWeek ? `Week ${g.futureWeek}` : "All games"}</button>
       <div class="gnav-r">
         <button class="tbtn" data-game="${prev?.id || ""}" ${prev ? "" : "disabled"} title="Previous game ([)">‹ ${prev ? `${prev.away} @ ${prev.home}` : ""}</button>
         <button class="tbtn" data-game="${next?.id || ""}" ${next ? "" : "disabled"} title="Next game (])">${next ? `${next.away} @ ${next.home}` : ""} ›</button>
@@ -3244,17 +3492,21 @@ function renderGame() {
           const mine = S.sync ? pastRows(g).filter((r) => isMine(r.id)) : [];
           return mine.length ? `<div class="yours-line"><b>Your players:</b> ${mine.map((r) => `<span ${S.byId[r.id] ? `data-open="${r.id}"` : ""}>${esc(r.name)} <b class="num">${fmtPts(fantasyPts(r.st, r.pos))}</b></span>`).join(" · ")}</div>` : "";
         }
+        if (g.futureWeek) {
+          const mine = S.sync ? [...mySet()].map((id) => S.byId[id]).filter((p) => p && (p.team === g.home || p.team === g.away)) : [];
+          return mine.length ? `<div class="yours-line"><b>Your players:</b> ${mine.map((p) => `<span data-open="${p.id}">${esc(p.name)} <b class="num">proj ${fmtPts(weekProjOf(p, g.futureWeek))}</b></span>`).join(" · ")}</div>` : "";
+        }
         const mine = S.sync ? S.data.players.filter((p) => p.game_id === g.id && isMine(p.id)) : [];
         return mine.length ? `<div class="yours-line"><b>Your players:</b> ${mine.map((p) => `<span data-open="${p.id}">${esc(p.name)} <b class="num">${current(p) ? fmtPts(livePPR(p)) : `proj ${fmtPts(projPts(p))}`}</b></span>`).join(" · ")}</div>` : "";
       })()}
       ${fieldView(g, teams, sum)}
       ${lastPlay ? `<div class="last-play"><span class="muted">Last play</span> ${esc(lastPlay.text || "")}</div>` : ""}
-      ${gameLines(g, teams)}
+      ${g.futureWeek ? `<div class="fut-line">${g.line ? `DraftKings: <b>${esc(g.line)}</b>${g.total ? `, total <b>${g.total}</b>` : ""}` : "DraftKings hasn't posted a line yet."}${g.tv ? ` <span class="muted">· ${esc(g.tv)}</span>` : ""}</div>` : gameLines(g, teams)}
       ${linescore(sum, teams)}
       ${winProb(sum, teams)}
     </div>
     <nav class="gtabs" role="tablist" aria-label="Game sections">
-      ${GAME_TABS.map(([k, l]) => `<button role="tab" aria-selected="${st.tab === k}" class="${st.tab === k ? "on" : ""}" data-gsub="${k}">
+      ${gameTabs(g).map(([k, l]) => `<button role="tab" aria-selected="${st.tab === k}" class="${st.tab === k ? "on" : ""}" data-gsub="${k}">
         ${l}${k === "plays" && g.state === "in" ? `<i class="ldot" title="Live"></i>` : ""}${badge[k] !== "" ? `<span class="gbadge">${badge[k]}</span>` : ""}</button>`).join("")}
       ${g.state === "in" ? `<span class="gtabs-note">updates every 8s</span>` : ""}
     </nav>
@@ -3266,7 +3518,7 @@ function renderGame() {
 
 // Switch a game's tab, keeping the tab bar in view if the page was scrolled past it
 function setGameTab(tab) {
-  if (!S.gameView || !GAME_TABS.some(([k]) => k === tab)) return;
+  if (!S.gameView || !gameTabs(gameOf(S.gameView)).some(([k]) => k === tab)) return;
   gs().tab = tab;
   renderGame();
   syncHash(false);
@@ -3278,8 +3530,9 @@ function setGameTab(tab) {
 }
 
 function stepGameTab(dir) {
-  const k = GAME_TABS.findIndex(([t]) => t === gs().tab);
-  setGameTab(GAME_TABS[(k + dir + GAME_TABS.length) % GAME_TABS.length][0]);
+  const tabs = gameTabs(gameOf(S.gameView));
+  const k = tabs.findIndex(([t]) => t === gs().tab);
+  setGameTab(tabs[(k + dir + tabs.length) % tabs.length][0]);
   $(".gtabs button.on")?.focus({ preventScroll: true });
 }
 
@@ -3287,6 +3540,7 @@ function openGame(id, push = true) {
   const g = gameOf(id);
   if (!g) return;
   if (g.pastWeek) S.viewWeek = g.pastWeek;
+  if (g.futureWeek) S.viewWeek = g.futureWeek;
   S.gameView = id;
   delete S.seenPlays[id];
   S.openDrives.clear();
@@ -3300,7 +3554,7 @@ function openGame(id, push = true) {
 // ---- links: #/props, #/fantasy, #/record, #/about, #/game/<id>/<tab>
 
 function hashNow() {
-  return S.gameView ? `#/game/${S.gameView}/${gs().tab}` : `#/${S.tab}`;
+  return S.gameView ? `#/game/${S.gameView}/${gs().tab}` : S.tab === "teams" && S.teamView ? `#/teams/${S.teamView}` : `#/${S.tab}`;
 }
 
 function syncHash(push) {
@@ -3314,9 +3568,12 @@ function applyHash() {
   if (m && gameOf(m[1])) {
     S.gameView = m[1];
     if (S.pastGames[m[1]] && !S.games[m[1]]) S.viewWeek = S.pastGames[m[1]].pastWeek;
-    if (m[2] && GAME_TABS.some(([k]) => k === m[2])) gs().tab = m[2];
+    if (S.futureGames[m[1]]) S.viewWeek = S.futureGames[m[1]].futureWeek;
+    if (m[2] && gameTabs(gameOf(m[1])).some(([k]) => k === m[2])) gs().tab = m[2];
     return true;
   }
+  const tm = location.hash.match(/^#\/teams(?:\/([A-Z]{2,3}))?$/);
+  if (tm) { S.gameView = null; S.tab = "teams"; S.teamView = tm[1] || null; return true; }
   const t = location.hash.match(/^#\/(props|fantasy|compare|league|trade|mine|news|record|about)$/);
   if (t) { S.gameView = null; S.tab = t[1]; return true; }
   return false;
@@ -3576,13 +3833,13 @@ function renderInjuries(head) {
   const want = (status) => st === "ALL" || (st === "Q" ? status === "Questionable" : st === "D" ? status === "Doubtful" : st === "O" ? ["Out", "Suspended", "PUP", "NA", "DNR", "COV"].includes(status) : st === "IR" ? status === "IR" || status === "Injured Reserve" : true);
   const rows = S.data.players.filter((p) => {
     const status = statusOf(p);
-    return status && want(status) && (pos === "ALL" || p.pos === pos) && ((projPts(p) ?? 0) >= 2 || p.depth === 1);
+    return status && want(status) && posMatch(p.pos, pos) && ((projPts(p) ?? 0) >= 2 || p.depth === 1);
   });
   const byGame = {};
   for (const p of rows) (byGame[p.game_id] ??= []).push(p);
   const games = gamesInOrder().filter((g) => byGame[g.id]);
   $("#main").innerHTML = head.replace("</div>", ` ${seg("data-injf", st, [["ALL", "All"], ["Q", "Questionable"], ["D", "Doubtful"], ["O", "Out"], ["IR", "IR"]], "Status")}
-      ${seg("data-injpos", pos, usePositions(["ALL", "QB", "RB", "WR", "TE", "K"]).map((x) => [x, x === "ALL" ? "All" : x]), "Position")}</div>`)
+      ${seg("data-injpos", pos, usePositions(withFlex(["ALL", "QB", "RB", "WR", "TE", "K"])).map((x) => [x, x === "ALL" ? "All" : x]), "Position")}</div>`)
     + `<p class="note">Fantasy-relevant players only (projected 2+ points or a starter). Tap a player for the full report: injury and side, expected return, games missed, recent snap shares, how his status has changed this season, and who plays more if he sits. Status from Sleeper and ESPN, plus game-day news from ESPN as it's posted.</p>`
     + (games.map((g) => `<section class="inj-game">
         <h3><button class="linkbtn" data-game="${g.id}">${g.away} @ ${g.home}</button> <span class="muted">${esc(gameStatus(g))}</span></h3>
@@ -3787,7 +4044,17 @@ function posOk(pos) {
   if (!slots || !["K", "DEF"].includes(pos)) return true;
   return slots.includes(pos);
 }
-const usePositions = (list) => list.filter((x) => posOk(x));
+const usePositions = (list) => list.filter((x) => x === "FLEX" || posOk(x));
+// FLEX: the positions your league's flex spot takes (RB, WR and TE unless your league says otherwise)
+function flexPositions() {
+  const slots = S.leagueData?.league.roster_positions || S.sync?.slots;
+  const fx = slots ? [...new Set(slots.filter((x) => x.includes("FLEX") && x !== "SUPER_FLEX").flatMap((x) => SLOT_ELIG[x] || []))] : [];
+  return fx.length ? fx : ["RB", "WR", "TE"];
+}
+// does a player's position match a filter (All / Any, one position, or FLEX)
+const posMatch = (pos, want) => !want || want === "ALL" || want === "ANY" || (want === "FLEX" ? flexPositions().includes(pos) : pos === want);
+// a position list with FLEX added after the last flex position
+const withFlex = (list) => { const i = Math.max(...list.map((x, k) => (["RB", "WR", "TE"].includes(x) ? k : -1))); return i < 0 ? list : [...list.slice(0, i + 1), "FLEX", ...list.slice(i + 1)]; };
 
 // My synced roster (kept from the last sync until the league reloads)
 function mySet() {
@@ -4084,7 +4351,7 @@ function renderMine() {
 function render() {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", !S.gameView && b.dataset.tab === S.tab));
   if (S.gameView) { renderGame(); renderScores(); return; }
-  ({ props: renderProps, fantasy: renderFantasy, compare: renderCompare, league: renderLeagueTab, trade: renderTrade, mine: renderMine, news: renderNews, record: renderRecord, about: renderAbout })[S.tab]();
+  ({ props: renderProps, fantasy: renderFantasy, compare: renderCompare, league: renderLeagueTab, trade: renderTrade, mine: renderMine, news: renderNews, teams: renderTeams, record: renderRecord, about: renderAbout })[S.tab]();
   updateSyncBtn();
   updateMineBadge();
   renderScores();
@@ -4125,7 +4392,7 @@ function renderLiveParts() {
 document.addEventListener("click", (e) => {
   const t = e.target;
   const tab = t.closest(".tabs button");
-  if (tab) { S.tab = tab.dataset.tab; S.gameView = null; store("tab", S.tab); render(); syncHash(true); window.scrollTo(0, 0); return; }
+  if (tab) { if (tab.dataset.tab === "teams") S.teamView = null; S.tab = tab.dataset.tab; S.gameView = null; store("tab", S.tab); render(); syncHash(true); window.scrollTo(0, 0); return; }
   if (t.closest("[data-back]")) { S.gameView = null; render(); syncHash(true); window.scrollTo(0, 0); return; }
   const gsub = t.closest("[data-gsub]");
   if (gsub) { setGameTab(gsub.dataset.gsub); return; }
@@ -4256,6 +4523,14 @@ document.addEventListener("click", (e) => {
     $("#calc")?.scrollIntoView({ block: "start" });
     return;
   }
+  const tmb = t.closest("[data-team]");
+  if (tmb) { S.tab = "teams"; S.teamView = tmb.dataset.team || null; S.teamTab = S.teamTab || "schedule"; S.gameView = null; render(); syncHash(true); window.scrollTo(0, 0); return; }
+  const ttab = t.closest("[data-team-tab]");
+  if (ttab) { S.teamTab = ttab.dataset.teamTab; renderTeams(); return; }
+  const dk = t.closest("[data-depth-kind]");
+  if (dk) { (S.gameView ? gs() : (S.teamPageSt ??= {})).depthKind = dk.dataset.depthKind; S.gameView ? renderGame() : renderTeams(); return; }
+  const mg = t.closest("[data-mu-go]");
+  if (mg) { S.leagueView = "matchups"; S.muWeek = +mg.dataset.muGo; renderLeagueTab(); window.scrollTo(0, 0); return; }
   const fs = t.closest("[data-fa-sort]");
   if (fs) { S.faSort = fs.dataset.faSort; renderLeagueTab(); return; }
   const tk = t.closest("[data-tx-kind]");
@@ -4523,7 +4798,8 @@ $("#reload").addEventListener("click", async () => {
   }
   takeYahooTokens();
   const deep = location.hash.match(/^#\/game\/(\d+)/);
-  if (deep && !S.games[deep[1]]) await loadPastWeeks();
+  if (deep && !S.games[deep[1]]) await Promise.all([loadPastWeeks(), loadTeams()]);
+  if (/^#\/teams/.test(location.hash)) await loadTeams();
   applyHash();
   if (WORKER_URL) {
     document.body.insertAdjacentHTML("beforeend", `<button id="chat-btn" class="chat-btn" title="Ask AI about trades, start/sit, matchups"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Ask AI</button>`);

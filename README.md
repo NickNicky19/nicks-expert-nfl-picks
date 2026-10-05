@@ -36,6 +36,10 @@ a Python build writes static JSON every hour, and a static page on GitHub Pages 
 - **Past weeks**: a week picker above the scores. Each finished week (`output/data/weeks/`, built once by
   `pull/build.py`) has final scores, DraftKings' game lines and closing player lines, and every stat line, so past
   game pages show the box score, play-by-play, fantasy points and each prop's result.
+- **Future weeks and teams**: the week picker runs through week 18 (upcoming games with DraftKings' line and a
+  fantasy preview). The Teams tab has every team's schedule, ESPN depth chart and injuries (`output/data/teams.json`,
+  rebuilt every update). The League tab shows your fantasy schedule for the rest of the season with projected scores.
+- **FLEX filters** everywhere positions are filtered, using your league's flex rules.
 - **Injuries by game**: each game page lists both teams' injuries (ESPN's report for every position plus Sleeper's
   statuses, IR included).
 - **Injuries in depth**: expected return, games missed, snap shares, a status timeline recorded every build
