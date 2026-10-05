@@ -99,14 +99,16 @@ export default {
       try { body = await req.json(); } catch { return json(req, env, { error: "bad request" }, 400); }
       const messages = (body.messages || []).slice(-16).map((m) => ({ role: m.role === "user" ? "user" : "model", parts: [{ text: String(m.text || "").slice(0, 4000) }] }));
       if (!messages.length || messages[messages.length - 1].role !== "user") return json(req, env, { error: "no question" }, 400);
-      const context = String(body.context || "").slice(0, 12000);
+      const context = String(body.context || "").slice(0, 30000);
       const ask = (model) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: `${SYSTEM}\n\nContext from the site:\n${context}` }] },
           contents: messages,
-          generationConfig: { maxOutputTokens: 1200, temperature: 0.6 },
+          generationConfig: body.json
+            ? { maxOutputTokens: 2500, temperature: 0.7, responseMimeType: "application/json" }   // the trade builder wants data back
+            : { maxOutputTokens: 1200, temperature: 0.6 },
         }),
       });
       // Free-tier models get busy: try the main model twice, then the fallbacks, until one answers

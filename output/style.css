@@ -741,3 +741,20 @@ h1 { overflow-wrap: anywhere; }
 
 .justin { background: var(--card); border: 1px solid var(--cyan); border-radius: 12px; margin-bottom: 8px; overflow: hidden; }
 .justin > .ptag { margin: 8px 12px 0; display: inline-block; }
+
+/* ---------- grades, after-trade view, AI builder */
+.grade { display: inline-block; min-width: 24px; text-align: center; font: 800 11px var(--sans); padding: 1px 5px; border-radius: 5px; background: var(--card-2); color: var(--text-2); }
+.grade.g-A { background: rgba(40, 231, 87, .18); color: var(--green); }
+.grade.g-B { background: rgba(0, 225, 224, .14); color: var(--cyan); }
+.grade.g-C { background: rgba(255, 201, 60, .14); color: var(--amber); }
+.grade.g-D, .grade.g-F { background: rgba(255, 128, 117, .16); color: var(--red); }
+.lu-g { display: inline-flex; align-items: center; gap: 6px; }
+.lu.new { background: rgba(0, 225, 224, .08); }
+.after-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 760px) { .after-grid { grid-template-columns: 1fr; } }
+.after h3 { font: 700 14px var(--head); margin: 2px 0 6px; }
+.after-sum { display: flex; flex-wrap: wrap; gap: 10px; font-size: 13px; }
+.after-sum .up { color: var(--green); } .after-sum .down { color: var(--red); }
+.ai-build { display: flex; gap: 6px; margin-bottom: 6px; }
+.ai-build input { flex: 1; min-width: 0; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; color: var(--text); }
+.idea-num .down { color: var(--red); }
