@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / "data" / "cache"
 OUT = ROOT / "output" / "data"
 ARCHIVE = OUT / "archive"
+WEEKS = OUT / "weeks"
 
 TOP_N = 12
 MIN_PICK_SCORE = 0.35
@@ -77,13 +78,18 @@ def week_stats(season, week, refresh):
 
 
 FREE_AGENTS = {}   # active players with no NFL team (filled by load_players)
+EVERYONE = {}      # every QB, RB, WR, TE, K and DEF Sleeper knows, for past weeks' names (filled by load_players)
 
 
 def load_players():
     """(skill players, kickers and team defenses) by Sleeper id. A team defense's id is its team code."""
     keep, kdef = {}, {}
     FREE_AGENTS.clear()
+    EVERYONE.clear()
     for pid, p in (sources.players() or {}).items():
+        if p.get("position") in ("QB", "RB", "WR", "TE", "K", "DEF"):
+            EVERYONE[pid] = {"name": p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip(),
+                             "pos": p["position"], "espn_id": p.get("espn_id")}
         if p.get("position") in ("QB", "RB", "WR", "TE", "K") and not p.get("team") and p.get("active") and (p.get("search_rank") or 9999) < 1500:
             FREE_AGENTS[pid] = {"name": p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip(),
                                 "pos": p["position"], "injury": p.get("injury_status") or None}
@@ -495,6 +501,40 @@ def archive_of(season, week, entries, picks, now, games):
     }
 
 
+def past_week(season, week, stats):
+    """One finished week for the page's week picker: final scores, DraftKings' game lines and closing player lines,
+    and every player's stat line (scored on the page, so any league's settings work)."""
+    games = load_games(season, week)
+    with ThreadPoolExecutor(8) as pool:
+        for g, odds in zip(games, pool.map(lambda g: books.game_odds(g["id"]), games)):
+            g["odds"] = odds
+    by_team = {}
+    for g in games:
+        by_team[g["home"]] = (g["id"], True)
+        by_team[g["away"]] = (g["id"], False)
+    keep = set(FUTURE_KEYS) | {k for ks in LOG_STATS.values() for k in ks} | {"off_snp", "tm_off_snp"}
+    rows = {}
+    for pid, e in stats.items():
+        who = EVERYONE.get(pid)
+        if not who or e.get("team") not in by_team or not (played(e) or who["pos"] == "DEF"):
+            continue
+        gid, home = by_team[e["team"]]
+        rows[pid] = {"id": pid, "name": who["name"], "pos": who["pos"], "team": e["team"], "opp": e.get("opp"), "home": home,
+                     "game_id": gid, "st": {k: v for k, v in e["stats"].items() if v and k in keep}}
+        if who.get("espn_id"):
+            rows[pid]["espn_id"] = str(who["espn_id"])
+    finished = [g["id"] for g in games if g["state"] == "post"]
+    try:
+        lines = books.week_lines(season, week, finished, {pid: {"name": r["name"], "team": r["team"], "espn_id": r.get("espn_id")} for pid, r in rows.items()})
+    except Exception as err:
+        print(f"DraftKings lines for week {week} unavailable:", err)
+        lines = {}
+    for pid, props in lines.items():
+        if pid in rows:
+            rows[pid]["lines"] = {k: v["close"] for k, v in props.items()}
+    return {"season": season, "week": week, "games": games, "players": list(rows.values())}
+
+
 def load_stats_through(season, last_week, refresh_from):
     """Last season plus this season's weeks 1..last_week."""
     weeks_by_key = {}
@@ -618,6 +658,11 @@ def run(refresh_all=False):
     dump(OUT / "meta.json", {"generated_at": now, "season": season, "week": week})
     dump(ARCHIVE / f"{season}_w{week:02d}.json", archive_of(season, week, entries, picks, now, games))
 
+    # Finished weeks for the week picker; older ones are final, so they're only built once
+    for w in range(1, week):
+        path = WEEKS / f"{season}_w{w:02d}.json"
+        if not path.exists() or w >= week - 2:
+            dump(path, past_week(season, w, weeks_by_key[(season, w)]))
     stats_for = lambda s, w: this_week_stats if (s, w) == (season, week) else week_stats(s, w, refresh=False)
     finals = {}
     def scores_for(s_, w):

@@ -11,10 +11,16 @@ const YAHOO_AUTH = "https://api.login.yahoo.com/oauth2/request_auth";
 const YAHOO_TOKEN = "https://api.login.yahoo.com/oauth2/get_token";
 const YAHOO_API = "https://fantasysports.yahooapis.com/fantasy/v2/";
 
-const SYSTEM = `You are the fantasy football and NFL betting assistant on "Joshua Moy's Expert NFL Picks".
-Answer in plain, friendly language, short paragraphs or a few bullets. Use the numbers in the context below
-(rest-of-season projections, trade values, rosters, injuries, matchups) and say when you're unsure.
+const SYSTEM = `You are the fantasy football and NFL betting helper on "Joshua Moy's Expert NFL Picks".
+Talk like a friend who knows football, texting back. Start with the answer in one short sentence
+("Yes, I'd take that trade." / "Start Addison."). Then give at most 3 short reasons as "- " bullets.
+Keep the whole reply under 70 words unless they ask for more detail.
+Use everyday words and round numbers ("about 15 points a week", "a top 10 running back"), never raw
+decimals like 191.54, and no jargon (no "ROS", "VOR", "replacement level", "positional scarcity").
+Don't repeat their roster or the context back to them. No headings, no bold, no tables.
+Use the numbers in the context below and say so when you're not sure.
 Never use em dashes or en dashes. This is for fun, not financial advice.`;
+const JSON_RULES = "Reply with JSON only, in exactly the format the user asks for. Write any text in short, everyday words, with no em or en dashes.";
 
 function allowedOrigin(req, env) {
   const o = req.headers.get("Origin") || "";
@@ -104,7 +110,7 @@ export default {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
         body: JSON.stringify({
-          systemInstruction: { parts: [{ text: `${SYSTEM}\n\nContext from the site:\n${context}` }] },
+          systemInstruction: { parts: [{ text: `${body.json ? JSON_RULES : SYSTEM}\n\nContext from the site:\n${context}` }] },
           contents: messages,
           generationConfig: body.json
             ? { maxOutputTokens: 2500, temperature: 0.7, responseMimeType: "application/json" }   // the trade builder wants data back

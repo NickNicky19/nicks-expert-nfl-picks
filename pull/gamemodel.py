@@ -37,7 +37,9 @@ def rollup(proj, pos_team):
 def american(p):
     """Fair American odds for a win probability."""
     p = min(max(p, 0.01), 0.99)
-    return round(-100 * p / (1 - p)) if p >= 0.5 else round(100 * (1 - p) / p)
+    if abs(p - 0.5) < 0.005:
+        return 100   # a true coin flip is even money for both sides
+    return round(-100 * p / (1 - p)) if p > 0.5 else round(100 * (1 - p) / p)
 
 
 def project(game, raw, league_avg):

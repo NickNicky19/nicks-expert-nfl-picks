@@ -28,9 +28,16 @@ a Python build writes static JSON every hour, and a static page on GitHub Pages 
 - **League tab**: start/sit for this week (players whose games have started stay locked), live matchups, standings,
   every roster and free agents. **League sync**: enter a Sleeper username (or an ESPN league ID; private ESPN leagues
   work in Chrome when signed in to espn.com) to load every roster: your best lineup, your rank at each
-  position, and 1-for-1 / 2-for-1 trades with every team that improve your starting lineup, flagged when theirs
-  improves too, as long as both sides are within 15 points of value. Top targets per position, and an "Ask AI" button
-  that opens Claude or ChatGPT with the trade, rosters and projections filled in.
+  position, and 1-for-1 / 2-for-1 trades with every team that improve your starting lineup and are fair for both
+  sides (their lineup can't get worse). Top targets per position, letter grades, both lineups after a trade, and an
+  AI trade builder.
+- **Ask AI**: a built-in chat (Google Gemini, through the Worker) that sees your league, roster, our top picks and the
+  trade you're looking at, and answers in a few plain sentences.
+- **Past weeks**: a week picker above the scores. Each finished week (`output/data/weeks/`, built once by
+  `pull/build.py`) has final scores, DraftKings' game lines and closing player lines, and every stat line, so past
+  game pages show the box score, play-by-play, fantasy points and each prop's result.
+- **Injuries by game**: each game page lists both teams' injuries (ESPN's report for every position plus Sleeper's
+  statuses, IR included).
 - **Injuries in depth**: expected return, games missed, snap shares, a status timeline recorded every build
   (`data/cache/injury_timeline.json`) and who plays more if a player sits.
 - **Matchup difficulty**: opponent rank against each position this season, and rest-of-season schedule strength.
