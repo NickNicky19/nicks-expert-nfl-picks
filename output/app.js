@@ -1266,22 +1266,50 @@ function bestLineup(ids, slots, value = rosPts) {
 
 // Trades that make your starting lineup better: 1-for-1, 2-for-1 and 1-for-2 with every other team.
 // "They gain" says whether their lineup improves too (a deal they'd plausibly take).
+// Each team's rank at each position (1 = best starters there), from its best rest-of-season lineup
+function positionRanks() {
+  const ld = S.leagueData, slots = leagueSlots();
+  const totals = ld.rosters.map((r) => {
+    const t = {};
+    for (const s2 of bestLineup(r.players || [], slots).starters) if (s2.pick) t[s2.pick.p.pos] = (t[s2.pick.p.pos] || 0) + s2.pick.v;
+    return { id: r.roster_id, t };
+  });
+  const out = {};
+  for (const x of totals) {
+    out[x.id] = {};
+    for (const pos of ["QB", "RB", "WR", "TE"]) out[x.id][pos] = 1 + totals.filter((y) => (y.t[pos] || 0) > (x.t[pos] || 0)).length;
+  }
+  return out;
+}
+
+// Trades another manager could plausibly accept. A deal counts as fair when:
+//  - the trade values (rest-of-season points over a waiver player) are within about 15% of each other, or up to
+//    about 30% when the deal fills a position they're weak at and takes from one where they're deep (people pay
+//    a little extra to fix a hole);
+//  - their best lineup doesn't get meaningfully worse.
+// Ideas are ranked by your lineup gain, their lineup gain and how well the deal fits both teams' needs.
 function findTradeIdeas() {
   const ld = S.leagueData;
-  const slots = ld.league.roster_positions.filter((x) => SLOT_ELIG[x]);
-  const me = ld.rosters.find((r) => r.roster_id === S.sync.roster_id);
+  const slots = leagueSlots();
+  const me = myRoster();
+  const n = ld.rosters.length;
   const usable = (ids) => (ids || []).filter((id) => S.byId[id] && rosPts(S.byId[id]) >= 15);
   const myIds = me.players || [];
   const baseMe = bestLineup(myIds, slots).total;
   const mineC = usable(myIds);
   const pairs = (xs) => xs.flatMap((a, i) => xs.slice(i + 1).map((b) => [a, b]));
-  // Trade value: rest-of-season points over a waiver player (the calculator's number). Both sides of an idea
-  // must be within FAIR_GAP of each other, so it's a deal the other manager could actually say yes to.
   const repl = replacementLevels();
   const tv = (id) => { const p = S.byId[id]; return p ? Math.max(0, rosPts(p) - (repl[p.pos] ?? 0)) : 0; };
   const sumTv = (ids) => ids.reduce((a, id) => a + tv(id), 0);
-  const FAIR_GAP = 15;
-  // optional position filters: what you want back, what you're willing to give
+  const ranks = positionRanks();
+  // + when a team receives players at positions it's weak (rank near n) and gives from positions it's deep
+  const needFit = (rid, incoming, outgoing) => {
+    const r = ranks[rid] || {};
+    const w = (id) => { const pos = S.byId[id]?.pos; return r[pos] ? (r[pos] - 1) / Math.max(1, n - 1) : 0.5; };
+    const inn = incoming.length ? incoming.reduce((a, id) => a + w(id), 0) / incoming.length : 0.5;
+    const out = outgoing.length ? outgoing.reduce((a, id) => a + w(id), 0) / outgoing.length : 0.5;
+    return inn - out;   // -1 .. 1
+  };
   const wantPos = S.ideaGet || "ANY", givePos = S.ideaGive || "ANY";
   const okPos = (ids, want) => want === "ANY" || ids.some((id) => S.byId[id]?.pos === want);
   const ideas = [];
@@ -1298,18 +1326,23 @@ function findTradeIdeas() {
     for (const [give, get] of deals) {
       if (!okPos(get, wantPos) || !okPos(give, givePos)) continue;
       const vGive = sumTv(give), vGet = sumTv(get);
-      if (Math.abs(vGet - vGive) > FAIR_GAP) continue;
+      const big = Math.max(vGive, vGet, 25);
+      const edge = (vGet - vGive) / big;                  // how much more value you'd get, as a share
+      const theirFit = needFit(r.roster_id, give, get);   // they receive what you give
+      const allowed = 0.15 + Math.max(0, theirFit) * 0.2; // up to about 30% when it fixes a hole for them
+      if (edge > allowed || edge < -0.3) continue;        // too lopsided either way
       const newMine = myIds.filter((id) => !give.includes(id)).concat(get);
       const dMe = bestLineup(newMine, slots).total - baseMe;
       if (dMe < 8) continue;
       const newThem = theirIds.filter((id) => !get.includes(id)).concat(give);
       const dThem = bestLineup(newThem, slots).total - baseThem;
-      if (dThem < -5) continue;
-      ideas.push({ roster: r.roster_id, give, get, dMe, dThem, vGive, vGet });
+      if (dThem < -3 && edge > -0.05) continue;           // they'd only take a lineup hit for clearly more value
+      const myFit = needFit(me.roster_id, get, give);
+      const score = dMe + 0.6 * dThem + 15 * theirFit + 10 * myFit - 40 * Math.max(0, edge);
+      ideas.push({ roster: r.roster_id, give, get, dMe, dThem, vGive, vGet, edge, theirFit, myFit, score });
     }
   }
-  // Drop deals padded with a throw-in that doesn't help either side: a 2-player version has to beat the
-  // simpler deal inside it by more than a couple of points for someone
+  // Drop deals padded with a throw-in that doesn't help either side
   const key = (x) => `${x.roster}|${[...x.give].sort().join(",")}|${[...x.get].sort().join(",")}`;
   const byKey = new Map(ideas.map((x) => [key(x), x]));
   const subsets = (x) => [
@@ -1320,18 +1353,28 @@ function findTradeIdeas() {
     const y = byKey.get(key(sub));
     return y && x.dMe <= y.dMe + 2 && x.dThem <= y.dThem + 2;
   }));
-  ideas.length = 0;
-  ideas.push(...lean);
-  // real win-wins first (their lineup improves too), then by how much your lineup improves
-  ideas.sort((a, b) => (b.dThem >= 1) - (a.dThem >= 1) || b.dMe - a.dMe);
+  lean.sort((a, b) => b.score - a.score);
   const perTeam = {}, perTarget = {};
-  return ideas.filter((x) => {
+  return lean.filter((x) => {
     const tk = x.get.join("+");
     if ((perTeam[x.roster] || 0) >= 3 || (perTarget[tk] || 0) >= 2) return false;
     perTeam[x.roster] = (perTeam[x.roster] || 0) + 1;
     perTarget[tk] = (perTarget[tk] || 0) + 1;
     return true;
   }).slice(0, 15);
+}
+
+// Why the other manager might say yes, in words
+function fairText(x) {
+  const ranks = positionRanks(), n = S.leagueData.rosters.length;
+  const posList = (ids) => [...new Set(ids.map((id) => S.byId[id]?.pos).filter(Boolean))];
+  const rk = (rid, pos) => ranks[rid]?.[pos];
+  const theirGet = posList(x.give), theirGive = posList(x.get);
+  const need = theirGet.filter((pos) => rk(x.roster, pos) > n / 2).map((pos) => `${pos} (they're ${rk(x.roster, pos)} of ${n})`);
+  const deep = theirGive.filter((pos) => rk(x.roster, pos) <= n / 2).map((pos) => `${pos} (${rk(x.roster, pos)} of ${n})`);
+  const value = Math.abs(x.edge) < 0.05 ? "Even value" : x.edge > 0 ? `You get about ${Math.round(100 * x.edge)}% more value` : `They get about ${Math.round(-100 * x.edge)}% more value`;
+  const why = [need.length ? `fills a need for them at ${need.join(", ")}` : "", deep.length ? `they give from depth at ${deep.join(", ")}` : ""].filter(Boolean).join("; ");
+  return `${value} (${fmtPts(x.vGive)} for ${fmtPts(x.vGet)})${why ? `; ${why}` : ""}.`;
 }
 
 // "Bhayshul Tuten: RB24 rest of season, 11.2 a game, bye week 9"
@@ -1383,9 +1426,20 @@ const leagueSlots = () => S.leagueData.league.roster_positions.filter((x) => SLO
 const myRoster = () => S.leagueData.rosters.find((r) => r.roster_id === S.sync.roster_id);
 const slotLabel = (x) => x.replace("SUPER_FLEX", "SF").replace("WRRB_FLEX", "W/R").replace("REC_FLEX", "W/T");
 
+// "QB, 2 RB, 2 WR, TE, 2 FLEX, K, DEF, 6 bench"
+function lineupSummary() {
+  const rp = S.leagueData.league.roster_positions || [];
+  const counts = {};
+  for (const x of rp) counts[x] = (counts[x] || 0) + 1;
+  const order = ["QB", "RB", "WR", "TE", "FLEX", "WRRB_FLEX", "REC_FLEX", "SUPER_FLEX", "K", "DEF", "BN", "IR", "TAXI"];
+  const names = { WRRB_FLEX: "RB/WR flex", REC_FLEX: "WR/TE flex", SUPER_FLEX: "superflex", BN: "bench", IR: "IR", TAXI: "taxi" };
+  return order.filter((k) => counts[k]).map((k) => `${counts[k] > 1 ? `${counts[k]} ` : ""}${names[k] || k}`).join(", ");
+}
+
 function leagueHead() {
   const ld = S.leagueData;
-  return `<div class="league-h"><div><b>${esc(ld.league.name)}</b> <span class="muted">· ${esc(teamName(S.sync.roster_id))} · ${ld.rosters.length} teams · ${S.sync.source === "espn" ? "ESPN" : "Sleeper"}</span></div>
+  return `<div class="league-h"><div><b>${esc(ld.league.name)}</b> <span class="muted">· ${esc(teamName(S.sync.roster_id))} · ${ld.rosters.length} teams · ${S.sync.source === "espn" ? "ESPN" : "Sleeper"}</span>
+      <div class="league-set">Lineup: ${esc(lineupSummary())} · scoring: ${esc(leagueSummary(ld.league.scoring_settings))}</div></div>
     <div><button class="tbtn" data-sync-refresh>Refresh</button> <button class="tbtn" data-sync-clear>Change</button></div></div>`;
 }
 
@@ -1638,10 +1692,10 @@ function tradeIdeasSection() {
       <div>You give ${nameList(x.give)}</div>
       <div>You get ${nameList(x.get)}</div>
       <div class="idea-num"><span class="up">Your lineup +${fmtPts(x.dMe)}</span> · <span class="${x.dThem >= 1 ? "up" : "muted"}">theirs ${x.dThem >= 0 ? "+" : ""}${fmtPts(x.dThem)}</span>${x.dThem >= 1 ? ` <span class="glean">both teams gain</span>` : ""}</div>
-      <div class="idea-why">Fair value: you give <b>${fmtPts(x.vGive)}</b>, you get <b>${fmtPts(x.vGet)}</b>. ${x.get.map((id) => whyLine(id)).join(" ")}</div>
+      <div class="idea-why"><b>Why it's fair:</b> ${fairText(x)} ${x.get.map((id) => whyLine(id)).join(" ")}</div>
       <div class="idea-btns"><button class="tbtn" data-idea="${i}">Open in calculator</button> <button class="tbtn" data-ask-idea="${i}">Ask AI about it</button></div>
     </div>`).join("") : `<p class="note">No fair trades found that improve your starters${S.ideaGet && S.ideaGet !== "ANY" ? ` with a ${S.ideaGet} coming back` : ""}. Try another position, or the calculator below.</p>`}</div>
-    <p class="note">Ideas only include trades where both sides are worth about the same (within 15 points of rest-of-season value over a waiver player), so the other manager has a reason to say yes. "Both teams gain" means their best lineup improves too. Everything comes from Sleeper's projections for the remaining weeks, not last week's box score.</p>
+    <p class="note">Ideas are trades the other manager could plausibly accept: the values (rest-of-season points over a waiver player) are within about 15% of each other, or up to about 30% when the deal fills a position they're weak at and comes from one where they're deep. Their best lineup can't get meaningfully worse unless they get clearly more value. "Both teams gain" means their lineup improves too. Ranked by your lineup gain, theirs, and how well it fits both teams' needs. Built for your league's lineup (${esc(lineupSummary())}). Everything comes from Sleeper's projections for the remaining weeks, not last week's box score.</p>
   </div>`;
 }
 

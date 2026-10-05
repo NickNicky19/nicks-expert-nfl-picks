@@ -721,3 +721,4 @@ h1 { overflow-wrap: anywhere; }
   .wp-team b { font-size: 16px; }
   .wp-team img { width: 16px; height: 16px; }
 }
+.league-set { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
