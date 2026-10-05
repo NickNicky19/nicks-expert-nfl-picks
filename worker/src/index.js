@@ -100,7 +100,7 @@ export default {
       const messages = (body.messages || []).slice(-16).map((m) => ({ role: m.role === "user" ? "user" : "model", parts: [{ text: String(m.text || "").slice(0, 4000) }] }));
       if (!messages.length || messages[messages.length - 1].role !== "user") return json(req, env, { error: "no question" }, 400);
       const context = String(body.context || "").slice(0, 12000);
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent`, {
+      const ask = (model) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
         body: JSON.stringify({
@@ -109,8 +109,16 @@ export default {
           generationConfig: { maxOutputTokens: 1200, temperature: 0.6 },
         }),
       });
+      // Free-tier models get busy: try the main model twice, then the fallbacks, until one answers
+      const chain = [env.GEMINI_MODEL, env.GEMINI_MODEL, ...String(env.GEMINI_FALLBACK || "").split(",").map((x) => x.trim()).filter(Boolean)];
+      let r;
+      for (let i = 0; i < chain.length; i++) {
+        r = await ask(chain[i]);
+        if (![503, 429, 404, 500].includes(r.status)) break;
+        if (i === 0) await new Promise((ok) => setTimeout(ok, 1200));
+      }
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) return json(req, env, { error: d.error?.message || `Gemini error ${r.status}` }, r.status === 429 ? 429 : 502);
+      if (!r.ok) return json(req, env, { error: r.status === 503 ? "Google's free AI is busy right now. Try again in a minute." : d.error?.message || `Gemini error ${r.status}` }, r.status === 429 ? 429 : 502);
       const text = (d.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
       return json(req, env, { text: text || "Sorry, I couldn't come up with an answer to that." });
     }

@@ -4,11 +4,11 @@
 const ESPN = "https://site.api.espn.com/apis/site/v2/sports/football/nfl";
 // The site's small server (Cloudflare Worker, worker/ in the repo): Yahoo sign-in and the AI chat. Empty until it's
 // deployed; those features stay hidden without it. localStorage "nflprops.worker" overrides it for testing.
-const WORKER_URL = (() => { try { return JSON.parse(localStorage.getItem("nflprops.worker")) || ""; } catch { return ""; } })() || "";
+const WORKER_URL = (() => { try { return JSON.parse(localStorage.getItem("nflprops.worker")) || ""; } catch { return ""; } })() || "https://expert-nfl-picks.joshuamoy.workers.dev";
 const ESPN_TO_SLEEPER = { WSH: "WAS" };
 const LIVE_MS = 30000;   // scores and box scores while a game is on
 const IDLE_MS = 300000;  // scores when nothing is live
-const GAME_MS = 15000;   // play-by-play for the game that's open
+const GAME_MS = 8000;    // play-by-play for the game that's open
 const META_MS = 60000;   // checks for a new build
 const UNAVAILABLE = new Set(["Out", "IR", "PUP", "Suspended", "NA", "Doubtful", "COV", "DNR"]);
 const SHORT = {
@@ -328,6 +328,12 @@ async function pollScores() {
       homeTO: e.status.type.state === "in" ? sit.homeTimeouts ?? null : null,
       awayTO: e.status.type.state === "in" ? sit.awayTimeouts ?? null : null,
       drive: e.status.type.state === "in" ? sit.lastPlay?.drive?.description || "" : "",
+      lastPlay: e.status.type.state === "in" && sit.lastPlay?.id ? {
+        id: sit.lastPlay.id, text: sit.lastPlay.text, type: sit.lastPlay.type, scoreValue: sit.lastPlay.scoreValue,
+        scoringPlay: (sit.lastPlay.scoreValue || 0) > 0, statYardage: sit.lastPlay.statYardage, start: sit.lastPlay.start, end: sit.lastPlay.end,
+        period: { number: e.status.period }, clock: { displayValue: e.status.displayClock },
+        homeScore: home.score === "" ? null : +home.score, awayScore: away.score === "" ? null : +away.score,
+      } : null,
       spot: e.status.type.state === "in" && sit.yardLine != null ? { yardLine: sit.yardLine, down: sit.down, distance: sit.distance, text: sit.downDistanceText, team: sit.possession } : null,
       rz: e.status.type.state === "in" && !!sit.isRedZone,
     });
@@ -738,7 +744,7 @@ function impliedFor(p) {
 
 function avatar(p) {
   if (p.pos === "DEF") return `<div class="av def"><img src="${logo(p.team)}" alt="" loading="lazy"></div>`;
-  return `<div class="av"><img src="${photo(p.id)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'"><img class="tm" src="${logo(p.team)}" alt="" loading="lazy"></div>`;
+  return `<div class="av"><img src="${photo(p.id)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">${p.freeAgent ? "" : `<img class="tm" src="${logo(p.team)}" alt="" loading="lazy">`}</div>`;
 }
 
 function injBadge(p) {
@@ -2085,7 +2091,7 @@ function renderAbout() {
     <table class="ptable">${scoreRows.map(([k, v]) => `<tr><td>${k}</td><td class="num">${v > 0 ? "+" : ""}${v}</td></tr>`).join("")}<tr><td>Reception (half PPR)</td><td class="num">+0.5</td></tr></table>
     <p>Kickers and team defenses use <b>ESPN's standard scoring</b>: field goals 3 (under 40 yards), 4 (40-49), 5 (50-59), 6 (60+), -1 per miss, 1 per extra point; defenses get 1 per sack, 2 per interception, fumble recovery, safety or blocked kick, 6 per touchdown, plus points-allowed and yards-allowed tiers. Every kicker and defense matches ESPN's own totals each week we've checked.</p>
     <h2>Live</h2>
-    <p>Scores, box scores and play-by-play come straight from ESPN every 30 seconds while games are on (every 15 seconds for the game you have open), paused when this tab is hidden. Live points use the same scoring, including 2-point conversions and field goal distances. An over is marked cleared the moment it passes the line, since stats only go up; an under is only a hit once the game is final.</p>
+    <p>Scores, box scores and play-by-play come straight from ESPN every 30 seconds while games are on (every 8 seconds for the game you have open, and the newest play shows "just in" the moment the scoreboard has it, before the full play-by-play catches up), paused when this tab is hidden. Live points use the same scoring, including 2-point conversions and field goal distances. An over is marked cleared the moment it passes the line, since stats only go up; an under is only a hit once the game is final.</p>
     <h2>News and injuries</h2>
     <p>Injury designations come from Sleeper with each update, along with ESPN's injury report (notes, body part and expected return). On game days the page also checks ESPN's latest news for games kicking off within 4 hours, so game-day inactives show up right away (outlined badges, with the time ESPN posted them). The News tab has ESPN's latest headlines, tagged with the players they mention, and an injury report by game. Opening a player and tapping More news loads his latest Rotowire note and headlines.</p>
     <h2>Updates and honest grading</h2>
@@ -2327,6 +2333,11 @@ function renderPlays(g, sum, teams) {
   const ordered = (arr) => (st.order === "new" ? arr.slice().reverse() : arr);
   const isOpen = (d) => (st.drives === "all" ? true : st.drives === "none" ? false : d.id === newest) !== S.openDrives.has(d.id);
   const allOpen = drives.length > 0 && drives.every(isOpen);
+  // the scoreboard often has the newest play a few seconds before the play-by-play feed does
+  const known = new Set(all.flatMap((d) => (d.plays || []).map((pl) => pl.id)));
+  const lp = g.lastPlay && !known.has(g.lastPlay.id) && (!st.team || teamCode(Object.values(teams).find((x) => x.id === g.lastPlay.start?.team?.id)?.abbr || "") === st.team || !g.lastPlay.start?.team?.id) ? g.lastPlay : null;
+  const justIn = lp && (st.pbp === "all" || (st.pbp === "scoring" ? lp.scoringPlay : playTags(lp).some((x) => x[0] === st.pbp)))
+    ? `<div class="justin"><span class="ptag big">JUST IN</span>${playRow(lp, teams, roster, true)}</div>` : "";
 
   const toolbar = `<div class="gtool">
     ${seg("data-pbp", st.pbp, PLAY_FILTERS, "Show")}
@@ -2340,11 +2351,11 @@ function renderPlays(g, sum, teams) {
   if (st.pbp !== "all") {
     const keep = (pl) => st.pbp === "scoring" ? pl.scoringPlay : playTags(pl).some((t) => t[0] === st.pbp);
     const plays = ordered(drives.flatMap((d) => (d.plays || []).filter(keep)));
-    return toolbar + `<div class="gcount">${plays.length} ${plays.length === 1 ? "play" : "plays"}</div>`
+    return toolbar + justIn + `<div class="gcount">${plays.length} ${plays.length === 1 ? "play" : "plays"}</div>`
       + (plays.length ? `<div class="play-list">${plays.map((pl) => playRow(pl, teams, roster, isFresh(pl))).join("")}</div>` : `<div class="empty">None yet.</div>`);
   }
 
-  return toolbar + ordered(drives).map((d) => {
+  return toolbar + justIn + ordered(drives).map((d) => {
     const open = isOpen(d);
     const abbr = teamCode(d.team?.abbreviation || "");
     const live = g.state === "in" && d.id === newest && !d.displayResult;
@@ -2521,7 +2532,8 @@ function renderGame() {
     </div>`;
   };
   const lastDrive = allDrives(sum).slice(-1)[0];
-  const lastPlay = g.state === "in" ? lastDrive?.plays?.slice(-1)[0] : null;
+  const fromFeed = lastDrive?.plays?.slice(-1)[0];
+  const lastPlay = g.state === "in" ? (g.lastPlay && g.lastPlay.id !== fromFeed?.id && !allDrives(sum).some((d) => (d.plays || []).some((pl) => pl.id === g.lastPlay.id)) ? g.lastPlay : fromFeed || g.lastPlay) : null;
   const order = gamesInOrder();
   const i = order.findIndex((x) => x.id === g.id);
   const prev = order[i - 1], next = order[i + 1];
@@ -2555,7 +2567,7 @@ function renderGame() {
     <nav class="gtabs" role="tablist" aria-label="Game sections">
       ${GAME_TABS.map(([k, l]) => `<button role="tab" aria-selected="${st.tab === k}" class="${st.tab === k ? "on" : ""}" data-gsub="${k}">
         ${l}${k === "plays" && g.state === "in" ? `<i class="ldot" title="Live"></i>` : ""}${badge[k] !== "" ? `<span class="gbadge">${badge[k]}</span>` : ""}</button>`).join("")}
-      ${g.state === "in" ? `<span class="gtabs-note">updates every 15s</span>` : ""}
+      ${g.state === "in" ? `<span class="gtabs-note">updates every 8s</span>` : ""}
     </nav>
     <div class="gbody" role="tabpanel">${body}</div>`;
   // Plays drawn now count as seen; anything that shows up on a later refresh gets highlighted once
@@ -2978,7 +2990,7 @@ async function loadFuture() {
       S.future = f;
       // players not in this week's data (on bye or hurt), so league rosters and rankings still include them
       S.extra = Object.entries(f.meta || {}).filter(([id]) => !S.byId[id]).map(([id, [name, pos, team, injury]]) => {
-        const p = { id, name, pos, team, injury, props: [], log: [], extra: true };
+        const p = { id, name, pos, team: team || "FA", injury, props: [], log: [], extra: true, freeAgent: !team };
         S.byId[id] = p;
         return p;
       });
@@ -3013,7 +3025,7 @@ function rosPts(p) {
 }
 
 // Everyone with rest-of-season projections: this week's players plus those on bye or hurt this week
-const rosPool = () => [...S.data.players, ...(S.extra || [])];
+const rosPool = () => [...S.data.players, ...(S.extra || []).filter((p) => !p.freeAgent)];
 
 function rosGames(p) {
   const g = S.games[p.game_id];

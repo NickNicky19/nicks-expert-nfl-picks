@@ -76,10 +76,17 @@ def week_stats(season, week, refresh):
     return data
 
 
+FREE_AGENTS = {}   # active players with no NFL team (filled by load_players)
+
+
 def load_players():
     """(skill players, kickers and team defenses) by Sleeper id. A team defense's id is its team code."""
     keep, kdef = {}, {}
+    FREE_AGENTS.clear()
     for pid, p in (sources.players() or {}).items():
+        if p.get("position") in ("QB", "RB", "WR", "TE", "K") and not p.get("team") and p.get("active") and (p.get("search_rank") or 9999) < 1500:
+            FREE_AGENTS[pid] = {"name": p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip(),
+                                "pos": p["position"], "injury": p.get("injury_status") or None}
         if p.get("position") in ("K", "DEF") and p.get("team") and (p.get("active", True) or p["position"] == "DEF"):
             name = p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
             kdef[pid] = {"name": name, "pos": p["position"], "team": p["team"], "injury": p.get("injury_status"),
@@ -420,7 +427,7 @@ FUTURE_KEYS = set(scoring.PPR) | set(scoring.K_SCORING) | set(scoring.DEF_SCORIN
     "pass_cmp", "pass_att", "rush_att", "rec_tgt", "fgm_50p", "pts_allow", "yds_allow"}
 
 
-def future_weeks(season, week, entries, everyone):
+def future_weeks(season, week, entries, everyone, free_agents=None):
     """Sleeper's projections for every remaining week: [{w, opp, st}] per player, plus each team's bye weeks.
 
     Covers this week's players and anyone else with a real projection (players on bye or hurt this week still
@@ -456,6 +463,11 @@ def future_weeks(season, week, entries, everyone):
     keep = {pid: v for pid, v in out.items() if v and (pid in in_week or sum(x.get("pp") or 0 for x in v) >= 10)}
     meta = {pid: [everyone[pid]["name"], everyone[pid]["pos"], everyone[pid]["team"], everyone[pid].get("injury")]
             for pid in keep if pid not in in_week}
+    # Free agents (no NFL team, like a released veteran) can still be on fantasy rosters: name them so the page
+    # can show them on a synced league's roster, with no projection until they sign
+    for pid, p in (free_agents or {}).items():
+        if pid not in in_week and pid not in meta:
+            meta[pid] = [p["name"], p["pos"], None, p.get("injury")]
     return {"season": season, "from_week": week + 1, "players": keep, "byes": byes, "meta": meta}
 
 
@@ -601,7 +613,7 @@ def run(refresh_all=False):
         "log_stats": LOG_STATS,
     }
     dump(OUT / "week.json", data)
-    dump(OUT / "future.json", future_weeks(season, week, entries, {**players, **kdef}))
+    dump(OUT / "future.json", future_weeks(season, week, entries, {**players, **kdef}, FREE_AGENTS))
     # The page polls this small file to tell when a new build is out
     dump(OUT / "meta.json", {"generated_at": now, "season": season, "week": week})
     dump(ARCHIVE / f"{season}_w{week:02d}.json", archive_of(season, week, entries, picks, now, games))

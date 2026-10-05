@@ -738,3 +738,6 @@ h1 { overflow-wrap: anywhere; }
 .chat-in textarea { flex: 1; resize: none; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; color: var(--text); padding: 7px 9px; font: 13.5px var(--sans); }
 .chat-note { font-size: 10.5px; color: var(--faint); padding: 0 12px 8px; }
 @media (max-width: 560px) { .chat { right: 8px; left: 8px; bottom: 8px; width: auto; height: calc(100vh - 80px); } }
+
+.justin { background: var(--card); border: 1px solid var(--cyan); border-radius: 12px; margin-bottom: 8px; overflow: hidden; }
+.justin > .ptag { margin: 8px 12px 0; display: inline-block; }
