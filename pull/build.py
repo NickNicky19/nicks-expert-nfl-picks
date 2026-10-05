@@ -212,9 +212,15 @@ def player_props(player, proj, games, season, opp, mx):
             continue
         factor, n_games = mx.factor(opp, player["pos"], key, season_avg)
         adj = round(base * factor, 2)
+        # Our own model, independent of Sleeper and DraftKings: this season's games (recent ones count more) x the
+        # same matchup factor. Tracked on its own in the track record.
+        model = None
+        if len(values) >= 2:
+            wts = range(1, len(values) + 1)
+            model = round(sum(x["v"] * w for x, w in zip(values, wts)) / sum(wts) * factor, 2)
         line = scoring.round_to_half(adj)
         prop = {
-            "key": key, "line": line, "proj": projection, "adj": adj, "mf": factor, "mf_n": n_games, "lean": None,
+            "key": key, "line": line, "proj": projection, "adj": adj, "model": model, "mf": factor, "mf_n": n_games, "lean": None,
             "source": "model" if projection is not None else "average",
             "over": sum(1 for x in values if x["v"] > line), "n": len(values), "values": values,
         }
@@ -496,7 +502,7 @@ def archive_of(season, week, entries, picks, now, games):
         "players": [{
             "id": e["id"], "name": e["name"], "pos": e["pos"], "team": e["team"], "opp": e["opp"], "game_id": e["game_id"],
             "proj_ppr": e["proj_ppr"], "matchup": (e.get("matchup") or {}).get("label"), "late": e.get("late", False),
-            "props": [{k: p.get(k) for k in ("key", "line", "proj", "adj", "lean", "source", "line_from", "mf")} for p in e["props"]],
+            "props": [{k: p.get(k) for k in ("key", "line", "proj", "adj", "model", "lean", "source", "line_from", "mf")} for p in e["props"]],
         } for e in entries],
     }
 

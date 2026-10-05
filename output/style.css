@@ -907,3 +907,5 @@ tr.is-mine td { background: rgba(0, 225, 224, .07); }
 }
 .my-sum > div > .muted:first-child { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
 .my-sum .small.muted { text-transform: none; letter-spacing: 0; font-size: 12px; }
+.cat-nums .n.up { color: var(--green); }
+.cat-nums .n.down { color: var(--red); }

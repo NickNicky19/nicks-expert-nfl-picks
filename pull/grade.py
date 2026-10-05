@@ -66,6 +66,7 @@ def grade_week(archive, stats, final_games):
         out[f"top_{side}"] = {**tally([g["result"] for g in graded]), "picks": graded}
 
     lean_results, by_cat, dk_results = [], {}, []
+    model_all, model_big = [], []   # our own model's side of every real line, and only where it's well away from it
     ppr_errors, line_errors, bias = [], [], []
     match = {"soft": [], "neutral": [], "tough": []}
     for p in archive["players"]:
@@ -76,6 +77,13 @@ def grade_week(archive, stats, final_games):
             continue
         for prop in p["props"]:
             dk = prop.get("line_from") in ("dk", "sleeper")  # a real line; leans are only called against real lines
+            m = prop.get("model")
+            if dk and m is not None and m != prop["line"] and prop["key"] != "anytime_td":
+                side = "over" if m > prop["line"] else "under"
+                r = result(side, scoring.stat_value(prop["key"], a["stats"]), prop["line"])
+                model_all.append(r)
+                if abs(m - prop["line"]) >= 0.5 * scoring.CATEGORIES[prop["key"]]["scale"]:
+                    model_big.append(r)
             if prop["lean"] and dk and prop["key"] != "anytime_td":
                 r = result(prop["lean"], scoring.stat_value(prop["key"], a["stats"]), prop["line"])
                 lean_results.append(r)
@@ -94,6 +102,7 @@ def grade_week(archive, stats, final_games):
 
     out["leans"] = {**tally(lean_results), "by_category": {k: tally(v) for k, v in sorted(by_cat.items())}}
     out["dk_leans"] = {side: tally([r for d, r in dk_results if d == side]) for side in ("over", "under")}
+    out["model"] = {"all": tally(model_all), "big": tally(model_big)}
     out["ppr"] = {
         "n": len(ppr_errors),
         "proj_mae": round(statistics.mean(ppr_errors), 2) if ppr_errors else None,
@@ -127,6 +136,11 @@ def combine(weeks):
         h = sum(w.get("dk_leans", {}).get(side, {}).get("hit", 0) for w in weeks)
         m = sum(w.get("dk_leans", {}).get(side, {}).get("miss", 0) for w in weeks)
         total["dk_leans"][side] = {"hit": h, "miss": m, "pct": pct(h, m)}
+    total["model"] = {}
+    for k in ("all", "big"):
+        h = sum(w.get("model", {}).get(k, {}).get("hit", 0) for w in weeks)
+        m = sum(w.get("model", {}).get(k, {}).get("miss", 0) for w in weeks)
+        total["model"][k] = {"hit": h, "miss": m, "pct": pct(h, m)}
     for kind in ("spread", "total"):
         rs = {k: sum(w.get("games", {}).get(kind, {}).get(k, 0) for w in weeks) for k in ("hit", "miss")}
         total.setdefault("games", {})[kind] = {**rs, "pct": round(100 * rs["hit"] / (rs["hit"] + rs["miss"]), 1) if rs["hit"] + rs["miss"] else None}
