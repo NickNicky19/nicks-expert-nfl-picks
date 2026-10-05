@@ -91,3 +91,16 @@ Data comes from the Sleeper API (projections, stats, players, injuries, Picks li
 play-by-play, box scores, injuries, DraftKings lines). This is for fun, not betting advice.
 
 Made by Joshua Moy.
+
+## Yahoo sign-in and the AI chat (optional)
+
+`worker/` is a small Cloudflare Worker (free plan) that keeps the two secrets the static site can't: the Yahoo app
+secret (for "Sign in with Yahoo"; Yahoo's API doesn't allow requests from web pages) and a Google Gemini API key
+(for the chat). Both features stay hidden on the site until `WORKER_URL` in `output/app.js` points at it.
+
+1. `cd worker && npx wrangler login`, then `npx wrangler deploy` (prints the Worker's address).
+2. Create a Yahoo app at https://developer.yahoo.com/apps/create/ (Web Application, Fantasy Sports: Read,
+   redirect URI `<worker address>/yahoo/callback`).
+3. Get a Gemini API key at https://aistudio.google.com/apikey.
+4. `npx wrangler secret put YAHOO_CLIENT_ID`, `YAHOO_CLIENT_SECRET` and `GEMINI_API_KEY`.
+5. Set `WORKER_URL` in `output/app.js` to the Worker's address.

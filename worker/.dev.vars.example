@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local testing with `npx wrangler dev` (never commit .dev.vars)
+YAHOO_CLIENT_ID=
+YAHOO_CLIENT_SECRET=
+GEMINI_API_KEY=

@@ -2,6 +2,9 @@
 
 // Live data comes straight from ESPN in the browser (the hourly build can't keep up with a game in progress).
 const ESPN = "https://site.api.espn.com/apis/site/v2/sports/football/nfl";
+// The site's small server (Cloudflare Worker, worker/ in the repo): Yahoo sign-in and the AI chat. Empty until it's
+// deployed; those features stay hidden without it. localStorage "nflprops.worker" overrides it for testing.
+const WORKER_URL = (() => { try { return JSON.parse(localStorage.getItem("nflprops.worker")) || ""; } catch { return ""; } })() || "";
 const ESPN_TO_SLEEPER = { WSH: "WAS" };
 const LIVE_MS = 30000;   // scores and box scores while a game is on
 const IDLE_MS = 300000;  // scores when nothing is live
@@ -52,6 +55,8 @@ const S = {
   mine: store("mine") || [],
   cmp: store("cmp") || [null, null],    // the two players on the Compare tab
   trade: store("trade") || { give: [], get: [] },
+  yahoo: store("yahoo") || null,       // Yahoo tokens (from the Worker's sign-in)
+  chat: [], chatBusy: false,
   sync: store("sync") || null,         // the synced Sleeper league: {league_id, user_id, roster_id, name}
   leagueData: null, ideas: null, syncMsg: "", syncFound: null, syncUser: null,   // My Picks: [{pid, key, dir, line, season, week, at}]
 };
@@ -1153,13 +1158,15 @@ async function syncLeague(leagueId, userId, source = "sleeper") {
   rerenderLeagueViews();
   try {
     let league, rosters, users;
+    let yMine = null;
     if (source === "espn") ({ league, rosters, users } = await espnLeague(leagueId));
+    else if (source === "yahoo") ({ league, rosters, users, mine: yMine } = await yahooLeague(leagueId));
     else [league, rosters, users] = await Promise.all([
       getJSON(`https://api.sleeper.app/v1/league/${leagueId}`),
       getJSON(`https://api.sleeper.app/v1/league/${leagueId}/rosters`),
       getJSON(`https://api.sleeper.app/v1/league/${leagueId}/users`),
     ]);
-    const mine = rosters.find((r) => r.owner_id === userId || (r.co_owners || []).includes(userId));
+    const mine = yMine != null ? rosters.find((r) => r.roster_id === yMine) : rosters.find((r) => r.owner_id === userId || (r.co_owners || []).includes(userId));
     const keep = S.sync?.league_id === leagueId ? S.sync.roster_id : null;
     S.sync = { league_id: leagueId, user_id: userId || null, roster_id: keep ?? mine?.roster_id ?? null, name: league.name, source };
     S.leagueData = { league, rosters, users };
@@ -1176,7 +1183,7 @@ async function syncLeague(leagueId, userId, source = "sleeper") {
     S.syncMsg = "";
     S.ideas = null;
   } catch (err) {
-    S.syncMsg = source === "espn"
+    S.syncMsg = source === "yahoo" ? `Couldn't load that Yahoo league (${err.message}).` : source === "espn"
       ? err.message === "private"
         ? "That ESPN league is private. In Chrome, sign in to espn.com in this browser and try again, or make the league viewable to the public in its ESPN settings."
         : "Couldn't find that ESPN league. Check the leagueId in your league's ESPN address."
@@ -1240,6 +1247,110 @@ async function espnLeague(leagueId) {
       players: (t.roster?.entries || []).map((e) => toSleeper(e.playerPoolEntry?.player || {})).filter(Boolean) })),
     users: d.teams.map((t) => ({ user_id: t.primaryOwner || (t.owners || [])[0], display_name: members[t.primaryOwner] || "", metadata: { team_name: t.name || [t.location, t.nickname].filter(Boolean).join(" ") || t.abbrev } })),
   };
+}
+
+// ---- Yahoo leagues, through the site's Worker (Yahoo's API doesn't allow requests from web pages)
+
+const YAHOO_SLOT = { QB: "QB", RB: "RB", WR: "WR", TE: "TE", K: "K", DEF: "DEF", "W/R/T": "FLEX", "W/R": "WRRB_FLEX", "W/T": "REC_FLEX", "Q/W/R/T": "SUPER_FLEX", BN: "BN", IR: "IR" };
+// Yahoo scoring stat ids -> Sleeper stat names
+const YAHOO_STAT = { 4: ["pass_yd"], 5: ["pass_td"], 6: ["pass_int"], 9: ["rush_yd"], 10: ["rush_td"], 11: ["rec"], 12: ["rec_yd"], 13: ["rec_td"], 16: ["pass_2pt", "rush_2pt", "rec_2pt"], 18: ["fum_lost"] };
+const YAHOO_TEAM = { JAC: "JAX", WSH: "WAS", LA: "LAR" };
+
+// Yahoo's JSON: lists come as {"0": {...}, "1": {...}, count} and records as arrays of small objects to merge
+const yList = (x, key) => (x ? Object.keys(x).filter((k) => /^\d+$/.test(k)).map((k) => x[k][key]) : []);
+const yObj = (x) => (Array.isArray(x) ? x.reduce((a, v) => Object.assign(a, Array.isArray(v) ? yObj(v) : v && typeof v === "object" ? v : {}), {}) : x || {});
+
+async function yahooFetch(path) {
+  let tok = S.yahoo;
+  if (!tok) throw new Error("not signed in");
+  if (tok.expires_at - Date.now() < 60000) {
+    const r = await fetch(`${WORKER_URL}/yahoo/refresh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: tok.refresh_token }) });
+    if (!r.ok) { S.yahoo = null; store("yahoo", null); throw new Error("Yahoo sign-in expired"); }
+    tok = { ...(await r.json()) };
+    tok.refresh_token ||= S.yahoo.refresh_token;
+    S.yahoo = tok;
+    store("yahoo", tok);
+  }
+  const r = await fetch(`${WORKER_URL}/yahoo/api?path=${encodeURIComponent(path)}`, { headers: { Authorization: `Bearer ${tok.access_token}` } });
+  if (!r.ok) throw new Error(`Yahoo ${r.status}`);
+  return (await r.json()).fantasy_content;
+}
+
+async function yahooLeagues() {
+  const fc = await yahooFetch("users;use_login=1/games;game_keys=nfl/leagues");
+  const user = fc.users?.["0"]?.user || [];
+  const games = yList(yObj(user).games, "game");
+  return games.flatMap((g) => yList(yObj(g).leagues, "league").map(yObj)).filter((l) => String(l.season) === String(S.data.season));
+}
+
+async function yahooLeague(key) {
+  await loadFuture();
+  const [settingsFc, rostersFc, standingsFc] = await Promise.all([
+    yahooFetch(`league/${key}/settings`), yahooFetch(`league/${key}/teams/roster`), yahooFetch(`league/${key}/standings`),
+  ]);
+  const meta = yObj(settingsFc.league);
+  const settings = (meta.settings || [])[0] || meta.settings || {};
+  const roster_positions = (settings.roster_positions || []).flatMap((x) => {
+    const r = x.roster_position || {};
+    return YAHOO_SLOT[r.position] ? Array(+r.count || 1).fill(YAHOO_SLOT[r.position]) : [];
+  });
+  const scoring_settings = {};
+  for (const x of settings.stat_modifiers?.stats || []) for (const k of YAHOO_STAT[x.stat?.stat_id] || []) scoring_settings[k] = +x.stat.value;
+  const byName = {};
+  for (const p of rosPool()) byName[`${normName(p.name)}|${p.team}`] = p.id;
+  const toSleeper = (pl) => {
+    const team = YAHOO_TEAM[String(pl.editorial_team_abbr || "").toUpperCase()] || String(pl.editorial_team_abbr || "").toUpperCase();
+    if ((pl.display_position || pl.primary_position) === "DEF") return S.byId[team] ? team : null;
+    return byName[`${normName(pl.name?.full || "")}|${team}`] || null;
+  };
+  const teams = yList(yObj(rostersFc.league).teams, "team");
+  const standing = {};
+  const stl = yObj(standingsFc.league).standings;
+  for (const t of yList((Array.isArray(stl) ? stl[0] : stl)?.teams, "team")) {
+    const o = yObj(t);
+    standing[o.team_id] = { wins: +o.team_standings?.outcome_totals?.wins || 0, losses: +o.team_standings?.outcome_totals?.losses || 0, ties: +o.team_standings?.outcome_totals?.ties || 0, fpts: +o.team_standings?.points_for || 0, fpts_against: +o.team_standings?.points_against || 0 };
+  }
+  let mine = null;
+  const rosters = teams.map((t) => {
+    const info = yObj(Array.isArray(t) ? t[0] : t);
+    const roster = (Array.isArray(t) ? t[1] : t)?.roster || {};
+    const players = yList(roster["0"]?.players || roster.players, "player").map((pl) => toSleeper(yObj(pl))).filter(Boolean);
+    if (+info.is_owned_by_current_login === 1) mine = +info.team_id;
+    return { roster_id: +info.team_id, owner_id: `y${info.team_id}`, players, settings: standing[info.team_id] || {}, _name: info.name };
+  });
+  return {
+    league: { league_id: key, name: meta.name || "Yahoo league", season: String(meta.season || S.data.season), total_rosters: rosters.length, roster_positions, scoring_settings, source: "yahoo" },
+    rosters,
+    users: rosters.map((r) => ({ user_id: r.owner_id, display_name: r._name, metadata: { team_name: r._name } })),
+    mine,
+  };
+}
+
+// Back from Yahoo's sign-in page: the Worker put the tokens in the address fragment
+function takeYahooTokens() {
+  const m = location.hash.match(/[?&]yahoo=([\w-]+)/);
+  const err = location.hash.match(/[?&]yahoo_error=([^&]+)/);
+  if (m) {
+    try {
+      S.yahoo = JSON.parse(decodeURIComponent(escape(atob(m[1].replace(/-/g, "+").replace(/_/g, "/")))));
+      store("yahoo", S.yahoo);
+      S.syncApp = "yahoo";
+    } catch { /* bad token string */ }
+  }
+  if (err) { S.syncApp = "yahoo"; S.syncMsg = decodeURIComponent(err[1]); }
+  if (m || err) history.replaceState(null, "", "#/league");
+}
+
+async function yahooFind() {
+  S.syncMsg = "Loading your Yahoo leagues...";
+  rerenderLeagueViews();
+  try {
+    S.yahooLeagues = await yahooLeagues();
+    S.syncMsg = S.yahooLeagues.length ? "" : `No Yahoo NFL leagues for ${S.data.season} on this account.`;
+  } catch (err) {
+    S.syncMsg = `Couldn't read your Yahoo leagues (${err.message}). Try signing in again.`;
+  }
+  rerenderLeagueViews();
 }
 
 function teamName(rosterId) {
@@ -1400,7 +1511,12 @@ function leagueGate(intro) {
       : app === "espn"
       ? `<p class="note">Paste your ESPN league ID: it's the number after <code>leagueId=</code> in your league's address on espn.com. Private leagues work in Chrome when you're signed in to espn.com in this browser; otherwise make the league viewable to the public in its settings.</p>
         <div class="sc-find"><input id="espn-q" placeholder="ESPN league ID" inputmode="numeric" autocomplete="off"><button class="tbtn" data-espn-find>Sync</button></div>`
-      : `<p class="note">Yahoo only shares league data with apps that sign you in through Yahoo and run their own server, which this site doesn't have yet. You can still add your players to the trade calculator by name.</p>`;
+      : !WORKER_URL
+      ? `<p class="note">Yahoo sign-in is coming soon. You can still add your players to the trade calculator by name.</p>`
+      : !S.yahoo
+      ? `<p class="note">Sign in with your Yahoo account; the site only asks for read access to your fantasy leagues.</p><p><a class="tbtn on" href="${WORKER_URL}/yahoo/login">Sign in with Yahoo</a></p>`
+      : `<p class="note">Signed in to Yahoo. <button class="tbtn" data-yahoo-find>Show my leagues</button> <button class="tbtn" data-yahoo-out>Sign out</button></p>
+        ${(S.yahooLeagues || []).map((l) => `<div class="sc-lg"><span><b>${esc(l.name)}</b> <span class="muted">${l.num_teams} teams</span></span><button class="tbtn" data-yahoo-pick="${esc(l.league_key)}">Sync</button></div>`).join("")}`;
     return `<div class="card league-sync">
       <b>Sync your league</b>
       <p class="note">${intro}</p>
@@ -1438,7 +1554,7 @@ function lineupSummary() {
 
 function leagueHead() {
   const ld = S.leagueData;
-  return `<div class="league-h"><div><b>${esc(ld.league.name)}</b> <span class="muted">· ${esc(teamName(S.sync.roster_id))} · ${ld.rosters.length} teams · ${S.sync.source === "espn" ? "ESPN" : "Sleeper"}</span>
+  return `<div class="league-h"><div><b>${esc(ld.league.name)}</b> <span class="muted">· ${esc(teamName(S.sync.roster_id))} · ${ld.rosters.length} teams · ${{ espn: "ESPN", yahoo: "Yahoo" }[S.sync.source] || "Sleeper"}</span>
       <div class="league-set">Lineup: ${esc(lineupSummary())} · scoring: ${esc(leagueSummary(ld.league.scoring_settings))}</div></div>
     <div><button class="tbtn" data-sync-refresh>Refresh</button> <button class="tbtn" data-sync-clear>Change</button></div></div>`;
 }
@@ -1727,6 +1843,62 @@ function aiPrompt(give, get, rosterId) {
   return lines.join("\n");
 }
 
+// What the chat knows: the scoring, your synced league and roster, the trade on the calculator, the week
+function chatContext() {
+  const bits = [`Season ${S.data.season}, week ${S.data.week}. Scoring: ${scoringName()} (kickers and defenses on ESPN standard).`];
+  const ld = S.leagueData;
+  if (ld && S.sync?.roster_id != null && S.future) {
+    bits.push(`League: ${ld.league.name}, ${ld.rosters.length} teams, lineup ${lineupSummary()}.`);
+    const brief = (id) => { const p = S.byId[id]; return p ? `${p.name} (${p.pos} ${p.team}) ${fmtPts(rosPts(p))} rest-of-season pts${injOf(p).status ? `, ${injOf(p).status}` : ""}` : null; };
+    bits.push(`My team (${teamName(S.sync.roster_id)}): ${(myRoster().players || []).map(brief).filter(Boolean).join("; ")}.`);
+    try { bits.push(`My position ranks in the league (1 = best): ${Object.entries(positionRanks()[S.sync.roster_id] || {}).map(([k, v]) => `${k} ${v}`).join(", ")}.`); } catch { /* ranks need projections */ }
+  }
+  if (S.trade.give.length || S.trade.get.length) bits.push(`Trade on the calculator: give ${S.trade.give.map((id) => S.byId[id]?.name).join(", ") || "nothing"}; get ${S.trade.get.map((id) => S.byId[id]?.name).join(", ") || "nothing"}.`);
+  if (S.gameView) { const g = S.games[S.gameView]; bits.push(`Looking at ${g.away} @ ${g.home}, ${gameStatus(g)}${g.home_score != null ? `, score ${g.away} ${g.away_score} - ${g.home} ${g.home_score}` : ""}.`); }
+  return bits.join("\n");
+}
+
+function renderChat() {
+  const box = $("#chat");
+  if (!box) return;
+  box.querySelector(".chat-msgs").innerHTML = (S.chat.length ? S.chat : [{ role: "model", text: "Ask me about trades, start/sit, matchups, injuries or any prop. I can see your synced league and the trade on the calculator." }])
+    .map((m) => `<div class="msg ${m.role}">${esc(m.text).replace(/\n/g, "<br>")}</div>`).join("") + (S.chatBusy ? `<div class="msg model busy">Thinking...</div>` : "");
+  const list = box.querySelector(".chat-msgs");
+  list.scrollTop = list.scrollHeight;
+}
+
+function openChat(first) {
+  if (!$("#chat")) {
+    document.body.insertAdjacentHTML("beforeend", `<div id="chat" class="chat" role="dialog" aria-label="AI chat">
+      <div class="chat-h"><b>Ask AI</b> <span class="muted">Gemini</span><button class="tbtn" data-chat-clear>New chat</button><button class="rm" data-chat-close aria-label="Close">×</button></div>
+      <div class="chat-msgs"></div>
+      <form class="chat-in"><textarea rows="2" placeholder="Ask about a trade, start/sit, a matchup..."></textarea><button class="tbtn on">Send</button></form>
+      <div class="chat-note">Answers come from Google Gemini with your league and the site's numbers. It can be wrong. Don't share anything private.</div>
+    </div>`);
+  }
+  $("#chat").hidden = false;
+  renderChat();
+  if (first) sendChat(first);
+  else $("#chat textarea").focus();
+}
+
+async function sendChat(text) {
+  text = text.trim();
+  if (!text || S.chatBusy) return;
+  S.chat.push({ role: "user", text });
+  S.chatBusy = true;
+  renderChat();
+  try {
+    const r = await fetch(`${WORKER_URL}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: S.chat, context: chatContext() }) });
+    const d = await r.json();
+    S.chat.push({ role: "model", text: d.text || `Sorry: ${d.error || "something went wrong"}${r.status === 429 ? " (the free daily limit may be used up; try again later)" : ""}.` });
+  } catch {
+    S.chat.push({ role: "model", text: "Sorry, I couldn't reach the chat right now." });
+  }
+  S.chatBusy = false;
+  renderChat();
+}
+
 function showAsk(text) {
   const q = encodeURIComponent(text);
   $("#ask-box")?.remove();
@@ -1736,7 +1908,8 @@ function showAsk(text) {
       <p class="note">This opens a chat with everything filled in: both rosters, projections, byes and injury notes. You can keep asking follow-ups there.</p>
       <textarea readonly>${esc(text)}</textarea>
       <div class="idea-btns">
-        <a class="tbtn on" href="https://claude.ai/new?q=${q}" target="_blank" rel="noopener">Open in Claude</a>
+        ${WORKER_URL ? `<button class="tbtn on" data-chat-here>Chat here</button>` : ""}
+        <a class="tbtn ${WORKER_URL ? "" : "on"}" href="https://claude.ai/new?q=${q}" target="_blank" rel="noopener">Open in Claude</a>
         <a class="tbtn" href="https://chatgpt.com/?q=${q}" target="_blank" rel="noopener">Open in ChatGPT</a>
         <button class="tbtn" data-ask-copy>Copy</button>
       </div>
@@ -2447,6 +2620,7 @@ function applyHash() {
 
 window.addEventListener("popstate", () => {
   if (!S.data) return;
+  takeYahooTokens();
   if (!applyHash()) S.gameView = null;
   render();
   if (S.gameView) gameTick();
@@ -2779,7 +2953,17 @@ async function findLeagues(q) {
   $("#sc-q").value = q;
 }
 
+document.addEventListener("submit", (e) => {
+  if (!e.target.closest(".chat-in")) return;
+  e.preventDefault();
+  const ta = e.target.querySelector("textarea");
+  const v = ta.value;
+  ta.value = "";
+  sendChat(v);
+});
+
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && e.target.closest?.(".chat-in")) { e.preventDefault(); e.target.closest("form").requestSubmit(); return; }
   if (e.key === "Enter" && e.target.id === "sc-q") findLeagues(e.target.value.trim());
   if (e.key === "Enter" && e.target.id === "sync-q") syncFindUser(e.target.value);
   if (e.key === "Enter" && e.target.id === "espn-q") $("[data-espn-find]")?.click();
@@ -3234,6 +3418,10 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (t.closest("[data-sync-find]")) { syncFindUser($("#sync-q").value); return; }
+  if (t.closest("[data-yahoo-find]")) { yahooFind(); return; }
+  if (t.closest("[data-yahoo-out]")) { S.yahoo = null; S.yahooLeagues = null; store("yahoo", null); rerenderLeagueViews(); return; }
+  const yp = t.closest("[data-yahoo-pick]");
+  if (yp) { syncLeague(yp.dataset.yahooPick, null, "yahoo"); return; }
   if (t.closest("[data-go-sync]")) { goToSync(); return; }
   if (t.closest("[data-hide-promo]")) { store("syncPromoHidden", true); renderProps(); return; }
   const sa = t.closest("[data-sync-app]");
@@ -3281,6 +3469,10 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (t.closest("[data-ask-close]") || t.id === "ask-box") { $("#ask-box")?.remove(); return; }
+  if (t.closest("[data-chat-here]")) { const q = $("#ask-box textarea").value; $("#ask-box")?.remove(); openChat(q); return; }
+  if (t.closest("#chat-btn")) { openChat(); return; }
+  if (t.closest("[data-chat-close]")) { $("#chat").hidden = true; return; }
+  if (t.closest("[data-chat-clear]")) { S.chat = []; renderChat(); return; }
   if (t.closest("[data-ask-copy]")) {
     const ta = $("#ask-box textarea");
     navigator.clipboard?.writeText(ta.value).then(() => { t.closest("[data-ask-copy]").textContent = "Copied"; }).catch(() => { ta.select(); });
@@ -3517,7 +3709,9 @@ $("#reload").addEventListener("click", async () => {
     console.error(err);
     return;
   }
+  takeYahooTokens();
   applyHash();
+  if (WORKER_URL) document.body.insertAdjacentHTML("beforeend", `<button id="chat-btn" class="chat-btn" title="Ask AI about trades, start/sit, matchups">Ask AI</button>`);
   if (S.sc.mode === "league" && !currentLeague()) S.sc = { mode: "sleeper", half: false };
   $("#sc-btn").textContent = `${scoringName()} \u25be`;
   setTopHeight();
