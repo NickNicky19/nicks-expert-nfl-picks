@@ -122,6 +122,11 @@ def main():
     graded = [r for r in rows if r["ours"] is not None]
     mae = lambda f: statistics.mean(abs(f(r) - r["actual"]) for r in graded) if graded else None
     totals["mae_plain"], totals["mae_ours"], totals["mae_dk"] = mae(lambda r: r["plain"]), mae(lambda r: r["ours"]), mae(lambda r: r["dk"])
+    # every prop where our number and DraftKings' line disagree: did the result land on our side?
+    sided = [r for r in graded if r["ours"] != r["dk"] and r["actual"] != r["dk"]]
+    totals["side_n"] = len(sided)
+    totals["side_hit"] = sum((r["ours"] > r["dk"]) == (r["actual"] > r["dk"]) for r in sided)
+    print(f"When ours and DraftKings disagreed, the result landed on our side {pct(totals['side_hit'], totals['side_n']).strip()} ({totals['side_n']} props).")
     print(f"\nAverage miss: season average {totals['mae_plain']:.2f}, adjusted for the matchup {totals['mae_ours']:.2f}, DraftKings {totals['mae_dk']:.2f}")
     print(f"DraftKings' line was closer to the result {pct(totals['dk_closer'], totals['n'] - totals['ties']).strip()} of the time ({totals['n']} props, ties left out).")
     print(f"When our line was well above DraftKings', the over hit {pct(totals['hi_hit'], totals['hi']).strip()} ({totals['hi']} props).")
@@ -135,6 +140,7 @@ def main():
             "below_under": r1(totals["lo_hit"], totals["lo"]), "below_n": totals["lo"],
             "above_over": r1(totals["hi_hit"], totals["hi"]), "above_n": totals["hi"],
             "categories": table,
+            "our_side": r1(totals["side_hit"], totals["side_n"]), "our_side_n": totals["side_n"],
             "mae_plain": round(totals["mae_plain"], 2), "mae_ours": round(totals["mae_ours"], 2), "mae_dk": round(totals["mae_dk"], 2),
         }, separators=(",", ":")))
         print("Wrote", args.json)

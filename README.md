@@ -29,7 +29,7 @@ a Python build writes static JSON every hour, and a static page on GitHub Pages 
   every roster and free agents. **League sync**: enter a Sleeper username (or an ESPN league ID; private ESPN leagues
   work in Chrome when signed in to espn.com) to load every roster: your best lineup, your rank at each
   position, and 1-for-1 / 2-for-1 trades with every team that improve your starting lineup and are fair for both
-  sides (their lineup can't get worse). Top targets per position, letter grades, both lineups after a trade, and an
+  sides (their lineup can't get worse). Top targets per position, position ranks (WR14), both lineups after a trade, and an
   AI trade builder.
 - **Ask AI**: a built-in chat (Google Gemini, through the Worker) that sees your league, roster, our top picks and the
   trade you're looking at, and answers in a few plain sentences.

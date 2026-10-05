@@ -818,6 +818,92 @@ tr.is-mine td { background: rgba(0, 225, 224, .07); }
 
 .chat-ideas { display: flex; flex-wrap: wrap; gap: 6px; }
 .chat-ideas .tbtn { font-size: 12.5px; padding: 6px 10px; text-align: left; }
-.ai-btn { margin-left: auto; }
-.ai-btn + .sync-btn { margin-left: 6px; }
-.ai-btn { background: var(--card); color: var(--cyan); border: 1px solid var(--cyan); }
+
+/* ---------- phones: no zoom-in on typing (iOS zooms into any text box under 16px), full-screen chat, bigger taps */
+@media (max-width: 899px) {
+  input, textarea, select { font-size: 16px !important; }
+  .chat { inset: 0; width: 100%; height: var(--vvh, 100dvh); max-height: none; border-radius: 0; border: 0; }
+  .chat-h { padding: calc(10px + env(safe-area-inset-top)) 14px 10px; }
+  .chat-h b { font-size: 17px; }
+  .chat-h .rm { font-size: 26px; min-width: 44px; min-height: 44px; }
+  .chat-h .tbtn { min-height: 36px; }
+  .chat-msgs { padding: 12px 14px; }
+  .msg { font-size: 15.5px; max-width: 92%; }
+  .chat-ideas .tbtn { font-size: 14.5px; padding: 9px 12px; }
+  .chat-in { padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); }
+  .chat-in textarea { min-height: 44px; }
+  .chat-in .tbtn { min-height: 44px; padding: 0 16px; }
+  .chat-note { font-size: 11.5px; padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
+  body.chat-open { overflow: hidden; }
+  .chat-btn { bottom: calc(14px + env(safe-area-inset-bottom)); }
+}
+.chat ul { margin: 4px 0 0; padding-left: 18px; }
+.chat li { margin: 2px 0; }
+
+.prank { display: inline-block; min-width: 30px; text-align: center; font: 800 11px var(--sans); padding: 1px 5px; border-radius: 5px; background: var(--card-2); color: var(--muted); }
+.prank.t1 { background: rgba(40, 231, 87, .18); color: var(--green); }
+.prank.t2 { background: rgba(0, 225, 224, .14); color: var(--cyan); }
+.prank.t3 { background: rgba(255, 201, 60, .14); color: var(--amber); }
+.chat .msg p { margin: 0 0 4px; }
+.chat .msg p:last-child { margin-bottom: 0; }
+
+/* ---------- League: more views */
+.lv-scroll { overflow-x: auto; margin: 0 -4px; padding: 0 4px 2px; scrollbar-width: none; }
+.lv-scroll::-webkit-scrollbar { display: none; }
+.lv-scroll .seg { flex-wrap: nowrap; width: max-content; }
+.lv-scroll .seg button { white-space: nowrap; }
+.tbl.stand tr.cutline td { border-bottom: 2px dashed var(--cyan); }
+.my-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 4px 0 12px; }
+.my-sum > div { background: var(--card-2); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.my-sum b { font: 700 19px var(--num); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fa-ups { background: rgba(40, 231, 87, .08); border: 1px solid rgba(40, 231, 87, .35); border-radius: 12px; padding: 10px 14px; margin-bottom: 10px; font-size: 13.5px; }
+.fa-ups.none { background: var(--card-2); border-color: var(--line); color: var(--muted); }
+.fa-ups ul { margin: 6px 0 0; padding-left: 18px; }
+.fa-ups li { margin: 3px 0; }
+.linkish { color: var(--cyan); cursor: pointer; }
+.tx-list { display: grid; gap: 6px; }
+.tx { display: grid; grid-template-columns: 82px 1fr auto; gap: 10px; align-items: start; background: var(--card-2); border-radius: 10px; padding: 9px 12px; font-size: 13.5px; }
+.tx-k { font: 700 11px var(--sans); text-transform: uppercase; letter-spacing: .04em; padding: 2px 7px; border-radius: 6px; background: rgba(255, 201, 60, .14); color: var(--amber); justify-self: start; }
+.tx-k.waiver, .tx-k.free_agent { background: rgba(0, 225, 224, .12); color: var(--cyan); }
+.tx.trade > div > div + div { margin-top: 3px; }
+@media (max-width: 560px) { .tx { grid-template-columns: 1fr; gap: 4px; } }
+.draft-rd h3 { font: 700 14px var(--head); margin: 12px 0 6px; }
+.dp { display: grid; grid-template-columns: 44px 1fr auto 40px; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 8px; font-size: 13.5px; }
+.dp:nth-child(odd) { background: rgba(255, 255, 255, .025); }
+.dp.me { background: rgba(0, 225, 224, .1); box-shadow: inset 3px 0 0 var(--cyan); }
+.dp[data-open] { cursor: pointer; }
+@media (max-width: 560px) { .dp { grid-template-columns: 40px 1fr 40px; } .dp > .small { grid-column: 2; grid-row: 2; } }
+.set-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 8px; }
+.set-f { background: var(--card-2); border-radius: 10px; padding: 9px 12px; display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
+.set-f .muted { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
+.set-sc { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 16px; font-size: 13.5px; }
+.set-sc > div { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.set-more { margin-top: 10px; }
+.set-more summary { cursor: pointer; color: var(--cyan); font-size: 13px; }
+.wk-l { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.wk-l select, .wks { background: var(--card-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; }
+
+.fa-list { display: grid; gap: 6px; }
+.fa-row { display: grid; grid-template-columns: 40px 1fr auto; gap: 10px; align-items: center; background: var(--card-2); border-radius: 12px; padding: 9px 12px; cursor: pointer; }
+.fa-row:hover { background: #18224a; }
+.fa-row.up { box-shadow: inset 3px 0 0 var(--green); }
+.fa-main { min-width: 0; }
+.fa-beat { color: var(--green); font-size: 12.5px; margin-top: 2px; }
+.fa-side { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.fa-side b { font-size: 17px; }
+.fa-add { font: 600 11px var(--sans); color: var(--amber); }
+@media (max-width: 899px) {
+  .chat-btn { padding: 10px 14px; font-size: 14px; gap: 6px; min-height: 44px; }
+  .chat-btn svg { width: 17px; height: 17px; }
+  .foot { padding-bottom: 84px; }
+}
+
+/* phones: the header scrolls away instead of covering half the screen */
+@media (max-width: 560px) {
+  .top { position: relative; padding-top: 10px; }
+  h1 { font-size: 17px; }
+  .wks { height: auto; min-height: 32px; padding: 4px 8px; }
+  .wkb { width: 32px; height: 32px; }
+}
+.my-sum > div > .muted:first-child { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
+.my-sum .small.muted { text-transform: none; letter-spacing: 0; font-size: 12px; }
