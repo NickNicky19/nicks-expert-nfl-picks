@@ -25,10 +25,15 @@ a Python build writes static JSON every hour, and a static page on GitHub Pages 
   for every remaining week (and his bye), in the chosen scoring.
 - **Rest of season and trades**: a rest-of-season ranking, and a trade calculator that values players by
   rest-of-season points above waiver-level replacement for your league's size, lineup and bench.
-- **League sync**: enter a Sleeper username (or an ESPN league ID; private ESPN leagues work in Chrome when signed in
-  to espn.com) to load every roster: your best lineup, your rank at each
+- **League tab**: start/sit for this week (players whose games have started stay locked), live matchups, standings,
+  every roster and free agents. **League sync**: enter a Sleeper username (or an ESPN league ID; private ESPN leagues
+  work in Chrome when signed in to espn.com) to load every roster: your best lineup, your rank at each
   position, and 1-for-1 / 2-for-1 trades with every team that improve your starting lineup, flagged when theirs
-  improves too.
+  improves too, as long as both sides are within 15 points of value. Top targets per position, and an "Ask AI" button
+  that opens Claude or ChatGPT with the trade, rosters and projections filled in.
+- **Injuries in depth**: expected return, games missed, snap shares, a status timeline recorded every build
+  (`data/cache/injury_timeline.json`) and who plays more if a player sits.
+- **Matchup difficulty**: opponent rank against each position this season, and rest-of-season schedule strength.
 - **Compare**: two players side by side with a start recommendation.
 - **Top Overs / Top Unders**: the biggest gaps between our number (Sleeper's projection, adjusted) and the real line.
   They lock at kickoff.

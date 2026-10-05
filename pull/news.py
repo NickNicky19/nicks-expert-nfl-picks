@@ -43,3 +43,26 @@ def injury_report(entries):
             if pid not in out or (report["date"] or "") > (out[pid]["date"] or ""):
                 out[pid] = {k: v for k, v in report.items() if v}
     return out
+
+
+def update_timeline(path, entries, reports, now):
+    """ESPN and Sleeper only show a player's latest injury status, so each build records changes here, building
+    each player's injury timeline over the season: [{t, status, part, note}], newest last, up to 12 per player."""
+    import json
+    try:
+        log = json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        log = {}
+    for e in entries:
+        r = reports.get(e["id"], {})
+        status = e.get("injury") or (r.get("status") if r.get("status") not in (None, "Active") else None)
+        note = r.get("short")
+        last = (log.get(e["id"]) or [{}])[-1]
+        if status is None and not last:
+            continue   # healthy and never hurt: nothing to record
+        if (status, note) == (last.get("status"), last.get("note")):
+            continue
+        log.setdefault(e["id"], []).append({k: v for k, v in {"t": now, "status": status or "Active", "part": e.get("injury_part") or r.get("part"), "note": note}.items() if v})
+        log[e["id"]] = log[e["id"]][-12:]
+    path.write_text(json.dumps(log, separators=(",", ":"), sort_keys=True))
+    return log

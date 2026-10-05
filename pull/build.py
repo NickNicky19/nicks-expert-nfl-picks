@@ -569,6 +569,13 @@ def run(refresh_all=False):
         else:
             e.pop("inj_report", None)
     print(f"ESPN injury notes for {len(reports)} players")
+    # this season's injury timeline, recorded build by build (newest last)
+    timeline = news.update_timeline(CACHE / "injury_timeline.json", entries, reports, now)
+    for e in entries:
+        if len(timeline.get(e["id"], [])) > 0 and (e.get("injury") or e.get("inj_report") or len(timeline[e["id"]]) > 1):
+            e["inj_timeline"] = timeline[e["id"]]
+        else:
+            e.pop("inj_timeline", None)
     for e in entries:
         # ESPN's id lets the page match DraftKings' live lines to the player
         espn = espn_ids.get(e["id"]) or players.get(e["id"], {}).get("espn_id")
