@@ -2,8 +2,8 @@
 
 Run: python tools/compare_lines.py [--json output/data/dk_backtest.json]
 
-For every DraftKings player prop in a finished game, "ours" is our own model: the player's games so far this season
-(2+ earlier games, recent ones weighted more) times the matchup factor (how similar players did against that defense this season, pull/matchup.py), using
+For every DraftKings player prop in a finished game, "ours" is the player's average so far this season (2+ earlier
+games) times the matchup factor (how similar players did against that defense this season, pull/matchup.py), using
 only games before that week. It reports how far ours sits from DraftKings, which was closer to the result, whether
 the matchup adjustment beat the plain average, and whether big gaps between ours and DraftKings' line were a signal.
 
@@ -56,9 +56,7 @@ def rows_for_week(season, week, weeks, all_players):
             plain = statistics.mean(values) if len(values) >= 2 else None
             ours = None
             if plain is not None and pos and key in scoring.POSITION_CATEGORIES[pos]:
-                wts = range(1, len(values) + 1)
-                recent = sum(v * w for v, w in zip(values, wts)) / sum(wts)
-                ours = recent * mx.factor(entry.get("opp"), pos, key, plain)[0]   # same as build.py's "model"
+                ours = plain * mx.factor(entry.get("opp"), pos, key, plain)[0]
             rows.append({"week": week, "pid": pid, "key": key, "dk": dk["close"], "dk_open": dk["open"], "ours": ours,
                          "plain": plain, "actual": scoring.stat_value(key, entry["stats"])})
     return rows, len(games), len(lines)

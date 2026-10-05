@@ -937,7 +937,6 @@ function catCard(p, raw) {
       ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment, made before kickoff">Our proj (pregame)<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
       ${st && !st.final && st.v != null && prop.adj != null && prop.key !== "anytime_td" ? `<div title="What he has so far plus our pregame projection for the time left">On pace<span class="n" style="color:var(--amber)">${fmt(st.v + prop.adj * remaining(S.games[p.game_id]), prop.key === "fpts" ? 2 : 1)}</span></div>` : ""}
       ${prop.proj != null ? `<div>Sleeper proj<span class="n">${fmtStat(prop.key, prop.proj)}</span></div>` : ""}
-      ${prop.model != null && prop.key !== "anytime_td" && !(prop.key === "fpts" && S.sc.half) ? `<div title="Our own model: his games this season (recent ones count more) x the matchup, made without Sleeper's or DraftKings' numbers. Tracked separately on the Record tab.">Our model<span class="n ${prop.model > line ? "up" : prop.model < line ? "down" : ""}">${prop.key === "fpts" ? fmtPts(prop.model) : fmt(prop.model)}${prop.model > line ? " \u25b2" : prop.model < line ? " \u25bc" : ""}</span></div>` : ""}
       ${avg != null ? `<div>Season avg<span class="n">${fmt(avg)}</span></div>` : ""}
       ${st ? `<div>${st.final ? "Final" : "Now"}<span class="n" style="color:var(--cyan)">${st.v == null ? "DNP" : fmtStat(prop.key, st.v)}</span></div>` : ""}
     </div>
@@ -2521,23 +2520,13 @@ function pctText(t) {
   return t && t.pct != null ? `${fmt(t.pct)}%` : "-";
 }
 
-// Our own model (this season's games, recent ones weighted more, x the matchup) against real lines, graded live
-function modelSection(c) {
-  const m = c.model || {};
-  const tile = (t, k, d) => `<div class="card stat"><div class="k">${k}</div><div class="v">${t && t.pct != null ? `${fmt(t.pct)}%` : "-"}</div><div class="d">${t ? `${t.hit} right, ${t.miss} wrong` : "0 right, 0 wrong"}${d ? `. ${d}` : ""}</div></div>`;
-  return `<h2>Our own model, live <small>graded from this week on</small></h2>
-    <div class="stats">${tile(m.all, "Our model's side of the real line", "Every prop with a DraftKings or Sleeper Picks line")}${tile(m.big, "When it's well away from the line", "At least half a typical spread apart")}</div>
-    <p class="note">Our model ignores Sleeper's projections and DraftKings' lines: it's each player's games this season (recent games count more) times the matchup adjustment. It shows as "Our model" on every prop (\u25b2 above the line, \u25bc below). Tested on weeks 1 to 4 it called the right side about 49% of the time, no better than a coin flip, so treat it as a second opinion until the live record says otherwise.</p>`;
-}
-
 function dkSection(c) {
   const b = S.dk;
   const dl = c.dk_leans || {};
   const leanStat = (side) => `<div class="card stat"><div class="k">Leans ${side} the real line</div><div class="v">${pctText(dl[side])}</div><div class="d">${dl[side] ? `${dl[side].hit}-${dl[side].miss}` : "0-0"}, DraftKings or Sleeper Picks lines</div></div>`;
   return `<h2>Against real lines</h2>
     <div class="stats">${leanStat("over")}${leanStat("under")}</div>
-    ${modelSection(c)}
-    ${b ? `<h2>Our model vs DraftKings, tested on past games <small>${b.season} weeks ${b.weeks[0]}-${b.weeks[b.weeks.length - 1]}, ${b.props.toLocaleString()} props</small></h2>
+    ${b ? `<h2>Our numbers vs DraftKings <small>${b.season} weeks ${b.weeks[0]}-${b.weeks[b.weeks.length - 1]}, ${b.props.toLocaleString()} props</small></h2>
     <div class="stats">
       ${b.our_side != null ? `<div class="card stat"><div class="k">When we disagreed with DraftKings</div><div class="v">${fmt(b.our_side)}%</div><div class="d">of the time the result landed on our side (${b.our_side_n.toLocaleString()} props; 50% is a coin flip)</div></div>` : ""}
       <div class="card stat"><div class="k">DraftKings closer to the result</div><div class="v">${fmt(b.dk_closer)}%</div><div class="d">vs the matchup-adjusted season average</div></div>
