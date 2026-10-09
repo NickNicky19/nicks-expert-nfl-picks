@@ -1,4 +1,4 @@
-// Worker for Joshua Moy's Expert NFL Picks (a static GitHub Pages site).
+// Worker for Nick's Expert NFL Picks (a static GitHub Pages site).
 //
 // The site can't hold secrets, so this small server does the two things that need one:
 //   /yahoo/login, /yahoo/callback, /yahoo/refresh  Sign in with Yahoo (OAuth 2.0). Tokens go back to the browser
@@ -11,7 +11,7 @@ const YAHOO_AUTH = "https://api.login.yahoo.com/oauth2/request_auth";
 const YAHOO_TOKEN = "https://api.login.yahoo.com/oauth2/get_token";
 const YAHOO_API = "https://fantasysports.yahooapis.com/fantasy/v2/";
 
-const SYSTEM = `You are the assistant on "Joshua Moy's Expert NFL Picks", helping with fantasy football and NFL props.
+const SYSTEM = `You are the assistant on "Nick's Expert NFL Picks", helping with fantasy football and NFL props.
 Write clear, natural, grammatically correct English, the way a knowledgeable friend would explain it: complete
 sentences, contractions, proper capitalization and punctuation. Never write in fragments or shorthand.
 Start with a direct answer in the first sentence. Then add up to 4 short bullet points (each starting with "- ")

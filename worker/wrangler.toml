@@ -1,11 +1,11 @@
-# Cloudflare Worker for Joshua Moy's Expert NFL Picks: Yahoo sign-in and the AI chat.
+# Cloudflare Worker for Nick's Expert NFL Picks: Yahoo sign-in and the AI chat.
 # Secrets (set with `npx wrangler secret put NAME`, never committed): YAHOO_CLIENT_ID, YAHOO_CLIENT_SECRET, GEMINI_API_KEY
-name = "expert-nfl-picks"
+name = "nicks-expert-nfl-picks"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
 
 [vars]
-SITE_ORIGIN = "https://joshuam0y.github.io"
-SITE_URL = "https://joshuam0y.github.io/joshua-moy-expert-nfl-picks/"
+SITE_ORIGIN = "https://nicknicky19.github.io"
+SITE_URL = "https://nicknicky19.github.io/nicks-expert-nfl-picks/"
 GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_FALLBACK = "gemini-flash-lite-latest, gemini-flash-latest"

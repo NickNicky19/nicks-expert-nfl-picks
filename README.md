@@ -1,10 +1,11 @@
-# Joshua Moy's Expert NFL Picks
+# Nick's Expert NFL Picks
 
-**Live site:** https://joshuam0y.github.io/joshua-moy-expert-nfl-picks/
+**Live site:** https://nicknicky19.github.io/nicks-expert-nfl-picks/
 
 NFL props against real sportsbook lines, fantasy projections, live scoring and play-by-play, league sync and trade ideas, styled after Sleeper.
-It's a companion to [mlb-player-props](https://github.com/joshuam0y/mlb-player-props) and is built the same way:
-a Python build writes static JSON every hour, and a static page on GitHub Pages reads it.
+A Python build writes static JSON every hour, and a static page on GitHub Pages reads it.
+
+This is Nick's edition of [Joshua Moy's original project](https://github.com/joshuam0y/joshua-moy-expert-nfl-picks). The projection code, existing archives, and historical track record came from that project. Newly published results are generated in this repository; the historical record should not be presented as picks originally made by Nick.
 
 ## What's on the page
 
@@ -101,17 +102,21 @@ cd output && python3 -m http.server 8000
 Data comes from the Sleeper API (projections, stats, players, injuries, Picks lines) and ESPN (scores,
 play-by-play, box scores, injuries, DraftKings lines). This is for fun, not betting advice.
 
-Made by Joshua Moy.
+Nick's edition is maintained at [NickNicky19/nicks-expert-nfl-picks](https://github.com/NickNicky19/nicks-expert-nfl-picks). Original project and historical results: [joshuam0y/joshua-moy-expert-nfl-picks](https://github.com/joshuam0y/joshua-moy-expert-nfl-picks).
+
+## GitHub Pages
+
+The `hourly.yml` workflow builds the JSON and deploys `output/` to GitHub Pages. In the new repository, set **Settings → Pages → Build and deployment → Source** to **GitHub Actions**, then run **Actions → Hourly update → Run workflow** once. The scheduled updates and ticker run after Actions are enabled for the fork.
 
 ## Yahoo sign-in and the AI chat (optional)
 
-`worker/` is a small Cloudflare Worker (free plan) that keeps the two secrets the static site can't: the Yahoo app
+`worker/` is a small Cloudflare Worker that keeps the two secrets the static site can't: the Yahoo app
 secret (for "Sign in with Yahoo"; Yahoo's API doesn't allow requests from web pages) and a Google Gemini API key
-(for the chat). Both features stay hidden on the site until `WORKER_URL` in `output/app.js` points at it.
+(for the chat). Both features stay hidden on the site until `WORKER_URL` in `output/app.js` points at Nick's own Worker. The copied site does not call the original project's Worker.
 
 1. `cd worker && npx wrangler login`, then `npx wrangler deploy` (prints the Worker's address).
 2. Create a Yahoo app at https://developer.yahoo.com/apps/create/ (Web Application, Fantasy Sports: Read,
    redirect URI `<worker address>/yahoo/callback`).
 3. Get a Gemini API key at https://aistudio.google.com/apikey.
 4. `npx wrangler secret put YAHOO_CLIENT_ID`, `YAHOO_CLIENT_SECRET` and `GEMINI_API_KEY`.
-5. Set `WORKER_URL` in `output/app.js` to the Worker's address.
+5. Set `WORKER_URL` in `output/app.js` to the new Worker's address and publish that change. Keep all secrets out of Git.
