@@ -122,8 +122,8 @@ export default {
           systemInstruction: { parts: [{ text: `${body.json ? JSON_RULES : SYSTEM}\n\nContext from the site:\n${context}` }] },
           contents: messages,
           generationConfig: body.json
-            ? { maxOutputTokens: 2500, temperature: 0.7, responseMimeType: "application/json" }   // the trade builder wants data back
-            : { maxOutputTokens: 1200, temperature: 0.6 },
+            ? { maxOutputTokens: 2500, responseMimeType: "application/json" }   // the trade builder wants data back
+            : { maxOutputTokens: 1200 },
         }),
       });
       // Free-tier models get busy: try the main model twice, then the fallbacks, until one answers
