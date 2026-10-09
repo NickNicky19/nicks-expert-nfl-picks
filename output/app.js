@@ -2655,7 +2655,7 @@ function renderAbout() {
       <div class="card"><b>My Picks</b><p>Track any prop you like, live, with a running record for your slate. Saved on your device.</p></div>
       <div class="card"><b>News and injuries</b><p>ESPN headlines tagged with players, and an in-depth injury report: injury and side, expected return, games missed, recent snap shares, how his status has changed, and who plays more if he sits. Game-day inactives show up as they post.</p></div>
       <div class="card"><b>Honest track record</b><p>Every pick and lean graded only from what was posted before kickoff, and our numbers checked against DraftKings'.</p></div>
-      <div class="card"><b>Ask AI</b><p>A built-in chat (Google Gemini) that knows your league, roster, our picks and the trade you're looking at. Short, plain answers. Tap Ask AI in the bottom right corner.</p></div>
+      <div class="card"><b>Ask AI (optional)</b><p>After Nick's Cloudflare Worker and Gemini key are configured, the built-in chat can use your league, roster, picks and trade context to answer in plain language.</p></div>
     </div>
     <h2>Lines</h2>
     <p>Every prop uses the real <b>DraftKings</b> line when DraftKings has posted one (ESPN carries DraftKings' player props). If DraftKings hasn't, it uses <b>Sleeper Picks</b>' line, and only after that our own estimate, which is labeled "est". Each card shows all of them side by side, plus where DraftKings' line opened.</p>

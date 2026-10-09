@@ -106,7 +106,7 @@ Nick's edition is maintained at [NickNicky19/nicks-expert-nfl-picks](https://git
 
 ## GitHub Pages
 
-The `hourly.yml` workflow builds the JSON and deploys `output/` to GitHub Pages. In the new repository, set **Settings → Pages → Build and deployment → Source** to **GitHub Actions**, then run **Actions → Hourly update → Run workflow** once. The scheduled updates and ticker run after Actions are enabled for the fork.
+The `hourly.yml` workflow builds the JSON and deploys `output/` to GitHub Pages on pushes and scheduled updates. In the new repository, set **Settings → Pages → Build and deployment → Source** to **GitHub Actions**, then run **Actions → Hourly update → Run workflow** once. The ticker adds updates during game days.
 
 ## Yahoo sign-in and the AI chat (optional)
 

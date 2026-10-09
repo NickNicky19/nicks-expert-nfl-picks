@@ -1,6 +1,8 @@
 name: Hourly update
 
 on:
+  push:
+    branches: [main]
   schedule:
     # A few minutes past the hour: GitHub delays scheduled runs most at the top of the hour.
     # Live scores don't depend on this; the page polls ESPN itself every 30 seconds.
