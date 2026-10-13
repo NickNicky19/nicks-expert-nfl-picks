@@ -1,0 +1,52 @@
+name: Restore original code
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Restore the pre-upgrade code, keeping all captured data?'
+        type: choice
+        required: true
+        default: 'Cancel'
+        options:
+          - 'Cancel'
+          - 'RESTORE_ORIGINAL'
+
+concurrency:
+  group: hourly-update
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  restore:
+    if: github.ref == 'refs/heads/main' && inputs.confirmation == 'RESTORE_ORIGINAL'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Restore original files without resetting history or data
+        run: |
+          git pull --ff-only origin main
+          python tools/restore_original.py --confirm RESTORE_ORIGINAL --application-only
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Preserve the pre-restore head remotely before committing recovery.
+          BACKUP="$(git for-each-ref --sort=-refname --format='%(refname:short)' 'refs/heads/backup/pre-restore-*' | head -n 1)"
+          test -n "$BACKUP"
+          git push origin "$BACKUP"
+          if ! git diff --cached --quiet; then
+            git commit -m "Restore original pre-upgrade code; retain captured evidence"
+            git push origin HEAD:main
+          fi
+      - name: Request rebuild with restored original code
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run hourly.yml --ref main

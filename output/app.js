@@ -315,9 +315,12 @@ function liveStatsFromSummary(summary) {
 
 async function pollScores() {
   const d = await getJSON(`${ESPN}/scoreboard?seasontype=2&week=${S.data.week}&dates=${S.data.season}`);
-  for (const e of d.events || []) {
+  if (!Array.isArray(d.events)) throw new Error("Invalid scoreboard response");
+  let matched = 0;
+  for (const e of d.events) {
     const g = S.games[e.id];
     if (!g) continue;
+    matched += 1;
     const c = e.competitions[0];
     const home = c.competitors.find((x) => x.homeAway === "home");
     const away = c.competitors.find((x) => x.homeAway === "away");
@@ -345,6 +348,7 @@ async function pollScores() {
       rz: e.status.type.state === "in" && !!sit.isRedZone,
     });
   }
+  return matched;
 }
 
 // DraftKings' in-game lines, via ESPN (same markets as pull/books.py)
@@ -513,18 +517,19 @@ function defenseFromSummary(summary) {
 }
 
 let liveTimer = null;
-// Everything live refreshes together, then the page redraws once, so the score, stats, plays and odds always agree
+// Poll the separate feeds, then redraw. Their update times can differ; only successful scoreboard refreshes advance the score clock.
 let ticking = false;
 async function liveTick() {
   clearTimeout(liveTimer);
   if (ticking) return;
   ticking = true;
   try {
-    await pollScores().catch((err) => console.warn("scores", err));
+    await pollScores().then((matched) => {
+      if (matched > 0) S.liveAt = new Date();  // successful matched scoreboard refresh, not a poll attempt
+    }).catch((err) => console.warn("scores", err));
     await pollSleeper();     // first, so the ESPN backup only runs if Sleeper's feed is actually down
     const live = Object.values(S.games).filter((g) => g.state === "in").map((g) => g.id);
     await Promise.all([pollBoxScores(), pollOpenGame(), pollLiveLines(live)]);
-    S.liveAt = new Date();
   } catch (err) {
     console.warn("live", err);
   }
@@ -574,6 +579,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function checkMeta() {
+  if (S.data) updateSub();
   try {
     const m = await getJSON(`data/meta.json?t=${Date.now()}`);
     if (S.generatedAt && m.generated_at !== S.generatedAt) $("#banner").hidden = false;
@@ -608,8 +614,14 @@ function updateSub() {
   const built = new Date(S.data.generated_at);
   const day = built.toDateString() === new Date().toDateString() ? "" : `${built.toLocaleDateString(undefined, { weekday: "short" })} `;
   $("#sub").innerHTML = `${S.data.season} Week ${S.data.week}`
-    + (S.liveAt ? ` \u00b7 <span class="sub-live">live ${t(S.liveAt, true)}</span>` : "")
-    + ` \u00b7 <span title="Lines, projections and injuries rebuild about every hour">lines ${day}${t(built)}</span>`;
+    + (S.liveAt ? ` \u00b7 <span class="sub-live" title="Last successful matched scoreboard refresh; other feeds may differ">scores ${t(S.liveAt, true)}</span>` : "")
+    + ` \u00b7 <span title="Last build time; individual quote freshness is not verified">build ${day}${t(built)}</span>`;
+  const health = $("#build-health");
+  if (health && globalThis.NflReliability) {
+    const status = NflReliability.buildStatus(S.data.generated_at);
+    health.textContent = status.text;
+    health.dataset.state = status.state;
+  }
 }
 
 // ---------------------------------------------------------------- score strip
@@ -2594,19 +2606,23 @@ function renderRecord() {
   const graded = (x) => x.hit + x.miss;
   const stat = (k, tally, d) => `<div class="card stat"><div class="k">${k}</div><div class="v">${pctText(tally)}</div><div class="d">${d}</div></div>`;
   const cats = Object.entries(c.leans.by_category);
+  const extras = (tally) => globalThis.NflReliability?.tallyDetails(tally) || "";
   const weeks = t.weeks.map((w) => {
     const picks = [...w.top_over.picks, ...w.top_under.picks];
     return `<details class="card week" ${w === t.weeks[0] ? "open" : ""}>
       <summary>${w.season} Week ${w.week} ${w.complete ? "" : `<span class="res live">IN PROGRESS</span>`}
         <span class="muted" style="font-weight:500"> · Overs ${w.top_over.hit}-${w.top_over.miss} · Unders ${w.top_under.hit}-${w.top_under.miss} · Leans ${w.leans.hit}-${w.leans.miss}</span></summary>
       ${picks.length ? `<div class="glist">${picks.map((x) => `<div class="g"><span>${esc(x.name)} ${x.direction === "over" ? "o" : "u"}${x.line} ${SHORT[x.key]}</span><span><span class="num">${x.actual ?? "-"}</span> <span class="res ${x.result}">${x.result.toUpperCase()}</span></span></div>`).join("")}</div>` : `<p class="note">No picks graded yet this week (they're graded when each game goes final).</p>`}
+      <p class="note">${esc([extras(w.top_over), extras(w.top_under)].filter(Boolean).join(" · "))}</p>
+      ${picks.length && t.grading_version ? `<details><summary>Projection used for each saved selection</summary><div class="glist">${picks.map((x) => `<div class="g"><span>${esc(x.name)} · ${esc(SHORT[x.key])}</span><span>Raw ${fmt(x.proj, 2)} · Adjusted ${fmt(x.adj, 2)}</span></div>`).join("")}</div></details>` : ""}
       ${w.ppr.n ? `<p class="note">PPR projection error: Sleeper ${w.ppr.proj_mae} pts per player, ours (matchup-adjusted) ${w.ppr.average_mae} (${w.ppr.n} players).</p>` : ""}
     </details>`;
   }).join("");
   const nothing = graded(c.top_over) + graded(c.top_under) + graded(c.leans) === 0;
   $("#main").innerHTML = `
     <h2>Track record <small>${c.weeks} week${c.weeks === 1 ? "" : "s"}</small></h2>
-    <p class="note">Historical picks and results from before this edition was created came from <a href="https://github.com/joshuam0y/joshua-moy-expert-nfl-picks" target="_blank" rel="noopener">Joshua Moy's original project</a>. New results are generated by the same publicly available projection code in this repository.</p>
+    <p class="note">${t.grading_version ? "Statistical grading v2: unresolved data and pushes are excluded from hit-rate denominators. Historical regrading is not new prospective evidence." : "Legacy grading snapshot: these totals have not yet been rebuilt by the upgraded grader."} This is not a sportsbook-settled profit record.</p>
+    <p class="note">Historical picks and results from before this edition was created came from <a href="https://github.com/joshuam0y/joshua-moy-expert-nfl-picks" target="_blank" rel="noopener">Joshua Moy's original project</a>. The forecasting code is retained as the original benchmark; statistical grading is versioned separately. Inherited historical picks are not new prospective forecasts from this edition.</p>
     ${nothing ? `<div class="card note" style="margin-bottom:10px">Grading started with week ${t.weeks[t.weeks.length - 1].week} of ${t.weeks[t.weeks.length - 1].season}. Only picks and leans saved before kickoff count, so this fills in as games go final. There's no backfill: Sleeper updates past weeks' projections after the games, so grading old weeks would look far better than it really is.</div>` : ""}
     <div class="stats">
       ${stat("Top Overs", c.top_over, `${c.top_over.hit}-${c.top_over.miss}${c.top_over.dnp ? `, ${c.top_over.dnp} DNP` : ""}`)}
@@ -2614,6 +2630,8 @@ function renderRecord() {
       ${stat("Every lean", c.leans, `${c.leans.hit}-${c.leans.miss}, all categories`)}
       <div class="card stat"><div class="k">PPR projection error</div><div class="v">${c.ppr.proj_mae ?? "-"}</div><div class="d">${c.ppr.n ? `pts per player for Sleeper, ${c.ppr.average_mae} for ours (${c.ppr.n} players)` : "graded once games go final"}</div></div>
     </div>
+    <p class="note">Other lean outcomes: ${esc(extras(c.leans) || "none recorded")}</p>
+    ${c.by_venue ? `<h2>Statistical results by line source</h2><div class="glist">${Object.entries(c.by_venue).map(([key, tally]) => `<div class="g"><span>${esc(LINE_FROM[key] || key)}</span><span>${tally.hit}-${tally.miss} · ${pctText(tally)} · ${esc(extras(tally))}</span></div>`).join("")}</div>` : ""}
     ${cats.length ? `<h2>Leans by category</h2><div class="glist">${cats.map(([k, v]) => `<div class="g"><span>${S.data.categories[k].label}</span><span class="num">${v.hit}-${v.miss} · ${pctText(v)}</span></div>`).join("")}</div>` : ""}
     ${c.games ? `<h2>Game leans vs DraftKings</h2><div class="stats">
       <div class="card stat"><div class="k">Against the spread</div><div class="v">${pctText(c.games.spread)}</div><div class="d">${c.games.spread.hit}-${c.games.spread.miss}, when our spread is 2+ points off DraftKings'</div></div>
@@ -2621,7 +2639,7 @@ function renderRecord() {
     </div>` : ""}
     ${dkSection(c)}
     <h2>By week</h2>${weeks}
-    <p class="note">A hit needs the result strictly over or under the line (lines end in .5, so there are no pushes). Players who didn't play are DNP, not misses. Lines first built after a game kicked off are never graded.</p>`;
+    <p class="note">A hit requires a result strictly over or under the saved line. In statistical grading v2, equality is a push; a missing participation record is unresolved, not confirmed DNP. Actual venue void, injury, and payout rules still require verification. Lines first built after kickoff are excluded. My Picks and live progress retain their original tracking behavior; they are not venue settlement.</p>`;
 }
 
 // ---------------------------------------------------------------- how it works tab
@@ -2635,6 +2653,11 @@ function renderAbout() {
   ];
   const cats = Object.entries(S.data.categories).filter(([k]) => k !== "anytime_td");
   $("#main").innerHTML = `<div class="about">
+    <h2>Reliability foundation · Phase 1</h2>
+    <div class="card note"><p><b>The prediction engine is unchanged.</b> Raw Sleeper projections, matchup adjustments, and top-pick selection rules remain the original benchmark. This release improves statistical grading, publication checks, and future baseline capture; it does not establish greater predictive accuracy or profitability.</p>
+    <p>Top picks are projection-gap rankings, not calibrated win probabilities or positive-EV recommendations. DraftKings player-prop prices are not captured. A recent build does not verify the age of each quote.</p>
+    <p>After installation, the update workflow saves append-only pregame capture receipts with both raw and adjusted projections, input and code hashes, and the local observation time. These are not verified execution receipts. Replay tests are stored separately and never called prospective results.</p>
+    <p>Recovery preserves the original code and retains subsequent evidence. <a href="recovery.html">How to restore the original</a>.</p></div>
     <h2 id="features">What's here</h2>
     <div class="feat">
       <div class="card"><b>Props with real lines</b><p>DraftKings lines (then Sleeper Picks) for every prop, our pregame projection, leans, hit rates this season, and Top Overs / Unders for real starters only.</p></div>
@@ -2654,7 +2677,7 @@ function renderAbout() {
       <div class="card"><b>Matchup difficulty</b><p>Every player shows his opponent's rank against his position this season (#1 = toughest), and every remaining schedule is rated easy, average or hard.</p></div>
       <div class="card"><b>My Picks</b><p>Track any prop you like, live, with a running record for your slate. Saved on your device.</p></div>
       <div class="card"><b>News and injuries</b><p>ESPN headlines tagged with players, and an in-depth injury report: injury and side, expected return, games missed, recent snap shares, how his status has changed, and who plays more if he sits. Game-day inactives show up as they post.</p></div>
-      <div class="card"><b>Honest track record</b><p>Every pick and lean graded only from what was posted before kickoff, and our numbers checked against DraftKings'.</p></div>
+      <div class="card"><b>Versioned statistical track record</b><p>Saved selections graded after confirmed finals; missing participation is unresolved. Historical regrades and forward-capture evidence remain distinct. No verified ROI claim.</p></div>
       <div class="card"><b>Ask AI (optional)</b><p>After Nick's Cloudflare Worker and Gemini key are configured, the built-in chat can use your league, roster, picks and trade context to answer in plain language.</p></div>
     </div>
     <h2>Lines</h2>
@@ -2678,8 +2701,9 @@ function renderAbout() {
     <p>Scores, box scores and play-by-play come straight from ESPN every 30 seconds while games are on (every 8 seconds for the game you have open, and the newest play shows "just in" the moment the scoreboard has it, before the full play-by-play catches up), paused when this tab is hidden. Live points use the same scoring, including 2-point conversions and field goal distances. An over is marked cleared the moment it passes the line, since stats only go up; an under is only a hit once the game is final.</p>
     <h2>News and injuries</h2>
     <p>Injury designations come from Sleeper with each update, along with ESPN's injury report (notes, body part and expected return). On game days the page also checks ESPN's latest news for games kicking off within 4 hours, so game-day inactives show up right away (outlined badges, with the time ESPN posted them). The News tab has ESPN's latest headlines, tagged with the players they mention, and an injury report by game. Opening a player and tapping More news loads his latest Rotowire note and headlines.</p>
-    <h2>Updates and honest grading</h2>
-    <p>Lines, projections and injuries rebuild every hour (every 30 minutes on game days). Once a game kicks off, its lines and picks freeze. The track record only grades what was posted before kickoff, and it isn't backfilled: Sleeper revises past weeks' projections after the games, so grading old weeks with them would use information nobody had beforehand.</p>
+    <h2>Updates, grading, and evidence</h2>
+    <p>The configured schedule is unchanged: hourly builds, with additional game-day runs. Critical structural checks and offline regression tests must pass before publishing a new release. Older network-dependent diagnostics remain visible as advisory results. A failed critical build leaves the prior published snapshot in place; the build-age warning identifies when it becomes stale.</p>
+    <p>Selections for started games remain frozen. Grading v2 reports pushes and unresolved participation separately and preserves the raw and adjusted projection for each top pick. These are statistical comparisons, not verified venue settlement or ROI. Prior archives can be regraded without changing the saved forecasts; that is a historical regrade, not a new prospective prediction. Missing stats must not be mistaken for confirmed DNP.</p>
     <h2 id="maker">Nick's Expert NFL Picks</h2>
     <div class="card bio">
       <p>Nick's edition brings NFL props, fantasy projections, live scoring, league tools and trade ideas together in one place.</p>

@@ -4,14 +4,11 @@ on:
   push:
     branches: [main]
   schedule:
-    # A few minutes past the hour: GitHub delays scheduled runs most at the top of the hour.
-    # Live scores don't depend on this; the page polls ESPN itself every 30 seconds.
     - cron: "6 * * * *"
-    # and every 30 minutes on game days (Thursday, Sunday, Monday; UTC) so injuries and lines stay fresh
     - cron: "36 * * * 0,1,4,5"
   workflow_dispatch: {}
 
-# Runs queue instead of cancelling each other, so a run is never killed between its commit and its deploy
+# Shared with manual recovery. Never interrupt a commit/deploy pair.
 concurrency:
   group: hourly-update
   cancel-in-progress: false
@@ -23,6 +20,7 @@ permissions:
 
 jobs:
   update:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
@@ -30,62 +28,88 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          fetch-depth: 0
+      - name: Use latest main before building
+        run: git pull --ff-only origin main
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install dependencies
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Read release mode
+        id: mode
+        run: python tools/release_mode.py >> "$GITHUB_OUTPUT"
+      - name: Install existing dependencies
         run: pip install -r requirements.txt
-
-      # Fail fast: if the build breaks there's nothing new to deploy
-      - name: Build lines, projections and track record
+      - name: Required offline regression tests
+        if: steps.mode.outputs.mode == 'phase1'
+        run: |
+          python -m unittest discover -s tests -v
+          node --check output/app.js
+          node --check output/reliability-ui.js
+          node tests/test-ui.cjs
+      - name: Preserve original grading output
+        if: steps.mode.outputs.mode == 'phase1'
+        run: python tools/preserve_legacy.py
+      - name: Build unchanged projection engine
         run: python pull/build.py
+      - name: Required integrity checks and pregame capture
+        if: steps.mode.outputs.mode == 'phase1'
+        run: GITHUB_SHA="$(git rev-parse HEAD)" python tools/reliability.py --mode live
 
-      # A failed check is flagged on the run but doesn't hold back fresh data
-      - name: Verify
+      # The old verifier mixes network availability, diagnostics, and model warnings.
+      # Required deterministic invariants are enforced above, not bypassed here.
+      - name: Legacy diagnostic verification (advisory)
+        id: legacy
         run: python tools/verify.py
         continue-on-error: true
-
-      # Our lines vs DraftKings' on every finished game this season (shown on the Track Record tab)
-      - name: Compare with DraftKings
+      - name: Historical DraftKings comparison (advisory)
+        id: comparison
         run: python tools/compare_lines.py --json output/data/dk_backtest.json
         continue-on-error: true
-
-      # The week's file and archives must be committed: they hold the lines and picks frozen at kickoff,
-      # which later runs keep and grade
-      - name: Commit data
+      - name: Record advisory outcomes
+        if: steps.mode.outputs.mode == 'phase1'
+        env:
+          LEGACY_OUTCOME: ${{ steps.legacy.outcome }}
+          COMPARISON_OUTCOME: ${{ steps.comparison.outcome }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path('output/data/health.json')
+          d = json.loads(p.read_text())
+          d['legacy_verifier'] = os.environ['LEGACY_OUTCOME']
+          d['historical_comparison'] = os.environ['COMPARISON_OUTCOME']
+          p.write_text(json.dumps(d, separators=(',', ':'), allow_nan=False))
+          PY
+      - name: Commit validated data and immutable receipts
+        id: commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || { echo "Main changed during build; refusing to merge generated evidence. Re-run on new main."; exit 1; }
           git add output/data data/cache
-          git diff --cached --quiet && exit 0
-          git commit -m "Hourly update"
-          for i in 1 2 3 4 5; do
-            git rebase --abort >/dev/null 2>&1 || true
-            if git pull --rebase -X theirs origin main && git push; then exit 0; fi
-            sleep $((i * 5))
+          for dir in data/forward data/history; do
+            if [ -d "$dir" ]; then git add "$dir"; fi
           done
-          git rebase --abort >/dev/null 2>&1 || true
-          echo "::error::Couldn't push after 5 tries; deploying this run's data anyway"
-          exit 1
-
+          if ! git diff --cached --quiet; then
+            git commit -m "Scheduled update (${{ steps.mode.outputs.mode }})"
+            git push origin HEAD:main
+          fi
       - uses: actions/configure-pages@v5
-        if: ${{ !cancelled() }}
       - uses: actions/upload-pages-artifact@v3
-        if: ${{ !cancelled() }}
+        id: artifact
         with:
           path: output
-
-      # GitHub's Pages backend fails now and then; one retry clears it
-      - name: Deploy to Pages
+      - name: Deploy validated output
         id: deployment
-        if: ${{ !cancelled() }}
-        continue-on-error: true
         uses: actions/deploy-pages@v4
-      - name: Wait before retry
-        if: ${{ !cancelled() && steps.deployment.outcome == 'failure' }}
+        continue-on-error: true
+      - name: Wait before deployment retry
+        if: ${{ !cancelled() && steps.commit.outcome == 'success' && steps.artifact.outcome == 'success' && steps.deployment.outcome == 'failure' }}
         run: sleep 20
-      - name: Deploy to Pages (retry)
-        if: ${{ !cancelled() && steps.deployment.outcome == 'failure' }}
+      - name: Deploy validated output (retry)
+        if: ${{ !cancelled() && steps.commit.outcome == 'success' && steps.artifact.outcome == 'success' && steps.deployment.outcome == 'failure' }}
         uses: actions/deploy-pages@v4

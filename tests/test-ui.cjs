@@ -1,0 +1,12 @@
+const assert = require('node:assert/strict');
+const { buildStatus, tallyDetails } = require('../output/reliability-ui.js');
+const now = Date.parse('2026-10-10T19:00:00Z');
+assert.equal(buildStatus('2026-10-10T18:00:00Z', now).state, 'recent');
+assert.equal(buildStatus('2026-10-10T16:59:00Z', now).state, 'stale');
+assert.equal(buildStatus('2026-10-10T17:00:00Z', now).state, 'recent');
+assert.equal(buildStatus('2026-10-10T20:00:00Z', now).state, 'unknown');
+assert.equal(buildStatus('not a timestamp', now).state, 'unknown');
+assert.equal(tallyDetails({ push: 2, dnp: 1, unresolved: 3 }), '2 push · 1 confirmed DNP · 3 unresolved');
+assert.equal(tallyDetails({}), '');
+assert.equal(tallyDetails(undefined), '');
+console.log('8 UI helper assertions passed.');
