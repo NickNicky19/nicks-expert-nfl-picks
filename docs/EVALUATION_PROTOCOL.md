@@ -22,12 +22,70 @@ participation, DNP and exclusions; never silently turn missing outcomes into zer
 Only games kicking off after registration enter the prospective primary report.
 Older games stay available as descriptive evidence.
 
+Outcome selection reads immutable receipts only; it never consults a later
+cache or rewrites a forecast/outcome snapshot. A resolved value needs a confirmed
+past final and a finite integer statistic (passing yards may be negative; counts
+may not). When a saved statistics entry is provided, participation, team and the
+actual must agree with it. DNP needs explicit attributed participation; a recorded
+void stays a distinct unscored exclusion, without inferring venue settlement.
+Incomplete later observations cannot erase a previously confirmed result.
+
+Each player/game/category retains distinct receipt and row digests, declared
+source/cache identity and version, collection/source timestamps and observed
+status/value in outcome_observations. Repeated identical inputs do not create
+additional observations or scored outcomes. Compare versions only within the
+same mode, declared source and cache path. A saved cache digest (or saved entry
+digest when no cache digest exists) identifies a version. If every candidate in
+that origin supplies a valid source timestamp, order by that clock; otherwise
+order versions by their first recorded collection time. Seeing an already-known
+older cache again does not prove either a stale response or a legitimate value
+reversion. Without a source clock, retain that version in the active comparison
+and quarantine any resulting disagreement; an actual newer sourced timestamp
+can confirm a legitimate reversion. This fallback is local observation ordering,
+not proof of source freshness; unknown source timestamps stay unknown.
+
+A later consistent, attributed source version can correct a statistic, with all
+old receipts retained. Different unattributed/unversioned finals, conflicting
+values within the same latest version, tied latest versions, or disagreeing
+current sources are quarantined as unresolved with actual:null and an explicit
+outcome_conflict flag. Content-digest ordering does not choose a numeric winner.
+Agreement or a later valid source correction may reconcile a conflict; its
+original observations remain visible. Quarantined values enter neither point
+nor probability score denominators. Single legacy finals remain readable, but
+missing provenance cannot justify replacing them with a different final value.
+
+Week completion is separate from the selected statistic receipt. A saved matching
+team/kickoff row with a confirmed past final and week_confirmed_complete:true can
+establish completion even when that later observation lacks the player's stat.
+Keep those completion receipt references separately; an outage does not revoke
+an already recorded completion. Missing stats still never become zero.
+
 Point metrics are MAE, RMSE and signed mean error, separately by category. Paired
 error differences use the same outcomes. Report lead time and injury coverage.
 Use a week-cluster bootstrap to keep correlated players and games together;
 before eight completed weeks, uncertainty is unavailable. The prespecified
 98.33% intervals address the three primary comparisons. Do not combine yards
 and counts into a single unscaled accuracy number.
+
+For each category's primary interval, every scored row in a season/week cluster
+must have week_confirmed_complete literally true; otherwise exclude that entire
+cluster from resampling. The gate still requires eight eligible completed weeks.
+Sort eligible week keys before seeded resampling, draw the same number of whole
+week blocks with replacement, and retain every paired row in each drawn block.
+Each replicate divides summed paired absolute-error differences by the sampled
+number of paired outcomes, not by an unweighted average of week means. The
+registered seed, replicate count, confidence, thresholds and policy files stay
+unchanged.
+
+Report observed, resampled and excluded week/outcome counts, plus the completed-
+week paired MAE delta corresponding to the interval. Overall point MAE/RMSE/bias
+and paired delta still describe all resolved matched observations, including
+partial weeks; their denominator can differ from the completed-week interval.
+Use completed_week_mae_delta_clone_minus_raw for its matching point estimate.
+Before eight eligible completed weeks, the interval remains unavailable even
+when many partial weeks or observations exist. No interval supplies independent
+evidence for repeated captures, and completed-week clustering does not establish
+calibration, profitability or production readiness.
 
 The first shadow challenger centers on the retained clone and adds a historical
 dispersion estimate. Count targets use negative-binomial/Poisson distributions;

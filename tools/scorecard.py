@@ -128,19 +128,146 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live"):
     return paths
 
 
+def _past_final(row, collected):
+    return (row.get("game_state") == "post" and row.get("final_confirmed") is True
+            and row.get("kickoff") is not None and utc(row["kickoff"]) < collected)
+
+
+def _outcome_record(payload, row, payload_sha):
+    """Keep only recorded provenance; no current-cache lookup or source-time guess."""
+    collected = utc(payload["collected_at"])
+    source = payload.get("source")
+    path = payload.get("cache_path")
+    if ((source is not None and not isinstance(source, str))
+            or (path is not None and not isinstance(path, str))):
+        raise IntegrityError("Invalid outcome source identity")
+    source_time = utc(payload["source_timestamp"]) if payload.get("source_timestamp") else None
+    if source_time is not None and source_time > collected:
+        raise IntegrityError("Outcome source timestamp is after collection")
+    cache_sha = payload.get("cache_sha256")
+    if cache_sha is not None and (not isinstance(cache_sha, str) or len(cache_sha) != 64
+                                 or any(c not in "0123456789abcdef" for c in cache_sha)):
+        raise IntegrityError("Invalid outcome cache digest")
+    entry = row.get("stats_entry")
+    if entry is not None and not isinstance(entry, dict):
+        raise IntegrityError("Invalid saved statistics entry")
+    past_final = _past_final(row, collected)
+    status = row["status"]
+    if status not in ("pending", "unresolved", "resolved", "dnp", "void"):
+        raise IntegrityError("Unexpected outcome status")
+    if status == "resolved":
+        if not past_final:
+            raise IntegrityError("Outcome lacks confirmed past final")
+        actual = row["actual"]
+        finite(actual, "outcome", optional=False)
+        if int(actual) != actual or row["category"] in ("rec", "rush_att") and actual < 0:
+            raise IntegrityError("Invalid integer/count outcome")
+        if isinstance(entry, dict):
+            if grade.participation(entry) != "played" or entry.get("team") != row["team"]:
+                raise IntegrityError("Resolved outcome has contradictory participation/team")
+            observed = entry.get("stats", {}).get(row["category"], 0)
+            finite(observed, "saved source statistic", optional=False)
+            if observed != actual:
+                raise IntegrityError("Resolved outcome differs from its saved source statistic")
+    attributed = bool(source and source.strip())
+    terminal = status == "resolved" or (past_final and attributed and
+                (status == "void" or status == "dnp" and grade.participation(entry) == "dnp"))
+    normalized = dict(row)
+    if not terminal:
+        normalized["actual"] = None
+        if status in ("dnp", "void"):
+            normalized.update(status="unresolved", reason="unconfirmed_exclusion")
+    provenance = {"outcome_snapshot_sha256": payload_sha, "outcome_row_sha256": digest(row),
+                  "collected_at": payload["collected_at"], "source": source, "cache_path": path,
+                  "cache_sha256": cache_sha, "source_timestamp": payload.get("source_timestamp"),
+                  "game_snapshot_sha256": payload.get("game_snapshot_sha256"),
+                  "status": status, "actual": row.get("actual"), "team": row.get("team"),
+                  "kickoff": row.get("kickoff"), "final_confirmed": row.get("final_confirmed"),
+                  "week_confirmed_complete": row.get("week_confirmed_complete", False)}
+    return {"row": normalized, "provenance": provenance, "collected": collected,
+            "source_time": source_time, "origin": (payload.get("mode"), source, path),
+            "attributed": attributed,
+            "version": cache_sha or (digest(entry) if isinstance(entry, dict) else None),
+            "terminal": terminal, "past_final": past_final}
+
+
+def _confirmed_frontier(records):
+    """Compare source versions within origins; never rank disagreeing sources."""
+    origins = defaultdict(list)
+    for record in records:
+        if record["terminal"]:
+            origins[record["origin"]].append(record)
+    frontier = []
+    for observations in origins.values():
+        # Unknown origin/version cannot justify replacing a different final.
+        if not all(r["attributed"] and r["version"] for r in observations):
+            frontier.extend(observations)
+            continue
+        versions = defaultdict(list)
+        for record in observations:
+            versions[record["version"]].append(record)
+        sourced_clock = all(r["source_time"] is not None for r in observations)
+        if sourced_clock:
+            order = {v: max(r["source_time"] for r in rs) for v, rs in versions.items()}
+        else:
+            # First observation orders distinct saved versions, not source
+            # freshness. An older content version reappearing later is ambiguous.
+            order = {v: min(r["collected"] for r in rs) for v, rs in versions.items()}
+        newest = max(order.values())
+        for version, candidates in versions.items():
+            reappeared = (not sourced_clock and order[version] < newest
+                          and any(r["collected"] >= newest for r in candidates))
+            if order[version] == newest or reappeared:
+                frontier.extend(candidates)
+    return frontier
+
+
 def latest_outcomes(snapshots, allow_replay=False):
-    latest = {}
+    observations = defaultdict(list)
+    seen = set()
     for payload in sorted(snapshots, key=lambda p: (utc(p["collected_at"]), digest(p))):
         if payload.get("schema_version") != "forecast-outcomes-v1":
             raise IntegrityError("Unexpected outcome schema")
         if payload.get("mode") != "live" and not (allow_replay and payload.get("mode") == "replay"):
             continue
+        payload_sha = digest(payload)
         for row in payload["rows"]:
-            if row["status"] == "resolved":
-                if row.get("game_state") != "post" or row.get("final_confirmed") is not True or utc(row["kickoff"]) >= utc(payload["collected_at"]):
-                    raise IntegrityError("Outcome lacks confirmed past final")
-                finite(row["actual"], "outcome", optional=False)
-            latest[identity(row)] = {**row, "outcome_snapshot_sha256": digest(payload), "collected_at": payload["collected_at"]}
+            record = _outcome_record(payload, row, payload_sha)
+            reference = (payload_sha, record["provenance"]["outcome_row_sha256"])
+            if reference not in seen:
+                seen.add(reference)
+                observations[identity(row)].append(record)
+    latest = {}
+    for key, records in observations.items():
+        frontier = _confirmed_frontier(records)
+        signatures = {(r["row"]["status"], r["row"].get("actual"), r["row"].get("team"),
+                       utc(r["row"]["kickoff"])) for r in frontier}
+        conflict = len(signatures) > 1
+        # Records already have deterministic parsed-time/content order. A tie
+        # can choose a representative only when every active final agrees.
+        fallback = [r for r in records if r["past_final"]] or records
+        if frontier and all(r["source_time"] is not None for r in frontier):
+            selected = max(frontier, key=lambda r: r["source_time"])
+        else:
+            selected = frontier[0] if frontier else fallback[-1]
+        result = {**selected["row"], "outcome_snapshot_sha256": selected["provenance"]["outcome_snapshot_sha256"],
+                  "collected_at": selected["provenance"]["collected_at"],
+                  "outcome_observations": [r["provenance"] for r in records],
+                  "outcome_conflict": conflict,
+                  "outcome_selection": "confirmed" if frontier else "incomplete_observation"}
+        if conflict:
+            result.update(status="unresolved", actual=None, stats_entry=None,
+                          reason="conflicting_confirmed_outcomes", outcome_snapshot_sha256=None,
+                          outcome_selection="conflict", collected_at=records[-1]["provenance"]["collected_at"])
+        # Completion proof is separate from the statistic's selected receipt.
+        # A later missing stat may still document a confirmed complete week.
+        completion = [r["provenance"]["outcome_snapshot_sha256"] for r in records
+                      if r["past_final"] and r["row"].get("week_confirmed_complete") is True
+                      and r["row"].get("team") == selected["row"].get("team")
+                      and utc(r["row"]["kickoff"]) == utc(selected["row"]["kickoff"])]
+        result["week_confirmed_complete"] = bool(completion)
+        result["week_completion_snapshot_sha256"] = sorted(set(completion))
+        latest[key] = result
     return latest
 
 
@@ -154,22 +281,34 @@ def metrics(rows, field):
 def cluster_interval(rows, policy):
     groups = defaultdict(list)
     for row in rows:
-        groups[(row["season"], row["week"])].append(abs(row["adjusted_projection"] - row["actual"]) -
-                                                        abs(row["raw_projection"] - row["actual"]))
+        groups[(row["season"], row["week"])].append(row)
     rule = policy["uncertainty"]
-    completed = {(r["season"], r["week"]) for r in rows if r.get("week_confirmed_complete") is True}
+    completed = sorted(key for key, group in groups.items()
+                       if all(r.get("week_confirmed_complete") is True for r in group))
+    blocks = []
+    for key in completed:
+        differences = [abs(r["adjusted_projection"] - r["actual"]) -
+                       abs(r["raw_projection"] - r["actual"]) for r in groups[key]]
+        for value in differences:
+            finite(value, "completed-week paired error", optional=False)
+        blocks.append((math.fsum(differences), len(differences)))
+    n = sum(count for _, count in blocks)
+    coverage = {"completed_weeks": len(completed), "observed_week_clusters": len(groups),
+                "resampled_week_clusters": len(completed), "resampled_outcomes": n,
+                "excluded_incomplete_week_clusters": len(groups) - len(completed),
+                "excluded_incomplete_outcomes": len(rows) - n, "cluster": "season_week",
+                "interval_population": "completed_weeks_only",
+                "completed_week_mae_delta_clone_minus_raw": math.fsum(total for total, _ in blocks) / n if n else None}
     if len(completed) < rule["minimum_completed_weeks"]:
-        return {"status": "insufficient_completed_weeks", "completed_weeks": len(completed), "interval": None}
-    blocks = list(groups.values())
+        return {**coverage, "status": "insufficient_completed_weeks", "interval": None}
     rng = random.Random(rule["seed"])
     means = []
     for _ in range(rule["bootstrap_replicates"]):
         sampled = [blocks[rng.randrange(len(blocks))] for _ in blocks]
-        means.append(sum(sum(x) for x in sampled) / sum(len(x) for x in sampled))
+        means.append(math.fsum(total for total, _ in sampled) / sum(count for _, count in sampled))
     means.sort()
     tail = (1 - rule["simultaneous_confidence"]) / 2
-    return {"status": "available", "completed_weeks": len(completed), "observed_week_clusters": len(groups), "cluster": "season_week",
-            "confidence": rule["simultaneous_confidence"],
+    return {**coverage, "status": "available", "confidence": rule["simultaneous_confidence"],
             "interval": [means[int(tail * len(means))], means[min(len(means) - 1, int((1 - tail) * len(means)))]]}
 
 
@@ -192,6 +331,10 @@ def score(pairs, outcomes, coverage, policy):
         injuries[row.get("injury_at_capture") or "no_designation_reported"] += 1
         item = {**row, "evaluation_status": status, "actual": outcome.get("actual"),
                 "outcome_snapshot_sha256": outcome.get("outcome_snapshot_sha256"),
+                "outcome_observations": outcome.get("outcome_observations", []),
+                "outcome_conflict": outcome.get("outcome_conflict", False),
+                "outcome_selection": outcome.get("outcome_selection"),
+                "week_completion_snapshot_sha256": outcome.get("week_completion_snapshot_sha256", []),
                 "week_confirmed_complete": outcome.get("week_confirmed_complete", False)}
         detail.append(item)
         if status == "resolved":
