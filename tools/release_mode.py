@@ -10,5 +10,20 @@ def read_mode(root):
     return value["mode"]
 
 
+def read_phase2(root):
+    path = Path(root) / "config/phase2.json"
+    if not path.exists():
+        return False
+    value = json.loads(path.read_text())
+    if (not isinstance(value, dict) or type(value.get("capture_enabled")) is not bool or
+            value.get("production_model") != "original_sleeper_matchup_baseline" or
+            value.get("challenger_production_enabled") is not False):
+        raise ValueError("Invalid Phase 2 mode or attempted production-model switch")
+    return value["capture_enabled"]
+
+
 if __name__ == "__main__":
-    print("mode=" + read_mode(Path(__file__).resolve().parents[1]))
+    root = Path(__file__).resolve().parents[1]
+    mode = read_mode(root)
+    print("mode=" + mode)
+    print("phase2_enabled=" + str(mode == "phase1" and read_phase2(root)).lower())

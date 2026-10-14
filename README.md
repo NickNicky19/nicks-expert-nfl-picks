@@ -66,12 +66,30 @@ finished game this season.
 Leans can't be backtested: Sleeper revises past weeks' projections after the games, so the track record only grades
 what was saved before kickoff.
 
+## Phase 2 review branch
+
+The retained production model is unchanged. Phase 2 records exact matchup inputs,
+compares raw Sleeper and the clone at matched times for receptions, rushing
+attempts and passing yards, and saves an experimental probability challenger in
+shadow mode. Each player/game/statistic counts once, even with many captures.
+Accuracy needs confirmed finals and participation; initial outcomes are pending.
+Calibration and profitability are unproven, and promotion is disabled.
+
+Sleeper normal-line selection captures retain contract, line, side, offered leg
+multiplier, collection/source timestamps and rule provenance. Missing full entry
+payout/settlement information remains explicit. No odds, EV, paid service or new
+account is added. See [UPGRADE_NOTES.md](UPGRADE_NOTES.md),
+[evaluation rules](docs/EVALUATION_PROTOCOL.md), [offer scope](docs/OFFER_CAPTURE.md),
+[diagnosis](docs/PHASE2_DIAGNOSIS.md) and [recovery](ROLLBACK.md).
+
 ## Running it
 
 ```
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python pull/build.py      # writes output/data/
-.venv/bin/python tools/verify.py    # checks scoring, point-in-time lines and live scoring
+.venv/bin/python tools/build_recorded.py  # unchanged builder plus exact input receipts
+.venv/bin/python tools/verify.py --offline
+.venv/bin/python tools/phase2_capture.py --mode live
+.venv/bin/python tools/verify.py    # also runs network scoring diagnostics
 cd output && python3 -m http.server 8000
 ```
 
@@ -79,6 +97,7 @@ cd output && python3 -m http.server 8000
 
 - PPR matches Sleeper's own totals on every cached player-week.
 - Lines rebuild exactly from earlier weeks only.
+- The full recorded builder population and frozen-game input origins match.
 - The output is consistent.
 - Live ESPN scoring matches Sleeper's final PPR for finished games.
 
@@ -95,6 +114,11 @@ cd output && python3 -m http.server 8000
 | `pull/gamemodel.py` | our game projection: team scores, spread, total, moneyline |
 | `pull/news.py` | ESPN's injury report |
 | `tools/verify.py`, `tools/compare_lines.py` | checks, DraftKings comparison |
+| `tools/build_recorded.py` | exact retained-builder input recording |
+| `tools/scorecard.py`, `tools/shadow.py` | unique prospective comparison and shadow probability scoring |
+| `tools/offers.py`, `tools/phase2_capture.py` | narrow source capture and evidence pipeline |
+| `data/forward`, `data/verification`, `data/shadow`, `data/offers`, `data/outcomes` | create-only evidence |
+| `config/evaluation-policy.json` | versioned evaluation/promotion rules |
 | `output/` | the site (`index.html`, `app.js`, `style.css`) and its data |
 | `data/cache/` | trimmed weekly stats (finished weeks are fetched once) |
 | `.github/workflows/hourly.yml` | hourly build, commit and Pages deploy |

@@ -1,4 +1,4 @@
-"""Restore only the four changed original files. Preserve data and Git history.
+"""Restore allowlisted original files. Preserve data and Git history.
 
 Run on a clean main checkout after fetching the repository. Never force-push.
 This command does not commit, push, deploy, or remove newly collected evidence.
@@ -17,6 +17,7 @@ ORIGINAL_FILES = {
     ".github/workflows/hourly.yml": "99ba2148941b9560599dd273a0a7e40b3bb6bd28",
     "output/app.js": "34d2769db20f2ff5c86d232ddfc046c092033234",
     "output/index.html": "08fc1cea83a942bef91ed86e472306c25111f624",
+    "tools/verify.py": "9f510735c2401de1d19fb56718d147e8f1c5ff8d",
 }
 
 

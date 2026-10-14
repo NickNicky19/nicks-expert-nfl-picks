@@ -21,9 +21,18 @@ jobs:
         run: python tools/release_mode.py >> "$GITHUB_OUTPUT"
       - name: Install existing dependencies
         run: pip install -r requirements.txt
-      - name: Phase 1 regression suite
+      - name: Retained baseline and Phase 2 regression suites
         if: steps.mode.outputs.mode == 'phase1'
-        run: python -m unittest discover -s tests -v
+        run: |
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            python -m unittest discover -s tests -v
+          else
+            python -m unittest discover -s tests -p test_reliability.py -v
+            python -m unittest discover -s tests -p test_recovery.py -v
+          fi
       - name: Python syntax
         run: python -m compileall -q pull tools
       - run: node --check output/app.js && node --check output/reliability-ui.js && node tests/test-ui.cjs
+      - name: About comparison states
+        if: steps.mode.outputs.phase2_enabled == 'true'
+        run: node tests/test-about.cjs

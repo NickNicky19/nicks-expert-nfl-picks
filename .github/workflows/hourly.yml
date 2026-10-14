@@ -46,18 +46,37 @@ jobs:
       - name: Required offline regression tests
         if: steps.mode.outputs.mode == 'phase1'
         run: |
-          python -m unittest discover -s tests -v
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            python -m unittest discover -s tests -v
+          else
+            python -m unittest discover -s tests -p test_reliability.py -v
+            python -m unittest discover -s tests -p test_recovery.py -v
+          fi
           node --check output/app.js
           node --check output/reliability-ui.js
           node tests/test-ui.cjs
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then node tests/test-about.cjs; fi
       - name: Preserve original grading output
         if: steps.mode.outputs.mode == 'phase1'
         run: python tools/preserve_legacy.py
       - name: Build unchanged projection engine
-        run: python pull/build.py
+        run: |
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            python tools/build_recorded.py
+          else
+            python pull/build.py
+          fi
+      - name: Required reproducible matchup verification
+        if: steps.mode.outputs.phase2_enabled == 'true'
+        run: python tools/verify.py --offline --json output/data/matchup-diagnostics.json
       - name: Required integrity checks and pregame capture
         if: steps.mode.outputs.mode == 'phase1'
-        run: GITHUB_SHA="$(git rev-parse HEAD)" python tools/reliability.py --mode live
+        run: |
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            GITHUB_SHA="$(git rev-parse HEAD)" python tools/phase2_capture.py --mode live
+          else
+            GITHUB_SHA="$(git rev-parse HEAD)" python tools/reliability.py --mode live
+          fi
 
       # The old verifier mixes network availability, diagnostics, and model warnings.
       # Required deterministic invariants are enforced above, not bypassed here.
@@ -91,7 +110,7 @@ jobs:
           git fetch origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || { echo "Main changed during build; refusing to merge generated evidence. Re-run on new main."; exit 1; }
           git add output/data data/cache
-          for dir in data/forward data/history; do
+          for dir in data/forward data/history data/verification data/shadow data/offers data/outcomes; do
             if [ -d "$dir" ]; then git add "$dir"; fi
           done
           if ! git diff --cached --quiet; then

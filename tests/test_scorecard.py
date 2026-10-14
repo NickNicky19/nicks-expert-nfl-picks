@@ -62,6 +62,7 @@ class ScorecardTests(unittest.TestCase):
         pairs, coverage = paired_forecasts([p], policy, {"test": "fixture"})
         if final:
             data["games"][0]["state"] = "post"
+            data["games"][0]["detail"] = "Final"
         with tempfile.TemporaryDirectory() as d:
             root = Path(d); (root / "output/data").mkdir(parents=True); (root / "data/cache").mkdir(parents=True)
             (root / "output/data/week.json").write_text(json.dumps(data))
@@ -107,7 +108,7 @@ class ScorecardTests(unittest.TestCase):
         _, p, policy = setup(); pairs, coverage = paired_forecasts([p], policy, {"test": "fixture"})
         row = next(iter(pairs.values()))
         a = {"schema_version": "forecast-outcomes-v1", "mode": "live", "collected_at": stamp(NOW + timedelta(hours=5)),
-             "rows": [{**row, "status": "resolved", "actual": 3, "game_state": "post"}]}
+             "rows": [{**row, "status": "resolved", "actual": 3, "game_state": "post", "final_confirmed": True}]}
         b = copy.deepcopy(a); b.update(collected_at=stamp(NOW + timedelta(hours=6))); b["rows"][0]["actual"] = 5
         before = copy.deepcopy(p)
         report = score(pairs, latest_outcomes([b, a]), coverage, policy)
@@ -117,9 +118,25 @@ class ScorecardTests(unittest.TestCase):
 
     def test_week_cluster_uncertainty_requires_eight_weeks(self):
         _, _, policy = setup()
-        rows = [{"season": 2026, "week": w, "raw_projection": 5, "adjusted_projection": 4, "actual": 3} for w in range(1, 9)]
+        rows = [{"season": 2026, "week": w, "raw_projection": 5, "adjusted_projection": 4, "actual": 3,
+                 "week_confirmed_complete": True} for w in range(1, 9)]
         self.assertIsNone(cluster_interval(rows[:7], policy)["interval"])
         self.assertEqual(cluster_interval(rows, policy)["interval"], [-1, -1])
+        rows[-1]["week_confirmed_complete"] = False
+        self.assertIsNone(cluster_interval(rows, policy)["interval"])
+
+    def test_cancelled_post_flag_does_not_establish_a_final(self):
+        data, p, policy = setup(); data["games"][0].update(state="post", detail="Cancelled")
+        pairs, _ = paired_forecasts([p], policy, {"test": "fixture"})
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); (root / "output/data").mkdir(parents=True); (root / "data/cache").mkdir(parents=True)
+            (root / "output/data/week.json").write_text(json.dumps(data))
+            (root / "data/cache/stats_2026_05.json").write_text(json.dumps({"fictional-1": {"team": "AAA", "stats": {"gp": 1, "rec": 5}}}))
+            paths = snapshot_outcomes(root, pairs, NOW + timedelta(hours=5))
+            outcome = read(paths[0])["rows"][0]
+            self.assertEqual(outcome["status"], "pending")
+            self.assertIsNone(outcome["actual"])
+            self.assertFalse(outcome["week_confirmed_complete"])
 
 
 if __name__ == "__main__":

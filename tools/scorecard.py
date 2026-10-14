@@ -66,6 +66,8 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live"):
     for row in pairs.values():
         groups[(row["season"], row["week"])].append(row)
     current = load_json(root / "output/data/week.json")
+    status_path = root / "output/data/game-status.json"
+    observed_status = load_json(status_path).get("weeks", {}) if status_path.exists() else {}
     paths = []
     for (season, week), rows in sorted(groups.items()):
         board_path = root / ("output/data/week.json" if (current["season"], current["week"]) == (season, week)
@@ -74,12 +76,23 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live"):
         board = load_json(board_path) if board_path.exists() else {"games": []}
         cache = load_json(cache_path) if cache_path.exists() else {}
         games = {g["id"]: g for g in board["games"]}
+        source_status = observed_status.get(f"{season}_{week:02d}")
+        def confirmed_final(game):
+            if game.get("state") != "post":
+                return False
+            if source_status is not None:
+                raw = source_status["games"].get(game["id"], {})
+                return raw.get("state") == "post" and raw.get("completed") is True and raw.get("kickoff") == game["kickoff"]
+            # Legacy ESPN snapshots have a saved Final/Final-OT detail but did
+            # not retain completed. A bare post flag can also mean cancelled.
+            return str(game.get("detail", "")).lower().startswith("final")
+        week_complete = bool(games) and all(confirmed_final(g) for g in games.values())
         outcomes = []
         for row in rows:
             game = games.get(row["game_id"])
             status, actual, reason = "pending", None, "game_not_confirmed_final"
             entry = cache.get(row["player_id"])
-            if game and game.get("state") == "post":
+            if game and confirmed_final(game):
                 if utc(game["kickoff"]) >= observed_at:
                     raise IntegrityError("Final-game evidence has a future kickoff")
                 status = grade.participation(entry)
@@ -102,13 +115,14 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live"):
             outcomes.append({k: row[k] for k in ("season", "week", "game_id", "player_id", "category", "team")} |
                             {"status": status, "actual": actual, "reason": reason,
                              "kickoff": game.get("kickoff") if game else None, "stats_entry": entry,
-                             "game_state": game.get("state") if game else None})
+                             "game_state": game.get("state") if game else None,
+                             "final_confirmed": bool(game and confirmed_final(game)), "week_confirmed_complete": week_complete})
         payload = {"schema_version": "forecast-outcomes-v1", "mode": mode, "season": season, "week": week,
                    "collected_at": stamp(observed_at), "source_timestamp": None,
                    "source": "existing_Sleeper_stats_cache_and_ESPN_final_game_snapshot",
                    "cache_path": cache_path.relative_to(root).as_posix(), "cache_sha256": digest(cache),
                    "game_snapshot_path": board_path.relative_to(root).as_posix(), "game_snapshot_sha256": digest(board),
-                   "games": board["games"], "rows": outcomes,
+                   "games": board["games"], "source_game_status": source_status, "rows": outcomes,
                    "settlement_scope": "STATISTICAL_ONLY_NOT_VENUE_SETTLEMENT"}
         paths.append(write(root, "outcomes" if mode == "live" else "outcomes_replay", payload))
     return paths
@@ -123,7 +137,7 @@ def latest_outcomes(snapshots, allow_replay=False):
             continue
         for row in payload["rows"]:
             if row["status"] == "resolved":
-                if row.get("game_state") != "post" or utc(row["kickoff"]) >= utc(payload["collected_at"]):
+                if row.get("game_state") != "post" or row.get("final_confirmed") is not True or utc(row["kickoff"]) >= utc(payload["collected_at"]):
                     raise IntegrityError("Outcome lacks confirmed past final")
                 finite(row["actual"], "outcome", optional=False)
             latest[identity(row)] = {**row, "outcome_snapshot_sha256": digest(payload), "collected_at": payload["collected_at"]}
@@ -143,8 +157,9 @@ def cluster_interval(rows, policy):
         groups[(row["season"], row["week"])].append(abs(row["adjusted_projection"] - row["actual"]) -
                                                         abs(row["raw_projection"] - row["actual"]))
     rule = policy["uncertainty"]
-    if len(groups) < rule["minimum_completed_weeks"]:
-        return {"status": "insufficient_completed_weeks", "completed_weeks": len(groups), "interval": None}
+    completed = {(r["season"], r["week"]) for r in rows if r.get("week_confirmed_complete") is True}
+    if len(completed) < rule["minimum_completed_weeks"]:
+        return {"status": "insufficient_completed_weeks", "completed_weeks": len(completed), "interval": None}
     blocks = list(groups.values())
     rng = random.Random(rule["seed"])
     means = []
@@ -153,7 +168,7 @@ def cluster_interval(rows, policy):
         means.append(sum(sum(x) for x in sampled) / sum(len(x) for x in sampled))
     means.sort()
     tail = (1 - rule["simultaneous_confidence"]) / 2
-    return {"status": "available", "completed_weeks": len(groups), "cluster": "season_week",
+    return {"status": "available", "completed_weeks": len(completed), "observed_week_clusters": len(groups), "cluster": "season_week",
             "confidence": rule["simultaneous_confidence"],
             "interval": [means[int(tail * len(means))], means[min(len(means) - 1, int((1 - tail) * len(means)))]]}
 
@@ -176,7 +191,8 @@ def score(pairs, outcomes, coverage, policy):
         lead_times["under_24h" if hours < 24 else "24_to_72h" if hours <= 72 else "over_72h"] += 1
         injuries[row.get("injury_at_capture") or "no_designation_reported"] += 1
         item = {**row, "evaluation_status": status, "actual": outcome.get("actual"),
-                "outcome_snapshot_sha256": outcome.get("outcome_snapshot_sha256")}
+                "outcome_snapshot_sha256": outcome.get("outcome_snapshot_sha256"),
+                "week_confirmed_complete": outcome.get("week_confirmed_complete", False)}
         detail.append(item)
         if status == "resolved":
             by_category[row["category"]].append(item)

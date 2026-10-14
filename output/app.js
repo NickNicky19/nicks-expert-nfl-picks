@@ -595,6 +595,7 @@ async function load() {
   S.generatedAt = S.data.generated_at;
   try { S.track = await getJSON(`data/track_record.json?t=${Date.now()}`); } catch { S.track = null; }
   try { S.dk = await getJSON(`data/dk_backtest.json?t=${Date.now()}`); } catch { S.dk = null; }
+  try { S.forecastScorecard = await getJSON(`data/forecast-scorecard.json?t=${Date.now()}`); } catch { S.forecastScorecard = null; }
   S.byId = {};
   S.byKey = {};
   S.byEspn = {};
@@ -942,7 +943,7 @@ function catCard(p, raw) {
     : (vals.length ? `Over in <b>${over}</b> of ${gamesText}${edited ? ` at your line (the ${LINE_FROM[from]} line is ${prop.line})` : ""}.` : "No games yet this season.")
         + mfText
         + (from === "ours" && prop.key !== "fpts" ? " No sportsbook line yet, so this line is our projection." : "")
-        + (prop.sleeper?.over ? ` Sleeper Picks pays ${prop.sleeper.over}x over, ${prop.sleeper.under}x under.` : "");
+        + (prop.sleeper?.over ? ` Sleeper Picks shows leg multipliers: ${prop.sleeper.over}x over, ${prop.sleeper.under}x under. Full payouts depend on the contest entry.` : "");
 
   return `<div class="cat" data-cat="${k}">
     <div class="cat-h"><span>${prop.key === "fpts" ? `Fantasy Points (${scoringName()})` : cat.label}</span>${leanPill}</div>
@@ -2653,11 +2654,17 @@ function renderAbout() {
   ];
   const cats = Object.entries(S.data.categories).filter(([k]) => k !== "anytime_td");
   $("#main").innerHTML = `<div class="about">
-    <h2>Reliability foundation · Phase 1</h2>
-    <div class="card note"><p><b>The prediction engine is unchanged.</b> Raw Sleeper projections, matchup adjustments, and top-pick selection rules remain the original benchmark. This release improves statistical grading, publication checks, and future baseline capture; it does not establish greater predictive accuracy or profitability.</p>
+    <h2>Forecast comparison · Phase 2</h2>
+    <div class="card note"><p><b>Production picks use the retained baseline.</b> Raw Sleeper projections, matchup adjustments, and top-pick selection rules remain unchanged. Statistical grading and saved forecast comparisons do not establish greater predictive accuracy or profitability.</p>
     <p>Top picks are projection-gap rankings, not calibrated win probabilities or positive-EV recommendations. DraftKings player-prop prices are not captured. A recent build does not verify the age of each quote.</p>
-    <p>After installation, the update workflow saves append-only pregame capture receipts with both raw and adjusted projections, input and code hashes, and the local observation time. These are not verified execution receipts. Replay tests are stored separately and never called prospective results.</p>
-    <p>Recovery preserves the original code and retains subsequent evidence. <a href="recovery.html">How to restore the original</a>.</p></div>
+    <p>The comparison scorecard pairs raw Sleeper and the unchanged clone for receptions, rushing attempts and passing yards at the same forecast time. Repeated captures count once per player, game and statistic. Final games and confirmed participation are required for accuracy metrics.</p>
+    <p>An experimental probability model saves shadow forecasts and fixed-prior comparison distributions. It does not select production picks. Calibration and profitability remain unproven; model promotion requires a forward holdout review and explicit approval.</p>
+    <p>Sleeper selection captures save the exact line, side, offered leg multiplier, collection time, available source timestamp and rule references. No offer, a source outage and missing information are separate states. A source timestamp is not a freshness guarantee. Full entry payout and entry-specific settlement remain unverified; no EV is computed.</p>
+    <p>The update workflow preserves exact matchup inputs, frozen-forecast origins and append-only pregame receipts. Replay tests stay separate from prospective evidence. <a href="recovery.html">Recovery instructions</a>.</p></div>
+    <h2>Saved comparison status</h2>
+    <div class="card note">${S.forecastScorecard ? `<p>${Number(S.forecastScorecard.coverage?.unique_opportunities || 0)} unique matched opportunities; ${Number(S.forecastScorecard.coverage?.repeated_capture_rows || 0)} repeated captures excluded from sample size. ${Number(S.forecastScorecard.outcome_status?.pending || 0)} pending, ${Number(S.forecastScorecard.outcome_status?.unresolved || 0)} unresolved, ${Number(S.forecastScorecard.outcome_status?.dnp || 0)} confirmed DNP.</p>
+      <table class="ptable"><thead><tr><th>Statistic</th><th>Resolved</th><th>Sleeper MAE</th><th>Clone MAE</th></tr></thead><tbody>${[ ["rec", "Receptions"], ["rush_att", "Rush attempts"], ["pass_yd", "Pass yards"] ].map(([key, label]) => { const c = S.forecastScorecard.categories?.[key]; const number = (v) => v == null ? "Pending" : fmt(v, 2); return `<tr><td>${label}</td><td>${Number(c?.raw_sleeper?.n || 0)}</td><td>${number(c?.raw_sleeper?.mae)}</td><td>${number(c?.unchanged_clone?.mae)}</td></tr>`; }).join("")}</tbody></table>
+      <p>MAE is the average absolute miss in that statistic's units. Uncertainty requires eight completed NFL weeks. These are statistical outcomes, not sportsbook settlement or ROI.</p>` : `<p>No comparison report is available for this release yet. Accuracy and model performance are not established.</p>`}</div>
     <h2 id="features">What's here</h2>
     <div class="feat">
       <div class="card"><b>Props with real lines</b><p>DraftKings lines (then Sleeper Picks) for every prop, our pregame projection, leans, hit rates this season, and Top Overs / Unders for real starters only.</p></div>
@@ -2687,7 +2694,7 @@ function renderAbout() {
     <h2>Leans and top picks</h2>
     <p>A lean means our projection is far enough above (over) or below (under) a real sportsbook line. There are no leans against our own estimate. Top Overs and Top Unders are the biggest gaps, measured in each category's typical spread, and only use real sportsbook lines. They include players with 2+ games this season who aren't out, doubtful or on IR, and lock at kickoff. During a game, cards also show DraftKings' live line.</p>
     <h2>How our lines compare with DraftKings</h2>
-    <p>See the Track Record tab. In short: DraftKings' lines are sharper than a season average, and three or four weeks in, the matchup adjustment hasn't yet made a season average more accurate. That's why the real line is the one that counts, and why the adjustment is kept small until there's more data.</p>
+    <p>The Track Record tab includes a descriptive comparison with saved historical DraftKings lines. Its historical season-average benchmark differs from the raw Sleeper forecasts in the forward scorecard. Small historical samples do not establish future accuracy.</p>
     <h2>Our game lines</h2>
     <p>Our spread, total and moneyline come from the same player projections, added up: each team's projected touchdowns (passing TDs from the quarterback, rushing TDs from everyone, so no catch is counted twice), 2-point conversions, its kicker's field goals and extra points, and its defense's touchdowns and safeties. Those totals are scaled to this season's real average points per team, then turned into a spread, total and win chance (a fair moneyline with no sportsbook margin). We show a lean when we're 2+ points off DraftKings' spread or 3+ off the total, lock it at kickoff, and grade it on the Track Record tab.</p>
     <h2>Future weeks and trades</h2>
@@ -2698,11 +2705,11 @@ function renderAbout() {
     <table class="ptable">${scoreRows.map(([k, v]) => `<tr><td>${k}</td><td class="num">${v > 0 ? "+" : ""}${v}</td></tr>`).join("")}<tr><td>Reception (half PPR)</td><td class="num">+0.5</td></tr></table>
     <p>Kickers and team defenses use <b>ESPN's standard scoring</b>: field goals 3 (under 40 yards), 4 (40-49), 5 (50-59), 6 (60+), -1 per miss, 1 per extra point; defenses get 1 per sack, 2 per interception, fumble recovery, safety or blocked kick, 6 per touchdown, plus points-allowed and yards-allowed tiers. Every kicker and defense matches ESPN's own totals each week we've checked.</p>
     <h2>Live</h2>
-    <p>Scores, box scores and play-by-play come straight from ESPN every 30 seconds while games are on (every 8 seconds for the game you have open, and the newest play shows "just in" the moment the scoreboard has it, before the full play-by-play catches up), paused when this tab is hidden. Live points use the same scoring, including 2-point conversions and field goal distances. An over is marked cleared the moment it passes the line, since stats only go up; an under is only a hit once the game is final.</p>
+    <p>Scores, box scores and play-by-play come straight from ESPN every 30 seconds while games are on (every 8 seconds for the game you have open, and the newest play shows "just in" the moment the scoreboard has it, before the full play-by-play catches up), paused when this tab is hidden. Live points use the same scoring, including 2-point conversions and field goal distances. An over is marked cleared when the reported stat exceeds its line. Final statistical grading can reflect later changes; an under is only a hit once the game is final.</p>
     <h2>News and injuries</h2>
     <p>Injury designations come from Sleeper with each update, along with ESPN's injury report (notes, body part and expected return). On game days the page also checks ESPN's latest news for games kicking off within 4 hours, so game-day inactives show up right away (outlined badges, with the time ESPN posted them). The News tab has ESPN's latest headlines, tagged with the players they mention, and an injury report by game. Opening a player and tapping More news loads his latest Rotowire note and headlines.</p>
     <h2>Updates, grading, and evidence</h2>
-    <p>The configured schedule is unchanged: hourly builds, with additional game-day runs. Critical structural checks and offline regression tests must pass before publishing a new release. Older network-dependent diagnostics remain visible as advisory results. A failed critical build leaves the prior published snapshot in place; the build-age warning identifies when it becomes stale.</p>
+    <p>The schedule remains hourly, with additional game-day runs. Exact-input matchup verification, structural checks and offline regression tests must pass before publication. Network-dependent diagnostics remain visible as advisory results, with unavailable coverage reported. A failed critical build leaves the prior published snapshot in place; the build-age warning identifies when it becomes stale.</p>
     <p>Selections for started games remain frozen. Grading v2 reports pushes and unresolved participation separately and preserves the raw and adjusted projection for each top pick. These are statistical comparisons, not verified venue settlement or ROI. Prior archives can be regraded without changing the saved forecasts; that is a historical regrade, not a new prospective prediction. Missing stats must not be mistaken for confirmed DNP.</p>
     <h2 id="maker">Nick's Expert NFL Picks</h2>
     <div class="card bio">

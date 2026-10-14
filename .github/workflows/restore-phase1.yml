@@ -1,0 +1,49 @@
+name: Restore working Phase 1
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Restore working Phase 1 and retain every forecast/offer/outcome receipt?'
+        type: choice
+        required: true
+        default: 'Cancel'
+        options: ['Cancel', 'RESTORE_PHASE1']
+concurrency:
+  group: hourly-update
+  cancel-in-progress: false
+permissions:
+  contents: write
+  actions: write
+jobs:
+  restore:
+    if: github.ref == 'refs/heads/main' && inputs.confirmation == 'RESTORE_PHASE1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify backup and stage Phase 1 recovery
+        run: |
+          git pull --ff-only origin main
+          git fetch origin backup/pre-phase2-20261014-3149663447b2
+          test "$(git rev-parse FETCH_HEAD)" = '3149663447b29f95f06c7259b84da3bd4a21cab0'
+          python tools/restore_phase1.py --confirm RESTORE_PHASE1
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          BACKUP="$(git for-each-ref --sort=-refname --format='%(refname:short)' 'refs/heads/backup/pre-restore-*' | head -n 1)"
+          test -n "$BACKUP"
+          git push origin "$BACKUP"
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Restore working Phase 1; retain Phase 2 evidence'
+            git push origin HEAD:main
+          fi
+      - name: Request Phase 1 rebuild
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run hourly.yml --ref main
