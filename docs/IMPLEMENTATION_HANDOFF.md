@@ -135,10 +135,18 @@ value. Re-fetch authorization and PR target immediately before publication.
 Use the existing one-parent, non-force transaction and full state readback, with
 source-head checks before and after the coordination push. A drift after push
 leaves the claim unusable and requires attention; never silently release/retry.
-Each subsequent manual check also re-fetches the original authorization and
-current PR target; changed/retracted authorization or a closed/stale target
-stops further edits/publication. A final owner-authored release can still safely
-close the lease against its exact result and existing scope/ancestry checks.
+Each manual check, checkpoint and ordinary finish re-fetches the original
+authorization and current PR target. Edited/deleted authorization or a
+closed/stale target blocks checkpoint and ordinary finish publication. Checkpoint
+and finish also re-read the result comment and bind coordination publication to
+the observed source head before and after the non-force push.
+
+After revocation, explicit `finish --safe-release` permits only owner-authored
+BLOCKED cleanup at the last acknowledged source SHA, with no source advance or
+changed paths and a clean worktree. It retains owner/run/result, gate digest, repository/branch/head
+and state/readback checks. An unmerged closed PR is permitted for this cleanup;
+it does not check the revoked authorization or authorize source changes.
+Unknown source/state drift, a merged PR or another owner requires attention.
 
 ```sh
 python tools/writer_gate.py claim-manual --comment-id ACTUAL_OWNER_AUTHORIZATION_ID --run-id EXACT_RUN_ID
@@ -147,6 +155,8 @@ python tools/writer_gate.py check --run-id EXACT_RUN_ID
 # Post/read back structured CODEX_RESULT for each checkpoint and at completion.
 python tools/writer_gate.py checkpoint --comment-id ACTUAL_CHECKPOINT_RESULT_ID
 python tools/writer_gate.py finish --comment-id ACTUAL_FINAL_RESULT_ID
+# Explicit cleanup only, unchanged acknowledged source and BLOCKED result:
+python tools/writer_gate.py finish --safe-release --comment-id ACTUAL_BLOCKED_RESULT_ID
 ```
 
 The authenticated API equivalent must call the same claim_manual validation on
@@ -179,7 +189,10 @@ repository entrypoint or scheduler.
 Publish only the approved source tree with one parent, the pinned source SHA;
 preserve all other bytes/refs. Record the installation on the reservation while
 running exact-head checks and independent verification. A freshly read-back
-CODEX_RESULT and proven exact tree/parent permit reservation closure. Do not
+CODEX_RESULT and proven exact tree/parent alone do not permit reservation closure.
+Closure also needs an actual independent exact-source AUDIT_REPORT and separate
+explicit owner acceptance, each authenticated and bound by comment ID, origin,
+body digest, unedited timestamps and reviewed SHA. Do not
 convert the reservation into a manual owner: close it, then acquire/read back a
 fresh explicit manual authorization against the actual installed source and
 current coordination SHA. No Phase 2 repair edit is allowed before that step.
@@ -195,6 +208,40 @@ reservation and stop; no reset, forced ref update, expiry or deletion. A rollbac
 after reservation closure needs a fresh exact-head authorization/reservation
 and cannot interrupt an active manual owner. Automatic implementation stays
 disabled throughout bootstrap, manual use, abort and rollback.
+
+An existing exact-patch reservation cannot authorize an amended patch. For the
+G01/G02 remedy at 43099c1, obtain a new owner-approved, digest-pinned correction
+authorization before any source or coordination change. The proposed external
+controller retains the same bootstrap owner/run/reservation and records its
+previous metadata; it replaces the permitted artifact pins without release or
+an implementation lease. The original controller then rejects the superseded
+artifact pins. Read back the exact one-parent, non-force state transaction before
+installing only the new approved three-file tree with parent 43099c1.
+
+Record the corrected install while holding the reservation. A new structured
+`manual-gate-audit-v1` report must identify the exact source/tree, repository ID,
+branch, policy/evaluation/timing versions, correction manifest/controller/gate
+digests and G01/G02 PASS findings. Closure additionally requires a separately
+owner-approved `manual-gate-review-acceptance-v1` comment referencing that audit's
+full metadata, with `independent_review_confirmed:true`. Bind both actual comments
+in the final CODEX_RESULT. Re-fetch all evidence and exact repository/PR/source/
+state immediately before publication, use source-bound non-force coordination,
+and verify full readback. Missing, edited, rejected, stale or unaccepted audit
+evidence leaves the reservation held. Correction-plan approval authorizes the
+patch only; it does not preapprove the later audit acceptance or release.
+
+The corrective code-only rollback restores those three paths to their 43099c1
+bytes in a new commit parented to the recorded corrective install. It retains
+the reservation as BLOCKED, the failed correction, bootstrap and all evidence.
+43099c1 remains unpassed after rollback. Restoring pre-bootstrap 9c02617 or
+releasing a failed reservation requires a separately pinned owner procedure;
+there is no reset, force update, history deletion or automatic takeover.
+
+This is a cooperative gate. Delegated owner credentials can author owner
+comments, and direct repository writes can bypass local checks. Comment
+authentication proves GitHub identity/origin, not a separate human decision.
+The owner must confirm independent review in a separate decision after reading
+the actual report. No server permissions or branch protection is changed here.
 
 ## Automatic structured request and audit contract
 

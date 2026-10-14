@@ -104,7 +104,7 @@ def claim(state, request, policy, source_head, now, audit=None):
     return _claim(state, request, policy, source_head, now, audit)
 
 
-def verify_manual_target(policy, source_head, repository, pull_request):
+def verify_manual_target(policy, source_head, repository, pull_request, *, allow_closed=False):
     """Require fresh server metadata, not just the configured Git remote URL."""
     head = pull_request.get("head", {})
     head_repo = head.get("repo") or {}
@@ -113,7 +113,8 @@ def verify_manual_target(policy, source_head, repository, pull_request):
             or head_repo.get("id") != policy["repository_id"] or head_repo.get("full_name") != policy["repository"]
             or type(pull_request.get("number")) is not int or pull_request["number"] != policy["pull_request"]
             or pull_request.get("html_url") != f"https://github.com/{policy['repository']}/pull/{policy['pull_request']}"
-            or pull_request.get("state") != "open" or pull_request.get("merged") is not False
+            or pull_request.get("state") not in (("open", "closed") if allow_closed else ("open",))
+            or pull_request.get("merged") is not False
             or head.get("ref") != policy["development_branch"] or head.get("sha") != source_head):
         reject("WRONG_OR_STALE_MANUAL_TARGET")
 
@@ -251,7 +252,7 @@ def check_owner(state, policy, run_id, source_head, *, gate_sha256=None):
 
 
 def finish(state, report, policy, source_head, now, *, descendant=False, changed_paths=(), release=True,
-           gate_sha256=None):
+           gate_sha256=None, safe_release=False):
     """Release only this owner after an exact, freshly read-back result comment."""
     validate_state(state, policy)
     active = state.get("active")
@@ -267,6 +268,11 @@ def finish(state, report, policy, source_head, now, *, descendant=False, changed
         reject("STALE_RESULT")
     if report.get("status") not in ("COMPLETED", "BLOCKED") or report.get("deployed") is not False or report.get("production_model_changed") is not False:
         reject("UNSAFE_OR_INCOMPLETE_RESULT")
+    if safe_release and (not release or active.get("kind") != "manual_owner"
+                         or active.get("manual_gate_sha256") is None
+                         or source_head != active["source_head"] or changed_paths
+                         or report["status"] != "BLOCKED"):
+        reject("SAFE_RELEASE_REQUIRES_UNCHANGED_BLOCKED_MANUAL_OWNER")
     if utc(report["_comment"]["created_at"]) > utc(now) or utc(report["_comment"]["updated_at"]) != utc(report["_comment"]["created_at"]):
         reject("FUTURE_OR_EDITED_RESULT")
     if source_head != active["source_head"] and not descendant:
@@ -370,7 +376,11 @@ def main():
     parser.add_argument("operation", choices=("show", "claim", "claim-manual", "check", "checkpoint", "finish"))
     parser.add_argument("--run-id")
     parser.add_argument("--comment-id", type=int)
+    parser.add_argument("--safe-release", action="store_true",
+                        help="finish only: BLOCKED cleanup at the last acknowledged source, even if authorization was revoked")
     args = parser.parse_args()
+    if args.safe_release and args.operation != "finish":
+        parser.error("--safe-release requires finish")
     policy = load_json(ROOT / "config/handoff-policy.json")
     remote = RemoteGate(ROOT, policy)
     try:
@@ -415,12 +425,24 @@ def main():
                 if state["active"].get("kind") == "bootstrap_reservation":
                     reject("BOOTSTRAP_NOT_IMPLEMENTATION_LEASE")
                 original = state["active"]["source_head"]
+                if args.safe_release and git(ROOT, "status", "--porcelain"):
+                    reject("SAFE_RELEASE_REQUIRES_CLEAN_WORKTREE")
                 descendant = subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", original, source_head], capture_output=True).returncode == 0
                 paths = git(ROOT, "diff", "--name-only", original, source_head).decode().splitlines()
                 updated = finish(state, report, policy, source_head, now, descendant=descendant, changed_paths=paths,
-                                 release=args.operation == "finish", gate_sha256=entrypoint_sha256())
+                                 release=args.operation == "finish", gate_sha256=entrypoint_sha256(),
+                                 safe_release=args.safe_release)
+                if state["active"].get("manual_gate_sha256") is not None:
+                    if not args.safe_release:
+                        verify_active_manual_authorization(
+                            state["active"], fetched_comment(policy, state["active"]["request_comment"]["id"]), policy)
+                    verify_manual_target(policy, source_head, *fetched_manual_target(policy),
+                                         allow_closed=args.safe_release)
+                reread = message(fetched_comment(policy, args.comment_id), "CODEX_RESULT", policy)
+                if reread["_comment"] != report["_comment"]:
+                    reject("RESULT_CHANGED")
             published = remote.publish(state_commit_sha, updated,
-                                       expected_source=source_head if args.operation == "claim-manual" else None)
+                                       expected_source=source_head if args.operation in ("claim-manual", "checkpoint", "finish") else None)
             print(json.dumps({"status": "READBACK_VERIFIED", "state_commit": published, "source_head": source_head}))
     except (GateRejected, subprocess.CalledProcessError, OSError) as error:
         print(json.dumps({"status": "REJECTED_OR_BLOCKED", "reason": getattr(error, "reason", type(error).__name__),
