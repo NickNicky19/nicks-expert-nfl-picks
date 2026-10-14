@@ -8,6 +8,7 @@ Before Phase 2 edits, both remote references and trees were read back:
 | --- | --- | --- |
 | Original before Phase 1: backup/pre-phase1-20261013-210e34329d6e | 210e34329d6e5b42b4e8f1af768b63db75ec10c5 | 4c2349e3a37905ad8043437b9f661227be488a2c |
 | Working Phase 1: backup/pre-phase2-20261014-3149663447b2 | 3149663447b29f95f06c7259b84da3bd4a21cab0 | 880aa7e3b980be3bf55cb27cb735bf9a3d9a74f3 |
+| Phase 2 before timing/handoff: backup/pre-timing-extension-20261014-8fc1fb2f530a | 8fc1fb2f530adaf17ee2bf88516d22f613023903 | c4b878bf4d0183dcb8cfae137402bbb6fad2e303 |
 
 The original backup's app, grader and seven baseline engine files match the
 original pinned source at 6c33224b90d32ac2e005fff140662f114f97eb14. Both backups
@@ -70,6 +71,9 @@ All data/forward, data/verification, data/shadow, data/offers, data/outcomes,
 data/history, replay lanes, caches, prediction archives and Git history remain.
 Current data can be rebuilt; recovery does not deliberately deploy stale lines.
 New helper files may remain but recovered modes do not execute Phase 2 capture.
+The coordination/phase2-writer metadata branch/history and timing/handoff
+registries are also retained. Automatic implementation remains disabled; do
+not reset its ownership record during recovery or assume an old lease expired.
 The recovery routes share the hourly concurrency group, refuse dirty worktrees,
 verify allowlisted source hashes before staging, and never reset or force-push.
 Repository/environment protections remain in effect.

@@ -55,6 +55,21 @@ was created and verified at backup/pre-phase2-20261014-3149663447b2, commit
 
 ## Explicit limits and unresolved issues
 
+The separate timing/side extension is registered in config/timing-policy.json
+but **not implemented**. Its 24-hour, 6-hour and 90-minute checkpoint rules,
+Chicago selection/kickoff attribution, NO_ACTION/coverage, subgroup/economics
+and later-confirmation design are preserved for the next bounded stage. There
+are no timing decision receipts or performance metrics. The primary experiment
+and both retained evaluation/model versions are unchanged.
+
+PR #1 now carries CODEX_RESULT checkpoints for the existing hourly ChatGPT audit.
+The failed connector handshake requires a compatible legacy Codex environment;
+the settings page was sign-in gated and existing environment reuse could not be
+verified. A cooperative append-only remote writer gate and regression/race tests
+are provided. Automatic implementation is disabled; native gate adoption and
+native task acknowledgement remain unverified. See docs/IMPLEMENTATION_HANDOFF.md
+and the actual report/audit readback evidence. No competing scheduler was created.
+
 A Sleeper leg multiplier is not a complete executable entry payout or a
 straight-bet price. Complete entry format/payout context, acceptance and
 entry-specific settlement remain unavailable in this feed. Those fields stay

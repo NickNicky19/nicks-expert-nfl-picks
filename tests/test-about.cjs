@@ -30,4 +30,6 @@ const resolved = structuredClone(pending);
 resolved.categories.rec = { raw_sleeper: { n: 2, mae: 1.25 }, unchanged_clone: { n: 2, mae: 1.5 } };
 assert.match(render(resolved), /<td>Receptions<\/td><td>2<\/td><td>1.25<\/td><td>1.50<\/td>/);
 assert.match(render(null), /No comparison report is available/);
-console.log('9 About rendering assertions passed.');
+assert.match(render(null), /Timing capture and performance reporting are not implemented yet/);
+assert.match(render(null), /leaves the primary forecast comparison unchanged/);
+console.log('11 About rendering assertions passed.');

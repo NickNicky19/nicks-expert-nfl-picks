@@ -82,6 +82,13 @@ account is added. See [UPGRADE_NOTES.md](UPGRADE_NOTES.md),
 [evaluation rules](docs/EVALUATION_PROTOCOL.md), [offer scope](docs/OFFER_CAPTURE.md),
 [diagnosis](docs/PHASE2_DIAGNOSIS.md) and [recovery](ROLLBACK.md).
 
+The separate day/timing and over/under study is **registered but not implemented**
+at the safe handoff. See [timing protocol](docs/TIMING_PROTOCOL.md) and
+[implementation handoff](docs/IMPLEMENTATION_HANDOFF.md). Automatic implementation
+is disabled. The existing hourly audit uses PR #1; a tested cooperative remote
+writer gate is provided, while native GitHub-triggered environment/gate adoption
+remains unverified. No scheduler, API-key requirement or replacement repo was added.
+
 ## Running it
 
 ```
