@@ -68,6 +68,15 @@ class OfferTests(unittest.TestCase):
         over = next(r for r in capture_offers(data, observed, meta, rules)["rows"] if r["side"] == "over")
         self.assertEqual(over["collection_status"], "missing_information")
 
+    def test_collection_precision_does_not_reject_a_valid_same_second_source_time(self):
+        data, observed, meta, rules = offer_fixture()
+        observed["collected_at"] = stamp(NOW + timedelta(microseconds=950000))
+        observed["markets"][0]["updated_at"] = int((NOW + timedelta(microseconds=850000)).timestamp() * 1000)
+        over = next(r for r in capture_offers(data, observed, meta, rules)["rows"] if r["side"] == "over")
+        self.assertEqual(over["collection_status"], "complete_selection_capture")
+        self.assertEqual(over["collected_at"], "2026-10-10T19:00:00.950000Z")
+        self.assertEqual(over["source_timestamp"]["utc"], "2026-10-10T19:00:00.850000Z")
+
     def test_wrong_event_mapping_and_duplicate_selections_fail_closed(self):
         data, observed, meta, rules = offer_fixture()
         meta["fictional-1"]["game_id"] = "different-game"

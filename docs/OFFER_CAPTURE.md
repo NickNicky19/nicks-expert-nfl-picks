@@ -13,6 +13,9 @@ contract, line, side, raw offered multiplier, collection time, raw updated_at an
 its UTC interpretation when valid, and rule-document provenance. The provider
 updated_at field is not represented as a guaranteed quote time or executable
 availability. Preserve raw source fields rather than estimating omitted prices.
+New collection receipts retain microseconds, so an update earlier within the
+same second is not incorrectly flagged as future. Existing second-resolution
+receipts remain unchanged; raw provider epoch milliseconds are always retained.
 
 Collection status is complete_selection_capture, no_offer, source_unavailable
 or missing_information. An empty successful response is different from a failed

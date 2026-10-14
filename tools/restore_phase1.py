@@ -12,6 +12,7 @@ PHASE1_FILES = {
     "output/index.html": "877dfd0011b036105852ed7b3b67986d62ef8230",
     "pull/grade.py": "67c7284ed84f69296158e9acfc05b5a0e0c9c300",
     "tools/verify.py": "9f510735c2401de1d19fb56718d147e8f1c5ff8d",
+    "tools/reliability.py": "a035a4393934ff429588fe89fef24f8c995f72fe",
     "config/release-mode.json": "aff6c07f76b7eabcb2299a74a9c595138a878ccf",
 }
 

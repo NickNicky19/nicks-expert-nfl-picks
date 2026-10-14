@@ -41,14 +41,14 @@ def run_capture(root=ROOT, mode="live", replay_at=None):
     inputs = referenced(root, pointer["latest_inputs"], "verification")
     policy = load_json(root / "config/evaluation-policy.json")
     rules = load_json(root / "config/sleeper-rules-provenance.json")
-    now = utc(replay_at) if replay_at else utc(stamp(datetime.now(timezone.utc)))
+    now = utc(replay_at) if replay_at else datetime.now(timezone.utc)
     baseline_path, health = capture(data, load_json(root / "output/data/meta.json"), root,
                                     now, engine_hashes(root), mode=mode)
     baseline = read(baseline_path)
     shadow_path = None
     if health["capture_created"]:
         payload = make_shadow(baseline, inputs, policy, now, code_commit=os.environ.get("GITHUB_SHA"))
-        completed = utc(replay_at) if replay_at else utc(stamp(datetime.now(timezone.utc)))
+        completed = utc(replay_at) if replay_at else datetime.now(timezone.utc)
         # Never call a calculation completed after kickoff a prospective forecast.
         payload["rows"] = [r for r in payload["rows"] if utc(r["kickoff"]) > completed]
         payload["calculation_completed_at"] = stamp(completed)

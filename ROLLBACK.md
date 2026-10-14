@@ -22,7 +22,7 @@ mutation is required. Keep the review branch and its new evidence.
 From a phone: Actions → **Restore working Phase 1** → Run workflow → main →
 **RESTORE_PHASE1**. The workflow verifies the pinned Phase 1 backup, creates and
 pushes a fresh pre-restore backup, restores allowlisted Phase 1 app/grader/verifier
-files, disables Phase 2 capture, commits normally and requests an Hourly update.
+files and its original capture helper, disables Phase 2 capture, commits normally and requests an Hourly update.
 It retains the recovery-aware runner and all new evidence. Confirm that the
 following build and Pages deployment both succeed.
 

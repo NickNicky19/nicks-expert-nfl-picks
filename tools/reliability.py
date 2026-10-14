@@ -44,7 +44,7 @@ def utc(value: str | datetime) -> datetime:
 
 
 def stamp(value: datetime) -> str:
-    return utc(value).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return utc(value).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def canonical(value) -> bytes:
