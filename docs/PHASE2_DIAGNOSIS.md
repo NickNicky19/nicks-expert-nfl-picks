@@ -37,3 +37,14 @@ The first recorded live rebuild checked 1,860 factors with zero discrepancies;
 source changes account for the different count. The seven baseline engine blobs
 remain byte-identical. This is software verification, not evidence that the
 matchup adjustment improves forecast accuracy.
+
+Offline reproduction from the saved diagnostic (no network or mutable cache):
+
+```sh
+python tools/reproduce_matchups.py data/verification/2026/w06/dcf4bce0b2d3a162bdea39217eb6ae0ee2545e3895cce129338afc715a5e8e2a.json.gz
+python tools/reproduce_matchups.py data/verification/2026/w06/dcf4bce0b2d3a162bdea39217eb6ae0ee2545e3895cce129338afc715a5e8e2a.json.gz --published-population
+```
+
+The second command intentionally exits 1 with the original 805 discrepancies;
+it is a negative control, not the release verifier. The full-population command
+exits 0 while retaining the explicit historical-input provenance limitation.
