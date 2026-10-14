@@ -14,6 +14,7 @@ import requests
 import statistics
 import sys
 import unicodedata
+import argparse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,6 +23,8 @@ import build  # noqa: E402
 import matchup  # noqa: E402
 import scoring  # noqa: E402
 import sources  # noqa: E402
+from evidence import referenced  # noqa: E402
+from reliability import IntegrityError, atomic_json, digest, engine_hashes, load_json  # noqa: E402
 
 problems = []
 
@@ -95,23 +98,53 @@ def check_espn_kdef(data):
         problem(f"{total - same} kicker/defense scores differ from ESPN's")
 
 
-def check_point_in_time(data):
+def check_point_in_time(data, proof=None):
     """Matchup factors rebuilt from this season's earlier weeks only must match; no game from last season or from
     this week may appear in a player's chart."""
     season, week = data["season"], data["week"]
-    weeks = {}
-    for f in (ROOT / "data" / "cache").glob(f"stats_{season}_*.json"):
-        w = int(f.stem.split("_")[2])
-        if w < week:
-            weeks[w] = json.loads(f.read_text())
-    positions = {p["id"]: p["pos"] for p in data["players"] if p["pos"] in scoring.POSITION_CATEGORIES}
-    mx = matchup.Matchups(weeks, positions)
+    try:
+        proof = proof if proof is not None else load_json(ROOT / "output/data/matchup-proof.json")
+        if proof.get("output_sha256") != digest(data):
+            raise IntegrityError("Matchup proof belongs to a different output")
+        current_hashes = engine_hashes(ROOT)
+    except (OSError, ValueError, KeyError) as err:
+        problem(f"matchup inputs unavailable or invalid: {err}; run tools/build_recorded.py")
+        return
+    models = {}
     checked = 0
     for p in data["players"]:
         for prop in p["props"]:
             if any(v["s"] != season or v["w"] >= week for v in prop.get("values", [])):
                 problem(f"{p['name']} {prop['key']}: chart includes a game from another season or this week")
             if p.get("late") or "mf" not in prop:
+                continue
+            origin = proof.get("game_origins", {}).get(p["game_id"])
+            if not origin:
+                problem(f"{p['name']} {prop['key']}: original frozen matchup inputs missing")
+                continue
+            try:
+                if origin not in models:
+                    inputs = referenced(ROOT, origin, "verification")
+                    if (inputs["season"], inputs["week"]) != (season, week) or inputs["engine_files"] != current_hashes:
+                        raise IntegrityError("Wrong season/week or engine in matchup inputs")
+                    weeks = {int(w): rows for w, rows in inputs["weeks"].items()}
+                    if any(w < 1 or w >= week for w in weeks):
+                        raise IntegrityError("Matchup inputs contain a current/future week")
+                    if inputs["output_sha256"] != digest(inputs["week_data"]):
+                        raise IntegrityError("Recorded output checksum mismatch")
+                    positions = inputs["positions"]
+                    if not positions or any(pos not in scoring.POSITION_CATEGORIES for pos in positions.values()):
+                        raise IntegrityError("Invalid recorded player population")
+                    models[origin] = (matchup.Matchups(weeks, positions), inputs)
+                mx, inputs = models[origin]
+                old_player = next(x for x in inputs["week_data"]["players"] if x["id"] == p["id"])
+                old_prop = next(x for x in old_player["props"] if x["key"] == prop["key"])
+                if inputs["positions"].get(p["id"]) != p["pos"] or old_player["opp"] != p["opp"] or old_player["game_id"] != p["game_id"]:
+                    raise IntegrityError("Recorded player/game/opponent does not match")
+                if any(old_prop.get(k) != prop.get(k) for k in ("proj", "adj", "mf", "mf_n", "values")):
+                    raise IntegrityError("Frozen forecast changed since its input receipt")
+            except (OSError, ValueError, KeyError, StopIteration) as err:
+                problem(f"{p['name']} {prop['key']}: invalid matchup evidence: {err}")
                 continue
             avg = statistics.mean(v["v"] for v in prop["values"]) if prop["values"] else None
             f, n = mx.factor(p["opp"], p["pos"], prop["key"], avg)
@@ -247,14 +280,24 @@ def check_live(data):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--offline", action="store_true", help="Required deterministic checks; use recorded inputs, no HTTP")
+    parser.add_argument("--json", type=Path, help="Write the diagnostic results")
+    args = parser.parse_args()
+    problems.clear()
     data = json.loads((ROOT / "output" / "data" / "week.json").read_text())
     print(f"Verifying season {data['season']} week {data['week']}")
     check_ppr()
-    check_espn_kdef(data)
+    if not args.offline:
+        check_espn_kdef(data)
     check_point_in_time(data)
     check_shape(data)
-    check_live(data)
+    if not args.offline:
+        check_live(data)
     check_lean_balance(data)
+    if args.json:
+        atomic_json(args.json, {"offline": args.offline, "problems": problems,
+                               "status": "failure" if problems else "success"})
     if problems:
         print(f"\nFAILED: {len(problems)} problem(s)")
         sys.exit(1)
