@@ -70,6 +70,13 @@ are provided. Automatic implementation is disabled; native gate adoption and
 native task acknowledgement remain unverified. See docs/IMPLEMENTATION_HANDOFF.md
 and the actual report/audit readback evidence. No competing scheduler was created.
 
+A fresh clean-checkout check also reproduced a pre-existing static-build gap:
+output/data/matchup-proof.json is absent and no saved exact input receipt matches
+the committed Week 6 output. `tools/verify.py --offline` correctly fails that
+snapshot. Earlier successful live integration checks were on separately
+recorded local builds. This handoff leaves the failure visible; a matching
+recorded build is required before release. Tests/CI alone do not waive that gate.
+
 A Sleeper leg multiplier is not a complete executable entry payout or a
 straight-bet price. Complete entry format/payout context, acceptance and
 entry-specific settlement remain unavailable in this feed. Those fields stay

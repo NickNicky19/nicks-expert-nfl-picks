@@ -154,3 +154,35 @@ backfill old captures as prospective policy decisions. Economics stay
 unavailable without complete verified venue/ticket records. Confirmatory
 evaluation requires genuinely later games. The existing Phase 2 implementation
 and its original validation remain reviewable; this handoff is not an audit pass.
+
+## Checkpoint evidence and a reproduced build blocker
+
+At source 2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6, 123 Python tests, 8 UI
+helper assertions and 11 About assertions passed locally and in exact-head CI
+38503503889 / 38503500421. Metadata-only requests read back from actual PR
+comments were rejected against live state: duplicate (6159953021), busy
+(6159953174), stale source (6159953361), stale policy (6159953503). No native task
+was invoked. Actual GitHub sibling candidates shared parent f539f4fe3605b1e72dd8749712b68a484edb4d69;
+winner c17cb097bd5b1655cb385277c1e99db230044efa advanced the ref, while sibling
+1b164320ee1d760c20816ed5859d4f078125fad2 was rejected with force:false as
+"rejecting non-fast forward update." Remote winner/owner/source readback matched.
+Both rollback routes were rehearsed in an isolated clone and retained 69
+tracked data files, all three current policies, coordination ref and Git history.
+
+**The committed static Week 6 build does not pass the offline verifier.**
+`python tools/verify.py --offline` exits 1 because output/data/matchup-proof.json
+is absent, including at pre-extension 8fc1fb2. Its output hash is
+6e2721c8ffa524621ba22384d070295ed6c3d2ccd9a5f5cc2ba5eb1fe3ef851d, generated
+2026-10-14T01:10:09Z. None of the four exact input snapshots matches it. The
+diagnostic refetch is not original proof. Previous live integration results
+refer to the separately recorded local builds; they do not verify this committed
+snapshot. Unit/CI success does not override the failed build gate.
+
+Leave this failing case visible. Before a release, an authorized recorded build
+must establish its own matching output/proof; do not fabricate a historical
+pointer, refetch proof retroactively, weaken checks or overwrite older decisions.
+Frozen games lacking original proof remain blocked. No collector or deployment
+was run for this handoff. The timing recorder/report is still the next bounded
+stage, and native environment/gate adoption and audit round-trip delivery remain
+separate readiness requirements. See the append-only CODEX_RESULT checkpoints
+and data/verification/reports/handoff_validation_20261014.json.

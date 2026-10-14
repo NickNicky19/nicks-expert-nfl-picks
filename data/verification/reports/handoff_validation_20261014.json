@@ -1,0 +1,341 @@
+{
+  "audit_transport": {
+    "delivered_audit_reports_at_checkpoint": 0,
+    "existing_scheduler": "NFL Codex Audit Loop",
+    "immediate_existing_audit_run_requested_once": true,
+    "last_execution_timestamp_observed": "2026-10-14T02:42:19.081281+00:00",
+    "new_scheduler_created": false,
+    "result_comments": [
+      6159542963,
+      6159772257,
+      6159874842,
+      6160003169
+    ],
+    "result_readbacks_verified": true,
+    "roundtrip": "PENDING_ACTUAL_AUDIT_DELIVERY_NOT_CLAIMED_COMPLETE",
+    "schedule_unchanged": true
+  },
+  "backups": [
+    {
+      "ref": "backup/pre-phase1-20261013-210e34329d6e",
+      "sha": "210e34329d6e5b42b4e8f1af768b63db75ec10c5",
+      "tree": "4c2349e3a37905ad8043437b9f661227be488a2c"
+    },
+    {
+      "ref": "backup/pre-phase2-20261014-3149663447b2",
+      "sha": "3149663447b29f95f06c7259b84da3bd4a21cab0",
+      "tree": "880aa7e3b980be3bf55cb27cb735bf9a3d9a74f3"
+    },
+    {
+      "ref": "backup/pre-timing-extension-20261014-8fc1fb2f530a",
+      "sha": "8fc1fb2f530adaf17ee2bf88516d22f613023903",
+      "tree": "c4b878bf4d0183dcb8cfae137402bbb6fad2e303"
+    }
+  ],
+  "baseline_engine_sha256": {
+    "pull/books.py": "0b89744960136a4f2e594b61e6df754d357706d8c66a8ae359d8eb02bbfa53f8",
+    "pull/build.py": "75bf99c55b5f2561a60a120c82db368ad3b996a8a64e9ab08828b586a9314419",
+    "pull/gamemodel.py": "2a2519a12ad4993da02ae6bdcdb6c86f2b5a6554ce93a702b550ecde17fb7d1f",
+    "pull/matchup.py": "15b1739b203e1757b0ebaefa3a6994034d56bb4a92a9e07572527ef1a90e914c",
+    "pull/news.py": "17ce1b3b6b72694e6b543bd767e287c26a9d1f6dd5dba2de6c873543036842e9",
+    "pull/scoring.py": "31672c10d526d591db8951157b0ecd669b4d02b412a75deec337618bff18dab2",
+    "pull/sources.py": "36555cdbc55d73ba632d5adae1130288f4f532073857c642ac3ebc7e626b0061"
+  },
+  "boundaries": {
+    "deployed": false,
+    "evidence_deleted": false,
+    "force_pushed": false,
+    "main_source_changed": false,
+    "merged": false,
+    "production_model_changed": false
+  },
+  "checks": {
+    "ci": [
+      {
+        "conclusion": "success",
+        "job_id": 115655617733,
+        "raw_counts_verified": true,
+        "run_id": 38503503889,
+        "sha": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6"
+      },
+      {
+        "conclusion": "success",
+        "run_id": 38503500421,
+        "sha": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6"
+      }
+    ],
+    "collector_run": false,
+    "diff_check": "PASS",
+    "end_to_end": "existing_fictional_replay_suite_passed",
+    "node_about_assertions": 11,
+    "node_helper_assertions": 8,
+    "python_and_js_syntax": "PASS",
+    "python_tests": 123,
+    "writer_gate_tests": 20
+  },
+  "native_environment": {
+    "api_key_requested": false,
+    "bot_comment": 6159426861,
+    "credentials_requested": false,
+    "existing_environment_list_access": false,
+    "native_entrypoint_gate_verified": false,
+    "native_task_acknowledged": false,
+    "reuse_confirmed": false,
+    "settings_changed": false,
+    "settings_page_sign_in_wall_observed": true,
+    "status": "BLOCKED_UNKNOWN_COMPATIBLE_ENVIRONMENT"
+  },
+  "policies": {
+    "automatic_implementation_enabled": false,
+    "baseline": "original_sleeper_matchup_baseline",
+    "evaluation": "phase2-evaluation-v1.1",
+    "handoff": "phase2-handoff-v1",
+    "retained_versions_preserved": true,
+    "shadow": "shadow-dispersion-v1.1",
+    "timing": "phase2-timing-v1",
+    "timing_implementation": "REGISTERED_NOT_IMPLEMENTED"
+  },
+  "preservation_manifest": {
+    "config/evaluation-policy.json": "e8ce2c9e67550b1e68b621c148335ca901569c2a932e270a50b3b6d59e6ba40d",
+    "config/policies/phase2-evaluation-v1.json": "ea51d062821597dc12ceaa666b29422c08101568c53cc04b9071da26c7715c4d",
+    "data/forward/2026/w06/0d0d3d4676f1d3e9f47bdca9fe191d4d677185a9d9a77ff1f536385edc246e23.json.gz": "9aa6bb7c689d1ee722f1741c8848943d6d8f670cca2e7b0cc0f0525bbbf32f0c",
+    "data/forward/2026/w06/36cc3b363fc72c3bb6f3ab0d16401101db768e1582ef28227d10f11a41a7fd0e.json.gz": "ebf55440a47ec4972dbe3799b165a01a43fc069a4b3424a7d473da55ede845f3",
+    "data/forward/2026/w06/63727edbfe5f8d5e6f859a5781a3e7bc92c9d727cfc7f0bba5935379d33e2e27.json.gz": "a3e4c6811f3b0e78fda318c4b1e3ed9485ef3048f8e85a0ffc8a7ee305486837",
+    "data/forward/2026/w06/7f953b860d59523d9e5e6871f2548a5ffd3978944a7097e3e367d80bd8048a34.json.gz": "ed7fd90bc1dfa306be166ab54b109aca4c21f8061a44aa13072c2ee53a7aa6a7",
+    "data/forward/2026/w06/d5c25d0e597be8ed609c4505c25fe1aa0d252be00e6abdecb356559576a09321.json.gz": "be2c5239f2314f49b37468575ef7838ac54d140ae89d372271ac6f59b19ec424",
+    "data/forward/2026/w06/d60c60613f99297133a66d8091dad9e6c1578269ae30fe824ae6b8a85560a4a9.json.gz": "d4ba7e1e62d1e6efbb15ee7457231330ca71eae52634d8b81271fe82e2c4c6d3",
+    "data/forward/2026/w06/e08b27e35b73a9afb317b02088344f3289adbd6c699baae971dc149f0b5c35e5.json.gz": "16dba685f0ee61f876b059a5cbf451d32ab8bdf0475e94b5540dc9eb9b65f7ee",
+    "data/forward/2026/w06/e2e98bb9fcc5508ad6cc1126f341cfc58c8678ff912bdcf3fc72816b284d5b6b.json.gz": "f04fdf8e113c89352f15ba45ceffd913fd98f571a0b2b83f6f494152ad44bd70",
+    "data/history/pre_phase1_track_record.json.gz": "28e91cd304a264cc52765e5ccfbbb7d0a24d668988d3d52e0bbaff85f8bcf570",
+    "data/offers/2026/w06/03a02bd7b3ae7cdce297da44345f8b13282c38e47238f3ac3d45a106332240ee.json.gz": "b007e1927a18dd89c217fe81162979abcb572344c4c2c8a7ed96197cc5b4fc72",
+    "data/offers/2026/w06/2d54e96b294660fed7f7654ed0181a197e8f559afc58a7fbe4a5d18ed90fc30a.json.gz": "960e6e0d08c3ce90bd15da648c2a4f2d0f20b2a418eac586cf61e966a86e644f",
+    "data/offers/2026/w06/546c5a6cb3cdda36a9d8e9c765387e6bdba042f5fb07e67a3bed0685e98aec0c.json.gz": "20754e4a1376d3f8c3761be4b43eb51ddfb2d6ee6d481ba87abd3650863f00b1",
+    "data/outcomes/2026/w06/1b5bbeaa009a05a874ffed7c6efcf6016954c4570edf8416feb54117248e7dff.json.gz": "0806033daefc31bccf2afab00af847d9c9b622dbbac3df317fb60485f5a32339",
+    "data/outcomes/2026/w06/4c56aa5a9e86b1af2e422fe5ee9f1999998c90fcacf57461232ec09fa10bff05.json.gz": "7cf82caf7a8f181e729abce1c5e2f3860d73d1969b30072c9d209c53cab19391",
+    "data/outcomes/2026/w06/8a6e4f10afca9aa4796115d5c56fdbf3c8d2ebb0cde50a4e3acbb794c8698ee9.json.gz": "ecc830f2b89a96ca18892d33c10b1c133c7a5de3c3e4eac7ac02147b1c6bcaeb",
+    "data/outcomes/2026/w06/9ce7d1ed1c860e5e03aa072974547f9b264686f5f2a9b9089cf6be2bd6c9d9b7.json.gz": "174c15adbc148f45fa7b0493dbabedf045c898fa3a7a4ccee49c4c52756cd897",
+    "data/outcomes/2026/w06/b452b688304db84b9f1abbe2a2a78c2b058fedc4fc078502245aeac606e3bcee.json.gz": "a55bd8757d2db34a0df03e21054e856fb2094eba36ccc2bd0b4176939d58efe7",
+    "data/shadow/2026/w06/5227ace8fad5cf297d985a8a7e3a06f82fc4b9f7859968488be14421b335c65e.json.gz": "0732eff6315fc1786b099c12bdff1d75df3430e7352b98a6f673414ce6d62d8b",
+    "data/shadow/2026/w06/5ad17d5d7a1c3c7a8464674c00b043c351426c0e2f6f4c5c534eb55133e193ac.json.gz": "d4340265490495dd870b7b6c81e759dea92340975fcb884d6591e43104d789f5",
+    "data/shadow/2026/w06/7333b2551a20358d2045e77bf3575a110ee838e52587bcec701161abfc462d09.json.gz": "63cc52add5db99a41c5af24a63aa2940c5cf965d18c42e336565ebe3028902bf",
+    "data/verification/2026/w06/3acbbf47d8009b5f54ac42a08b85e8eeceb398b0c651183f6da3125ea1875cac.json.gz": "da697a3ad6c910b88e59a98cd36d013e79d592d9fd1048cfd7a44b3fa4c0377e",
+    "data/verification/2026/w06/814aadf74fcd4ed2e8243527f71c6b793bb5b9dd6e97716090a0a9ddd90adaf3.json.gz": "821ef9a7deaa408f1887d2032a4fc5f8dbc5aa54238b8c712464dad5b4f7fca7",
+    "data/verification/2026/w06/c226e0a9b506256f0147f61015f98695061de07089524dd44508ac88d777b04b.json.gz": "8f9904ef3e99fdf25cc901bc97d8d23ed35eee69ada4bcd3b09cff6fbac56f36",
+    "data/verification/2026/w06/dc53dfdd7eb61e8ad37fb527556766091158eaf3ab6788ebb6190c13b5fc5451.json.gz": "dc05b69643b2bfd2bbbe8c3e00e7afa1c4269322bbc24d0e39ee6d23cf6c2c91",
+    "data/verification/2026/w06/dcf4bce0b2d3a162bdea39217eb6ae0ee2545e3895cce129338afc715a5e8e2a.json.gz": "611a89abb37db9e1693715a3a88e8b8afe9113953bf15c2868eb611e63902d8d",
+    "output/data/forecast-scorecard.json": "215a720bff2e01b19602ed60107c4ec0012345fda4b34424c45a42ba261f7d65"
+  },
+  "preserved_file_count": 28,
+  "recorded_at": "2026-10-14T03:16:06.086787Z",
+  "remaining": [
+    "Connect/reuse a compatible legacy Codex environment through owner settings.",
+    "Demonstrate actual AUDIT_REPORT acknowledgement/readback; execution requested is not delivery.",
+    "Verify native entrypoint acquires the gate before edits; leave automatic implementation off.",
+    "Implement the separately registered timing recorder/reports using genuine checkpoint observations.",
+    "Establish a matching recorded build/proof before release; do not fabricate original historical custody."
+  ],
+  "remote_rejection_probes": [
+    {
+      "body_sha256": "d20e32cc589b402da0335d00631c14b015f0a609c26d4b4a7c260d053ceaa502",
+      "case": "duplicate",
+      "comment_id": 6159953021,
+      "rejected": "DUPLICATE_REQUEST_OR_AUDIT",
+      "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6159953021"
+    },
+    {
+      "body_sha256": "c411bba8a227e1656579232fb2199b82ea3277fd47451eea44143d7eb341e613",
+      "case": "busy",
+      "comment_id": 6159953174,
+      "rejected": "BUSY",
+      "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6159953174"
+    },
+    {
+      "body_sha256": "3c98a20539f0151437d44d8982bbb468c1ef70af0675144592111ce0886b7d0f",
+      "case": "stale_head",
+      "comment_id": 6159953361,
+      "rejected": "STALE_HEAD",
+      "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6159953361"
+    },
+    {
+      "body_sha256": "9a587e0b2232be0906dd1ef192c8bc64626d8716ac9f2f9fbed51ff98c894504",
+      "case": "stale_policy",
+      "comment_id": 6159953503,
+      "rejected": "STALE_POLICY",
+      "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6159953503"
+    }
+  ],
+  "remote_sibling_test": {
+    "force": false,
+    "loser": "1b164320ee1d760c20816ed5859d4f078125fad2",
+    "native_task_dispatched": false,
+    "parent": "f539f4fe3605b1e72dd8749712b68a484edb4d69",
+    "result": "REJECTED_NON_FAST_FORWARD",
+    "server_error": "GithubGraphQLAPIError: [{'type': 'UNPROCESSABLE', 'path': ['updateRefs'], 'locations': [{'line': 3, 'column': 5}], 'message': 'rejecting non-fast forward update'}]",
+    "source_unchanged": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6",
+    "winner": "c17cb097bd5b1655cb385277c1e99db230044efa",
+    "winner_readback": "c17cb097bd5b1655cb385277c1e99db230044efa"
+  },
+  "rollback_rehearsal": {
+    "checks": [
+      {
+        "command": "python -m unittest discover -s tests -p test_reliability.py -q",
+        "exit_code": 0,
+        "summary": [
+          "----------------------------------------------------------------------",
+          "Ran 48 tests in 0.008s",
+          "",
+          "OK"
+        ]
+      },
+      {
+        "command": "python -m unittest discover -s tests -p test_recovery.py -q",
+        "exit_code": 0,
+        "summary": [
+          "----------------------------------------------------------------------",
+          "Ran 8 tests in 0.253s",
+          "",
+          "OK"
+        ]
+      },
+      {
+        "command": "node tests/test-ui.cjs",
+        "exit_code": 0,
+        "summary": [
+          "8 UI helper assertions passed."
+        ]
+      },
+      {
+        "command": "node --check output/app.js",
+        "exit_code": 0,
+        "summary": []
+      },
+      {
+        "command": "node --check output/app.js",
+        "exit_code": 0,
+        "summary": []
+      }
+    ],
+    "control_ref_retained": "243669bcf6562eb01baef6953df09d26151e67be",
+    "original_target": "6c33224b90d32ac2e005fff140662f114f97eb14",
+    "phase1_target": "3149663447b29f95f06c7259b84da3bd4a21cab0",
+    "production_mutated": false,
+    "retained_data_files": 69,
+    "retained_policies": {
+      "config/evaluation-policy.json": "e8ce2c9e67550b1e68b621c148335ca901569c2a932e270a50b3b6d59e6ba40d",
+      "config/handoff-policy.json": "4d5c1bd1fc84a84113277fe4165760ec8c90fb87cb7c0c72ac525b7cb7e39631",
+      "config/timing-policy.json": "0d5c7f39a44c4274b37a8b9c54ab01b7187e9a63b1e4733ab0d95d6d5d52b450"
+    },
+    "source_sha": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6"
+  },
+  "run_id": "NFL-PHASE2-HANDOFF-20261014-022231Z",
+  "schema_version": "implementation-handoff-validation-v1",
+  "source_changes": [
+    {
+      "blob_sha": "b3cfe8cafe0a989013e595535cce55d3314b085a",
+      "path": "AGENTS.md"
+    },
+    {
+      "blob_sha": "36d38713f992fdf6e7e4b4cb2f480b193aa76154",
+      "path": "config/handoff-policy.json"
+    },
+    {
+      "blob_sha": "a4a612793cf74b413be46cd2a4750f2747679a3a",
+      "path": "tools/writer_gate.py"
+    },
+    {
+      "blob_sha": "c8143f90dbbc0118bbd19308a2766bddd0285703",
+      "path": "tests/test_writer_gate.py"
+    },
+    {
+      "blob_sha": "d779b6ace43851bc346aa6a124d22f48b1e7696d",
+      "path": "docs/IMPLEMENTATION_HANDOFF.md"
+    },
+    {
+      "blob_sha": "671763b7f1c45df0636db9b908d18ffb605697ee",
+      "path": "README.md"
+    },
+    {
+      "blob_sha": "8e316ef162140ab136d2397e93eb3518eb1216ce",
+      "path": "UPGRADE_NOTES.md"
+    },
+    {
+      "blob_sha": "7468bef7ef5005c17357e3e73bbc8e1c193ca9d2",
+      "path": "ROLLBACK.md"
+    },
+    {
+      "blob_sha": "e504104e49339e7fae4c79bea03ec2cc9899ded5",
+      "path": "output/app.js"
+    },
+    {
+      "blob_sha": "8dd5374f7e825672e8683180bd44b224b61475d1",
+      "path": "output/index.html"
+    },
+    {
+      "blob_sha": "dc732f74ed12f5eb64e83a1f1a0c9b1d1493d2b8",
+      "path": "tests/test-about.cjs"
+    }
+  ],
+  "source_under_test": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6",
+  "starting_sha": "8fc1fb2f530adaf17ee2bf88516d22f613023903",
+  "static_build_verification": {
+    "check_weakened": false,
+    "command": "python tools/verify.py --offline",
+    "exit_code": 1,
+    "games": [
+      "pre",
+      "pre",
+      "pre",
+      "pre",
+      "pre",
+      "pre",
+      "pre",
+      "pre",
+      "pre",
+      "pre",
+      "pre",
+      "pre",
+      "pre",
+      "pre"
+    ],
+    "generated_at": "2026-10-14T01:10:09Z",
+    "matching_exact_input_receipts": 0,
+    "missing_file": "output/data/matchup-proof.json",
+    "preexisting_at": "8fc1fb2f530adaf17ee2bf88516d22f613023903",
+    "proofs": [
+      {
+        "output_sha256": "eac581d73c952b1149d437bc099b1fdcf44974190d4bcb9425d4b82829420f28",
+        "path": "data/verification/2026/w06/3acbbf47d8009b5f54ac42a08b85e8eeceb398b0c651183f6da3125ea1875cac.json.gz",
+        "schema": "matchup-inputs-v1",
+        "week_data_sha256": "eac581d73c952b1149d437bc099b1fdcf44974190d4bcb9425d4b82829420f28"
+      },
+      {
+        "output_sha256": "8650281f2d0f763014c447679b68888a2efccd1fbdd2be68732db940d54f1dfc",
+        "path": "data/verification/2026/w06/814aadf74fcd4ed2e8243527f71c6b793bb5b9dd6e97716090a0a9ddd90adaf3.json.gz",
+        "schema": "matchup-inputs-v1",
+        "week_data_sha256": "8650281f2d0f763014c447679b68888a2efccd1fbdd2be68732db940d54f1dfc"
+      },
+      {
+        "output_sha256": "817eb195e572b19b3958494803353fb3b9f884ca635219aec76b7e7a64c178b4",
+        "path": "data/verification/2026/w06/c226e0a9b506256f0147f61015f98695061de07089524dd44508ac88d777b04b.json.gz",
+        "schema": "matchup-inputs-v1",
+        "week_data_sha256": "817eb195e572b19b3958494803353fb3b9f884ca635219aec76b7e7a64c178b4"
+      },
+      {
+        "output_sha256": "5478908501cf34bfdb16a4fd970d226e46bc559cc6a6f7d035188cb1a05bbf40",
+        "path": "data/verification/2026/w06/dc53dfdd7eb61e8ad37fb527556766091158eaf3ab6788ebb6190c13b5fc5451.json.gz",
+        "schema": "matchup-inputs-v1",
+        "week_data_sha256": "5478908501cf34bfdb16a4fd970d226e46bc559cc6a6f7d035188cb1a05bbf40"
+      },
+      {
+        "output_sha256": null,
+        "path": "data/verification/2026/w06/dcf4bce0b2d3a162bdea39217eb6ae0ee2545e3895cce129338afc715a5e8e2a.json.gz",
+        "schema": "phase2-diagnostic-reproduction-v1",
+        "week_data_sha256": "6401f4eef8a31b4459585099e86d6dd3de0800683eb98891b2475573b978a5fa"
+      }
+    ],
+    "refetch_substituted": false,
+    "status": "FAIL_MISSING_ORIGINAL_PROOF",
+    "week_sha256": "6e2721c8ffa524621ba22384d070295ed6c3d2ccd9a5f5cc2ba5eb1fe3ef851d"
+  },
+  "timing_registry_commit": "ee8bfa5aa3bd4b38fd3c0363eb2ecc6f83b61d89"
+}
