@@ -2,61 +2,34 @@
   "schema_version": "implementation-writer-state-v1",
   "policy_version": "phase2-handoff-v1",
   "policy_sha256": "8251039e3f983a69a52dc85c1d0c41d145cf770a1851a3904b7baea173521810",
-  "revision": 3,
-  "updated_at": "2026-10-14T03:07:10.736645Z",
+  "revision": 4,
+  "updated_at": "2026-10-14T03:28:29.488550Z",
   "readiness": {
-    "owner_handoff_complete": false,
+    "owner_handoff_complete": true,
     "native_environment_verified": false,
     "native_entrypoint_uses_gate_verified": false,
     "report_audit_ack_readback_verified": false,
-    "rejection_tests_verified": false
+    "rejection_tests_verified": true
   },
-  "active": {
-    "run_id": "NFL-PHASE2-HANDOFF-20261014-022231Z",
-    "request_id": "owner-handoff-20261014-022231Z",
-    "kind": "manual_owner",
-    "owner": {
-      "login": "NickNicky19",
-      "id": 208912933
-    },
-    "source_head": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6",
-    "acquired_at": "2026-10-14T02:33:05.703501Z",
-    "authorization_comment_id": 6159542963,
-    "scope": [
-      "config/timing-policy.json",
-      "docs/TIMING_PROTOCOL.md",
-      "config/handoff-policy.json",
-      "tools/writer_gate.py",
-      "tests/test_writer_gate.py",
-      "AGENTS.md",
-      "docs/IMPLEMENTATION_HANDOFF.md",
-      "UPGRADE_NOTES.md",
-      "ROLLBACK.md",
-      "README.md",
-      "output/app.js",
-      "output/index.html",
-      "tests/test-about.cjs",
-      "data/verification/reports/handoff_validation_20261014.json"
-    ]
-  },
+  "active": null,
   "requests": {
     "owner-handoff-20261014-022231Z": {
-      "status": "ACTIVE",
+      "status": "BLOCKED",
       "run_id": "NFL-PHASE2-HANDOFF-20261014-022231Z",
       "kind": "manual_owner",
       "result_comment": {
-        "id": 6159874842,
-        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6159874842",
+        "id": 6160202109,
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6160202109",
         "author": {
           "login": "NickNicky19",
           "id": 208912933
         },
-        "body_sha256": "9323586d7faad3d45e1e22d03431f047cc336352357da2c372f2ee4e7f73c744",
-        "created_at": "2026-10-14T02:58:13Z",
-        "updated_at": "2026-10-14T02:58:13Z"
+        "body_sha256": "8a1fd73f0d49c0c0a3b148f7363e162c3b60f2526520b4dd1c3940184472bdad",
+        "created_at": "2026-10-14T03:26:53Z",
+        "updated_at": "2026-10-14T03:26:53Z"
       },
-      "start_sha": "ee8bfa5aa3bd4b38fd3c0363eb2ecc6f83b61d89",
-      "end_sha": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6"
+      "start_sha": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6",
+      "end_sha": "9c02617d765dfa91b7b20f5293bfc102787fb77f"
     }
   },
   "audit_ids": [],
@@ -91,6 +64,21 @@
         "updated_at": "2026-10-14T02:58:13Z"
       },
       "end_sha": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6"
+    },
+    {
+      "run_id": "NFL-PHASE2-HANDOFF-20261014-022231Z",
+      "result_comment": {
+        "id": 6160202109,
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6160202109",
+        "author": {
+          "login": "NickNicky19",
+          "id": 208912933
+        },
+        "body_sha256": "8a1fd73f0d49c0c0a3b148f7363e162c3b60f2526520b4dd1c3940184472bdad",
+        "created_at": "2026-10-14T03:26:53Z",
+        "updated_at": "2026-10-14T03:26:53Z"
+      },
+      "end_sha": "9c02617d765dfa91b7b20f5293bfc102787fb77f"
     }
   ],
   "transport_validation": {
@@ -127,7 +115,8 @@
     ],
     "tests_at": "2026-10-14T03:07:10.736645Z",
     "native_task_dispatched": false,
-    "remote_sibling_probe": "PENDING"
+    "remote_sibling_probe": "PASS_REJECTED_NON_FAST_FORWARD",
+    "native_entrypoint_verified": false
   },
   "sibling_probe_candidate": "winner_candidate"
 }
