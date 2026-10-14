@@ -2,8 +2,8 @@
   "schema_version": "implementation-writer-state-v1",
   "policy_version": "phase2-handoff-v1",
   "policy_sha256": "8251039e3f983a69a52dc85c1d0c41d145cf770a1851a3904b7baea173521810",
-  "revision": 2,
-  "updated_at": "2026-10-14T03:04:03.330396Z",
+  "revision": 3,
+  "updated_at": "2026-10-14T03:07:10.736645Z",
   "readiness": {
     "owner_handoff_complete": false,
     "native_environment_verified": false,
@@ -92,5 +92,42 @@
       },
       "end_sha": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6"
     }
-  ]
+  ],
+  "transport_validation": {
+    "source_head": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6",
+    "rejections": [
+      {
+        "case": "duplicate",
+        "comment_id": 6159953021,
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6159953021",
+        "body_sha256": "d20e32cc589b402da0335d00631c14b015f0a609c26d4b4a7c260d053ceaa502",
+        "rejected": "DUPLICATE_REQUEST_OR_AUDIT"
+      },
+      {
+        "case": "busy",
+        "comment_id": 6159953174,
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6159953174",
+        "body_sha256": "c411bba8a227e1656579232fb2199b82ea3277fd47451eea44143d7eb341e613",
+        "rejected": "BUSY"
+      },
+      {
+        "case": "stale_head",
+        "comment_id": 6159953361,
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6159953361",
+        "body_sha256": "3c98a20539f0151437d44d8982bbb468c1ef70af0675144592111ce0886b7d0f",
+        "rejected": "STALE_HEAD"
+      },
+      {
+        "case": "stale_policy",
+        "comment_id": 6159953503,
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6159953503",
+        "body_sha256": "9a587e0b2232be0906dd1ef192c8bc64626d8716ac9f2f9fbed51ff98c894504",
+        "rejected": "STALE_POLICY"
+      }
+    ],
+    "tests_at": "2026-10-14T03:07:10.736645Z",
+    "native_task_dispatched": false,
+    "remote_sibling_probe": "PENDING"
+  },
+  "sibling_probe_candidate": "winner_candidate"
 }
