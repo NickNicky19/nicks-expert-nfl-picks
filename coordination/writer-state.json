@@ -2,8 +2,8 @@
   "schema_version": "implementation-writer-state-v1",
   "policy_version": "phase2-handoff-v1",
   "policy_sha256": "8251039e3f983a69a52dc85c1d0c41d145cf770a1851a3904b7baea173521810",
-  "revision": 5,
-  "updated_at": "2026-10-14T19:09:25.231445Z",
+  "revision": 6,
+  "updated_at": "2026-10-14T19:21:39.849194Z",
   "readiness": {
     "owner_handoff_complete": true,
     "native_environment_verified": false,
@@ -42,7 +42,8 @@
       "created_at": "2026-10-14T19:08:42Z",
       "updated_at": "2026-10-14T19:08:42Z"
     },
-    "acquired_at": "2026-10-14T19:09:25.231445Z"
+    "acquired_at": "2026-10-14T19:09:25.231445Z",
+    "installed_source_sha": "43099c1d5179efcb9579c7c1b13f984524a05ad1"
   },
   "requests": {
     "owner-handoff-20261014-022231Z": {
@@ -79,7 +80,21 @@
         "body_sha256": "8e06df201cd934d6da39ae3a3feb1b07c3da297e21c9133a66476ad50c56910a",
         "created_at": "2026-10-14T19:08:42Z",
         "updated_at": "2026-10-14T19:08:42Z"
-      }
+      },
+      "result_comment": {
+        "id": 6176428198,
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6176428198",
+        "author": {
+          "login": "NickNicky19",
+          "id": 208912933
+        },
+        "marker": "CODEX_RESULT",
+        "body_sha256": "0f0484ae68237f5aaa505ba50ca147b0093e3a6d8e5eedeab95ccfcef5536685",
+        "created_at": "2026-10-14T19:20:44Z",
+        "updated_at": "2026-10-14T19:20:44Z"
+      },
+      "start_sha": "9c02617d765dfa91b7b20f5293bfc102787fb77f",
+      "end_sha": "43099c1d5179efcb9579c7c1b13f984524a05ad1"
     }
   },
   "audit_ids": [
@@ -131,6 +146,23 @@
         "updated_at": "2026-10-14T03:26:53Z"
       },
       "end_sha": "9c02617d765dfa91b7b20f5293bfc102787fb77f"
+    },
+    {
+      "run_id": "NFL-MANUAL-WRITER-PROPOSAL-20261014-174819Z-bootstrap",
+      "result_comment": {
+        "id": 6176428198,
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6176428198",
+        "author": {
+          "login": "NickNicky19",
+          "id": 208912933
+        },
+        "marker": "CODEX_RESULT",
+        "body_sha256": "0f0484ae68237f5aaa505ba50ca147b0093e3a6d8e5eedeab95ccfcef5536685",
+        "created_at": "2026-10-14T19:20:44Z",
+        "updated_at": "2026-10-14T19:20:44Z"
+      },
+      "end_sha": "43099c1d5179efcb9579c7c1b13f984524a05ad1",
+      "kind": "bootstrap_reservation"
     }
   ],
   "transport_validation": {
