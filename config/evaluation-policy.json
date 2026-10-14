@@ -1,7 +1,7 @@
 {
   "schema_version": "forecast-evaluation-policy-v1",
-  "version": "phase2-evaluation-v1",
-  "registered_at": "2026-10-14T00:15:47Z",
+  "version": "phase2-evaluation-v1.1",
+  "registered_at": "2026-10-14T01:11:56.185587Z",
   "targets": [
     "rec",
     "rush_att",
@@ -55,7 +55,7 @@
     "economics": "ROI_and_EV_require_complete_executable_entry_prices_payouts_and_verified_venue_settlement"
   },
   "challenger": {
-    "version": "shadow-dispersion-v1",
+    "version": "shadow-dispersion-v1.1",
     "production_enabled": false,
     "centers": {
       "challenger": "unchanged_clone",
@@ -70,5 +70,7 @@
     "training": "confirmed_played_current_season_weeks_strictly_before_forecast_week_in_exact_input_snapshot",
     "probability_reference": "same_distribution_family_with_fixed_priors_and_raw_or_clone_center",
     "no_tuning_on_evaluation_outcomes": true
-  }
+  },
+  "timestamp_order": "parsed_UTC_instant_then_content_digest",
+  "amendment": "Mixed timestamp precision ordering correction before outcomes; distribution parameters unchanged; v1 registry and forecasts retained and evaluated separately."
 }
