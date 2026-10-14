@@ -23,7 +23,7 @@ def paired_forecasts(receipts, policy, expected_hashes, allow_replay=False):
     chosen = {}
     exclusions = Counter()
     observations = 0
-    for payload in sorted(receipts, key=lambda p: (p["captured_at"], digest(p))):
+    for payload in sorted(receipts, key=lambda p: (utc(p["captured_at"]), digest(p))):
         if payload.get("schema_version") != "baseline-capture-v1" or payload.get("model") != policy["baseline"]:
             raise IntegrityError("Unexpected forecast schema/model")
         if payload.get("engine_files") != expected_hashes:
@@ -130,7 +130,7 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live"):
 
 def latest_outcomes(snapshots, allow_replay=False):
     latest = {}
-    for payload in sorted(snapshots, key=lambda p: (p["collected_at"], digest(p))):
+    for payload in sorted(snapshots, key=lambda p: (utc(p["collected_at"]), digest(p))):
         if payload.get("schema_version") != "forecast-outcomes-v1":
             raise IntegrityError("Unexpected outcome schema")
         if payload.get("mode") != "live" and not (allow_replay and payload.get("mode") == "replay"):

@@ -99,6 +99,19 @@ class ShadowTests(unittest.TestCase):
         self.assertEqual(report["pending_or_unresolved"], 1)
         self.assertIsNone(report["categories"]["rec"]["challenger"]["negative_log_likelihood"])
 
+    def test_shadow_common_triple_orders_mixed_precision_by_instant(self):
+        data, baseline, policy = setup()
+        first = make_shadow(baseline, inputs_for(data, baseline), policy, NOW)
+        first["predicted_at"] = baseline["captured_at"] = "2026-10-10T19:00:00Z"
+        first["baseline_payload_sha256"] = digest(baseline)
+        later_baseline = copy.deepcopy(baseline); later_baseline["captured_at"] = "2026-10-10T19:00:00.900000Z"
+        later = make_shadow(later_baseline, inputs_for(data, later_baseline), policy, NOW + timedelta(microseconds=900000))
+        later["rows"][0]["models"]["challenger"]["alpha"] = 2
+        outcome = {identity(baseline["rows"][0]): {"status": "resolved", "actual": 5}}
+        expected = evaluate([first], [baseline], outcome, policy)
+        actual = evaluate([later, first], [baseline, later_baseline], outcome, policy)
+        self.assertEqual(actual["categories"], expected["categories"])
+
 
 if __name__ == "__main__":
     unittest.main()

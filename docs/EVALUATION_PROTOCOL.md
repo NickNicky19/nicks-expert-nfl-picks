@@ -6,6 +6,12 @@ candidate version and a fresh forward holdout; do not rewrite an old registry,
 receipt or outcome snapshot. The source timestamp of Sleeper projections is
 unknown: collection time does not establish source-level as-of correctness.
 
+The v1 registry is retained unchanged in config/policies/. Before any game
+outcome, v1.1 corrects ordering of mixed second/microsecond timestamp formats
+using parsed UTC instants. Distribution parameters and promotion rules are
+unchanged. V1 forecasts remain saved and separately evaluable; versions are
+never pooled into additional independent outcomes.
+
 Compare raw Sleeper and the unchanged clone for receptions, rushing attempts,
 and passing yards. A pair must come from the same live receipt and the same
 player, game and category, with finite projections and collection and generation

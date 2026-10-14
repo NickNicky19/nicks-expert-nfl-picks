@@ -150,7 +150,7 @@ def evaluate(shadows, baselines, outcomes, policy, allow_replay=False):
     selected = {}
     excluded = 0
     code_versions = set()
-    for payload in sorted(shadows, key=lambda p: (p["predicted_at"], digest(p))):
+    for payload in sorted(shadows, key=lambda p: (utc(p["predicted_at"]), digest(p))):
         if payload.get("mode") != "live" and not (allow_replay and payload.get("mode") == "replay"):
             continue
         if payload.get("model_version") != policy["challenger"]["version"] or payload.get("policy_sha256") != digest(policy):

@@ -18,14 +18,22 @@ from shadow import evaluate, make_shadow
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def probability_report(root, policy, mode="live"):
+def probability_report(root, policy, mode="live", include_registry=True):
     forecast_lane = "forward" if mode == "live" else "replay"
     shadow_lane = "shadow" if mode == "live" else "shadow_replay"
     outcome_lane = "outcomes" if mode == "live" else "outcomes_replay"
-    return evaluate([read(p) for p in (root / "data" / shadow_lane).rglob("*.json.gz")],
-                    [read(p) for p in (root / "data" / forecast_lane).rglob("*.json.gz")],
-                    latest_outcomes([read(p) for p in (root / "data" / outcome_lane).rglob("*.json.gz")], mode == "replay"),
-                    policy, allow_replay=mode == "replay")
+    shadows = [read(p) for p in (root / "data" / shadow_lane).rglob("*.json.gz")]
+    baselines = [read(p) for p in (root / "data" / forecast_lane).rglob("*.json.gz")]
+    outcomes = latest_outcomes([read(p) for p in (root / "data" / outcome_lane).rglob("*.json.gz")], mode == "replay")
+    report = evaluate(shadows, baselines, outcomes, policy, allow_replay=mode == "replay")
+    if include_registry:
+        report["retained_versions"] = {}
+        for path in sorted((root / "config/policies").glob("*.json")):
+            old_policy = load_json(path)
+            if digest(old_policy) != digest(policy):
+                report["retained_versions"][old_policy["challenger"]["version"]] = evaluate(
+                    shadows, baselines, outcomes, old_policy, allow_replay=mode == "replay")
+    return report
 
 
 def run_capture(root=ROOT, mode="live", replay_at=None):

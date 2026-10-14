@@ -44,6 +44,19 @@ class ScorecardTests(unittest.TestCase):
         self.assertFalse(pairs)
         self.assertEqual(coverage["excluded"]["missing_pair"], 2)
 
+    def test_mixed_timestamp_precision_orders_actual_instants(self):
+        _, older, policy = setup(); newer = copy.deepcopy(older)
+        older["captured_at"] = "2026-10-10T19:00:00Z"
+        newer["captured_at"] = "2026-10-10T19:00:00.900000Z"
+        newer["rows"][0]["raw_projection"] = 99
+        pairs, _ = paired_forecasts([newer, older], policy, {"test": "fixture"})
+        self.assertEqual(next(iter(pairs.values()))["raw_projection"], 4.8)
+        row = next(iter(pairs.values()))
+        a = {"schema_version": "forecast-outcomes-v1", "mode": "live", "collected_at": "2026-10-10T23:00:00Z",
+             "rows": [{**row, "status": "resolved", "actual": 3, "game_state": "post", "final_confirmed": True}]}
+        b = copy.deepcopy(a); b["collected_at"] = "2026-10-10T23:00:00.900000Z"; b["rows"][0]["actual"] = 5
+        self.assertEqual(next(iter(latest_outcomes([a, b]).values()))["actual"], 5)
+
     def test_replay_and_started_receipts_excluded(self):
         _, p, policy = setup(); replay = copy.deepcopy(p); replay["mode"] = "replay"
         late = copy.deepcopy(p); late["captured_at"] = p["rows"][0]["kickoff"]
