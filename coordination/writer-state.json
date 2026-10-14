@@ -2,8 +2,8 @@
   "schema_version": "implementation-writer-state-v1",
   "policy_version": "phase2-handoff-v1",
   "policy_sha256": "8251039e3f983a69a52dc85c1d0c41d145cf770a1851a3904b7baea173521810",
-  "revision": 4,
-  "updated_at": "2026-10-14T03:28:29.488550Z",
+  "revision": 5,
+  "updated_at": "2026-10-14T19:09:25.231445Z",
   "readiness": {
     "owner_handoff_complete": true,
     "native_environment_verified": false,
@@ -11,7 +11,39 @@
     "report_audit_ack_readback_verified": false,
     "rejection_tests_verified": true
   },
-  "active": null,
+  "active": {
+    "kind": "bootstrap_reservation",
+    "request_id": "manual-gate-bootstrap-20261014-174819Z",
+    "run_id": "NFL-MANUAL-WRITER-PROPOSAL-20261014-174819Z-bootstrap",
+    "owner": {
+      "login": "NickNicky19",
+      "id": 208912933
+    },
+    "reserved_source_sha": "9c02617d765dfa91b7b20f5293bfc102787fb77f",
+    "reserved_coordination_sha": "56b9bcc768cb6d223c1089f0684bc77de7ac60ae",
+    "manifest_sha256": "92ed53e09eca3b130cd97f54164ca785df31a63da7ca8ec20e795521e7fb3d94",
+    "patch_sha256": "0dc360f997f840d963df850b51413c5f7feea5d27f8208ede57e89fd0f45859a",
+    "controller_sha256": "c14b3d1246f7e14a62f6eaa012ffa461c72efeedcdd32ff6f6139c6cdb7d1778",
+    "scope": [
+      "AGENTS.md",
+      "docs/IMPLEMENTATION_HANDOFF.md",
+      "tests/test_manual_writer_gate.py",
+      "tools/writer_gate.py"
+    ],
+    "request_comment": {
+      "id": 6176186493,
+      "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6176186493",
+      "author": {
+        "login": "NickNicky19",
+        "id": 208912933
+      },
+      "marker": "BOOTSTRAP_WRITER_GATE_AUTHORIZATION",
+      "body_sha256": "8e06df201cd934d6da39ae3a3feb1b07c3da297e21c9133a66476ad50c56910a",
+      "created_at": "2026-10-14T19:08:42Z",
+      "updated_at": "2026-10-14T19:08:42Z"
+    },
+    "acquired_at": "2026-10-14T19:09:25.231445Z"
+  },
   "requests": {
     "owner-handoff-20261014-022231Z": {
       "status": "BLOCKED",
@@ -30,9 +62,29 @@
       },
       "start_sha": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6",
       "end_sha": "9c02617d765dfa91b7b20f5293bfc102787fb77f"
+    },
+    "manual-gate-bootstrap-20261014-174819Z": {
+      "status": "BOOTSTRAP_RESERVED",
+      "kind": "bootstrap_reservation",
+      "run_id": "NFL-MANUAL-WRITER-PROPOSAL-20261014-174819Z-bootstrap",
+      "audit_id": "manual-gate-review-P01-20261014-174819Z",
+      "request_comment": {
+        "id": 6176186493,
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6176186493",
+        "author": {
+          "login": "NickNicky19",
+          "id": 208912933
+        },
+        "marker": "BOOTSTRAP_WRITER_GATE_AUTHORIZATION",
+        "body_sha256": "8e06df201cd934d6da39ae3a3feb1b07c3da297e21c9133a66476ad50c56910a",
+        "created_at": "2026-10-14T19:08:42Z",
+        "updated_at": "2026-10-14T19:08:42Z"
+      }
     }
   },
-  "audit_ids": [],
+  "audit_ids": [
+    "manual-gate-review-P01-20261014-174819Z"
+  ],
   "finding_attempts": {},
   "checkpoints": [
     {
