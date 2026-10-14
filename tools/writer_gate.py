@@ -21,6 +21,8 @@ from reliability import IntegrityError, _pairs, canonical, digest, load_json, st
 ROOT = Path(__file__).resolve().parents[1]
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}\Z")
+MANUAL_GATE_VERSION = "phase2-manual-writer-v1"
+HEX_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class GateRejected(IntegrityError):
@@ -58,7 +60,7 @@ def message(comment, marker, policy):
     if not isinstance(payload, dict):
         reject("INVALID_MESSAGE")
     payload = copy.deepcopy(payload)
-    payload["_comment"] = {"id": comment["id"], "url": comment["html_url"], "author": trusted,
+    payload["_comment"] = {"id": comment["id"], "url": comment["html_url"], "author": trusted, "marker": marker,
                            "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(), "created_at": comment["created_at"],
                            "updated_at": comment["updated_at"]}
     return payload
@@ -99,8 +101,66 @@ def changed(state, now):
 
 def claim(state, request, policy, source_head, now, audit=None):
     """Pure transition. Callers must publish with compare/readback + non-force."""
+    return _claim(state, request, policy, source_head, now, audit)
+
+
+def verify_manual_target(policy, source_head, repository, pull_request):
+    """Require fresh server metadata, not just the configured Git remote URL."""
+    head = pull_request.get("head", {})
+    head_repo = head.get("repo") or {}
+    if (type(repository.get("id")) is not int or repository["id"] != policy["repository_id"]
+            or repository.get("full_name") != policy["repository"]
+            or head_repo.get("id") != policy["repository_id"] or head_repo.get("full_name") != policy["repository"]
+            or type(pull_request.get("number")) is not int or pull_request["number"] != policy["pull_request"]
+            or pull_request.get("html_url") != f"https://github.com/{policy['repository']}/pull/{policy['pull_request']}"
+            or pull_request.get("state") != "open" or pull_request.get("merged") is not False
+            or head.get("ref") != policy["development_branch"] or head.get("sha") != source_head):
+        reject("WRONG_OR_STALE_MANUAL_TARGET")
+
+
+def entrypoint_sha256():
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def verify_active_manual_authorization(active, raw_comment, policy):
+    reread = message(raw_comment, "MANUAL_OWNER_AUTHORIZATION", policy)
+    if reread["_comment"] != active["request_comment"]:
+        reject("MANUAL_AUTHORIZATION_CHANGED")
+
+
+def claim_manual(state, raw_comment, policy, source_head, state_head, now, *,
+                 run_id, repository, pull_request, gate_sha256):
+    """Explicit owner authorization; never accepted by the automatic claim path."""
+    request = message(raw_comment, "MANUAL_OWNER_AUTHORIZATION", policy)
+    if (request.get("schema_version") != "manual-writer-authorization-v1"
+            or request.get("kind") != "manual_owner"
+            or request.get("approval") != "OWNER_APPROVED_MANUAL_EXECUTION"
+            or request.get("native_dispatch") is not False
+            or request.get("boundaries") != policy["boundaries"]):
+        reject("EXPLICIT_MANUAL_AUTHORIZATION_REQUIRED")
+    if not run_id or request.get("run_id") != run_id:
+        reject("WRONG_MANUAL_RUN")
+    if (type(request.get("repository_id")) is not int
+            or request["repository_id"] != policy["repository_id"]):
+        reject("WRONG_TARGET")
+    verify_manual_target(policy, source_head, repository, pull_request)
+    if (not isinstance(state_head, str) or not SHA.fullmatch(state_head)
+            or request.get("coordination_sha") != state_head):
+        reject("STALE_COORDINATION_HEAD")
+    if (request.get("gate_version") != MANUAL_GATE_VERSION
+            or not isinstance(gate_sha256, str) or not HEX_DIGEST.fullmatch(gate_sha256)
+            or request.get("gate_sha256") != gate_sha256):
+        reject("STALE_MANUAL_GATE")
+    result = _claim(state, request, policy, source_head, now, manual=True)
+    result["active"].update(manual_gate_version=MANUAL_GATE_VERSION, manual_gate_sha256=gate_sha256,
+                            authorized_coordination_sha=state_head)
+    return result
+
+
+def _claim(state, request, policy, source_head, now, audit=None, *, manual=False):
     validate_state(state, policy)
-    if request.get("schema_version") != "implementation-request-v1":
+    schema = "manual-writer-authorization-v1" if manual else "implementation-request-v1"
+    if request.get("schema_version") != schema:
         reject("UNKNOWN_REQUEST_SCHEMA")
     for key in ("request_id", "run_id", "audit_id"):
         if not isinstance(request.get(key), str) or not IDENTIFIER.fullmatch(request[key]):
@@ -124,16 +184,22 @@ def claim(state, request, policy, source_head, now, audit=None):
     if state.get("active") is not None:
         reject("BUSY")
     kind = request.get("kind")
-    if kind not in ("read_only_probe", "implementation"):
+    if kind not in (("manual_owner",) if manual else ("read_only_probe", "implementation")):
         reject("UNKNOWN_REQUEST_KIND")
     scope = request.get("scope")
     if not isinstance(scope, list) or any(not isinstance(p, str) for p in scope) or len(scope) != len(set(scope)):
         reject("INVALID_SCOPE")
     if kind == "read_only_probe" and scope:
         reject("PROBE_CANNOT_EDIT_SOURCE")
-    if kind == "implementation":
+    if kind in ("implementation", "manual_owner"):
         if not scope or not all(allowed_path(p, policy) for p in scope):
             reject("PROTECTED_OR_UNBOUNDED_SCOPE")
+    if kind == "manual_owner":
+        if policy.get("automatic_implementation_enabled") is not False:
+            reject("MANUAL_REQUIRES_AUTOMATIC_DISABLED")
+        if not state["readiness"].get("owner_handoff_complete") or not state["readiness"].get("rejection_tests_verified"):
+            reject("MANUAL_PREREQUISITES_NOT_VERIFIED")
+    if kind == "implementation":
         if policy.get("automatic_implementation_enabled") is not True:
             reject("AUTOMATIC_IMPLEMENTATION_DISABLED")
         if not all(state["readiness"].values()):
@@ -143,7 +209,7 @@ def claim(state, request, policy, source_head, now, audit=None):
         reject("INVALID_FINDINGS")
     if any(state["finding_attempts"].get(f, 0) >= policy["maximum_attempts_per_finding"] for f in findings):
         reject("ATTEMPT_LIMIT_OWNER_ATTENTION")
-    if kind == "implementation" and not findings:
+    if kind in ("implementation", "manual_owner") and not findings:
         reject("AUDIT_FINDING_REQUIRED")
     if kind == "implementation":
         if not isinstance(audit, dict) or audit.get("_comment", {}).get("author") != policy["trusted_requester"]:
@@ -170,22 +236,31 @@ def claim(state, request, policy, source_head, now, audit=None):
     return result
 
 
-def check_owner(state, policy, run_id, source_head):
+def check_owner(state, policy, run_id, source_head, *, gate_sha256=None):
     validate_state(state, policy)
     active = state.get("active")
     if active is None or active.get("run_id") != run_id or active.get("owner") != policy["trusted_requester"]:
         reject("NOT_LEASE_OWNER")
+    if active.get("kind") == "bootstrap_reservation":
+        reject("BOOTSTRAP_NOT_IMPLEMENTATION_LEASE")
+    if active.get("manual_gate_sha256") is not None and active["manual_gate_sha256"] != gate_sha256:
+        reject("STALE_MANUAL_GATE")
     if active.get("source_head") != source_head:
         reject("SOURCE_HEAD_DRIFT")
     return active
 
 
-def finish(state, report, policy, source_head, now, *, descendant=False, changed_paths=(), release=True):
+def finish(state, report, policy, source_head, now, *, descendant=False, changed_paths=(), release=True,
+           gate_sha256=None):
     """Release only this owner after an exact, freshly read-back result comment."""
     validate_state(state, policy)
     active = state.get("active")
     if active is None or active.get("run_id") != report.get("run_id") or report.get("request_id") != active["request_id"]:
         reject("NOT_LEASE_OWNER")
+    if active.get("kind") == "bootstrap_reservation":
+        reject("BOOTSTRAP_NOT_IMPLEMENTATION_LEASE")
+    if active.get("manual_gate_sha256") is not None and active["manual_gate_sha256"] != gate_sha256:
+        reject("STALE_MANUAL_GATE")
     if report.get("_comment", {}).get("author") != policy["trusted_requester"]:
         reject("UNTRUSTED_RESULT_AUTHOR")
     if report.get("start_sha") != active["source_head"] or report.get("end_sha") != source_head or not SHA.fullmatch(source_head):
@@ -251,10 +326,12 @@ class RemoteGate:
     def head(self):
         return self.fetch_ref(self.policy["development_branch"])
 
-    def publish(self, expected_commit, state):
+    def publish(self, expected_commit, state, *, expected_source=None):
         current, _ = self.read()
         if current != expected_commit:
             reject("CONCURRENT_STATE_CHANGE")
+        if expected_source is not None and self.head() != expected_source:
+            reject("SOURCE_HEAD_DRIFT")
         candidate = state_commit(self.root, expected_commit, state, self.policy["state_path"])
         try:
             # Sibling claims cannot both fast-forward this ref. No force flag.
@@ -264,6 +341,9 @@ class RemoteGate:
         actual, payload = self.read()
         if actual != candidate or payload != state:
             reject("STATE_READBACK_FAILED")
+        if expected_source is not None and self.head() != expected_source:
+            # The reservation remains; do not edit, retry, or silently release it.
+            reject("SOURCE_HEAD_DRIFT")
         return candidate
 
 
@@ -274,9 +354,20 @@ def fetched_comment(policy, comment_id):
     return response.json()
 
 
+def fetched_manual_target(policy):
+    import requests
+    prefix = f"https://api.github.com/repos/{policy['repository']}"
+    result = []
+    for url in (prefix, f"{prefix}/pulls/{policy['pull_request']}"):
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        result.append(response.json())
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("show", "claim", "check", "checkpoint", "finish"))
+    parser.add_argument("operation", choices=("show", "claim", "claim-manual", "check", "checkpoint", "finish"))
     parser.add_argument("--run-id")
     parser.add_argument("--comment-id", type=int)
     args = parser.parse_args()
@@ -290,13 +381,28 @@ def main():
             print(json.dumps({"state_commit": state_commit_sha, "source_head": source_head, "active": state["active"],
                               "automatic_implementation_enabled": policy["automatic_implementation_enabled"], "readiness": state["readiness"]}))
         elif args.operation == "check":
-            check_owner(state, policy, args.run_id, source_head)
+            active = check_owner(state, policy, args.run_id, source_head, gate_sha256=entrypoint_sha256())
+            if active.get("manual_gate_sha256") is not None:
+                verify_active_manual_authorization(active, fetched_comment(policy, active["request_comment"]["id"]), policy)
+                verify_manual_target(policy, source_head, *fetched_manual_target(policy))
             print(json.dumps({"status": "LEASE_OWNER_VERIFIED", "state_commit": state_commit_sha, "source_head": source_head}))
         else:
             if not args.comment_id:
-                parser.error("claim/checkpoint/finish require an actual GitHub --comment-id")
+                parser.error("claim/claim-manual/checkpoint/finish require an actual GitHub --comment-id")
             raw = fetched_comment(policy, args.comment_id)
-            if args.operation == "claim":
+            if args.operation == "claim-manual":
+                if not args.run_id:
+                    parser.error("claim-manual requires the exact authorized --run-id")
+                repository, pull_request = fetched_manual_target(policy)
+                updated = claim_manual(state, raw, policy, source_head, state_commit_sha, now,
+                                       run_id=args.run_id, repository=repository, pull_request=pull_request,
+                                       gate_sha256=entrypoint_sha256())
+                # Bind the actual comment again immediately before publication.
+                reread = message(fetched_comment(policy, args.comment_id), "MANUAL_OWNER_AUTHORIZATION", policy)
+                if reread["_comment"] != updated["active"]["request_comment"]:
+                    reject("MANUAL_AUTHORIZATION_CHANGED")
+                verify_manual_target(policy, source_head, *fetched_manual_target(policy))
+            elif args.operation == "claim":
                 request = message(raw, "HANDOFF_REQUEST", policy)
                 audit = None
                 if request.get("kind") == "implementation" and type(request.get("audit_comment_id")) is int:
@@ -306,12 +412,15 @@ def main():
                 report = message(raw, "CODEX_RESULT", policy)
                 if state.get("active") is None:
                     reject("NOT_LEASE_OWNER")
+                if state["active"].get("kind") == "bootstrap_reservation":
+                    reject("BOOTSTRAP_NOT_IMPLEMENTATION_LEASE")
                 original = state["active"]["source_head"]
                 descendant = subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", original, source_head], capture_output=True).returncode == 0
                 paths = git(ROOT, "diff", "--name-only", original, source_head).decode().splitlines()
                 updated = finish(state, report, policy, source_head, now, descendant=descendant, changed_paths=paths,
-                                 release=args.operation == "finish")
-            published = remote.publish(state_commit_sha, updated)
+                                 release=args.operation == "finish", gate_sha256=entrypoint_sha256())
+            published = remote.publish(state_commit_sha, updated,
+                                       expected_source=source_head if args.operation == "claim-manual" else None)
             print(json.dumps({"status": "READBACK_VERIFIED", "state_commit": published, "source_head": source_head}))
     except (GateRejected, subprocess.CalledProcessError, OSError) as error:
         print(json.dumps({"status": "REJECTED_OR_BLOCKED", "reason": getattr(error, "reason", type(error).__name__),

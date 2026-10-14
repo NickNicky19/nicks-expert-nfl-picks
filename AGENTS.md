@@ -12,12 +12,30 @@ run. The current manual owner uses that same state branch. Future GitHub cloud
 tasks and manual implementation entrypoints must acquire/read back the gate
 before edits and check it again before publishing. Use tools/writer_gate.py or
 the equivalent documented connector transaction. Missing/inaccessible state,
-unknown ownership, another owner or an unverified native entrypoint means stop
-implementation and post a blocked CODEX_RESULT. Never infer idle from timestamps,
+unknown ownership or another owner means stop implementation and post a blocked
+CODEX_RESULT. A native entrypoint must also be independently verified before
+native implementation; an explicitly owner-authorized manual entrypoint uses
+the separate claim-manual contract below. Never infer idle from timestamps,
 absent commits or missing task visibility; there is no lease expiry/takeover.
 
 Automatic implementation is DISABLED. Read-only transport probes may claim a
 zero-source-scope lease, but must not edit source. No scheduler is installed here.
+An owner-requested manual session must fetch an unedited, authenticated
+MANUAL_OWNER_AUTHORIZATION on PR #1, bind the exact repository ID, branch,
+source/coordination SHAs, gate digest, policy versions, run and file scope, then
+use tools/writer_gate.py claim-manual --comment-id ID --run-id EXACT_RUN_ID.
+Read back the remote commit and full state before any implementation edit.
+Manual claims keep the automatic flag false and all readiness fields intact;
+they require completed prior owner handoff and verified rejection tests. Native
+environment/entrypoint readiness is not claimed by a manual authorization.
+The ordinary HANDOFF_REQUEST/claim path cannot acquire a manual lease.
+
+The initial gate correction needs a separately approved, exact-patch bootstrap
+reservation on the same coordination branch. That reservation is explicitly
+not an implementation lease: it has no source_head, blocks competing claims,
+and authorizes only the one-time reviewed infrastructure exception. Never
+relabel a probe, invent an owner, infer approval from this file, or edit while
+the bootstrap plan awaits owner approval. See docs/IMPLEMENTATION_HANDOFF.md.
 The existing hourly ChatGPT audit is the sole scheduled auditor/possible future
 dispatcher; do not create another audit or implementation scheduler. The cloud
 connector environment and its adoption of the gate must be verified before a

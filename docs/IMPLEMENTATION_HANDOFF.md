@@ -80,7 +80,123 @@ the checkpoint evidence. GitHub-triggered native use of this gate remains
 all implementation entrypoints, but is not server branch protection. Leave
 automatic implementation disabled while that condition is unverified.
 
-## Structured request and audit contract
+## Explicit manual ownership and one-time bootstrap
+
+The separately reviewed manual mechanism is `phase2-manual-writer-v1` in
+tools/writer_gate.py. It is distinct from automatic implementation. The existing
+automatic claim path retains its policy, readiness and structured audit checks;
+automatic_implementation_enabled remains false. No native environment/task
+readiness is asserted by a manual claim. All current protected paths, duplicate
+request/review IDs, finding attempt limits, busy ownership without expiry, and
+source-history/scope checks remain in effect.
+
+An owner-requested manual entrypoint uses a new, unedited PR #1 comment, freshly
+fetched from GitHub, with the exact numeric owner identity. A comment body or
+display name supplied locally is not authentication. Verify the repository ID
+and fresh PR head/repository/branch/status using GitHub metadata too. The
+`audit_id` below identifies this explicit owner review cycle for deduplication;
+it does not fabricate an independent AUDIT_REPORT or replace automatic audit
+reference validation. Cite actual prior audit/handoff evidence in the prose.
+
+```json
+{
+  "schema_version": "manual-writer-authorization-v1",
+  "request_id": "UNIQUE_MANUAL_REQUEST_ID",
+  "run_id": "EXACT_OWNER_REQUESTED_RUN_ID",
+  "audit_id": "UNIQUE_OWNER_REVIEW_CYCLE_ID",
+  "repository": "NickNicky19/nicks-expert-nfl-picks",
+  "repository_id": 1411185749,
+  "pull_request": 1,
+  "branch": "upgrade/phase2-reproducible-comparison",
+  "reviewed_sha": "EXACT_CURRENT_DEVELOPMENT_SHA",
+  "coordination_sha": "EXACT_CURRENT_COORDINATION_SHA",
+  "policy_version": "phase2-handoff-v1",
+  "policy_sha256": "EXACT_POLICY_DIGEST",
+  "evaluation_policy_version": "phase2-evaluation-v1.1",
+  "timing_policy_version": "phase2-timing-v1",
+  "gate_version": "phase2-manual-writer-v1",
+  "gate_sha256": "SHA256_OF_EXACT_INSTALLED_WRITER_GATE_BYTES",
+  "kind": "manual_owner",
+  "approval": "OWNER_APPROVED_MANUAL_EXECUTION",
+  "native_dispatch": false,
+  "boundaries": {"main_writes": false, "merge": false, "deployment": false,
+                 "model_promotion": false, "force_push": false},
+  "scope": ["tools/scorecard.py", "tests/test_scorecard.py"],
+  "finding_ids": ["A01", "A02"]
+}
+```
+
+This is an example, not authorization. The actual comment must start with
+`### MANUAL_OWNER_AUTHORIZATION`. The code verifies its GitHub origin, author,
+body hash and unedited timestamps. Bind the exact invocation run, current
+coordination parent, gate version/bytes and evaluation/timing versions. Require
+owner_handoff_complete and rejection_tests_verified; preserve every readiness
+value. Re-fetch authorization and PR target immediately before publication.
+Use the existing one-parent, non-force transaction and full state readback, with
+source-head checks before and after the coordination push. A drift after push
+leaves the claim unusable and requires attention; never silently release/retry.
+Each subsequent manual check also re-fetches the original authorization and
+current PR target; changed/retracted authorization or a closed/stale target
+stops further edits/publication. A final owner-authored release can still safely
+close the lease against its exact result and existing scope/ancestry checks.
+
+```sh
+python tools/writer_gate.py claim-manual --comment-id ACTUAL_OWNER_AUTHORIZATION_ID --run-id EXACT_RUN_ID
+python tools/writer_gate.py check --run-id EXACT_RUN_ID
+# Bounded edits, tests, non-force development publication; check before publishing.
+# Post/read back structured CODEX_RESULT for each checkpoint and at completion.
+python tools/writer_gate.py checkpoint --comment-id ACTUAL_CHECKPOINT_RESULT_ID
+python tools/writer_gate.py finish --comment-id ACTUAL_FINAL_RESULT_ID
+```
+
+The authenticated API equivalent must call the same claim_manual validation on
+fresh server comment/repository/PR metadata; do not construct trusted metadata
+from an arbitrary local body. The gate digest remains bound throughout the
+lease. An independent exact-source check plus actual manual claim/readback
+demonstration is required before resuming Phase 2 repairs. A marker alone is
+never permission, and AGENTS.md is still not server branch protection.
+
+Bootstrap cannot be performed under a lease that does not exist. The owner
+must first approve the proposed patch, manifest and one-time controller by
+digest, pin source and coordination SHAs, name the sole bootstrap actor and
+authorize exactly four infrastructure paths: tools/writer_gate.py,
+tests/test_manual_writer_gate.py, docs/IMPLEMENTATION_HANDOFF.md and AGENTS.md.
+The protected AGENTS.md edit is an explicit one-time exception, not a new
+permission for ordinary manual claims. No policy/config/evidence/workflow or
+production edit belongs to this exception.
+
+Only after that approval, record/read back a trusted structured
+BOOTSTRAP_WRITER_GATE_AUTHORIZATION with the exact artifact hashes and bases.
+The separately reviewed external pure controller may reserve the existing
+coordination ref with kind bootstrap_reservation, exact patch/manifest/body
+digests and reserved_source_sha. It deliberately omits source_head: old gate
+checks cannot mistake it for a lease, and all ordinary claims see BUSY. Publish
+as one non-force sibling with the observed parent and verify full readback
+before installing the exact approved patch. No competing source writer, expiry
+or takeover is authorized. The controller is not installed as a recurring
+repository entrypoint or scheduler.
+
+Publish only the approved source tree with one parent, the pinned source SHA;
+preserve all other bytes/refs. Record the installation on the reservation while
+running exact-head checks and independent verification. A freshly read-back
+CODEX_RESULT and proven exact tree/parent permit reservation closure. Do not
+convert the reservation into a manual owner: close it, then acquire/read back a
+fresh explicit manual authorization against the actual installed source and
+current coordination SHA. No Phase 2 repair edit is allowed before that step.
+
+On failure before source publication, report BLOCKED and explicitly close only
+this reservation against the unchanged source. After publication but before
+reservation release, the approved rollback is one ordinary code-only revert of
+those four paths to their pre-bootstrap bytes, parented to the recorded install;
+retain the failed commit, all evidence, backups and coordination history. The
+external controller verifies the original tree and exact rollback parent before
+closing as BLOCKED. Unknown source/state drift or another owner means retain the
+reservation and stop; no reset, forced ref update, expiry or deletion. A rollback
+after reservation closure needs a fresh exact-head authorization/reservation
+and cannot interrupt an active manual owner. Automatic implementation stays
+disabled throughout bootstrap, manual use, abort and rollback.
+
+## Automatic structured request and audit contract
 
 The trusted owner is GitHub login NickNicky19, numeric ID 208912933, type User.
 The marker alone is not trusted. Fetch actual metadata/body from GitHub; require
