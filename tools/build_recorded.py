@@ -6,6 +6,7 @@ proof is an error, never repaired by fetching a newer roster after the fact.
 """
 import argparse
 import copy
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -15,11 +16,15 @@ sys.path.insert(0, str(ROOT / "pull"))
 import build
 from evidence import write
 from offers import SOURCE, TARGETS
-from reliability import atomic_json, digest, engine_hashes, load_json, stamp
+from reliability import IntegrityError, atomic_json, digest, engine_hashes, load_json, stamp, utc
+from source_evidence import HASH_FORMAT, record_scoreboard
 
 
-def record_build(root=ROOT, run=None):
+def record_build(root=ROOT, run=None, *, mode="live"):
+    if mode not in ("live", "replay"):
+        raise IntegrityError("Recorded build mode must be live or replay")
     root = Path(root)
+    started = datetime.now(timezone.utc)
     hashes = engine_hashes(root)
     previous_path = root / "output/data/week.json"
     previous = load_json(previous_path) if previous_path.exists() else {}
@@ -33,6 +38,7 @@ def record_build(root=ROOT, run=None):
     projection_metadata = {}
     projection_url = None
     game_status = {}
+    source_requests = []
 
     def record_source(url, params=None, *args, **kwargs):
         nonlocal projection_url
@@ -43,6 +49,12 @@ def record_build(root=ROOT, run=None):
                 observation.update(status="unavailable", collected_at=stamp(datetime.now(timezone.utc)),
                                    error=type(err).__name__)
             raise
+        collected = datetime.now(timezone.utc)
+        if (url.endswith("/v1/players/nfl") or "/stats/nfl/" in url
+                or "/projections/nfl/" in url):
+            source_requests.append({"url": url, "params": copy.deepcopy(params),
+                                    "collected_at": stamp(collected), "response_sha256": digest(response),
+                                    "response_hash_format": HASH_FORMAT})
         if url == SOURCE:
             # Retain exact rows in the permitted NFL/three-statistic scope. The
             # digest fingerprints the full response without storing other sports.
@@ -65,16 +77,12 @@ def record_build(root=ROOT, run=None):
                         ("game_id", "season", "week", "team", "opponent", "date", "updated_at", "last_modified")}
         if url == build.sources.ESPN + "/scoreboard" and isinstance(response, dict) and isinstance(params, dict):
             key = f"{params.get('dates')}_{int(params.get('week', 0)):02d}"
-            if key not in game_status:
-                game_status[key] = {"collected_at": stamp(datetime.now(timezone.utc)), "response_sha256": digest(response),
-                                   "games": {}}
-                for event in response.get("events", []):
-                    status = event["competitions"][0]["status"]["type"]
-                    game_status[key]["games"][event["id"]] = {"kickoff": event["date"], "state": status.get("state"),
-                        "completed": status.get("completed"), "detail": status.get("shortDetail")}
+            game_status.setdefault(key, record_scoreboard(response, params, collected, mode=mode, source=url))
         return response
 
     def instrument(weeks, positions):
+        if recorded:
+            raise IntegrityError("Ambiguous repeated Matchups initialization")
         recorded.update(weeks=copy.deepcopy(weeks), positions=copy.deepcopy(positions),
                         inputs_observed_at=stamp(datetime.now(timezone.utc)))
         return original(weeks, positions)
@@ -86,22 +94,26 @@ def record_build(root=ROOT, run=None):
     finally:
         build.Matchups = original
         build.sources.get_json = original_get
+    completed = datetime.now(timezone.utc)
     data = load_json(previous_path)
     if not recorded:
         raise RuntimeError("Builder did not record matchup inputs")
-    payload = {"schema_version": "matchup-inputs-v1", "season": data["season"], "week": data["week"],
+    payload = {"schema_version": "matchup-inputs-v2", "mode": mode, "code_commit": os.environ.get("GITHUB_SHA"),
+               "build_started_at": stamp(started), "recorded_at": stamp(completed),
+               "season": data["season"], "week": data["week"],
                "output_sha256": digest(data), "engine_files": hashes,
                "positions": recorded["positions"], "weeks": {str(w): rows for w, rows in recorded["weeks"].items()},
                "inputs_observed_at": recorded["inputs_observed_at"], "week_data": data,
                "offer_observation": observation, "projection_metadata": projection_metadata,
-               "game_status": game_status}
+               "game_status": game_status, "source_requests": source_requests}
     path = write(root, "verification", payload)
     name = path.relative_to(root).as_posix()
     prior_valid = (pointer.get("output_sha256") == digest(previous) and
                    (previous.get("season"), previous.get("week")) == (data["season"], data["week"]))
     origins = {}
     for game in data["games"]:
-        frozen = game["state"] != "pre" or game["kickoff"] <= data["generated_at"]
+        frozen = (game["state"] != "pre" or utc(game["kickoff"]) <= utc(data["generated_at"])
+                  or utc(game["kickoff"]) <= completed)
         origins[game["id"]] = pointer.get("game_origins", {}).get(game["id"]) if frozen and prior_valid else (None if frozen else name)
     atomic_json(pointer_path, {"schema_version": "matchup-proof-v1", "output_sha256": digest(data),
                               "latest_inputs": name, "game_origins": origins})

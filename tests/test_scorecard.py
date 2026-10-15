@@ -13,6 +13,7 @@ from reliability import digest, make_payload, stamp
 from scorecard import cluster_interval, latest_outcomes, paired_forecasts, score, snapshot_outcomes
 from evidence import read
 from test_reliability import fixture, NOW
+from test_source_evidence import fictional_status
 
 
 def setup():
@@ -195,11 +196,9 @@ class OutcomePrecedenceRegressionTests(unittest.TestCase):
         if complete:
             game = {"id": row["game_id"], "kickoff": row["kickoff"], "state": "post", "detail": "Final"}
             population = fictional_week_population([game])
-            raw = {game["id"]: {"kickoff": game["kickoff"], "state": "post", "completed": True, "detail": "Final"}}
             result.update(season=2026, week=5, games=[game],
                           week_game_populations=[{"payload_sha256": digest(population), "payload": population}],
-                          source_game_status={"collected_at": result["collected_at"],
-                                              "response_sha256": digest(raw), "games": raw})
+                          source_game_status=fictional_status([game], collected_at=result["collected_at"]))
         return result
 
     def chosen(self, *snapshots):
@@ -528,11 +527,8 @@ class SavedWeekPopulationRegressionTests(unittest.TestCase):
         board["games"][0].update(state="post", detail="Final")
         board["games"].append({"id": "fictional-other-game", "home": "CCC", "away": "DDD",
                                "kickoff": stamp(NOW + timedelta(hours=2)), "state": "post", "detail": "Final"})
-        raw = {g["id"]: {"kickoff": g["kickoff"], "state": "post", "completed": True, "detail": "Final"}
-               for g in board["games"]}
         return {"board": board, "baseline": baseline, "policy": policy,
-                "status": {"collected_at": stamp(NOW + timedelta(hours=5)),
-                           "response_sha256": digest(raw), "games": raw},
+                "status": fictional_status(board["games"], week),
                 "populations": [fictional_week_population(board["games"], week)]}
 
     def capture(self, world):

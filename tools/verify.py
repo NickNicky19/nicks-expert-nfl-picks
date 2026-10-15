@@ -15,6 +15,7 @@ import statistics
 import sys
 import unicodedata
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -24,7 +25,8 @@ import matchup  # noqa: E402
 import scoring  # noqa: E402
 import sources  # noqa: E402
 from evidence import referenced  # noqa: E402
-from reliability import IntegrityError, atomic_json, digest, engine_hashes, load_json  # noqa: E402
+from reliability import IntegrityError, atomic_json, digest, engine_hashes, load_json, utc  # noqa: E402
+from source_evidence import HASH_FORMAT, verified_status  # noqa: E402
 
 problems = []
 
@@ -34,10 +36,11 @@ def problem(msg):
     print("  PROBLEM:", msg)
 
 
-def check_ppr():
+def check_ppr(*, root=None, report=None):
     """Skill players: our PPR and half PPR must equal Sleeper's own totals on every cached player-week."""
+    root, report = Path(root) if root is not None else ROOT, report or problem
     n = 0
-    for f in sorted((ROOT / "data" / "cache").glob("stats_*.json")):
+    for f in sorted((root / "data" / "cache").glob("stats_*.json")):
         for pid, e in json.loads(f.read_text()).items():
             s = e["stats"]
             if e.get("pos") in ("K", "DEF") or s.get("pts_ppr") is None:
@@ -48,7 +51,7 @@ def check_ppr():
                     continue
                 mine = scoring.fantasy_points(s, None, half=half)
                 if abs(mine - theirs) > 0.011:
-                    problem(f"{f.stem} {pid}: ours {mine} vs Sleeper {theirs} ({'half PPR' if half else 'PPR'})")
+                    report(f"{f.stem} {pid}: ours {mine} vs Sleeper {theirs} ({'half PPR' if half else 'PPR'})")
     print(f"1. PPR and half PPR checked on {n} player-weeks")
 
 
@@ -98,104 +101,228 @@ def check_espn_kdef(data):
         problem(f"{total - same} kicker/defense scores differ from ESPN's")
 
 
-def check_point_in_time(data, proof=None):
-    """Matchup factors rebuilt from this season's earlier weeks only must match; no game from last season or from
-    this week may appear in a player's chart."""
+def _indexed(rows, key, label):
+    if not isinstance(rows, list):
+        raise IntegrityError(f"Missing {label}")
+    result = {}
+    for row in rows:
+        value = row.get(key) if isinstance(row, dict) else None
+        if not isinstance(value, str) or not value or value in result:
+            raise IntegrityError(f"Missing or duplicate {label}")
+        result[value] = row
+    return result
+
+
+def recorded_inputs(root, name, season, week, hashes, *, mode=None, observed_at=None):
+    """Qualify a saved original input, without consulting today's roster/cache."""
+    inputs = referenced(root, name, "verification")
+    expected = f"data/verification/{season}/w{week:02d}/{digest(inputs)}.json.gz"
+    if name != expected:
+        raise IntegrityError("Matchup input content address/period does not match its payload")
+    if (inputs.get("schema_version") != "matchup-inputs-v2"
+            or inputs.get("mode") not in ("live", "replay")
+            or (mode is not None and inputs["mode"] != mode)):
+        raise IntegrityError("Original inputs lack qualified schema/live-replay provenance")
+    saved = inputs["week_data"]
+    if ((inputs["season"], inputs["week"]) != (season, week)
+            or (saved["season"], saved["week"]) != (season, week)
+            or inputs["engine_files"] != hashes):
+        raise IntegrityError("Wrong season/week or engine in matchup inputs")
+    if inputs["output_sha256"] != digest(saved):
+        raise IntegrityError("Recorded output checksum mismatch")
+    started, observed, recorded = (utc(inputs[k]) for k in
+                                   ("build_started_at", "inputs_observed_at", "recorded_at"))
+    generated = utc(saved["generated_at"])
+    # pull/build.py truncates its generation clock to seconds. Compare the
+    # observation's generation second, while keeping exact observation/seal
+    # instants for the strict before-kickoff checks below.
+    if not started <= observed <= recorded or observed.replace(microsecond=0) > generated or generated > recorded:
+        raise IntegrityError("Inconsistent original input/build clocks")
+    if observed_at is not None and recorded > utc(observed_at):
+        raise IntegrityError("Original input receipt was completed after verification/capture")
+    weeks = inputs["weeks"]
+    if (not isinstance(weeks, dict) or any(not str(w).isdigit() or str(int(w)) != w
+                                         or not 1 <= int(w) < week for w in weeks)):
+        raise IntegrityError("Matchup inputs contain a current/future week or ambiguous week key")
+    positions = inputs["positions"]
+    if (not isinstance(positions, dict) or not positions
+            or any(not isinstance(pid, str) or not pid or pos not in scoring.POSITION_CATEGORIES
+                   for pid, pos in positions.items())):
+        raise IntegrityError("Invalid recorded full player population")
+    games = _indexed(saved["games"], "id", "original games")
+    players = _indexed(saved["players"], "id", "original players")
+    for player in players.values():
+        _indexed(player["props"], "key", "original props")
+    for request in inputs["source_requests"]:
+        if (not isinstance(request.get("url"), str)
+                or request.get("response_hash_format") != HASH_FORMAT
+                or not re.fullmatch(r"[0-9a-f]{64}", request.get("response_sha256", ""))
+                or not started <= utc(request["collected_at"]) <= recorded):
+            raise IntegrityError("Invalid saved source-request observation")
+    status = inputs["game_status"][f"{season}_{week:02d}"]
+    if utc(status["collected_at"]) < started:
+        raise IntegrityError("Game-status source predates this recorded build")
+    sourced = verified_status(status, season, week, inputs["mode"], recorded)
+    if set(sourced) != set(games) or any(utc(sourced[gid]["kickoff"]) != utc(game["kickoff"])
+                                       or sourced[gid]["state"] != game["state"]
+                                       for gid, game in games.items()):
+        raise IntegrityError("Original games differ from the recorded source response")
+    return inputs
+
+
+def _original_game(inputs, game):
+    original = _indexed(inputs["week_data"]["games"], "id", "original games")[game["id"]]
+    kickoff = utc(game["kickoff"])
+    if (utc(original["kickoff"]) != kickoff
+            or (original["home"], original["away"]) != (game["home"], game["away"])):
+        raise IntegrityError("Original game/kickoff/team mapping changed")
+    if (original["state"] != "pre"
+            or max(utc(inputs["inputs_observed_at"]), utc(inputs["recorded_at"]),
+                   utc(inputs["week_data"]["generated_at"])) >= kickoff):
+        raise IntegrityError("Original input/forecast receipt is not proven before kickoff")
+
+
+def check_point_in_time(data, proof=None, *, root=None, report=None, mode=None,
+                        observed_at=None, require_latest=False):
+    """Rebuild factors from full original inputs; qualify original pregame clocks."""
+    root, report = Path(root) if root is not None else ROOT, report or problem
     season, week = data["season"], data["week"]
+    latest = None
+    input_cache = {}
     try:
-        proof = proof if proof is not None else load_json(ROOT / "output/data/matchup-proof.json")
+        proof = proof if proof is not None else load_json(root / "output/data/matchup-proof.json")
         if proof.get("output_sha256") != digest(data):
             raise IntegrityError("Matchup proof belongs to a different output")
-        current_hashes = engine_hashes(ROOT)
-    except (OSError, ValueError, KeyError) as err:
-        problem(f"matchup inputs unavailable or invalid: {err}; run tools/build_recorded.py")
+        current_hashes = engine_hashes(root)
+        games = _indexed(data["games"], "id", "current games")
+        if require_latest:
+            if proof.get("schema_version") != "matchup-proof-v1" or set(proof["game_origins"]) != set(games):
+                raise IntegrityError("Missing or mismatched original game-origin population")
+            latest = recorded_inputs(root, proof["latest_inputs"], season, week, current_hashes,
+                                     mode=mode, observed_at=observed_at)
+            if latest["output_sha256"] != digest(data):
+                raise IntegrityError("Latest original input receipt belongs to a different output")
+            if any(not name for name in proof["game_origins"].values()):
+                raise IntegrityError("Original frozen matchup inputs missing")
+            input_cache[proof["latest_inputs"]] = latest
+            # An origin for a game without modeled props still cannot be an
+            # unchecked/fabricated reference. Qualify the full game population.
+            for gid, origin in proof["game_origins"].items():
+                if origin not in input_cache:
+                    input_cache[origin] = recorded_inputs(root, origin, season, week, current_hashes,
+                                                          mode=mode, observed_at=observed_at)
+                _original_game(input_cache[origin], games[gid])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
+        report(f"matchup inputs unavailable or invalid: {err}; run tools/build_recorded.py")
         return
     models = {}
     checked = 0
     for p in data["players"]:
         for prop in p["props"]:
             if any(v["s"] != season or v["w"] >= week for v in prop.get("values", [])):
-                problem(f"{p['name']} {prop['key']}: chart includes a game from another season or this week")
-            if p.get("late") or "mf" not in prop:
+                report(f"{p['name']} {prop['key']}: chart includes a game from another season or this week")
+            if p.get("late"):
+                continue
+            if "mf" not in prop:
+                if require_latest and prop.get("adj") is not None:
+                    report(f"{p['name']} {prop['key']}: adjusted forecast lacks a matchup factor")
                 continue
             origin = proof.get("game_origins", {}).get(p["game_id"])
             if not origin:
-                problem(f"{p['name']} {prop['key']}: original frozen matchup inputs missing")
+                report(f"{p['name']} {prop['key']}: original frozen matchup inputs missing")
                 continue
             try:
                 if origin not in models:
-                    inputs = referenced(ROOT, origin, "verification")
-                    if (inputs["season"], inputs["week"]) != (season, week) or inputs["engine_files"] != current_hashes:
-                        raise IntegrityError("Wrong season/week or engine in matchup inputs")
-                    weeks = {int(w): rows for w, rows in inputs["weeks"].items()}
-                    if any(w < 1 or w >= week for w in weeks):
-                        raise IntegrityError("Matchup inputs contain a current/future week")
-                    if inputs["output_sha256"] != digest(inputs["week_data"]):
-                        raise IntegrityError("Recorded output checksum mismatch")
-                    positions = inputs["positions"]
-                    if not positions or any(pos not in scoring.POSITION_CATEGORIES for pos in positions.values()):
-                        raise IntegrityError("Invalid recorded player population")
-                    models[origin] = (matchup.Matchups(weeks, positions), inputs)
-                mx, inputs = models[origin]
-                old_player = next(x for x in inputs["week_data"]["players"] if x["id"] == p["id"])
-                old_prop = next(x for x in old_player["props"] if x["key"] == prop["key"])
-                if inputs["positions"].get(p["id"]) != p["pos"] or old_player["opp"] != p["opp"] or old_player["game_id"] != p["game_id"]:
-                    raise IntegrityError("Recorded player/game/opponent does not match")
+                    inputs = input_cache.get(origin)
+                    if inputs is None:
+                        inputs = recorded_inputs(root, origin, season, week, current_hashes,
+                                                 mode=mode, observed_at=observed_at)
+                    models[origin] = (matchup.Matchups({int(w): rows for w, rows in inputs["weeks"].items()},
+                                                      inputs["positions"]), inputs,
+                                      _indexed(inputs["week_data"]["players"], "id", "original players"))
+                mx, inputs, old_players = models[origin]
+                old_player, game = old_players[p["id"]], games[p["game_id"]]
+                old_prop = _indexed(old_player["props"], "key", "original props")[prop["key"]]
+                _original_game(inputs, game)
+                if (inputs["positions"].get(p["id"]) != p["pos"] or old_player["pos"] != p["pos"]
+                        or old_player["opp"] != p["opp"] or old_player["game_id"] != p["game_id"]
+                        or old_player["team"] != p["team"] or p["team"] not in (game["home"], game["away"])
+                        or p["opp"] not in (game["home"], game["away"]) or p["opp"] == p["team"]):
+                    raise IntegrityError("Recorded player/position/game/team/opponent does not match")
                 if any(old_prop.get(k) != prop.get(k) for k in ("proj", "adj", "mf", "mf_n", "values")):
                     raise IntegrityError("Frozen forecast changed since its input receipt")
-            except (OSError, ValueError, KeyError, StopIteration) as err:
-                problem(f"{p['name']} {prop['key']}: invalid matchup evidence: {err}")
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
+                report(f"{p['name']} {prop['key']}: invalid matchup evidence: {err}")
                 continue
             avg = statistics.mean(v["v"] for v in prop["values"]) if prop["values"] else None
             f, n = mx.factor(p["opp"], p["pos"], prop["key"], avg)
             checked += 1
             if (f, n) != (prop["mf"], prop["mf_n"]):
-                problem(f"{p['name']} {prop['key']}: matchup factor {prop['mf']} ({prop['mf_n']} games) but earlier weeks give {f} ({n})")
+                report(f"{p['name']} {prop['key']}: matchup factor {prop['mf']} ({prop['mf_n']} games) but earlier weeks give {f} ({n})")
     print(f"2. {checked} matchup factors rebuilt from this season's earlier weeks only")
+    return {"inputs": latest, "checked_factors": checked}
 
 
-def check_lean_balance(data):
+def require_offline(root, data, proof, mode, observed_at):
+    """Same required offline checks as the CLI, before any capture write."""
+    errors = []
+    try:
+        check_ppr(root=root, report=errors.append)
+        result = check_point_in_time(data, proof, root=root, report=errors.append, mode=mode,
+                                     observed_at=observed_at, require_latest=True)
+        check_shape(data, report=errors.append)
+        check_lean_balance(data, report=errors.append)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
+        errors.append(f"Malformed offline evidence: {err}")
+    if errors:
+        raise IntegrityError("Required offline verification failed: " + "; ".join(errors))
+    return result
+
+
+def check_lean_balance(data, *, report=None):
     """A guard against a biased projection: leans against real lines shouldn't be nearly all one way."""
+    report = report or problem
     leans = [x["lean"] for p in data["players"] if not p.get("late") for x in p["props"]
              if x.get("line_from") in ("dk", "sleeper") and x["lean"]]
     if len(leans) >= 40:
         share = max(leans.count("over"), leans.count("under")) / len(leans)
         print(f"5. Leans against real lines: {leans.count('over')} over, {leans.count('under')} under")
         if share > 0.8:
-            problem(f"{share:.0%} of leans go one way: the projection may be biased")
+            report(f"{share:.0%} of leans go one way: the projection may be biased")
     else:
         print(f"5. Only {len(leans)} leans against real lines in unstarted games; balance not checked")
 
 
-def check_shape(data):
+def check_shape(data, *, report=None):
+    report = report or problem
     ids = [p["id"] for p in data["players"]]
     if len(ids) != len(set(ids)):
-        problem("duplicate players in week.json")
+        report("duplicate players in week.json")
     teams = {g["home"] for g in data["games"]} | {g["away"] for g in data["games"]}
     by_id = {p["id"]: p for p in data["players"]}
     for p in data["players"]:
         if p["team"] not in teams:
-            problem(f"{p['name']} plays for {p['team']}, which has no game")
+            report(f"{p['name']} plays for {p['team']}, which has no game")
         for prop in p["props"]:
             ours = prop.get("our_line", prop["line"])
             if (ours * 2) % 2 != 1:
-                problem(f"{p['name']} {prop['key']} our line {ours} does not end in .5")
+                report(f"{p['name']} {prop['key']} our line {ours} does not end in .5")
             if prop.get("line_from") in ("dk", "sleeper") and prop["lean"] and prop.get("adj") is not None:
                 gap = prop["adj"] - prop["line"]
                 if (prop["lean"] == "over") != (gap > 0):
-                    problem(f"{p['name']} {prop['key']}: lean {prop['lean']} but our number {prop['adj']} vs DraftKings {prop['line']}")
+                    report(f"{p['name']} {prop['key']}: lean {prop['lean']} but our number {prop['adj']} vs DraftKings {prop['line']}")
     for side, picks in data["picks"].items():
         for pick in picks:
             p = by_id.get(pick["player_id"])
             cat = scoring.CATEGORIES[pick["key"]]
             if not p:
-                problem(f"{side} pick for unknown player {pick['player_id']}")
+                report(f"{side} pick for unknown player {pick['player_id']}")
             elif ((p.get("snap_share") or 0) < build.PICK_MIN_SNAP_SHARE or (p.get("proj_ppr") or 0) < build.PICK_MIN_PROJ_PPR[p["pos"]]) and not p.get("late"):
-                problem(f"{side} pick for a part-time player: {p['name']} (snap share {p.get('snap_share')}, proj {p.get('proj_ppr')})")
+                report(f"{side} pick for a part-time player: {p['name']} (snap share {p.get('snap_share')}, proj {p.get('proj_ppr')})")
             elif pick.get("line_from") not in ("dk", "sleeper") or pick["line"] < cat["min_pick"] or p.get("injury") in build.UNAVAILABLE and not p.get("late"):
-                problem(f"{side} pick breaks the rules: {p['name']} {pick['key']} {pick['line']}")
+                report(f"{side} pick breaks the rules: {p['name']} {pick['key']} {pick['line']}")
             if pick["direction"] != side:
-                problem(f"{side} list holds a {pick['direction']} pick")
+                report(f"{side} list holds a {pick['direction']} pick")
     print(f"3. Shape checked: {len(ids)} players, {len(data['games'])} games, {sum(len(v) for v in data['picks'].values())} picks")
 
 
@@ -290,7 +417,7 @@ def main():
     check_ppr()
     if not args.offline:
         check_espn_kdef(data)
-    check_point_in_time(data)
+    check_point_in_time(data, mode="live", observed_at=datetime.now(timezone.utc), require_latest=True)
     check_shape(data)
     if not args.offline:
         check_live(data)

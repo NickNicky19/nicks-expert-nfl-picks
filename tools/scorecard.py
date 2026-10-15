@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "pull"))
 import grade
 from evidence import read, write
 from reliability import IntegrityError, atomic_json, digest, engine_hashes, finite, load_json, stamp, utc
+from source_evidence import verified_status
 
 
 def identity(row):
@@ -113,15 +114,14 @@ def _verified_week_complete(payload):
         if _game_kickoffs(board) != expected:
             return False
         status = payload["source_game_status"]
-        source_sha = status.get("response_sha256")
-        if (set(status["games"]) != set(expected) or not isinstance(source_sha, str) or len(source_sha) != 64
-                or any(c not in "0123456789abcdef" for c in source_sha)):
+        sourced_games = verified_status(status, season, week, mode, observed)
+        if set(sourced_games) != set(expected):
             return False
         status_time = utc(status["collected_at"])
         if status_time > observed:
             return False
         for game in board:
-            raw = status["games"][game["id"]]
+            raw = sourced_games[game["id"]]
             kickoff = expected[game["id"]]
             if (game.get("state") != "post" or not str(game.get("detail", "")).lower().startswith("final")
                     or raw.get("state") != "post" or raw.get("completed") is not True

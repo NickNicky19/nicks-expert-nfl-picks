@@ -176,3 +176,34 @@ improvement merely by adding a distribution. Passing software tests never
 promotes a model. EV/ROI claims additionally require complete entry economics
 and verified venue settlement. Explicit owner approval is required before a
 production-model change.
+## A02-PROV-01: bound decoded-provider status evidence
+
+The installed completion predicate and saved-outcome reader require an
+`espn-status-response-v1` transcript. Its `response_sha256` has the recorder's
+original meaning: SHA-256 of the **full decoded provider JSON**, serialized with
+sorted keys, compact separators, UTF-8/`ensure_ascii=False`, and no non-finite
+numbers. `response_hash_format` explicitly names
+`sha256-canonical-decoded-json-v1`. It is not a digest of raw HTTP wire bytes or
+only the normalized game map.
+
+The saved transcript includes that full response, exact ESPN NFL scoreboard
+endpoint and regular-season request period, actual collection time, live/replay
+mode and normalized statuses. Verification recomputes the full-response hash,
+derives the game map again, checks the provider's own season/week metadata and
+rejects mismatched maps, duplicate/ambiguous events, wrong period/source/mode,
+unsupported contracts and impossible collection times. The existing full-week
+membership and all-final reconciliation requirements still apply. A valid
+formatting-only hash, including 64 zeroes, cannot establish completion.
+
+Legacy evidence without the saved response is retained and remains unverified
+for whole-week eligibility; it is not reconstructed from a later request or
+silently upgraded. A valid numerical point outcome remains readable even when
+its week cannot qualify for uncertainty. Source observations and conflicting
+outcomes remain append-only; the A01-R1 participation logic is unchanged.
+
+This binding demonstrates saved integrity, not upstream authenticity or that a
+self-declared full-week population covers the real NFL schedule. No real
+population capture adapter or retrospective pregame proof is supplied here.
+The original policy registry, eight-completed-week threshold, completed-only
+resampling pool, confidence level, replicates, seed and promotion restrictions
+are unchanged. Missing original evidence stays unknown/ineligible.
