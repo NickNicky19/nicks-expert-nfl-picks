@@ -23,6 +23,17 @@ def setup():
     return data, payload, policy
 
 
+def fictional_week_population(games, week=5, mode="live"):
+    """A fictional, separately sourced full-week membership document, not live proof."""
+    document = {"season": 2026, "week": week,
+                "games": [{"id": g["id"], "kickoff": g["kickoff"]} for g in games]}
+    return {"schema_version": "week-game-population-v1", "mode": mode, "season": 2026, "week": week,
+            "collected_at": stamp(NOW), "source_timestamp": None,
+            "source": "fictional_independently_checked_full_week_schedule",
+            "population_scope": "FULL_NFL_REGULAR_SEASON_WEEK", "source_document": document,
+            "source_document_sha256": digest(document)}
+
+
 class ScorecardTests(unittest.TestCase):
     def test_repeated_receipts_use_first_matched_pair_once(self):
         _, first, policy = setup()
@@ -175,12 +186,21 @@ class OutcomePrecedenceRegressionTests(unittest.TestCase):
                    game_state="pre" if status == "pending" else "post",
                    final_confirmed=status != "pending", stats_entry=entry,
                    week_confirmed_complete=complete)
-        return {"schema_version": "forecast-outcomes-v1", "mode": "live",
+        result = {"schema_version": "forecast-outcomes-v1", "mode": "live",
                 "collected_at": stamp(NOW + timedelta(hours=hour)), "source": source,
                 "source_timestamp": None, "cache_path": "data/cache/fictional_2026_05.json",
                 "cache_sha256": digest({row["player_id"]: entry}),
                 "game_snapshot_sha256": digest({"kickoff": row["kickoff"], "state": row["game_state"]}),
                 "rows": [row]}
+        if complete:
+            game = {"id": row["game_id"], "kickoff": row["kickoff"], "state": "post", "detail": "Final"}
+            population = fictional_week_population([game])
+            raw = {game["id"]: {"kickoff": game["kickoff"], "state": "post", "completed": True, "detail": "Final"}}
+            result.update(season=2026, week=5, games=[game],
+                          week_game_populations=[{"payload_sha256": digest(population), "payload": population}],
+                          source_game_status={"collected_at": result["collected_at"],
+                                              "response_sha256": digest(raw), "games": raw})
+        return result
 
     def chosen(self, *snapshots):
         return next(iter(latest_outcomes(list(snapshots)).values()))
@@ -444,6 +464,306 @@ class CompletedWeekRegressionTests(unittest.TestCase):
         self.assertEqual(result["resampled_outcomes"], 0)
         self.assertIsNone(result["interval"])
 
+
+
+class ParticipationContradictionRegressionTests(unittest.TestCase):
+    def snapshot(self, *args, **kwargs):
+        return OutcomePrecedenceRegressionTests().snapshot(*args, **kwargs)
+
+    def chosen(self, *snapshots):
+        return next(iter(latest_outcomes(snapshots).values()))
+
+    def test_same_source_final_played_then_dnp_is_quarantined_in_any_input_order(self):
+        for actual in (0, 3):
+            with self.subTest(actual=actual):
+                played, dnp = self.snapshot(actual), self.snapshot(status="dnp", hour=6)
+                originals = copy.deepcopy([played, dnp])
+                self.assertNotEqual(played["cache_sha256"], dnp["cache_sha256"])
+                result = self.chosen(played, dnp)
+                self.assertEqual(result, self.chosen(dnp, played))
+                self.assertEqual(result["status"], "unresolved")
+                self.assertIsNone(result["actual"])
+                self.assertIsNone(result["outcome_snapshot_sha256"])
+                self.assertTrue(result["outcome_conflict"])
+                self.assertEqual([p["status"] for p in result["outcome_observations"]], ["resolved", "dnp"])
+                self.assertEqual({p["outcome_snapshot_sha256"] for p in result["outcome_observations"]},
+                                 {digest(played), digest(dnp)})
+                self.assertEqual([played, dnp], originals)
+
+    def test_same_source_final_dnp_then_played_also_requires_investigation(self):
+        result = self.chosen(self.snapshot(status="dnp"), self.snapshot(3, hour=6))
+        self.assertEqual(result["status"], "unresolved")
+        self.assertTrue(result["outcome_conflict"])
+
+    def test_new_source_timestamp_cannot_invalidate_earlier_played_evidence(self):
+        played, dnp = self.snapshot(3), self.snapshot(status="dnp", hour=6)
+        played["source_timestamp"], dnp["source_timestamp"] = (stamp(NOW + timedelta(hours=h)) for h in (4, 5))
+        result = self.chosen(played, dnp)
+        self.assertIsNone(result["actual"])
+        self.assertTrue(result["outcome_conflict"])
+
+    def test_participation_contradiction_does_not_auto_clear_on_another_version(self):
+        records = [self.snapshot(3), self.snapshot(status="dnp", hour=6), self.snapshot(4, hour=7)]
+        result = self.chosen(*records)
+        self.assertEqual(result["status"], "unresolved")
+        self.assertTrue(result["outcome_conflict"])
+        self.assertEqual(len(result["outcome_observations"]), 3)
+
+    def test_contradictory_participation_is_excluded_from_point_scores(self):
+        _, baseline, policy = setup()
+        pairs, coverage = paired_forecasts([baseline], policy, {"test": "fixture"})
+        records = [self.snapshot(3), self.snapshot(status="dnp", hour=6)]
+        result = score(pairs, latest_outcomes(records), coverage, policy)
+        self.assertEqual(result["outcome_status"], {"unresolved": 1})
+        self.assertEqual(result["categories"]["rec"]["raw_sleeper"]["n"], 0)
+        self.assertIsNone(result["categories"]["rec"]["raw_sleeper"]["mae"])
+
+
+class SavedWeekPopulationRegressionTests(unittest.TestCase):
+    def world(self, week=5):
+        board, baseline, policy = setup()
+        board["week"], baseline["week"] = week, week
+        for row in baseline["rows"]:
+            row["week"] = week
+        board["games"][0].update(state="post", detail="Final")
+        board["games"].append({"id": "fictional-other-game", "home": "CCC", "away": "DDD",
+                               "kickoff": stamp(NOW + timedelta(hours=2)), "state": "post", "detail": "Final"})
+        raw = {g["id"]: {"kickoff": g["kickoff"], "state": "post", "completed": True, "detail": "Final"}
+               for g in board["games"]}
+        return {"board": board, "baseline": baseline, "policy": policy,
+                "status": {"collected_at": stamp(NOW + timedelta(hours=5)),
+                           "response_sha256": digest(raw), "games": raw},
+                "populations": [fictional_week_population(board["games"], week)]}
+
+    def capture(self, world):
+        from evidence import write
+        pairs, coverage = paired_forecasts([world["baseline"]], world["policy"], {"test": "fixture"})
+        week = world["board"]["week"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "output/data").mkdir(parents=True)
+            (root / "data/cache").mkdir(parents=True)
+            (root / "output/data/week.json").write_text(json.dumps(world["board"]))
+            if world["status"] is not None:
+                (root / "output/data/game-status.json").write_text(json.dumps({"weeks": {f"2026_{week:02d}": world["status"]}}))
+            (root / f"data/cache/stats_2026_{week:02d}.json").write_text(json.dumps({
+                "fictional-1": {"team": "AAA", "stats": {"gp": 1, "rec": 3}}}))
+            for population in world["populations"]:
+                write(root, "week_populations", population)
+            path, = snapshot_outcomes(root, pairs, NOW + timedelta(hours=5))
+            payload = read(path)
+        # Re-read immutable outcome data without access to the now-removed files.
+        selected = next(iter(latest_outcomes([payload]).values()))
+        return payload, selected, pairs, coverage
+
+    def test_full_sourced_frozen_population_and_reconciled_finals_complete_week(self):
+        world = self.world()
+        payload, result, pairs, coverage = self.capture(world)
+        self.assertTrue(payload["rows"][0]["week_confirmed_complete"])
+        self.assertTrue(result["week_confirmed_complete"])
+        self.assertEqual(result["week_completion_snapshot_sha256"], [digest(payload)])
+        self.assertEqual(result["actual"], 3)
+        self.assertEqual(score(pairs, {next(iter(pairs)): result}, coverage, world["policy"])["categories"]["rec"]["raw_sleeper"]["n"], 1)
+
+    def test_truncated_board_is_incomplete_even_when_all_saved_games_are_final(self):
+        world = self.world()
+        world["board"]["games"].pop()
+        payload, result, _, _ = self.capture(world)
+        self.assertFalse(payload["rows"][0]["week_confirmed_complete"])
+        self.assertFalse(result["week_confirmed_complete"])
+        self.assertEqual(result["actual"], 3)
+
+    def test_truncated_board_and_status_cannot_certify_each_other(self):
+        world = self.world()
+        world["board"]["games"].pop()
+        world["status"]["games"].pop("fictional-other-game")
+        _, result, _, _ = self.capture(world)
+        self.assertFalse(result["week_confirmed_complete"])
+
+    def test_missing_board_population_is_not_zero_or_complete(self):
+        world = self.world()
+        world["board"]["games"] = []
+        _, result, _, _ = self.capture(world)
+        self.assertFalse(result["week_confirmed_complete"])
+        self.assertEqual(result["status"], "pending")
+        self.assertIsNone(result["actual"])
+
+    def test_absent_frozen_population_keeps_valid_point_result_but_not_completion(self):
+        world = self.world()
+        world["populations"] = []
+        _, result, pairs, coverage = self.capture(world)
+        self.assertFalse(result["week_confirmed_complete"])
+        report = score(pairs, {next(iter(pairs)): result}, coverage, world["policy"])
+        self.assertEqual(report["categories"]["rec"]["raw_sleeper"]["n"], 1)
+        self.assertEqual(report["categories"]["rec"]["uncertainty"]["completed_weeks"], 0)
+
+    def test_legacy_true_flag_without_population_proof_is_not_reused(self):
+        payload = OutcomePrecedenceRegressionTests().snapshot(3)
+        payload["rows"][0]["week_confirmed_complete"] = True
+        before = copy.deepcopy(payload)
+        result = next(iter(latest_outcomes([payload]).values()))
+        self.assertFalse(result["week_confirmed_complete"])
+        self.assertEqual(result["actual"], 3)
+        self.assertTrue(result["outcome_observations"][0]["week_confirmed_complete"])
+        self.assertEqual(payload, before)
+
+    def test_unverified_or_wrong_period_population_does_not_establish_completion(self):
+        variants = [
+            {"source": ""}, {"population_scope": "OBSERVED_GAMES_ONLY"},
+            {"source_document_sha256": None}, {"season": 2025}, {"week": 6},
+            {"collected_at": stamp(NOW + timedelta(hours=3))},
+            {"source_timestamp": stamp(NOW + timedelta(minutes=1))}, {"mode": "replay"}]
+        for change in variants:
+            with self.subTest(change=change):
+                world = self.world()
+                world["populations"][0].update(change)
+                _, result, _, _ = self.capture(world)
+                self.assertFalse(result["week_confirmed_complete"])
+
+    def test_document_digest_empty_or_duplicate_expected_games_fail_closed(self):
+        for alteration in ("digest", "empty", "duplicate", "period"):
+            with self.subTest(alteration=alteration):
+                world = self.world()
+                p = world["populations"][0]
+                if alteration == "digest":
+                    p["source_document_sha256"] = "0" * 64
+                elif alteration == "empty":
+                    p["source_document"]["games"] = []
+                elif alteration == "duplicate":
+                    p["source_document"]["games"].append(copy.deepcopy(p["source_document"]["games"][0]))
+                else:
+                    p["source_document"]["week"] = 6
+                if alteration != "digest":
+                    p["source_document_sha256"] = digest(p["source_document"])
+                _, result, _, _ = self.capture(world)
+                self.assertFalse(result["week_confirmed_complete"])
+
+    def test_disagreeing_frozen_populations_have_no_latest_or_digest_winner(self):
+        world = self.world()
+        other = copy.deepcopy(world["populations"][0])
+        other["source_document"]["games"][1]["id"] = "fictional-conflicting-game"
+        other["source_document_sha256"] = digest(other["source_document"])
+        world["populations"].append(other)
+        _, result, _, _ = self.capture(world)
+        self.assertFalse(result["week_confirmed_complete"])
+
+    def test_same_game_count_with_wrong_expected_ids_is_incomplete(self):
+        world = self.world()
+        p = world["populations"][0]
+        p["source_document"]["games"][1]["id"] = "fictional-wrong-id"
+        p["source_document_sha256"] = digest(p["source_document"])
+        _, result, _, _ = self.capture(world)
+        self.assertFalse(result["week_confirmed_complete"])
+
+    def test_duplicate_board_id_does_not_collapse_into_a_complete_slate(self):
+        world = self.world()
+        world["board"]["games"].append(copy.deepcopy(world["board"]["games"][0]))
+        _, result, _, _ = self.capture(world)
+        self.assertFalse(result["week_confirmed_complete"])
+
+    def test_missing_extra_or_mismatched_status_game_is_incomplete(self):
+        for alteration in ("missing", "extra", "kickoff", "unavailable", "future_clock"):
+            with self.subTest(alteration=alteration):
+                world = self.world()
+                raw = world["status"]["games"]
+                if alteration == "missing":
+                    raw.pop("fictional-other-game")
+                elif alteration == "extra":
+                    raw["fictional-extra-game"] = copy.deepcopy(raw["fictional-other-game"])
+                elif alteration == "kickoff":
+                    raw["fictional-other-game"]["kickoff"] = stamp(NOW + timedelta(hours=3))
+                elif alteration == "unavailable":
+                    world["status"] = None
+                else:
+                    world["status"]["collected_at"] = stamp(NOW + timedelta(hours=6))
+                _, result, _, _ = self.capture(world)
+                self.assertFalse(result["week_confirmed_complete"])
+
+    def test_changed_board_kickoff_does_not_rewrite_frozen_population(self):
+        world = self.world()
+        world["board"]["games"][1]["kickoff"] = stamp(NOW + timedelta(hours=3))
+        world["status"]["games"]["fictional-other-game"]["kickoff"] = world["board"]["games"][1]["kickoff"]
+        _, result, _, _ = self.capture(world)
+        self.assertFalse(result["week_confirmed_complete"])
+
+    def test_postponed_or_cancelled_game_does_not_complete_a_week(self):
+        for detail, state in (("Postponed", "pre"), ("Postponed", "post"), ("Cancelled", "post")):
+            with self.subTest(detail=detail, state=state):
+                world = self.world()
+                world["board"]["games"][1].update(state=state, detail=detail)
+                # Even an inconsistent completed:true flag is insufficient.
+                world["status"]["games"]["fictional-other-game"].update(state=state, detail=detail)
+                _, result, _, _ = self.capture(world)
+                self.assertFalse(result["week_confirmed_complete"])
+
+    def test_nonfinal_or_future_final_game_cannot_establish_completion(self):
+        for alteration in ("nonfinal", "future"):
+            with self.subTest(alteration=alteration):
+                world = self.world()
+                raw = world["status"]["games"]["fictional-other-game"]
+                if alteration == "nonfinal":
+                    world["board"]["games"][1].update(state="pre", detail="Scheduled")
+                    raw.update(state="pre", completed=False, detail="Scheduled")
+                else:
+                    kickoff = stamp(NOW + timedelta(hours=7))
+                    world["board"]["games"][1]["kickoff"] = kickoff
+                    raw["kickoff"] = kickoff
+                    p = world["populations"][0]
+                    p["source_document"]["games"][1]["kickoff"] = kickoff
+                    p["source_document_sha256"] = digest(p["source_document"])
+                _, result, _, _ = self.capture(world)
+                self.assertFalse(result["week_confirmed_complete"])
+
+    def test_eight_truncated_weeks_keep_interval_unavailable_and_point_n_eight(self):
+        rows, pairs_all, outcomes_all = [], {}, {}
+        for week in range(1, 9):
+            world = self.world(week)
+            world["board"]["games"].pop()
+            world["status"]["games"].pop("fictional-other-game")
+            _, outcome, pairs, coverage = self.capture(world)
+            key = next(iter(pairs))
+            pairs_all.update(pairs)
+            outcomes_all[key] = outcome
+        report = score(pairs_all, outcomes_all, coverage, world["policy"])
+        category = report["categories"]["rec"]
+        self.assertEqual(category["raw_sleeper"]["n"], 8)
+        self.assertEqual(category["uncertainty"]["completed_weeks"], 0)
+        self.assertEqual(category["uncertainty"]["excluded_incomplete_outcomes"], 8)
+        self.assertEqual(category["uncertainty"]["status"], "insufficient_completed_weeks")
+        self.assertIsNone(category["uncertainty"]["interval"])
+
+    def test_eight_fully_verified_weeks_still_open_the_original_interval_gate(self):
+        rows = []
+        for week in range(1, 9):
+            world = self.world(week)
+            _, outcome, _, _ = self.capture(world)
+            rows.append({**outcome, "raw_projection": 5, "adjusted_projection": 4})
+        result = cluster_interval(rows, world["policy"])
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["completed_weeks"], 8)
+        self.assertEqual(result["resampled_outcomes"], 8)
+        self.assertEqual(result["interval"], [-1, -1])
+
+    def test_embedded_population_or_row_target_cannot_be_changed_to_reuse_completion(self):
+        world = self.world()
+        payload, _, _, _ = self.capture(world)
+        # Supply the declared receipt format explicitly so the same corrupt-
+        # receipt cases also exercise older readers lacking a population writer.
+        payload["week_game_populations"] = [{"payload_sha256": digest(p), "payload": p}
+                                             for p in world["populations"]]
+        for alteration in ("digest", "row_game", "row_week", "row_kickoff"):
+            with self.subTest(alteration=alteration):
+                forged = copy.deepcopy(payload)
+                if alteration == "digest":
+                    forged["week_game_populations"][0]["payload_sha256"] = "0" * 64
+                elif alteration == "row_game":
+                    forged["rows"][0]["game_id"] = "fictional-unverified-game"
+                elif alteration == "row_week":
+                    forged["rows"][0]["week"] = 6
+                else:
+                    forged["rows"][0]["kickoff"] = stamp(NOW + timedelta(minutes=90))
+                result = next(iter(latest_outcomes([forged]).values()))
+                self.assertFalse(result["week_confirmed_complete"])
 
 
 if __name__ == "__main__":

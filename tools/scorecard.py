@@ -59,6 +59,80 @@ def paired_forecasts(receipts, policy, expected_hashes, allow_replay=False):
                     "repeated_capture_rows": observations - len(chosen), "excluded": dict(exclusions)}
 
 
+def _game_kickoffs(games):
+    """Reject empty/duplicate populations instead of silently collapsing IDs."""
+    if not isinstance(games, list) or not games:
+        return None
+    result = {}
+    for game in games:
+        if not isinstance(game, dict) or not isinstance(game.get("id"), str) or not game["id"].strip():
+            return None
+        if game["id"] in result or not game.get("kickoff"):
+            return None
+        result[game["id"]] = utc(game["kickoff"])
+    return result
+
+
+def _verified_week_complete(payload):
+    """Validate only frozen population/status evidence inside this receipt."""
+    try:
+        season, week, mode = payload["season"], payload["week"], payload["mode"]
+        if type(season) is not int or type(week) is not int or not 1 <= week <= 18 or mode not in ("live", "replay"):
+            return False
+        observed = utc(payload["collected_at"])
+        populations = payload.get("week_game_populations")
+        if not isinstance(populations, list) or not populations:
+            return False
+        expected = None
+        for envelope in populations:
+            population = envelope["payload"]
+            if envelope["payload_sha256"] != digest(population):
+                return False
+            if (population.get("schema_version") != "week-game-population-v1"
+                    or population.get("mode") != mode
+                    or population.get("season") != season or population.get("week") != week
+                    or population.get("population_scope") != "FULL_NFL_REGULAR_SEASON_WEEK"
+                    or not isinstance(population.get("source"), str) or not population["source"].strip()):
+                return False
+            document = population["source_document"]
+            if (population.get("source_document_sha256") != digest(document)
+                    or document.get("season") != season or document.get("week") != week):
+                return False
+            games = _game_kickoffs(document.get("games"))
+            if games is None:
+                return False
+            collected = utc(population["collected_at"])
+            if collected >= min(games.values()) or collected > observed:
+                return False
+            if population.get("source_timestamp") and utc(population["source_timestamp"]) > collected:
+                return False
+            if expected is not None and games != expected:
+                return False
+            expected = games
+        board = payload.get("games")
+        if _game_kickoffs(board) != expected:
+            return False
+        status = payload["source_game_status"]
+        source_sha = status.get("response_sha256")
+        if (set(status["games"]) != set(expected) or not isinstance(source_sha, str) or len(source_sha) != 64
+                or any(c not in "0123456789abcdef" for c in source_sha)):
+            return False
+        status_time = utc(status["collected_at"])
+        if status_time > observed:
+            return False
+        for game in board:
+            raw = status["games"][game["id"]]
+            kickoff = expected[game["id"]]
+            if (game.get("state") != "post" or not str(game.get("detail", "")).lower().startswith("final")
+                    or raw.get("state") != "post" or raw.get("completed") is not True
+                    or not str(raw.get("detail", "")).lower().startswith("final")
+                    or utc(raw["kickoff"]) != kickoff or kickoff >= status_time):
+                return False
+        return True
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
 def snapshot_outcomes(root, pairs, observed_at, mode="live"):
     """Snapshot sourced final status and sparse statistics; never infer DNP."""
     root, observed_at = Path(root), utc(observed_at)
@@ -86,7 +160,13 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live"):
             # Legacy ESPN snapshots have a saved Final/Final-OT detail but did
             # not retain completed. A bare post flag can also mean cancelled.
             return str(game.get("detail", "")).lower().startswith("final")
-        week_complete = bool(games) and all(confirmed_final(g) for g in games.values())
+        population_dir = root / "data/week_populations" / str(season) / f"w{week:02d}"
+        populations = [{"payload_sha256": path.stem.split(".")[0], "payload": read(path)}
+                       for path in sorted(population_dir.glob("*.json.gz"))]
+        week_evidence = {"season": season, "week": week, "mode": mode, "collected_at": stamp(observed_at),
+                         "games": board["games"], "source_game_status": source_status,
+                         "week_game_populations": populations}
+        week_complete = _verified_week_complete(week_evidence)
         outcomes = []
         for row in rows:
             game = games.get(row["game_id"])
@@ -122,7 +202,8 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live"):
                    "source": "existing_Sleeper_stats_cache_and_ESPN_final_game_snapshot",
                    "cache_path": cache_path.relative_to(root).as_posix(), "cache_sha256": digest(cache),
                    "game_snapshot_path": board_path.relative_to(root).as_posix(), "game_snapshot_sha256": digest(board),
-                   "games": board["games"], "source_game_status": source_status, "rows": outcomes,
+                   "games": board["games"], "source_game_status": source_status,
+                   "week_game_populations": populations, "rows": outcomes,
                    "settlement_scope": "STATISTICAL_ONLY_NOT_VENUE_SETTLEMENT"}
         paths.append(write(root, "outcomes" if mode == "live" else "outcomes_replay", payload))
     return paths
@@ -133,7 +214,7 @@ def _past_final(row, collected):
             and row.get("kickoff") is not None and utc(row["kickoff"]) < collected)
 
 
-def _outcome_record(payload, row, payload_sha):
+def _outcome_record(payload, row, payload_sha, week_complete=False):
     """Keep only recorded provenance; no current-cache lookup or source-time guess."""
     collected = utc(payload["collected_at"])
     source = payload.get("source")
@@ -152,6 +233,10 @@ def _outcome_record(payload, row, payload_sha):
     if entry is not None and not isinstance(entry, dict):
         raise IntegrityError("Invalid saved statistics entry")
     past_final = _past_final(row, collected)
+    week_complete = bool(week_complete and (row.get("season"), row.get("week")) ==
+                         (payload.get("season"), payload.get("week")) and row.get("kickoff")
+                         and any(game["id"] == row.get("game_id") and utc(game["kickoff"]) == utc(row["kickoff"])
+                                 for game in payload["games"]))
     status = row["status"]
     if status not in ("pending", "unresolved", "resolved", "dnp", "void"):
         raise IntegrityError("Unexpected outcome status")
@@ -183,12 +268,13 @@ def _outcome_record(payload, row, payload_sha):
                   "game_snapshot_sha256": payload.get("game_snapshot_sha256"),
                   "status": status, "actual": row.get("actual"), "team": row.get("team"),
                   "kickoff": row.get("kickoff"), "final_confirmed": row.get("final_confirmed"),
-                  "week_confirmed_complete": row.get("week_confirmed_complete", False)}
+                  "week_confirmed_complete": row.get("week_confirmed_complete", False),
+                  "week_completion_verified": week_complete}
     return {"row": normalized, "provenance": provenance, "collected": collected,
             "source_time": source_time, "origin": (payload.get("mode"), source, path),
             "attributed": attributed,
             "version": cache_sha or (digest(entry) if isinstance(entry, dict) else None),
-            "terminal": terminal, "past_final": past_final}
+            "terminal": terminal, "past_final": past_final, "week_complete": week_complete}
 
 
 def _confirmed_frontier(records):
@@ -231,8 +317,9 @@ def latest_outcomes(snapshots, allow_replay=False):
         if payload.get("mode") != "live" and not (allow_replay and payload.get("mode") == "replay"):
             continue
         payload_sha = digest(payload)
+        week_complete = _verified_week_complete(payload)
         for row in payload["rows"]:
-            record = _outcome_record(payload, row, payload_sha)
+            record = _outcome_record(payload, row, payload_sha, week_complete)
             reference = (payload_sha, record["provenance"]["outcome_row_sha256"])
             if reference not in seen:
                 seen.add(reference)
@@ -242,7 +329,11 @@ def latest_outcomes(snapshots, allow_replay=False):
         frontier = _confirmed_frontier(records)
         signatures = {(r["row"]["status"], r["row"].get("actual"), r["row"].get("team"),
                        utc(r["row"]["kickoff"])) for r in frontier}
-        conflict = len(signatures) > 1
+        # A new source version may correct a number, but cannot establish that
+        # earlier confirmed participation was invalid. Retain both receipts.
+        participation = {r["row"]["status"] for r in records
+                         if r["terminal"] and r["row"]["status"] in ("resolved", "dnp")}
+        conflict = len(signatures) > 1 or participation == {"resolved", "dnp"}
         # Records already have deterministic parsed-time/content order. A tie
         # can choose a representative only when every active final agrees.
         fallback = [r for r in records if r["past_final"]] or records
@@ -262,7 +353,7 @@ def latest_outcomes(snapshots, allow_replay=False):
         # Completion proof is separate from the statistic's selected receipt.
         # A later missing stat may still document a confirmed complete week.
         completion = [r["provenance"]["outcome_snapshot_sha256"] for r in records
-                      if r["past_final"] and r["row"].get("week_confirmed_complete") is True
+                      if r["past_final"] and r["week_complete"]
                       and r["row"].get("team") == selected["row"].get("team")
                       and utc(r["row"]["kickoff"]) == utc(selected["row"]["kickoff"])]
         result["week_confirmed_complete"] = bool(completion)

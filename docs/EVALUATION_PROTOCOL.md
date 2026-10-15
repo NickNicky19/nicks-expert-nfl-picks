@@ -54,11 +54,74 @@ original observations remain visible. Quarantined values enter neither point
 nor probability score denominators. Single legacy finals remain readable, but
 missing provenance cannot justify replacing them with a different final value.
 
-Week completion is separate from the selected statistic receipt. A saved matching
-team/kickoff row with a confirmed past final and week_confirmed_complete:true can
-establish completion even when that later observation lacks the player's stat.
-Keep those completion receipt references separately; an outage does not revoke
-an already recorded completion. Missing stats still never become zero.
+Confirmed resolved-versus-DNP participation is checked across all retained
+terminal observations, including superseded versions from the same source. A
+later cache or source timestamp cannot establish that an earlier confirmed
+played record was invalid. Quarantine either chronological direction as
+unresolved, retain both receipts, and exclude the opportunity from scoring.
+Ordinary numeric corrections among played records still use the version rules
+above. This repair provides no automatic invalidation or adjudication mechanism;
+repeated assertions of either participation state do not clear the contradiction.
+
+Week completion is separate from the selected statistic receipt. A board and
+its status subset cannot certify their own full-week coverage. Require a
+separately sourced, independently checked full regular-season-week population,
+frozen locally before its first kickoff. Read create-only, content-addressed
+receipts from data/week_populations/SEASON/wWW/*.json.gz with the existing
+evidence envelope/checksum format. The payload contract is:
+
+```json
+{
+  "schema_version": "week-game-population-v1",
+  "mode": "live",
+  "season": 2026,
+  "week": 5,
+  "collected_at": "EXACT_RECORDED_PREGAME_COLLECTION_TIME",
+  "source_timestamp": null,
+  "source": "ATTRIBUTED_FULL_WEEK_SCHEDULE_DOCUMENT_REFERENCE",
+  "population_scope": "FULL_NFL_REGULAR_SEASON_WEEK",
+  "source_document": {
+    "season": 2026,
+    "week": 5,
+    "games": [{"id": "EVERY_EXPECTED_GAME_ID", "kickoff": "ITS_RECORDED_KICKOFF"}]
+  },
+  "source_document_sha256": "CANONICAL_SHA256_OF_SOURCE_DOCUMENT"
+}
+```
+
+This is a receipt contract, not a real schedule or authorization to collect or
+backfill one. Supply it only from a verified complete source population; a
+truncated scoreboard, forecast-player subset, inferred count or self-declared
+completion flag is insufficient. Retain the source document/reference for
+independent membership review. Hashes check recorded integrity, not upstream
+authenticity or completeness; source_timestamp:null stays unknown. This repair
+adds no live collector or source-completeness verification adapter and creates
+no real population receipts. Existing evidence without that original proof
+remains incomplete/unknown for this interval; never insert a retrospective
+pregame timestamp or reconstruct old forecasts from later schedule data.
+
+Embed all read population payloads and their digests in each new outcome receipt.
+They must agree on every expected game ID and parsed kickoff, have matching
+mode/season/week, valid source/document provenance and pregame collection times.
+The saved board must contain exactly that nonempty population, without duplicate,
+missing or extra IDs. Reconcile the whole board with the saved source-status
+population: exact IDs/kickoffs, post state, completed literally true and Final
+detail on both records. Every kickoff must precede the recorded status collection,
+which must not follow the outcome collection. Postponed, cancelled, nonfinal,
+future, unmapped or conflicting games leave the week incomplete/unknown; this
+repair does not invent an exception for cancelled games or choose among
+conflicting population versions.
+
+Revalidate this embedded proof when reading immutable outcomes. A legacy
+week_confirmed_complete:true flag alone cannot qualify a week, and a receipt for
+another season/week/game/kickoff cannot complete the row. Keep completion receipt
+references separately, matching the selected team/kickoff. A qualified later
+receipt can complete an earlier resolved statistic even if its stat is missing;
+an outage does not revoke already qualified completion. Preserve original flags
+in outcome_observations and expose their separate week_completion_verified result.
+Valid resolved values still enter point metrics when full-week proof is absent;
+missing stats never become zero. No evaluation policy, bootstrap threshold,
+seed, replicate count or confidence level is changed.
 
 Point metrics are MAE, RMSE and signed mean error, separately by category. Paired
 error differences use the same outcomes. Report lead time and injury coverage.
