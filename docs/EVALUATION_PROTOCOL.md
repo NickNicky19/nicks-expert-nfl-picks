@@ -207,3 +207,45 @@ population capture adapter or retrospective pregame proof is supplied here.
 The original policy registry, eight-completed-week threshold, completed-only
 resampling pool, confidence level, replicates, seed and promotion restrictions
 are unchanged. Missing original evidence stays unknown/ineligible.
+
+## A03: validate saved probability evidence before scoring
+
+Every applicable saved shadow receipt is validated before selecting the earliest
+common triple or looking at outcomes. Pending or later unselected receipts do
+not bypass this check. Require the captured target population (excluding games
+that started by a recorded calculation-completion time), unique opportunities,
+the same team, period, kickoff, line and line source, and exactly the raw-reference,
+clone-reference and challenger roles. Preserve the existing policy/version/mode,
+contemporaneous-baseline and no-mixed-model-code guards.
+
+Validate finite distribution parameters and their count/yardage support, original
+point centers, the retained 0.01 count-mean floor, legal training counts and the
+registered fixed-prior references. Learned challenger dispersion is checked as
+a saved distribution, not retrained from evaluation outcomes. This check does
+not independently authenticate its upstream training data or rederive learned
+dispersion from an unavailable historical training snapshot.
+
+Saved under/equal/over vectors must have exactly those sides, finite values in
+[0,1], unit mass and agreement with the saved model at its recorded threshold.
+Agreement uses absolute tolerance 1e-10 and no relative tolerance; this is a
+numerical consistency tolerance, never a probability floor or loss clip. A
+fractional line has exactly zero equality mass. With no line, the probability
+field must explicitly be null and Brier scoring is unavailable; point-mass log
+score and interval coverage may still be evaluated on valid actuals.
+
+The saved 80% interval must have finite ordered integer endpoints equal to the
+distribution's retained quantiles, with the corresponding CDF mass brackets.
+Unsupported numerical cases and non-finite losses fail closed. Negative yardage,
+zero-count full support, integer pushes and extreme-tail losses retain their
+original definitions. The distribution, quantile and forecast-generation
+functions and all registered policy parameters remain unchanged.
+
+Validation derives expected values only for comparison. It never replaces,
+relabels or rewrites saved probabilities, intervals, parameters, forecasts or
+outcomes. Invalid receipts remain preserved and cannot enter scoring; a caller
+must report the failure rather than silently skip it or repair historical proof.
+The absence of an old calculation-completion timestamp remains a provenance
+limitation; no completion time is fabricated. A03 changes the evaluator module's
+file hash, so future captures must still honor the existing model-code/version
+guard. No new live shadow capture, candidate re-registration, A05 research gate,
+policy relaxation or model promotion is part of this correction.

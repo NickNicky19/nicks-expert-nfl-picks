@@ -144,6 +144,140 @@ def make_shadow(baseline, inputs, policy, predicted_at, code_commit=None):
             "scope": "STATISTICAL_EVENTS_NOT_VENUE_SETTLEMENT"}
 
 
+MODEL_ROLES = ("raw_reference", "clone_reference", "challenger")
+PROBABILITY_TOLERANCE = 1e-10  # Absolute numerical agreement, not a scoring floor.
+
+
+def _roles(value, label):
+    if not isinstance(value, dict) or set(value) != set(MODEL_ROLES):
+        raise IntegrityError(f"Invalid saved {label} roles")
+
+
+def _validate_model(model, category, center, last_week, rule, reference):
+    finite(center, "baseline center", optional=False)
+    if not isinstance(model, dict):
+        raise IntegrityError("Missing saved distribution")
+    for field in ("point_center", "mean"):
+        finite(model[field], f"saved {field}", optional=False)
+    if model["point_center"] != center:
+        raise IntegrityError("Shadow centers changed the retained baseline")
+    n = model["training_games"]
+    if type(n) is not int or not 0 <= n <= last_week:
+        raise IntegrityError("Invalid saved training sample count")
+    if category in ("rec", "rush_att"):
+        finite(model["alpha"], "saved dispersion", optional=False)
+        if center < 0 or model["mean"] != max(.01, center) or model["alpha"] < 0:
+            raise IntegrityError("Invalid saved count distribution parameters")
+        family = "negative_binomial" if model["alpha"] > 1e-12 else "poisson"
+        fields = {"family", "mean", "point_center", "alpha", "training_games"}
+    elif category == "pass_yd":
+        finite(model["sd"], "saved standard deviation", optional=False)
+        if model["mean"] != center or model["sd"] < 1:
+            raise IntegrityError("Invalid saved yardage distribution parameters")
+        family = "integer_normal"
+        fields = {"family", "mean", "point_center", "sd", "training_games"}
+    else:
+        raise IntegrityError("Unsupported saved probability target")
+    if model["family"] != family or set(model) != fields:
+        raise IntegrityError("Saved distribution family/support/fields mismatch")
+    if reference and model != distribution(center, category, rule):
+        raise IntegrityError("Saved reference differs from its registered fixed prior")
+
+
+def _validate_derived(row):
+    models, intervals = row["models"], row["prediction_intervals_80"]
+    _roles(intervals, "interval")
+    probabilities = row["probabilities_at_saved_line"]
+    line = row["line"]
+    if line is None:
+        if probabilities is not None:
+            raise IntegrityError("Saved event probabilities lack a saved line")
+    else:
+        finite(line, "saved event line", optional=False)
+        _roles(probabilities, "probability")
+    for name in MODEL_ROLES:
+        model, bounds = models[name], intervals[name]
+        if not isinstance(bounds, list) or len(bounds) != 2:
+            raise IntegrityError("Invalid saved prediction interval")
+        for bound in bounds:
+            finite(bound, "saved interval endpoint", optional=False)
+            if int(bound) != bound:
+                raise IntegrityError("Saved interval endpoint is not an integer")
+        if bounds[0] > bounds[1] or bounds != interval80(model):
+            raise IntegrityError("Saved interval differs from its distribution quantiles")
+        for bound, quantile in zip(bounds, (.1, .9)):
+            below, through = cdf(model, bound - 1), cdf(model, bound)
+            if (not 0 <= below <= through <= 1
+                    or below > quantile + PROBABILITY_TOLERANCE
+                    or through < quantile - PROBABILITY_TOLERANCE):
+                raise IntegrityError("Distribution quantile mass is numerically unsupported")
+        if line is None:
+            continue
+        saved, expected = probabilities[name], event_probabilities(model, line)
+        if not isinstance(saved, dict) or set(saved) != {"under", "equal", "over"}:
+            raise IntegrityError("Invalid saved event sides")
+        for side in ("under", "equal", "over"):
+            finite(saved[side], "saved event probability", optional=False)
+            if (not 0 <= saved[side] <= 1 or not 0 <= expected[side] <= 1
+                    or not math.isclose(saved[side], expected[side], rel_tol=0,
+                                        abs_tol=PROBABILITY_TOLERANCE)):
+                raise IntegrityError("Saved event probability differs from its distribution")
+        if (not math.isclose(math.fsum(saved.values()), 1, rel_tol=0,
+                             abs_tol=PROBABILITY_TOLERANCE)
+                or (int(line) != line and saved["equal"] != 0)):
+            raise IntegrityError("Invalid saved event mass/equality convention")
+
+
+def _validated_rows(payload, baseline, policy):
+    """Check saved evidence without replacing forecasts or consulting outcomes."""
+    try:
+        predicted = utc(payload["predicted_at"])
+        completed = utc(payload.get("calculation_completed_at", payload["predicted_at"]))
+        if (payload["schema_version"] != "shadow-probability-v1"
+                or payload["production_enabled"] is not False
+                or baseline["schema_version"] != "baseline-capture-v1"
+                or baseline["model"] != policy["baseline"]
+                or not utc(baseline["forecast_generated_at"]) <= predicted <= completed
+                or utc(policy["registered_at"]) > predicted
+                or type(payload["season"]) is not int or type(payload["week"]) is not int
+                or not 2000 <= payload["season"] <= 2200 or not 1 <= payload["week"] <= 18):
+            raise IntegrityError("Invalid saved shadow/baseline contract or clocks")
+        available, expected = {}, set()
+        if not isinstance(baseline["rows"], list) or not isinstance(payload["rows"], list):
+            raise IntegrityError("Missing saved probability population")
+        for original in baseline["rows"]:
+            key = identity(original)
+            if key in available:
+                raise IntegrityError("Duplicate captured baseline opportunity")
+            available[key] = original
+            if (original["category"] in policy["targets"] and original["raw_projection"] is not None
+                    and original["adjusted_projection"] is not None and utc(original["kickoff"]) > completed):
+                expected.add(key)
+        seen = set()
+        for row in payload["rows"]:
+            key = identity(row)
+            if key in seen or key not in expected:
+                raise IntegrityError("Duplicate or unmatched shadow opportunity")
+            seen.add(key)
+            original = available[key]
+            if (any(row[k] != original[k] for k in ("season", "week", "team", "line", "line_from"))
+                    or (row["season"], row["week"]) != (payload["season"], payload["week"])
+                    or utc(row["kickoff"]) != utc(original["kickoff"])
+                    or type(row["training_last_week"]) is not int or row["training_last_week"] != row["week"] - 1):
+                raise IntegrityError("Shadow opportunity/line/source/kickoff/training mismatch")
+            _roles(row["models"], "model")
+            for name in MODEL_ROLES:
+                center = original["raw_projection" if name == "raw_reference" else "adjusted_projection"]
+                _validate_model(row["models"][name], row["category"], center, row["training_last_week"],
+                                policy["challenger"], name != "challenger")
+            _validate_derived(row)
+        if seen != expected:
+            raise IntegrityError("Shadow is missing captured probability opportunities")
+        return payload["rows"]
+    except (KeyError, TypeError, ArithmeticError) as err:
+        raise IntegrityError(f"Malformed or numerically unsupported saved probability evidence: {err}") from err
+
+
 def evaluate(shadows, baselines, outcomes, policy, allow_replay=False):
     """Earliest common saved triple per outcome; no retroactive forecast creation."""
     baseline_by_hash = {digest(p): p for p in baselines}
@@ -162,20 +296,8 @@ def evaluate(shadows, baselines, outcomes, policy, allow_replay=False):
         baseline = baseline_by_hash.get(payload["baseline_payload_sha256"])
         if not baseline or baseline["captured_at"] != payload["predicted_at"] or baseline["mode"] != payload["mode"]:
             raise IntegrityError("Shadow has no contemporaneous captured baseline")
-        available = {identity(r): r for r in baseline["rows"]}
-        seen = set()
-        for row in payload["rows"]:
+        for row in _validated_rows(payload, baseline, policy):
             key = identity(row)
-            if key in seen:
-                raise IntegrityError("Duplicate shadow opportunity")
-            seen.add(key)
-            original = available.get(key)
-            if not original or row["line"] != original["line"] or utc(row["kickoff"]) <= utc(payload["predicted_at"]):
-                raise IntegrityError("Shadow opportunity/line/time mismatch")
-            if (row["models"]["raw_reference"]["point_center"] != original["raw_projection"] or
-                    row["models"]["clone_reference"]["point_center"] != original["adjusted_projection"] or
-                    row["models"]["challenger"]["point_center"] != original["adjusted_projection"]):
-                raise IntegrityError("Shadow centers changed the retained baseline")
             selected.setdefault(key, row)
     scores = {k: {name: {"n": 0, "negative_log_likelihood": None, "three_way_brier": None,
                        "interval_coverage_80": None} for name in ("raw_reference", "clone_reference", "challenger")} for k in policy["targets"]}
@@ -191,6 +313,9 @@ def evaluate(shadows, baselines, outcomes, policy, allow_replay=False):
         actual = outcome["actual"]
         for name, model in row["models"].items():
             nll = -log_probability(model, actual)
+            finite(nll, "saved-model negative log likelihood", optional=False)
+            if nll < 0:
+                raise IntegrityError("Saved-model outcome mass exceeds one")
             low, high = row["prediction_intervals_80"][name]
             probabilities = row.get("probabilities_at_saved_line")
             brier = None
