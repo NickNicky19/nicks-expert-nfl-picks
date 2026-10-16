@@ -303,7 +303,7 @@ def run_capture(root=ROOT, mode="live", replay_at=None):
     baseline_path, health = capture(data, load_json(root / "output/data/meta.json"), root,
                                     now, engine_hashes(root), mode=mode)
     baseline = read(baseline_path)
-    check_path = write(root, "matchup_checks" if mode == "live" else "matchup_checks_replay", {
+    check_path = write(root, "verification/matchup-checks" if mode == "live" else "matchup_checks_replay", {
         "schema_version": "matchup-verification-v1", "season": data["season"], "week": data["week"],
         "mode": mode, "verified_at": stamp(now), "output_sha256": digest(data),
         "engine_files": inputs["engine_files"], "latest_inputs": pointer["latest_inputs"],

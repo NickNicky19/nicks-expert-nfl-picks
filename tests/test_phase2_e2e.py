@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -311,6 +312,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(check["checked_factors"], 1)
             self.assertFalse((root / "data/forward").exists())
             self.assertFalse((root / "data/matchup_checks").exists())
+            self.assertFalse((root / "data/verification/matchup-checks").exists())
 
     def test_replay_original_inputs_are_not_live_qualification(self):
         with tempfile.TemporaryDirectory() as d:
@@ -349,16 +351,113 @@ class PipelineTests(unittest.TestCase):
 class PublicSelectionPipelineTests(unittest.TestCase):
     AT = datetime(2026, 10, 24, 11, tzinfo=timezone.utc)
 
-    def run_live(self, root, at=None):
+    def run_live(self, root, at=None, *, registered_policy=None):
         at = at or self.AT
         kickoff_hours = (self.AT + timedelta(hours=25) - at).total_seconds() / 3600
         prepare(root, mode="live", at=at, kickoff_hours=kickoff_hours, all_ten=True)
+        if registered_policy is not None:
+            atomic_json(root / "config/evaluation-policy.json", registered_policy)
         class Clock(datetime):
             @classmethod
             def now(cls, tz=None):
                 return at
         with patch.object(phase2_capture, "datetime", Clock), patch("requests.sessions.Session.request", side_effect=AssertionError("No live HTTP")):
             return run_capture(root, mode="live")
+
+    def assert_saved_matchup_check(self, root, health):
+        name = health["phase2"]["matchup_verification_receipt"]
+        self.assertTrue(name.startswith("data/verification/matchup-checks/2026/w05/"), name)
+        path = root / name
+        check = read(path)
+        self.assertEqual(path.name, digest(check) + ".json.gz")
+        self.assertEqual(check["schema_version"], "matchup-verification-v1")
+        self.assertEqual(check["mode"], "live")
+        self.assertEqual((check["season"], check["week"]), (2026, 5))
+        pointer = load_json(root / "output/data/matchup-proof.json")
+        inputs = read(root / check["latest_inputs"])
+        self.assertEqual(check["latest_inputs"], pointer["latest_inputs"])
+        self.assertEqual(check["latest_inputs_sha256"], digest(inputs))
+        self.assertEqual(check["engine_files"], inputs["engine_files"])
+        self.assertEqual(check["engine_files"], engine_hashes(root))
+        self.assertEqual(check["game_origins"], pointer["game_origins"])
+        for origin in check["game_origins"].values():
+            self.assertEqual(read(root / origin)["engine_files"], check["engine_files"])
+        self.assertEqual(check["output_sha256"], pointer["output_sha256"])
+        self.assertEqual(check["output_sha256"], digest(load_json(root / "output/data/week.json")))
+        self.assertEqual(check["baseline_receipt"], health["receipt"])
+        self.assertEqual(check["baseline_payload_sha256"], digest(read(root / health["receipt"])))
+        self.assertEqual(check["checked_factors"], 10)
+        return path
+
+    def test_live_matchup_checks_preserve_bindings_forecasts_and_all_old_receipts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, first = self.run_live(root)
+            first_path = self.assert_saved_matchup_check(root, first)
+            # Fictional pre-existing live/replay receipts stay at their old paths.
+            legacy = write(root, "matchup_checks", read(first_path))
+            replay = write(root, "matchup_checks_replay", dict(read(first_path), mode="replay"))
+            saved = {path: path.read_bytes() for path in (root / "data").rglob("*.json.gz")}
+            forecasts = load_json(root / "output/data/week.json")
+            engine = {path: (root / path).read_bytes() for path in ENGINE_PATHS}
+            registered = load_json(root / "config/evaluation-policy.json")
+            _, second = self.run_live(root, self.AT + timedelta(minutes=5), registered_policy=registered)
+            second_path = self.assert_saved_matchup_check(root, second)
+            self.assertNotEqual(second_path, first_path)
+            for path, original in saved.items():
+                self.assertEqual(path.read_bytes(), original, str(path))
+            self.assertTrue(legacy.exists())
+            self.assertTrue(replay.exists())
+            later = load_json(root / "output/data/week.json")
+            for key in ("players", "picks", "games"):
+                self.assertEqual(later[key], forecasts[key], key)
+            self.assertEqual({path: (root / path).read_bytes() for path in ENGINE_PATHS}, engine)
+
+    def test_actual_updater_staging_keeps_health_checks_in_successive_clean_checkouts(self):
+        # Run the actual staging block, not an independently maintained lane list.
+        workflow = (ROOT / ".github/workflows/hourly.yml").read_text()
+        start = workflow.index("          git add output/data data/cache\n")
+        end = workflow.index("          if ! git diff --cached --quiet;", start)
+        staging = textwrap.dedent(workflow[start:end])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "writer"
+            root.mkdir()
+            _, first = self.run_live(root)
+            first_path = self.assert_saved_matchup_check(root, first)
+            legacy = write(root, "matchup_checks", read(first_path))
+            original_legacy = legacy.read_bytes()
+
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=root, check=True,
+                                      capture_output=True, text=True).stdout
+
+            git("init", "-q")
+            git("config", "user.name", "Fictional persistence test")
+            git("config", "user.email", "fixture@example.invalid")
+            git("add", "--", *ENGINE_PATHS, "config", legacy.relative_to(root).as_posix())
+            git("commit", "-qm", "Fictional existing code and historical receipt")
+            saved = {}
+            registered = load_json(root / "config/evaluation-policy.json")
+            for index, at in enumerate((self.AT, self.AT + timedelta(minutes=5))):
+                if index:
+                    self.run_live(root, at, registered_policy=registered)
+                health = load_json(root / "output/data/health.json")
+                name = self.assert_saved_matchup_check(root, health).relative_to(root).as_posix()
+                subprocess.run(["bash", "-eu", "-c", staging], cwd=root, check=True,
+                               capture_output=True, text=True)
+                self.assertIn(name, git("diff", "--cached", "--name-only").splitlines())
+                git("commit", "-qm", f"Fictional generated update {index + 1}")
+                checkout = Path(directory) / f"checkout-{index}"
+                git("clone", "--quiet", "--no-hardlinks", str(root), str(checkout))
+                restored = load_json(checkout / "output/data/health.json")
+                restored_path = self.assert_saved_matchup_check(checkout, restored)
+                self.assertEqual(restored_path.read_bytes(), (root / name).read_bytes())
+                self.assertEqual((checkout / legacy.relative_to(root)).read_bytes(), original_legacy)
+                for previous, original in saved.items():
+                    self.assertEqual((checkout / previous).read_bytes(), original, previous)
+                saved.update({path.relative_to(checkout).as_posix(): path.read_bytes()
+                              for path in (checkout / "data").rglob("*.json.gz")})
+                self.assertEqual(git("status", "--porcelain", "--untracked-files=no"), "")
 
     def assets(self, root):
         base = root / "output/data/selection-grading"
