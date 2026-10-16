@@ -10,7 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "pull")]
 from reliability import digest, make_payload, stamp
-from scorecard import cluster_interval, latest_outcomes, paired_forecasts, score, snapshot_outcomes
+from scorecard import build_scorecard, cluster_interval, latest_outcomes, paired_forecasts, score, snapshot_outcomes
 from evidence import read
 from test_reliability import fixture, NOW
 from test_source_evidence import fictional_status
@@ -42,8 +42,12 @@ def fictional_week_population(week=5):
 
 
 def final_games(population):
-    return [{**game, "state": "post", "detail": "Final"}
-            for game in population["source_document"]["games"]]
+    games = [{**game, "state": "post", "detail": "Final"}
+             for game in population["source_document"]["games"]]
+    # The forecast/cache fixtures use AAA/BBB. Bind those recorded board codes
+    # explicitly instead of accidentally claiming AAA is Arizona or Atlanta.
+    games[0].update(home="AAA", away="BBB")
+    return games
 
 
 class ScorecardTests(unittest.TestCase):
@@ -888,6 +892,197 @@ class AllPickableOutcomeTests(unittest.TestCase):
             result = latest_outcomes([read(paths[0])])
             self.assertTrue(all(not r["week_confirmed_complete"] for r in result.values()))
             self.assertTrue(all(r["status"] == "resolved" for r in result.values()))
+
+
+class SelectedOutcomeProvenanceRegressionTests(unittest.TestCase):
+    def snapshot(self, *args, **kwargs):
+        return OutcomePrecedenceRegressionTests().snapshot(*args, **kwargs)
+
+    def test_selected_provenance_is_the_exact_numeric_record_not_first_observation(self):
+        old, correction = self.snapshot(3), self.snapshot(5, hour=6)
+        result = next(iter(latest_outcomes([correction, old]).values()))
+        selected = result["selected_outcome_provenance"]
+        self.assertEqual((result["actual"], selected["actual"]), (5, 5))
+        self.assertEqual(selected["outcome_snapshot_sha256"], digest(correction))
+        self.assertEqual(selected["outcome_row_sha256"], digest(correction["rows"][0]))
+        self.assertEqual(result["selected_outcome_row_sha256"], digest(correction["rows"][0]))
+        self.assertEqual(result["selected_outcome_provenance_sha256"], digest(selected))
+        self.assertEqual(result["outcome_active_observations"], [digest(selected)])
+        self.assertNotEqual(selected, result["outcome_observations"][0])
+        self.assertTrue(result["outcome_revision"])
+        self.assertEqual(result["outcome_source_mix"], "single_source")
+        self.assertEqual(result, next(iter(latest_outcomes([old, correction]).values())))
+
+    def test_agreeing_sources_and_conflicts_have_explicit_distinct_contracts(self):
+        a, b = self.snapshot(3), self.snapshot(3, hour=6, source="fictional_stats_B")
+        agreed = next(iter(latest_outcomes([b, a]).values()))
+        self.assertEqual(agreed["outcome_source_mix"], "mixed_agreeing_sources")
+        self.assertEqual(len(agreed["outcome_active_observations"]), 2)
+        self.assertIsNotNone(agreed["selected_outcome_provenance"])
+        b = self.snapshot(5, hour=6, source="fictional_stats_B")
+        conflict = next(iter(latest_outcomes([a, b]).values()))
+        self.assertEqual(conflict["outcome_source_mix"], "conflicting_sources")
+        self.assertFalse(conflict["outcome_revision"])
+        for field in ("selected_outcome_provenance", "selected_outcome_provenance_sha256",
+                      "selected_outcome_row_sha256", "outcome_snapshot_sha256"):
+            self.assertIsNone(conflict[field])
+        self.assertEqual(conflict["status"], "unresolved")
+
+
+class OutcomeIdentityBindingRegressionTests(unittest.TestCase):
+    def saved(self, *, team="AAA", opponent="BBB", clubs=True):
+        payload = OutcomePrecedenceRegressionTests().snapshot(3)
+        row = payload["rows"][0]
+        row["stats_entry"].update(team=team, opp=opponent)
+        payload["games"] = [{"id": row["game_id"], "kickoff": row["kickoff"],
+                             "state": "post", "detail": "Final"}]
+        if clubs:
+            payload["games"][0].update(home="AAA", away="BBB")
+        return payload
+
+    def fresh(self, payload):
+        from unittest.mock import patch
+        row = payload["rows"][0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "output/data").mkdir(parents=True)
+            (root / "data/cache").mkdir(parents=True)
+            (root / "output/data/week.json").write_text(json.dumps({"season": 2026, "week": 5,
+                                                                     "games": payload["games"]}))
+            (root / "data/cache/stats_2026_05.json").write_text(json.dumps({item["player_id"]: item["stats_entry"]
+                                                                            for item in payload["rows"]}))
+            with patch("requests.sessions.Session.request", side_effect=AssertionError("HTTP forbidden")):
+                path, = snapshot_outcomes(root, {tuple(item[k] for k in
+                    ("season", "week", "game_id", "player_id", "category")): item for item in payload["rows"]}, NOW + timedelta(hours=5),
+                                          include_populations=False)
+            return read(path)
+
+    def test_fresh_and_saved_present_opponent_or_club_contradictions_are_quarantined(self):
+        for alteration in ("opponent", "clubs", "statistics_team"):
+            payload = self.saved()
+            if alteration == "opponent":
+                payload["rows"][0]["stats_entry"]["opp"] = "WRONG"
+            elif alteration == "clubs":
+                payload["games"][0].update(home="CCC", away="DDD")
+            else:
+                payload["rows"][0]["stats_entry"]["team"] = "WRONG"
+            before = copy.deepcopy(payload)
+            for source in (payload, self.fresh(payload)):
+                with self.subTest(alteration=alteration, source=source.get("source")):
+                    result = next(iter(latest_outcomes([source]).values()))
+                    self.assertEqual((result["status"], result["actual"]), ("unresolved", None))
+                    self.assertEqual(result["outcome_identity_status"], "quarantined")
+                    self.assertFalse(result["week_confirmed_complete"])
+            self.assertEqual(payload, before)
+
+    def test_complete_and_partial_legacy_bindings_remain_distinct_valid_controls(self):
+        full = next(iter(latest_outcomes([self.saved()]).values()))
+        self.assertEqual((full["actual"], full["outcome_identity_status"]), (3, "bound_to_recorded_game"))
+        legacy = self.saved(clubs=False)
+        legacy["rows"][0]["stats_entry"].pop("opp")
+        result = next(iter(latest_outcomes([legacy]).values()))
+        self.assertEqual((result["actual"], result["outcome_identity_status"]), (3, "partial_legacy"))
+        self.assertIn("recorded_club_mapping_incomplete", result["outcome_identity_reasons"])
+
+    def test_malformed_present_clubs_and_duplicate_game_identity_cannot_qualify(self):
+        for clubs in (("AAA", "AAA"), (0, "BBB"), ("", "BBB")):
+            payload = self.saved()
+            payload["games"][0].update(home=clubs[0], away=clubs[1])
+            with self.subTest(clubs=clubs):
+                result = next(iter(latest_outcomes([payload]).values()))
+                self.assertEqual((result["status"], result["actual"]), ("unresolved", None))
+                self.assertEqual(result["outcome_identity_status"], "quarantined")
+        payload = self.saved()
+        payload["games"].append(copy.deepcopy(payload["games"][0]))
+        result = next(iter(latest_outcomes([payload]).values()))
+        self.assertEqual(result["outcome_identity_status"], "quarantined")
+
+    def test_quarantined_observation_does_not_override_independent_valid_result(self):
+        good, bad = self.saved(), self.saved(opponent="WRONG")
+        bad["collected_at"] = stamp(NOW + timedelta(hours=6))
+        result = next(iter(latest_outcomes([bad, good]).values()))
+        self.assertEqual((result["status"], result["actual"]), ("resolved", 3))
+        self.assertEqual(len(result["outcome_observations"]), 2)
+        self.assertEqual(sum(p["outcome_identity_status"] == "quarantined" for p in result["outcome_observations"]), 1)
+        self.assertEqual(len(result["outcome_active_observations"]), 1)
+
+    def test_quarantine_is_per_observation_and_does_not_remove_valid_sibling_points(self):
+        payload = self.saved(opponent="WRONG")
+        sibling = copy.deepcopy(payload["rows"][0])
+        sibling["player_id"] = "fictional-unrelated-valid-player"
+        sibling["stats_entry"]["opp"] = "BBB"
+        payload["rows"].append(sibling)
+        for source in (payload, self.fresh(payload)):
+            outcomes = latest_outcomes([source])
+            valid = next(value for key, value in outcomes.items() if key[3] == sibling["player_id"])
+            bad = next(value for key, value in outcomes.items() if key[3] != sibling["player_id"])
+            self.assertEqual((valid["status"], valid["actual"]), ("resolved", 3))
+            self.assertEqual((bad["status"], bad["actual"]), ("unresolved", None))
+
+    def test_identity_quarantine_does_not_suppress_unrelated_malformed_statistics(self):
+        payload = self.saved(opponent="WRONG")
+        payload["rows"][0]["stats_entry"]["stats"]["rec"] = "malformed"
+        with self.assertRaises(ValueError):
+            latest_outcomes([payload])
+        with self.assertRaises(ValueError):
+            self.fresh(payload)
+
+
+class AdditionalOutcomePairsRegressionTests(unittest.TestCase):
+    def fixture(self, root):
+        from evidence import write
+        board, baseline, policy = setup()
+        base = baseline["rows"][0]
+        categories = json.loads((ROOT / "config/timing-policy.json").read_text())["categories"]
+        baseline["rows"] = [{**base, "category": category} for category in categories]
+        baseline.update(season=board["season"], week=board["week"])
+        board["games"][0].update(state="post", detail="Final")
+        (root / "config").mkdir()
+        (root / "output/data").mkdir(parents=True)
+        (root / "data/cache").mkdir(parents=True)
+        (root / "config/evaluation-policy.json").write_text(json.dumps(policy))
+        (root / "output/data/week.json").write_text(json.dumps(board))
+        (root / "data/cache/stats_2026_05.json").write_text(json.dumps({base["player_id"]: {
+            "team": "AAA", "opp": "BBB", "stats": {"gp": 1, **{category: 1 for category in categories}}}}))
+        write(root, "forward", baseline)
+        return {tuple(row[k] for k in ("season", "week", "game_id", "player_id", "category")): row
+                for row in baseline["rows"]}
+
+    def test_all_ten_extra_path_preserves_primary_metrics_and_cannot_qualify_whole_week(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            additional = self.fixture(root)
+            with patch("scorecard.engine_hashes", return_value={"test": "fixture"}):
+                primary, primary_paths = build_scorecard(root, NOW + timedelta(hours=5))
+                expanded, paths = build_scorecard(root, NOW + timedelta(hours=5), additional_outcome_pairs=additional)
+            self.assertEqual(expanded["categories"], primary["categories"])
+            self.assertEqual(expanded["coverage"], primary["coverage"])
+            self.assertEqual(len(paths), len(primary_paths) + 1)
+            extra = read(paths[-1])
+            self.assertEqual(len(extra["rows"]), 7)
+            self.assertTrue(all(row["category"] not in ("rec", "rush_att", "pass_yd") for row in extra["rows"]))
+            self.assertEqual(extra["week_population_read_errors"], [{"error_type": "POPULATION_NOT_CONSUMED_BY_OFFLINE_REPORT"}])
+            self.assertFalse(any(row["week_confirmed_complete"] for row in extra["rows"]))
+            outcomes = latest_outcomes([read(path) for path in (root / "data/outcomes").rglob("*.json.gz")])
+            self.assertEqual(len(outcomes), 10)
+
+    def test_unsaved_or_conflicting_additional_identity_is_rejected(self):
+        from unittest.mock import patch
+        for change in ("player", "team", "kickoff", "key", "category"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                additional = self.fixture(root)
+                key, row = next(iter(additional.items()))
+                row = dict(row)
+                if change == "player": row["player_id"] = "not-original"
+                elif change == "team": row["team"] = "WRONG"
+                elif change == "kickoff": row["kickoff"] = stamp(NOW + timedelta(days=5))
+                elif change == "category": row["category"] = "unsupported"
+                if change != "key": key = tuple(row[k] for k in ("season", "week", "game_id", "player_id", "category"))
+                else: key = (2026, 5, "wrong", row["player_id"], row["category"])
+                with patch("scorecard.engine_hashes", return_value={"test": "fixture"}), self.assertRaises(ValueError):
+                    build_scorecard(root, NOW + timedelta(hours=5), additional_outcome_pairs={key: row})
 
 
 if __name__ == "__main__":

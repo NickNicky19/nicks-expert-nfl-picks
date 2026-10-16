@@ -17,7 +17,9 @@ sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "pull")]
 from reliability import IntegrityError, digest, immutable_write, stamp, utc, engine_hashes
 from evidence import read, write
 from selection_report import (build_decisions, grade_decisions, summarize, run_report,
-                              matched_checkpoints, archive_decisions, render_html, _inventory)
+                              matched_checkpoints, archive_decisions, render_html, _inventory,
+                              final_outcome_records)
+from scorecard import identity, latest_outcomes, snapshot_outcomes
 
 ENGINE = {"fictional_original_engine": "fixture-source-hash"}
 KICKOFF = datetime(2026, 10, 25, 17, tzinfo=timezone.utc)
@@ -355,7 +357,10 @@ class SelectionReportIntegration(unittest.TestCase):
         self.assertEqual((candidate["action"], candidate["frozen_decision_sha256"]), ("EXCLUDED", frozen))
         material = {k: v for k, v in candidate.items() if k not in
                     ("decision_sha256", "result", "outcome_reason", "actual", "outcome_snapshot_sha256",
-                     "outcome_observations", "outcome_collected_at", "week_confirmed_complete", "outcome_provenance")}
+                     "outcome_observations", "outcome_collected_at", "week_confirmed_complete", "outcome_provenance",
+                     "selected_outcome_provenance_sha256", "selected_outcome_row_sha256", "outcome_selection",
+                     "outcome_conflict", "outcome_source_mix", "outcome_revision", "outcome_identity_status",
+                     "outcome_identity_reasons")}
         self.assertEqual(digest(material), candidate["decision_sha256"])
         self.assertTrue(directory.exists())
         self.assertTrue(revised["coverage"]["frozen_decision_conflicts"])
@@ -519,6 +524,132 @@ class SelectionIntegrityAcceptance(unittest.TestCase):
                 archive["picks"]["over"][0]["game_id"] = "wrong-game"
             with self.subTest(alteration=alteration), self.assertRaises(ValueError):
                 archive_decisions([archive], timing_policy())
+
+
+class SelectedOutcomeLabelIntegrationTests(unittest.TestCase):
+    def fixture(self):
+        return SelectionReportIntegration.fixture(self)
+
+    def snapshot(self, *, actual=6, hours=5, derived=False):
+        root, output = self.fixture()
+        record = row(top=True)
+        saved_sources(root, {record["player_id"]: {"team": "AAA", "opp": "BBB", "stats": {"gp": 1, "rec": actual}}})
+        options = {"include_populations": False}
+        if derived:
+            options.update(output_root=output, derived_context={"input_git_pin": "a" * 40,
+                           "scope": "fictional_saved_fixture_only"})
+        with patch("requests.sessions.Session.request", side_effect=AssertionError("HTTP forbidden")):
+            path, = snapshot_outcomes(root, {identity(record): record}, KICKOFF + timedelta(hours=hours), **options)
+        return read(path)
+
+    def grade(self, payloads):
+        decisions, _ = build_decisions([receipt(BOUNDARY - timedelta(minutes=15), [row(top=True)])],
+                                        timing_policy(), KICKOFF + timedelta(days=1), ENGINE)
+        outcomes = latest_outcomes(payloads)
+        return find(grade_decisions(decisions, outcomes), checkpoint="history"), next(iter(outcomes.values()))
+
+    def test_fresh_saved_and_mixed_sources_bind_label_to_exact_selected_evidence(self):
+        normal = self.snapshot(hours=4)
+        cache = self.snapshot(hours=5, derived=True)
+        normal_later = self.snapshot(hours=6)
+        for payloads, expected, mix in (
+            ([normal], "recorded_outcome_receipt", "single_source"),
+            ([cache], "saved_cache_descriptive_regrade", "single_source"),
+            ([cache, normal], "recorded_outcome_receipt", "mixed_agreeing_sources"),
+            ([normal_later, cache], "saved_cache_descriptive_regrade", "mixed_agreeing_sources"),
+            ([cache, normal_later], "saved_cache_descriptive_regrade", "mixed_agreeing_sources"),
+        ):
+            with self.subTest(expected=expected, clocks=[p["collected_at"] for p in payloads]):
+                graded, outcome = self.grade(payloads)
+                self.assertEqual((graded["result"], graded["actual"]), ("win", 6))
+                self.assertEqual(graded["outcome_provenance"], expected)
+                self.assertEqual(graded["outcome_source_mix"], mix)
+                selected = outcome["selected_outcome_provenance"]
+                self.assertEqual(graded["selected_outcome_provenance_sha256"], digest(selected))
+                self.assertEqual(graded["selected_outcome_row_sha256"], selected["outcome_row_sha256"])
+                self.assertEqual(graded["outcome_snapshot_sha256"], selected["outcome_snapshot_sha256"])
+
+    def test_conflicts_have_no_selected_source_and_remain_unresolved_in_either_order(self):
+        cache = self.snapshot(derived=True)
+        conflict = self.snapshot(actual=2, hours=6)
+        for snapshots in ([cache, conflict], [conflict, cache]):
+            graded, outcome = self.grade(snapshots)
+            self.assertEqual((graded["result"], graded["actual"]), ("unresolved", None))
+            self.assertEqual(graded["outcome_provenance"], "conflicting_outcome_evidence")
+            self.assertEqual(graded["outcome_source_mix"], "conflicting_sources")
+            self.assertIsNone(graded["selected_outcome_provenance_sha256"])
+            self.assertIsNone(graded["selected_outcome_row_sha256"])
+            self.assertIsNone(outcome["selected_outcome_provenance"])
+
+    def test_superseded_and_incomplete_observations_cannot_supply_selected_label(self):
+        old, correction = self.snapshot(actual=3, hours=4), self.snapshot(actual=6, hours=6)
+        graded, outcome = self.grade([correction, old])
+        self.assertEqual((graded["result"], graded["actual"]), ("win", 6))
+        self.assertEqual(graded["outcome_provenance"], "recorded_outcome_receipt")
+        self.assertTrue(graded["outcome_revision"])
+        self.assertNotEqual(outcome["selected_outcome_provenance"], outcome["outcome_observations"][0])
+        self.assertEqual(len(outcome["outcome_active_observations"]), 1)
+
+    def test_unbound_selected_reference_or_unknown_source_does_not_invent_provenance(self):
+        cache = self.snapshot(derived=True)
+        _, base = self.grade([cache])
+        decisions, _ = build_decisions([receipt(BOUNDARY - timedelta(minutes=15), [row(top=True)])],
+                                        timing_policy(), KICKOFF + timedelta(days=1), ENGINE)
+        for alteration in ("missing", "digest", "snapshot", "row", "observation"):
+            outcome = copy.deepcopy(base)
+            if alteration == "missing": outcome.pop("selected_outcome_provenance")
+            elif alteration == "digest": outcome["selected_outcome_provenance_sha256"] = "0" * 64
+            elif alteration == "snapshot": outcome["outcome_snapshot_sha256"] = "0" * 64
+            elif alteration == "row": outcome["selected_outcome_row_sha256"] = "0" * 64
+            else: outcome["outcome_observations"] = []
+            with self.subTest(alteration=alteration):
+                graded = find(grade_decisions(decisions, {identity(row()): outcome}), checkpoint="history")
+                self.assertEqual(graded["outcome_provenance"], "unknown_unverified")
+                self.assertEqual((graded["result"], graded["actual"]), ("win", 6))
+        unknown = self.snapshot()
+        unknown["source"] = "unsupported_fictional_source"
+        graded, _ = self.grade([unknown])
+        self.assertEqual(graded["outcome_provenance"], "unknown_unverified")
+
+    def test_full_persisted_report_v2_labels_and_minimal_outcome_index_preserve_old_artifact(self):
+        root, output = self.fixture()
+        saved_forecast(root, receipt(BOUNDARY - timedelta(minutes=15), [row(top=True)]))
+        saved_sources(root, {"fixture-A": {"team": "AAA", "opp": "BBB", "stats": {"gp": 1, "rec": 6}}})
+        old = output / "reports" / ("a" * 64) / "index.html"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"fictional original v1 report bytes preserved")
+        before = old.read_bytes()
+        with patch("requests.sessions.Session.request", side_effect=AssertionError("HTTP forbidden")):
+            report, directory = run_report([root], output, now=KICKOFF + timedelta(days=1),
+                                          expected_hashes=ENGINE, policy=timing_policy())
+        persisted = json.loads((directory / "rows.json").read_text())
+        self.assertEqual(report["schema_version"], "selection-report-v2")
+        self.assertEqual(find(persisted, checkpoint="history")["outcome_provenance"], "saved_cache_descriptive_regrade")
+        self.assertEqual(old.read_bytes(), before)
+        self.assertNotEqual(directory, old.parent)
+        final, = report["final_outcomes"]
+        self.assertEqual((final["status"], final["actual"], final["outcome_provenance"]),
+                         ("resolved", 6, "saved_cache_descriptive_regrade"))
+        self.assertTrue(final["final_confirmed"])
+        self.assertFalse(final["outcome_conflict"])
+        self.assertFalse({"stats_entry", "derived_context", "cache_path", "outcome_observations"} & set(final))
+        self.assertTrue(report["summary"]["disjoint_selected_partitions_reconciled"])
+
+    def test_seeded_frozen_checkpoint_absent_from_new_inputs_remains_in_report(self):
+        root, output = self.fixture()
+        saved_forecast(root, receipt(BOUNDARY - timedelta(minutes=15), [row(top=True)]))
+        saved_sources(root, {"fixture-A": {"team": "AAA", "stats": {"gp": 1, "rec": 6}}})
+        first, _ = run_report([root], output, now=KICKOFF + timedelta(days=1),
+                              expected_hashes=ENGINE, policy=timing_policy())
+        frozen = find(first["rows"])
+        partial, _ = self.fixture()
+        saved_sources(partial, {})
+        later, _ = run_report([partial], output, now=KICKOFF + timedelta(days=1, minutes=1),
+                              expected_hashes=ENGINE, policy=timing_policy())
+        retained = find(later["rows"])
+        self.assertEqual(retained["decision_sha256"], frozen["decision_sha256"])
+        self.assertEqual((retained["line"], retained["side"], retained["recorded_selection_at"]),
+                         (frozen["line"], frozen["side"], frozen["recorded_selection_at"]))
 
 
 if __name__ == "__main__":

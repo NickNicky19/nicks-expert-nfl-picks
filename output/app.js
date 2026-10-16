@@ -23,6 +23,8 @@ const INJ_SHORT = { Questionable: "Q", Doubtful: "D", Out: "OUT", IR: "IR", PUP:
 
 const S = {
   data: null, track: null, generatedAt: null,
+  grading: null, gradingError: null, finalOutcomes: new Map(),
+  gradingFilters: {}, gradingGroup: null, gradingShown: 100,
   byId: {}, byKey: {},
   games: {},           // game id -> schedule merged with the latest ESPN scoreboard
   live: {},            // player id -> stat line from ESPN's box score (Sleeper field names)
@@ -125,28 +127,120 @@ function gameStatus(g) {
   return g.detail || (g.state === "post" ? "Final" : "Live");
 }
 
+// Public grading assets have a small, versioned contract. Only content-addressed
+// local paths are read; provider bodies and private report manifests are absent.
+const GRADING_BASE = "data/selection-grading/";
+const HASH64 = /^[a-f0-9]{64}$/;
+const GRADING_RESULTS = ["win", "loss", "push", "dnp", "pending", "unresolved", "no_action", "not_due", "excluded"];
+function finalIdentity(p, category) {
+  return JSON.stringify([S.data.season, S.data.week, String(p.game_id), String(p.id), category, p.team,
+    Date.parse(S.games[p.game_id]?.kickoff)]);
+}
+function finalIdentityMatches(row, p, category) {
+  return row.season === S.data.season && row.week === S.data.week && row.player_id === String(p.id)
+    && row.game_id === String(p.game_id) && row.category === category && row.team === p.team
+    && Number.isFinite(Date.parse(row.kickoff)) && Date.parse(row.kickoff) === Date.parse(S.games[p.game_id]?.kickoff);
+}
+function publicAssetPath(pointer, descriptor, type) {
+  const filename = type === "rows" ? "rows-[0-9]{4,}.json" : `${type}.json`;
+  const pattern = new RegExp(`^${pointer.report_id}/${filename.replaceAll(".", "\\.")}$`);
+  if (!descriptor || !pattern.test(descriptor.path) || !HASH64.test(descriptor.sha256)) throw new Error("Invalid grading asset binding");
+  return GRADING_BASE + descriptor.path;
+}
+async function checkedGradingAsset(pointer, descriptor, type) {
+  const path = publicAssetPath(pointer, descriptor, type);
+  const response = await fetch(path, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Grading ${type} unavailable`);
+  const bytes = await response.arrayBuffer();
+  if (bytes.byteLength > (type === "rows" ? 2 : 12) * 1024 * 1024) throw new Error("Grading asset exceeds size limit");
+  const actual = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((v) => v.toString(16).padStart(2, "0")).join("");
+  if (actual !== descriptor.sha256) throw new Error("Grading asset checksum mismatch");
+  const data = JSON.parse(new TextDecoder().decode(bytes));
+  if (data.report_id !== pointer.report_id) throw new Error("Grading report identity mismatch");
+  return data;
+}
+async function loadGrading() {
+  S.grading = null; S.gradingError = null; S.finalOutcomes = new Map();
+  try {
+    const pointer = await getJSON(GRADING_BASE + "latest.json");
+    if (pointer.schema_version !== "selection-publication-pointer-v1" || !HASH64.test(pointer.report_id)
+        || !Number.isFinite(Date.parse(pointer.generated_at)) || !Array.isArray(pointer.rows)
+        || pointer.rows.length > 4000) throw new Error("Unsupported grading publication");
+    const paths = new Set();
+    for (const chunk of pointer.rows) {
+      publicAssetPath(pointer, chunk, "rows");
+      if (!Number.isInteger(chunk.count) || chunk.count < 1 || chunk.count > 250 || paths.has(chunk.path)) throw new Error("Invalid grading row chunks");
+      paths.add(chunk.path);
+    }
+    if (pointer.rows.slice(0, -1).some((chunk) => chunk.count !== 250)
+        || !Number.isInteger(pointer.row_count) || pointer.row_count !== pointer.rows.reduce((n, chunk) => n + chunk.count, 0)) throw new Error("Invalid grading row population");
+    const [summary, finals] = await Promise.all([checkedGradingAsset(pointer, pointer.summary, "summary"), checkedGradingAsset(pointer, pointer.outcomes, "outcomes")]);
+    if (summary.schema_version !== "selection-public-report-v1" || summary.report_schema_version !== "selection-report-v2" || !Array.isArray(summary.summary?.tables)
+        || finals.schema_version !== "selection-final-outcomes-v1" || !Array.isArray(finals.outcomes)) throw new Error("Unsupported grading data schema");
+    const tableIds = new Set();
+    for (const table of summary.summary.tables) {
+      if (!HASH64.test(table.summary_id) || tableIds.has(table.summary_id) || !Array.isArray(table.row_positions)
+          || table.row_positions.length !== table.rows || new Set(table.row_positions).size !== table.rows || !HASH64.test(table.row_ids_sha256)
+          || table.row_positions.some((i) => !Number.isInteger(i) || i < 0 || i >= pointer.row_count)
+          || !Array.isArray(table.row_chunks) || table.row_chunks.some((i) => !Number.isInteger(i) || i < 0 || i >= pointer.rows.length)
+          || JSON.stringify([...new Set(table.row_positions.map((i) => Math.floor(i / 250)))].sort((a, b) => a - b)) !== JSON.stringify([...table.row_chunks].sort((a, b) => a - b))
+          || GRADING_RESULTS.some((key) => !Number.isInteger(table[key]) || table[key] < 0)
+          || !Number.isInteger(table.decided) || table.decided !== table.win + table.loss
+          || (table.decided ? table.hit_rate !== table.win / table.decided : table.hit_rate !== null)
+          || ["unique_players", "unique_games", "unique_weeks", "decided_unique_players", "decided_unique_games", "decided_unique_weeks"].some((key) => !Number.isInteger(table[key]) || table[key] < 0)
+          || GRADING_RESULTS.reduce((n, k) => n + table[k], 0) !== table.rows) throw new Error("Invalid grading summary reconciliation");
+      tableIds.add(table.summary_id);
+    }
+    for (const row of finals.outcomes) {
+      if (!Number.isInteger(row.season) || !Number.isInteger(row.week) || !["game_id", "player_id", "category", "team"].every((key) => typeof row[key] === "string" && row[key])
+          || !Number.isFinite(Date.parse(row.kickoff)) || !["resolved", "dnp", "pending", "unresolved"].includes(row.status)
+          || typeof row.final_confirmed !== "boolean" || typeof row.outcome_conflict !== "boolean"
+          || (row.status === "resolved" && !Number.isFinite(row.actual))
+          || (["resolved", "dnp"].includes(row.status) && (!row.final_confirmed || row.outcome_conflict))
+          || (["resolved", "dnp"].includes(row.status) && row.outcome_identity_status === "quarantined")
+          || (["resolved", "dnp"].includes(row.status) && (row.game_state !== "post" || row.outcome_selection !== "confirmed"
+              || row.outcome_source_mix === "conflicting_sources" || !Number.isFinite(Date.parse(row.collected_at))
+              || Date.parse(row.collected_at) <= Date.parse(row.kickoff) || Date.parse(row.collected_at) > Date.parse(pointer.generated_at)))
+          || (row.status === "resolved" && (!Number.isInteger(row.actual) || (!row.category.endsWith("_yd") && row.actual < 0)))
+          || (row.status !== "resolved" && row.actual !== null)
+          || (["resolved", "dnp"].includes(row.status) && (!HASH64.test(row.outcome_snapshot_sha256)
+              || !HASH64.test(row.selected_outcome_provenance_sha256) || !HASH64.test(row.selected_outcome_row_sha256)))) throw new Error("Invalid final outcome index");
+      const key = JSON.stringify([row.season, row.week, row.game_id, row.player_id, row.category, row.team, Date.parse(row.kickoff)]);
+      if (S.finalOutcomes.has(key)) throw new Error("Duplicate final outcome identity");
+      S.finalOutcomes.set(key, row);
+    }
+    S.grading = { pointer, summary, chunks: new Map() };
+    S.gradingGroup = null;
+  } catch (err) {
+    S.grading = null; S.finalOutcomes = new Map(); S.gradingError = String(err.message || "Unavailable saved grading");
+  }
+}
+
 // ---------------------------------------------------------------- live data
 
-// A player's stat line this week: ESPN's live box score first, then Sleeper's (from the last build).
-// null before kickoff. {none: true} when the game is final and the player never showed up in the box score.
-// Live stats: Sleeper's own feed first (what the Sleeper app shows), then ESPN's box score, then the last build.
+// Live progress is provisional. Absence from a feed is unknown participation,
+// never a confirmed DNP. Final props use the separately validated saved index.
 function current(p) {
   const g = S.games[p.game_id];
   if (!g || g.state === "pre") return null;
+  const finals = [...S.finalOutcomes.values()].filter((r) => finalIdentityMatches(r, p, r.category));
+  const dnp = finals.length && finals.every((r) => r.status === "dnp" && r.final_confirmed && !r.outcome_conflict);
+  if (g.state === "post" && dnp) return { stats: {}, none: true, status: "dnp" };
   const slp = S.slp[p.id];
-  const stats = (slp && slpPlayed(slp) ? slp : null) || S.live[p.id] || p.actual?.stats;
-  if (stats) return { stats, none: false };
-  if (g.state === "post" && (S.slpOk || S.boxLoaded.has(p.game_id))) return { stats: {}, none: true };
-  return { stats: {}, none: false };
+  const actual = p.actual?.stats;
+  const stats = (slp && slpPlayed(slp) ? slp : null) || S.live[p.id] || (actual && slpPlayed(actual) ? actual : null);
+  if (stats) return { stats, none: false, status: "observed" };
+  return { stats: {}, none: false, status: "unresolved" };
 }
 
 function slpPlayed(s) {
-  return (s.gp || 0) > 0 || (s.off_snp || 0) > 0 || s.pts_ppr != null;
+  return !!s && [s.gp, s.off_snp].every((v) => v == null || typeof v === "number" && Number.isFinite(v) && v >= 0)
+    && ((s.gp || 0) > 0 || (s.off_snp || 0) > 0);
 }
 
 function livePPR(p) {
   const c = current(p);
-  return c && !c.none ? fantasyPts(c.stats, p.pos) : null;
+  return c && !c.none && c.status !== "unresolved" ? fantasyPts(c.stats, p.pos) : null;
 }
 
 // Same as fantasy_points() in pull/scoring.py: Sleeper PPR or half PPR for skill players, ESPN standard for K and DEF
@@ -246,15 +340,28 @@ function pv(p, prop) {
 
 // Where a prop stands. dir is the side being tracked (a pick or lean), or null.
 function propStatus(p, key, line, dir) {
-  const c = current(p);
-  if (!c) return null;
   const g = S.games[p.game_id];
-  if (c.none) return { v: null, res: "dnp", final: true };
+  if (!g || g.state === "pre") return null;
+  if (!Number.isFinite(line)) return { v: null, res: "unresolved", final: false, reason: "Saved line missing or invalid" };
+  if (g.state === "post") {
+    const outcome = S.finalOutcomes.get(finalIdentity(p, key));
+    if (!outcome || !finalIdentityMatches(outcome, p, key) || outcome.outcome_conflict)
+      return { v: null, res: "unresolved", final: false, reason: outcome?.outcome_conflict ? "Conflicting evidence" : "Awaiting saved final evidence" };
+    if (outcome.status === "dnp" && outcome.final_confirmed) return { v: null, res: "dnp", final: true };
+    if (outcome.status === "pending") return { v: null, res: "pending", final: false, reason: "Awaiting a saved confirmed final outcome" };
+    if (outcome.status !== "resolved" || !outcome.final_confirmed || !Number.isFinite(outcome.actual))
+      return { v: null, res: "unresolved", final: false, reason: outcome.reason || "Awaiting confirmed participation" };
+    const v = outcome.actual;
+    const relative = v === line ? "push" : v > line ? "over" : "under";
+    return { v, res: relative === "push" ? "push" : dir ? (relative === dir ? "hit" : "miss") : relative, final: true };
+  }
+  const c = current(p);
+  if (!c || c.status === "unresolved") return { v: null, res: "unresolved", final: false, reason: "Awaiting live statistics" };
+  const required = key === "rush_rec_yd" ? ["rush_yd", "rec_yd"] : key === "anytime_td" ? ["rush_td", "rec_td"] : [key];
+  if (required.some((name) => Object.hasOwn(c.stats, name) && (typeof c.stats[name] !== "number" || !Number.isFinite(c.stats[name]))))
+    return { v: null, res: "unresolved", final: false, reason: "Live statistic explicitly missing or invalid" };
   const v = statValue(key, c.stats);
-  const over = v > line;
-  if (g.state === "post") return { v, res: dir ? ((dir === "over") === over ? "hit" : "miss") : over ? "over" : "under", final: true };
-  if (over) return { v, res: dir === "under" ? "miss" : "hit", final: false };   // stats only go up, so an over is locked in
-  return { v, res: "live", final: false };
+  return { v, res: v === line ? "equal" : v > line ? "above" : "below", final: false };
 }
 
 function twoPointScorers(text) {
@@ -605,6 +712,7 @@ async function load() {
     if (p.espn_id) S.byEspn[String(p.espn_id)] = p.id;
   }
   for (const g of S.data.games) S.games[g.id] = { ...g, ...(S.games[g.id] || {}) };
+  await loadGrading();
   const built = new Date(S.data.generated_at);
   updateSub();
 }
@@ -838,10 +946,14 @@ function favBtn(p) {
 
 function resBadge(st) {
   if (!st) return "";
-  if (st.res === "hit") return `<span class="res hit">${st.final ? "HIT" : "CLEARED"}</span>`;
-  if (st.res === "miss") return `<span class="res miss">${st.final ? "MISS" : "LOST"}</span>`;
+  if (st.res === "hit" && st.final) return `<span class="res hit">WIN</span>`;
+  if (st.res === "miss" && st.final) return `<span class="res miss">LOSS</span>`;
   if (st.res === "dnp") return `<span class="res dnp">DNP</span>`;
   if (st.res === "push") return `<span class="res dnp">PUSH</span>`;
+  if (st.res === "unresolved") return `<span class="res dnp" title="${esc(st.reason || "Awaiting evidence")}">UNRESOLVED</span>`;
+  if (st.res === "pending") return `<span class="res live" title="${esc(st.reason || "Awaiting final outcome")}">PENDING</span>`;
+  if (["above", "below", "equal"].includes(st.res)) return `<span class="res live">CURRENTLY ${st.res.toUpperCase()}</span>`;
+  if (["over", "under"].includes(st.res)) return `<span class="res">FINAL ${st.res.toUpperCase()}</span>`;
   if (st.res === "live") return `<span class="res live">LIVE</span>`;
   return "";
 }
@@ -852,7 +964,7 @@ function progress(st, line, dir, key) {
   // an under that's most of the way to its line is in danger
   const cls = st.res === "hit" ? "hit" : st.res === "miss" ? "miss" : dir === "under" && pct >= 75 ? "warn" : "";
   let note = "";
-  if (st.res === "live" && key) {
+  if (!st.final && st.v != null && key) {
     const gap = line - st.v;
     note = dir === "under" ? `${fmtStat(key, gap)} to spare` : `needs ${fmtStat(key, Math.max(0, Math.floor(gap) + 1))} more`;
   }
@@ -957,7 +1069,7 @@ function catCard(p, raw) {
       ${st && !st.final && st.v != null && prop.adj != null && prop.key !== "anytime_td" ? `<div title="What he has so far plus our pregame projection for the time left">On pace<span class="n" style="color:var(--amber)">${fmt(st.v + prop.adj * remaining(S.games[p.game_id]), prop.key === "fpts" ? 2 : 1)}</span></div>` : ""}
       ${prop.proj != null ? `<div>Sleeper proj<span class="n">${fmtStat(prop.key, prop.proj)}</span></div>` : ""}
       ${avg != null ? `<div>Season avg<span class="n">${fmt(avg)}</span></div>` : ""}
-      ${st ? `<div>${st.final ? "Final" : "Now"}<span class="n" style="color:var(--cyan)">${st.v == null ? "DNP" : fmtStat(prop.key, st.v)}</span></div>` : ""}
+      ${st ? `<div>${st.final ? "Final statistic" : S.games[p.game_id]?.state === "post" ? "Final evidence" : "Now"}<span class="n" style="color:var(--cyan)">${st.v == null ? st.res === "dnp" ? "DNP" : "Unresolved" : fmtStat(prop.key, st.v)}</span>${resBadge(st)}</div>` : ""}
     </div>
     ${vals.length ? `<div class="bars">${bars}<div class="lineat" style="bottom:${(100 * line) / top}%"></div></div><div class="bars-x">${xs}</div>` : ""}
     <div class="foot-n">${note}</div>
@@ -1865,7 +1977,7 @@ function leagueFreeAgents() {
     <div class="fa-list">${rows.map(({ p, beat, add, pg }) => {
       const fut = futureRows(p);
       const g = S.games[p.game_id];
-      const week = g && g.state === "pre" ? `wk ${S.data.week} proj ${fmtPts(projPts(p))}` : g ? `wk ${S.data.week} ${current(p) && !current(p).none ? fmtPts(livePPR(p)) : g.state === "post" ? "did not play" : "0.00"}${g.state === "in" ? " so far" : ""}` : `wk ${S.data.week} bye`;
+      const week = g && g.state === "pre" ? `wk ${S.data.week} proj ${fmtPts(projPts(p))}` : g ? `wk ${S.data.week} ${current(p)?.none ? "confirmed DNP" : livePPR(p) != null ? fmtPts(livePPR(p)) : "unresolved"}${g.state === "in" ? " so far" : ""}` : `wk ${S.data.week} bye`;
       return `<div class="fa-row ${beat ? "up" : ""}" data-open="${p.id}">
         ${avatar(p)}
         <div class="fa-main"><div><b>${esc(p.name)}</b>${injBadge(p)} <span class="muted small">${p.pos} ${p.freeAgent ? "free agent" : p.team}${byesLeft(p).length ? ` · bye ${byesLeft(p).join(", ")}` : ""}</span></div>
@@ -2582,7 +2694,7 @@ function dkSection(c) {
   const leanStat = (side) => `<div class="card stat"><div class="k">Leans ${side} the real line</div><div class="v">${pctText(dl[side])}</div><div class="d">${dl[side] ? `${dl[side].hit}-${dl[side].miss}` : "0-0"}, DraftKings or Sleeper Picks lines</div></div>`;
   return `<h2>Against real lines</h2>
     <div class="stats">${leanStat("over")}${leanStat("under")}</div>
-    ${b ? `<h2>Our numbers vs DraftKings <small>${b.season} weeks ${b.weeks[0]}-${b.weeks[b.weeks.length - 1]}, ${b.props.toLocaleString()} props</small></h2>
+    ${b ? `<h2>Historical season-average benchmark vs DraftKings <small>${b.season} weeks ${b.weeks[0]}-${b.weeks[b.weeks.length - 1]}, ${b.props.toLocaleString()} props</small></h2>
     <div class="stats">
       ${b.our_side != null ? `<div class="card stat"><div class="k">When we disagreed with DraftKings</div><div class="v">${fmt(b.our_side)}%</div><div class="d">of the time the result landed on our side (${b.our_side_n.toLocaleString()} props; 50% is a coin flip)</div></div>` : ""}
       <div class="card stat"><div class="k">DraftKings closer to the result</div><div class="v">${fmt(b.dk_closer)}%</div><div class="d">vs the matchup-adjusted season average</div></div>
@@ -2597,7 +2709,102 @@ function dkSection(c) {
     <p class="note">DraftKings' closing lines, via ESPN, for every finished game this season, compared with each player's average so far this season adjusted for the matchup, using only earlier games (tools/compare_lines.py). Players need 2+ earlier games, so week 1 and 2 have few props. Sleeper's projections can't be tested on past weeks (Sleeper revises them after the games), so this tests the matchup adjustment on its own.</p>` : ""}`;
 }
 
+const GRADING_LABELS = {
+  all_qualifying_leans: "All qualifying leans", top_picks: "Actual recorded Top Picks",
+  top_at_all_lean_decision: "Top at the all-lean decision", non_top_at_all_lean_decision: "Non-Top leans (disjoint)",
+  local_pregame_membership_observation: "Original local pregame observations",
+  inherited_or_unclocked_archive: "Inherited / unclocked history", history: "First recorded selection (descriptive)",
+  overall: "Overall", category_side: "Category × side", selection_weekday: "Chicago selection weekday",
+  kickoff_weekday: "Chicago kickoff weekday", lead_time_bucket: "Actual pregame lead time",
+  saved_cache_descriptive_regrade: "Saved-cache descriptive regrade", recorded_outcome_receipt: "Recorded outcome receipt",
+};
+const gradingLabel = (value) => value == null ? "Unknown / unavailable" : GRADING_LABELS[value] || SHORT[value] || String(value).replaceAll("_", " ");
+function selectedGradingTables() {
+  let tables = S.grading.summary.summary.tables;
+  const fields = ["provenance_class", "model_version", "engine_sha256", "view", "checkpoint", "period", "dimension"];
+  const defaults = { provenance_class: "local_pregame_membership_observation", view: "all_qualifying_leans", checkpoint: "history", period: "cumulative", dimension: "overall" };
+  const controls = [];
+  const labels = { provenance_class: "Forecast provenance", model_version: "Model", engine_sha256: "Engine version", view: "Cohort", checkpoint: "Decision policy", period: "Reporting period", dimension: "Breakdown" };
+  for (const field of fields) {
+    const values = [...new Set(tables.map((table) => table[field]))].sort((a, b) => String(a).localeCompare(String(b)));
+    if (!values.includes(S.gradingFilters[field])) S.gradingFilters[field] = values.includes(defaults[field]) ? defaults[field] : values[0];
+    controls.push(`<label>${labels[field]}<select data-grading-filter="${field}" aria-label="${labels[field]}">${values.map((value) => `<option value="${esc(value)}" ${value === S.gradingFilters[field] ? "selected" : ""}>${esc(gradingLabel(value))}</option>`).join("")}</select></label>`);
+    tables = tables.filter((table) => table[field] === S.gradingFilters[field]);
+  }
+  return { tables, controls: controls.join("") };
+}
+function gradingRowsHtml(group) {
+  if (group.error) return `<p role="alert">Rows unavailable: ${esc(group.error)}. No partial rows qualify as a reconciled report.</p>`;
+  const table = S.grading.summary.summary.tables.find((item) => item.summary_id === group.id);
+  const rows = group.rows.slice(0, group.shown);
+  const label = (row, key) => esc(row[key] ?? "Unknown");
+  return `<h3 id="grading-detail">Auditable selections and coverage</h3><p data-grading-row-count>${rows.length} of ${table.rows} rows loaded${group.complete ? " · complete group reconciled" : " · bounded loading"}.</p>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th class="l">Selection</th><th>Saved line / side</th><th>Outcome</th><th class="l">Timing and evidence</th></tr></thead><tbody>${rows.map((row) => `<tr data-grading-row="${row.decision_sha256}"><td class="l"><b>${label(row, "name")}</b><br>${label(row, "team")} · ${label(row, "game_id")}<br>${esc(SHORT[row.category] || row.category)} · ${label(row, "model_version")}</td><td>${label(row, "side")} ${label(row, "line")}<br>${esc(LINE_FROM[row.line_from] || row.line_from || "No recorded real offer")}<br>${row.top_at_decision === true ? "Recorded Top" : row.top_at_decision === false ? "Not recorded Top" : "Top unknown"}</td><td>${esc(gradingLabel(row.result))}<br>${row.actual == null ? "No resolved statistic" : fmtStat(row.category, row.actual)}<br>${esc(gradingLabel(row.outcome_provenance))}${row.outcome_source_mix === "mixed_agreeing_sources" ? " · agreeing mixed sources" : ""}${row.outcome_conflict ? " · conflict" : ""}</td><td class="l"><details><summary>${label(row, "selection_weekday")} selection · ${label(row, "kickoff_weekday")} kickoff</summary><p>Recorded: ${label(row, "recorded_selection_at")}<br>Generated: ${label(row, "forecast_generated_at")}<br>Collected: ${label(row, "collected_at")}<br>Saved kickoff: ${label(row, "kickoff")}<br>Checkpoint: ${label(row, "checkpoint")}<br>Observation age: ${label(row, "observation_age_seconds")} seconds<br>Lead time: ${label(row, "seconds_to_kickoff")} seconds<br>Action: ${label(row, "action")} · ${label(row, "reason")}<br>Outcome: ${label(row, "outcome_reason")}<br>Coverage: ${label(row, "source_coverage")}<br>Policy: ${label(row, "policy_version")}<br>Selected source: ${label(row, "outcome_selection")}<br>Source mix: ${label(row, "outcome_source_mix")}<br>Revision: ${row.outcome_revision === true ? "Yes" : "No recorded revision"}</p><code style="overflow-wrap:anywhere">Decision ${row.decision_sha256}<br>Forecast ${label(row, "observation_receipt_sha256")}<br>Outcome ${label(row, "outcome_snapshot_sha256")}</code></details></td></tr>`).join("")}</tbody></table></div>
+      ${!group.complete ? `<button class="tbtn" data-grading-more ${group.loading ? "disabled" : ""}>${group.loading ? "Loading…" : "Load more (up to 100 rows)"}</button>` : `<button class="tbtn" data-grading-download>Download this complete group (JSON)</button>`}`;
+}
+function gradingReportHtml() {
+  if (!S.grading) return `<section id="selection-grading"><h2>Selection and timing grading</h2><div class="card note" role="status">The integrated report is unavailable. ${esc(S.gradingError || "No approved publication has been loaded.")} Existing historical reporting below is separate; missing report assets do not establish zero outcomes or verified final participation.</div></section>`;
+  const { pointer, summary } = S.grading;
+  const { tables, controls } = selectedGradingTables();
+  const age = Date.now() - Date.parse(pointer.generated_at);
+  const freshness = age < 0 ? "Generation clock is in the future; freshness unknown." : age > 2 * 3600000 ? "Stale report: no new generation clock is implied by loading these saved bytes." : "Saved report generation is recent; provider and quote freshness remain unverified.";
+  const statusCounts = (table) => `${table.win} W · ${table.loss} L · ${table.push} push · ${table.dnp} confirmed DNP · ${table.pending} pending · ${table.unresolved} unresolved · ${table.excluded} excluded · ${table.no_action} NO_ACTION · ${table.not_due} not due`;
+  const pointCategories = summary.primary_raw_vs_adjusted?.categories || {};
+  return `<section id="selection-grading"><h2>Selection and timing grading</h2>
+    <div class="card note"><b>Descriptive statistical results, not venue settlement or ROI.</b><p data-grading-freshness>${esc(freshness)} Generated ${esc(pointer.generated_at)}.</p><p>Top Picks overlap all leans. The disjoint non-Top view partitions the all-lean decision at its own original clock. Repeated checkpoint policies are related observations. Never add these tables as independent outcomes.</p><p>Whole-week intervals and confirmed subgroup advantages are unavailable unless their registered evidence requirements are met. These views do not identify the best weekday to consult the website.</p><p>Original Week 6 matchup proof remains missing. A new report does not authenticate that historical prediction artifact. Full offer coverage, quote freshness and complete venue contracts remain unestablished where the saved records do not prove them.</p></div>
+    <div class="filters grading-filters">${controls}</div>
+    <div class="tbl-wrap"><table class="tbl" data-grading-summaries><thead><tr><th class="l">Group</th><th>Hit rate</th><th>Sample</th><th class="l">Results and coverage</th><th>Rows</th></tr></thead><tbody>${tables.map((table) => `<tr data-grading-summary="${table.summary_id}"><td class="l">${esc(gradingLabel(table.value))}</td><td>${table.hit_rate == null ? "Unavailable" : fmt(100 * table.hit_rate) + "%"}<br><small>W / (W + L)</small></td><td>${table.decided} decided<br>${table.decided_unique_players} players · ${table.decided_unique_games} games · ${table.decided_unique_weeks} weeks</td><td class="l">${esc(statusCounts(table))}<br>${table.selected} selected / ${table.rows} coverage rows<br>${esc(Object.entries(table.coverage_reason_counts || {}).map(([reason, count]) => `${reason}: ${count}`).join(" · "))}<br>${table.unique_players} players · ${table.unique_games} games · ${table.unique_weeks} archived/observed weeks</td><td><button class="tbtn" data-grading-group="${table.summary_id}">Inspect ${table.rows} rows</button></td></tr>`).join("")}</tbody></table></div>
+    <p class="note">NO_ACTION reasons remain in the rows: observed abstention or non-Top membership differs from missing/stale observations, absent source rows and an unknown universe. Reference-only records are not executable offers. Inherited clocks stay unknown; saved-cache regrades remain separately labelled outcomes.</p>
+    ${S.gradingGroup ? `<div class="card" data-grading-details>${gradingRowsHtml(S.gradingGroup)}</div>` : ""}
+    <details class="card"><summary>Raw Sleeper versus unchanged adjusted point forecasts</summary><p>Same original observation and valid matched outcomes. Category-specific units; no mixed-unit accuracy claim. Descriptive comparisons do not prove improvement.</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Category</th><th>Matched n</th><th>Raw MAE / RMSE / bias</th><th>Adjusted MAE / RMSE / bias</th></tr></thead><tbody>${Object.entries(pointCategories).map(([key, item]) => { const raw = item.raw_sleeper || {}, adjusted = item.unchanged_clone || {}; return `<tr><td>${esc(SHORT[key] || key)}</td><td>${raw.n || 0}</td><td>${fmt(raw.mae, 3)} / ${fmt(raw.rmse, 3)} / ${fmt(raw.mean_error, 3)}</td><td>${fmt(adjusted.mae, 3)} / ${fmt(adjusted.rmse, 3)} / ${fmt(adjusted.mean_error, 3)}</td></tr>`; }).join("") || `<tr><td colspan="4">No matched point outcomes available.</td></tr>`}</tbody></table></div></details>
+    <details class="card"><summary>Coverage, limitations and report identity</summary><p>Report ${esc(pointer.report_id)} · ${esc(summary.report_schema_version)}. Source ${esc(summary.source_sha || "Unbound")}; generated input binding ${esc(summary.input_binding || "Unknown")}.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({ coverage: summary.coverage, limitations: summary.limitations, uncertainty: summary.uncertainty }, null, 2))}</pre></details></section>`;
+}
+async function loadGradingRows(id, more = false) {
+  if (!S.grading) return;
+  const grading = S.grading;
+  const table = grading.summary.summary.tables.find((item) => item.summary_id === id);
+  if (!table || S.gradingGroup?.loading) return;
+  if (!more || S.gradingGroup?.id !== id) S.gradingGroup = { id, rows: [], idsByPosition: new Map(), shown: 100, loadedChunks: 0, complete: false };
+  else S.gradingGroup.shown += 100;
+  const group = S.gradingGroup, wanted = new Set(table.row_positions);
+  let visitedChunks = 0; // Sparse groups must not download the full population in one click.
+  group.loading = true; renderRecord();
+  try {
+    while (group.rows.length < Math.min(group.shown, table.rows) && group.loadedChunks < table.row_chunks.length && visitedChunks++ < 4) {
+      const index = table.row_chunks[group.loadedChunks++], descriptor = grading.pointer.rows[index];
+      let chunk = grading.chunks.get(index);
+      if (!chunk) {
+        chunk = await checkedGradingAsset(grading.pointer, descriptor, "rows");
+        if (chunk.schema_version !== "selection-public-rows-v1" || !Array.isArray(chunk.rows) || chunk.rows.length !== descriptor.count
+            || new Set(chunk.rows.map((row) => row.decision_sha256)).size !== chunk.rows.length
+            || chunk.rows.some((row) => !HASH64.test(row.decision_sha256) || !GRADING_RESULTS.includes(row.result))) throw new Error("Invalid grading row chunk");
+        grading.chunks.set(index, chunk);
+      }
+      if (S.grading !== grading || S.gradingGroup !== group) return;
+      chunk.rows.forEach((row, offset) => {
+        const position = index * 250 + offset;
+        if (wanted.has(position)) { group.rows.push(row); group.idsByPosition.set(position, row.decision_sha256); }
+      });
+    }
+    group.rows.sort((a, b) => a.decision_sha256.localeCompare(b.decision_sha256));
+    if (new Set(group.rows.map((row) => row.decision_sha256)).size !== group.rows.length) throw new Error("Duplicate grading row identity");
+    if (group.loadedChunks === table.row_chunks.length) {
+      if (group.rows.length !== table.rows || group.idsByPosition.size !== table.rows
+          || GRADING_RESULTS.some((result) => group.rows.filter((row) => row.result === result).length !== table[result])) throw new Error("Summary-to-row reconciliation failed");
+      const originalIds = table.row_positions.map((position) => group.idsByPosition.get(position));
+      const membershipHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(originalIds))))].map((v) => v.toString(16).padStart(2, "0")).join("");
+      if (membershipHash !== table.row_ids_sha256) throw new Error("Summary membership checksum mismatch");
+      group.complete = group.rows.length <= group.shown;
+    }
+  } catch (err) { group.error = err.message; group.rows = []; }
+  finally { group.loading = false; if (S.grading === grading && S.gradingGroup === group && S.tab === "record") renderRecord(); }
+}
 function renderRecord() {
+  renderLegacyRecord();
+  const legacy = $("#main").innerHTML;
+  $("#main").innerHTML = gradingReportHtml() + `<details class="card"><summary>Separate legacy archive and historical benchmark</summary>${legacy}</details>`;
+}
+function renderLegacyRecord() {
   const t = S.track;
   if (!t || !t.weeks.length) {
     $("#main").innerHTML = `<h2>Track record</h2><div class="card note">Nothing graded yet.</div>`;
@@ -2621,7 +2828,7 @@ function renderRecord() {
   }).join("");
   const nothing = graded(c.top_over) + graded(c.top_under) + graded(c.leans) === 0;
   $("#main").innerHTML = `
-    <h2>Track record <small>${c.weeks} week${c.weeks === 1 ? "" : "s"}</small></h2>
+    <h2>Track record <small>${c.weeks} archived week${c.weeks === 1 ? "" : "s"}</small></h2>
     <p class="note">${t.grading_version ? "Statistical grading v2: unresolved data and pushes are excluded from hit-rate denominators. Historical regrading is not new prospective evidence." : "Legacy grading snapshot: these totals have not yet been rebuilt by the upgraded grader."} This is not a sportsbook-settled profit record.</p>
     <p class="note">Historical picks and results from before this edition was created came from <a href="https://github.com/joshuam0y/joshua-moy-expert-nfl-picks" target="_blank" rel="noopener">Joshua Moy's original project</a>. The forecasting code is retained as the original benchmark; statistical grading is versioned separately. Inherited historical picks are not new prospective forecasts from this edition.</p>
     ${nothing ? `<div class="card note" style="margin-bottom:10px">Grading started with week ${t.weeks[t.weeks.length - 1].week} of ${t.weeks[t.weeks.length - 1].season}. Only picks and leans saved before kickoff count, so this fills in as games go final. There's no backfill: Sleeper updates past weeks' projections after the games, so grading old weeks would look far better than it really is.</div>` : ""}
@@ -2640,7 +2847,7 @@ function renderRecord() {
     </div>` : ""}
     ${dkSection(c)}
     <h2>By week</h2>${weeks}
-    <p class="note">A hit requires a result strictly over or under the saved line. In statistical grading v2, equality is a push; a missing participation record is unresolved, not confirmed DNP. Actual venue void, injury, and payout rules still require verification. Lines first built after kickoff are excluded. My Picks and live progress retain their original tracking behavior; they are not venue settlement.</p>`;
+    <p class="note">A hit requires a result strictly over or under the saved line. In statistical grading v2, equality is a push; a missing participation record is unresolved, not confirmed DNP. Actual venue void, injury, and payout rules still require verification. Lines first built after kickoff are excluded. My Picks uses each saved user line and confirmed final statistical evidence; live progress remains reversible.</p>`;
 }
 
 // ---------------------------------------------------------------- how it works tab
@@ -2666,10 +2873,10 @@ function renderAbout() {
       <table class="ptable"><thead><tr><th>Statistic</th><th>Resolved</th><th>Sleeper MAE</th><th>Clone MAE</th></tr></thead><tbody>${[ ["rec", "Receptions"], ["rush_att", "Rush attempts"], ["pass_yd", "Pass yards"] ].map(([key, label]) => { const c = S.forecastScorecard.categories?.[key]; const number = (v) => v == null ? "Pending" : fmt(v, 2); return `<tr><td>${label}</td><td>${Number(c?.raw_sleeper?.n || 0)}</td><td>${number(c?.raw_sleeper?.mae)}</td><td>${number(c?.unchanged_clone?.mae)}</td></tr>`; }).join("")}</tbody></table>
       <p>MAE is the average absolute miss in that statistic's units. Uncertainty requires eight completed NFL weeks. These are statistical outcomes, not sportsbook settlement or ROI.</p>` : `<p>No comparison report is available for this release yet. Accuracy and model performance are not established.</p>`}</div>
     <h2 id="features">What's here</h2>
-    <div class="card note"><p><b>Planned separate timing and over/under study:</b> a registered design distinguishes selection weekday, kickoff weekday and time remaining in America/Chicago, with fixed 24-hour, 6-hour and 90-minute checkpoints. Timing capture and performance reporting are not implemented yet. This design leaves the primary forecast comparison unchanged; it provides no day-specific performance or profit claim.</p></div>
+    <div class="card note"><p><b>Separate timing and over/under study:</b> development source integrates saved decision records and descriptive grading into Track Record and the existing updater. Public availability requires separately approved generated assets and deployment; code alone does not establish operating capture. The registered 24-hour, 6-hour and 90-minute checkpoints use the latest already-recorded snapshot at or before the boundary, at most 60 minutes old. Chicago selection and kickoff weekdays remain separate. This leaves the primary forecast comparison unchanged; small descriptive groups do not establish a best weekday or profit.</p></div>
     <div class="feat">
       <div class="card"><b>Props with real lines</b><p>DraftKings lines (then Sleeper Picks) for every prop, our pregame projection, leans, hit rates this season, and Top Overs / Unders for real starters only.</p></div>
-      <div class="card"><b>Live everything</b><p>Scores, every player's stats and fantasy points from Sleeper's live feed, prop progress (cleared, lost, hit, miss), all refreshing together every 15 to 30 seconds.</p></div>
+      <div class="card"><b>Live everything</b><p>Scores, observed player stats and fantasy points, with reversible currently above/below/equal prop progress, refreshing together every 15 to 30 seconds. Final statistical results require saved evidence.</p></div>
       <div class="card"><b>Game pages</b><p>Tap a game: field position, last play, quarter scores, win probability, play-by-play with filters (quarter, scoring, big plays, turnovers, flags), box score, props and fantasy for that game.</p></div>
       <div class="card"><b>Past weeks</b><p>Pick any earlier week above the scores: final scores, box scores, play-by-play, fantasy points and every player against DraftKings' closing lines.</p></div>
       <div class="card"><b>Future weeks and teams</b><p>Pick any week through 18 above the scores: upcoming games with DraftKings' line once it's posted and a preview of who matters (projection, recent form, snap share, depth chart role, matchup). The Teams tab has every team's schedule, ESPN depth chart (offense, defense, special teams), fantasy players and injuries.</p></div>
@@ -2678,7 +2885,7 @@ function renderAbout() {
       <div class="card"><b>Game lines</b><p>DraftKings spread, total, moneyline and implied points next to ours (player projections added up), pregame and live, with leans that get graded.</p></div>
       <div class="card"><b>Your scoring</b><p>Sleeper or ESPN, PPR or half, or your own Sleeper league's exact settings. Every number on the site follows it. Kickers and defenses use ESPN scoring.</p></div>
       <div class="card"><b>Fantasy rankings</b><p>This week or rest of season, by position or FLEX, with live points, snap share and byes.</p></div>
-      <div class="card"><b>Game logs</b><p>Every player's games this season with snaps, then a projection for each remaining week, like Sleeper's. Games he missed show as Did not play (0 points).</p></div>
+      <div class="card"><b>Game logs</b><p>Recorded games with snaps and future projections. Missing participation stays unresolved; only attributed DNP evidence confirms that a player did not play.</p></div>
       <div class="card"><b>Compare</b><p>Two players side by side with a start recommendation, matchup, props and game logs.</p></div>
       <div class="card"><b>Your league</b><p>Sync Sleeper with just your username (or ESPN by league ID): start/sit for this week (locked players stay put), this week's matchups live, standings, every roster, and free agents ranked against your worst player at each spot.</p></div>
       <div class="card"><b>Trades</b><p>Top targets for your weak spots and fair trade ideas with every team (fair for both sides, and their lineup can't get worse), filtered by position, plus a calculator, position ranks (WR14), how both lineups look after the trade, and an AI trade builder.</p></div>
@@ -2706,7 +2913,7 @@ function renderAbout() {
     <table class="ptable">${scoreRows.map(([k, v]) => `<tr><td>${k}</td><td class="num">${v > 0 ? "+" : ""}${v}</td></tr>`).join("")}<tr><td>Reception (half PPR)</td><td class="num">+0.5</td></tr></table>
     <p>Kickers and team defenses use <b>ESPN's standard scoring</b>: field goals 3 (under 40 yards), 4 (40-49), 5 (50-59), 6 (60+), -1 per miss, 1 per extra point; defenses get 1 per sack, 2 per interception, fumble recovery, safety or blocked kick, 6 per touchdown, plus points-allowed and yards-allowed tiers. Every kicker and defense matches ESPN's own totals each week we've checked.</p>
     <h2>Live</h2>
-    <p>Scores, box scores and play-by-play come straight from ESPN every 30 seconds while games are on (every 8 seconds for the game you have open, and the newest play shows "just in" the moment the scoreboard has it, before the full play-by-play catches up), paused when this tab is hidden. Live points use the same scoring, including 2-point conversions and field goal distances. An over is marked cleared when the reported stat exceeds its line. Final statistical grading can reflect later changes; an under is only a hit once the game is final.</p>
+    <p>Scores, box scores and play-by-play come straight from ESPN every 30 seconds while games are on (every 8 seconds for the game you have open, and the newest play shows "just in" the moment the scoreboard has it, before the full play-by-play catches up), paused when this tab is hidden. Live points use the same scoring, including 2-point conversions and field goal distances. Prop progress is currently above, below or equal to the saved line. Negative yardage, deductions and corrections can reverse it. Final wins, losses and pushes require validated saved outcomes; missing statistics are unresolved, and fantasy points alone do not prove participation. Later evidence can revise a final statistical result. Venue settlement is separate.</p>
     <h2>News and injuries</h2>
     <p>Injury designations come from Sleeper with each update, along with ESPN's injury report (notes, body part and expected return). On game days the page also checks ESPN's latest news for games kicking off within 4 hours, so game-day inactives show up right away (outlined badges, with the time ESPN posted them). The News tab has ESPN's latest headlines, tagged with the players they mention, and an injury report by game. Opening a player and tapping More news loads his latest Rotowire note and headlines.</p>
     <h2>Updates, grading, and evidence</h2>
@@ -3701,16 +3908,17 @@ function gameLog(p) {
   const keys = S.data.log_stats?.[p.pos];
   if (!keys) return "";
   const rows = (p.log || []).map((x) => ({ ...x, pts: logPts(p, x) }));
-  // weeks his team played without him show as "Did not play" (0 points), weeks the team was off as "Bye"
+  // An absent historical log is missing participation evidence, not confirmed DNP.
   const opps = teamOpps(p.team), playedW = new Set(rows.map((x) => x.w));
   for (let w = 1; w < S.data.week; w++) {
     if (playedW.has(w)) continue;
-    rows.push(opps[w] ? { w, opp: opps[w], dnp: true, pts: 0 } : { w, bye: true });
+    rows.push(opps[w] ? { w, opp: opps[w], unknown: true, pts: null } : { w, bye: true });
   }
   rows.sort((a, b) => a.w - b.w);
   const g = S.games[p.game_id];
   const c = current(p);
   if (c && c.none && g) rows.push({ w: S.data.week, opp: p.opp, dnp: true, pts: 0, now: true });
+  else if (c && c.status === "unresolved") rows.push({ w: S.data.week, opp: p.opp, unknown: true, pts: null, now: true });
   else if (c && !c.none) {
     const st = c.stats;
     rows.push({ w: S.data.week, opp: p.opp, snp: st.off_snp, tsnp: st.tm_off_snp, s: keys.map((k) => st[k] || 0), pts: livePPR(p), now: true });
@@ -3737,6 +3945,8 @@ function gameLog(p) {
     <thead><tr><th class="l">Game log</th><th>Opp</th><th>Snaps</th>${keys.map((k) => `<th>${LOG_LABELS[k]}</th>`).join("")}<th class="ppr">Pts</th></tr></thead>
     <tbody>${rows.map((r) => r.bye
       ? `<tr class="bye"><td class="l">Week ${r.w}</td><td colspan="${keys.length + 3}">Bye</td></tr>`
+      : r.unknown
+      ? `<tr><td class="l">${r.now ? (g.state === "post" ? "Final" : "Now") : `Week ${r.w}`}</td><td>${r.opp || ""}</td><td colspan="${keys.length + 1}">Participation unresolved</td><td class="ppr">-</td></tr>`
       : r.dnp
       ? `<tr class="dnp"><td class="l">${r.now ? "Final" : `Week ${r.w}`}</td><td>${r.opp || ""}</td><td colspan="${keys.length + 1}" class="dnp-t">Did not play</td><td class="ppr">${fmtPts(0)}</td></tr>`
       : `<tr class="${r.now ? "now" : r.proj ? "proj" : ""}"><td class="l">${r.now ? (g.state === "post" ? "Final" : "Now") : `Week ${r.w}`}${r.proj ? ` <span class="ptag big">proj</span>` : ""}</td><td>${r.opp || ""}</td><td>${r.proj ? "" : snaps(r)}</td>${r.s.map((v) => `<td>${cellv(v, r.proj)}</td>`).join("")}<td class="ppr">${fmtPts(r.pts)}</td></tr>`).join("")}</tbody>
@@ -4273,13 +4483,19 @@ function gameBetLabel(m, g) {
 // Where a game bet stands: live margins and totals, then hit, miss or push at the final
 function gameBetStatus(m) {
   const g = S.games[m.gid];
-  if (!g || g.state === "pre" || g.home_score == null) return null;
+  if (!g || g.state === "pre") return null;
+  if (!["spread", "total", "ml"].includes(m.market) || (m.market !== "ml" && !Number.isFinite(m.line)))
+    return { res: "unresolved", final: false, note: "Saved market or line missing/invalid" };
+  if (m.market === "total" ? !["over", "under"].includes(m.side) : ![g.home, g.away].includes(m.side))
+    return { res: "unresolved", final: false, note: "Saved side does not match this game/market" };
+  if (!Number.isFinite(g.home_score) || !Number.isFinite(g.away_score)) return { res: "unresolved", final: false, note: "Missing recorded game score" };
+  if (g.state === "post" && !/^Final(?:\/\d*OT)?$/i.test((g.detail || "").trim())) return { res: "unresolved", final: false, note: "Final status unconfirmed; cancellation/void settlement unavailable" };
   const final = g.state === "post";
   const hs = g.home_score, as = g.away_score;
   if (m.market === "total") {
     const t = hs + as;
     const over = t > m.line;
-    const res = final ? (t === m.line ? "push" : over === (m.side === "over") ? "hit" : "miss") : over ? (m.side === "over" ? "hit" : "miss") : "live";
+    const res = final ? (t === m.line ? "push" : over === (m.side === "over") ? "hit" : "miss") : t === m.line ? "equal" : over ? "above" : "below";
     return { res, final, v: t, note: `${t} points${final ? "" : " so far"}${!final && !over ? `, ${fmt(m.line - t, 1)} under the line` : ""}`, pct: Math.min(100, (100 * t) / Math.max(m.line, 1)) };
   }
   const mine = m.side === g.home ? hs - as : as - hs;
@@ -4321,12 +4537,13 @@ function renderMine() {
   });
   const rank = (r) => (r.g.state === "in" ? 0 : r.g.state === "pre" ? 1 : 2);
   rows.sort((a, b) => rank(a) - rank(b) || a.g.kickoff.localeCompare(b.g.kickoff) || a.m.at - b.m.at);
-  const hit = rows.filter((r) => r.st?.res === "hit").length;
-  const miss = rows.filter((r) => r.st?.res === "miss").length;
-  const push = rows.filter((r) => r.st?.res === "push").length;
+  const hit = rows.filter((r) => r.st?.final && r.st.res === "hit").length;
+  const miss = rows.filter((r) => r.st?.final && r.st.res === "miss").length;
+  const push = rows.filter((r) => r.st?.final && r.st.res === "push").length;
+  const dnp = rows.filter((r) => r.st?.final && r.st.res === "dnp").length;
+  const unresolved = rows.filter((r) => r.st?.res === "unresolved").length;
   const final = rows.filter((r) => r.st?.final).length;
   const live = rows.filter((r) => r.g.state === "in").length;
-  const entry = miss ? "lost" : hit + push === rows.length && hit ? "won" : "open";
   const gameRow = ({ m, g, st }) => `<div class="pick mine ${st?.res || ""}" data-game="${g.id}">
       <div class="av def"><img src="${logo(m.market === "total" ? g.home : m.side)}" alt=""></div>
       <div>
@@ -4361,11 +4578,12 @@ function renderMine() {
   $("#main").innerHTML = `
     <h2>My Picks <small>${S.data.season} week ${S.data.week}</small></h2>
     <div class="mine-sum card">
-      <div><div class="k">Hit</div><div class="v num" style="color:var(--green)">${hit}</div></div>
-      <div><div class="k">Missed</div><div class="v num" style="color:var(--red)">${miss}</div></div>
+      <div><div class="k">Final wins</div><div class="v num" style="color:var(--green)">${hit}</div></div>
+      <div><div class="k">Final losses</div><div class="v num" style="color:var(--red)">${miss}</div></div>
+      <div><div class="k">Push / DNP</div><div class="v num">${push} / ${dnp}</div></div>
+      <div><div class="k">Unresolved</div><div class="v num">${unresolved}</div></div>
       <div><div class="k">Live</div><div class="v num" style="color:var(--cyan)">${live}</div></div>
       <div><div class="k">Not started</div><div class="v num">${rows.filter((r) => r.g.state === "pre").length}</div></div>
-      <div class="entry ${entry}"><div class="k">All ${rows.length} together</div><div class="v">${entry === "won" ? "Won" : entry === "lost" ? "Lost" : `${hit} of ${rows.length}`}</div></div>
     </div>
     <div class="plist">${rows.map((r) => (r.m.kind === "game" ? gameRow(r) : propRow(r))).join("")}</div>
     <div class="gtool" style="margin-top:12px">
@@ -4373,7 +4591,7 @@ function renderMine() {
       <button class="tbtn" data-mine-clear="all">Clear all</button>
       ${old ? `<button class="tbtn" data-mine-clear="old">Clear ${old} from earlier weeks</button>` : ""}
     </div>
-    <p class="note">Picks keep the line you added them at; change any line to the one you actually got (an alternate spread like -4.5, a different total). Overs show cleared as soon as they pass the line; unders, spreads and moneylines settle when the game is final (a push is a tie with the line).</p>`;
+    <p class="note">Each selection uses your own saved line. Equality is a statistical push on either side. Live values are currently above, below or equal and can change, including downward corrections. Only confirmed final statistical outcomes enter the win/loss counts; missing evidence is unresolved. These are individual statistical results, not verified venue settlement or combined-ticket economics.</p>`;
 }
 
 // ---------------------------------------------------------------- render and events
@@ -4421,6 +4639,16 @@ function renderLiveParts() {
 
 document.addEventListener("click", (e) => {
   const t = e.target;
+  const gradingGroup = t.closest("[data-grading-group]");
+  if (gradingGroup) { loadGradingRows(gradingGroup.dataset.gradingGroup); return; }
+  if (t.closest("[data-grading-more]")) { if (S.gradingGroup) loadGradingRows(S.gradingGroup.id, true); return; }
+  if (t.closest("[data-grading-download]")) {
+    const group = S.gradingGroup;
+    if (!group?.complete || group.error) return;
+    const blob = new Blob([JSON.stringify({ schema_version: "selection-public-group-download-v1", report_id: S.grading.pointer.report_id, summary_id: group.id, rows: group.rows }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob), link = document.createElement("a");
+    link.href = url; link.download = `grading-${group.id}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); return;
+  }
   const tab = t.closest(".tabs button");
   if (tab) { if (tab.dataset.tab === "teams") S.teamView = null; S.tab = tab.dataset.tab; S.gameView = null; store("tab", S.tab); render(); syncHash(true); window.scrollTo(0, 0); return; }
   if (t.closest("[data-back]")) { S.gameView = null; render(); syncHash(true); window.scrollTo(0, 0); return; }
@@ -4756,6 +4984,10 @@ document.addEventListener("input", (e) => {
 });
 
 document.addEventListener("change", (e) => {
+  if (e.target.dataset.gradingFilter) {
+    S.gradingFilters[e.target.dataset.gradingFilter] = e.target.value;
+    S.gradingGroup = null; renderRecord(); return;
+  }
   if (e.target.matches("[data-wksel]")) { setWeek(+e.target.value); return; }
   if (e.target.matches("[data-mu-week]")) { S.muWeek = +e.target.value; renderLeagueTab(); return; }
   const t = e.target;

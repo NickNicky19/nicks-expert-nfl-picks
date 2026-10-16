@@ -13,6 +13,7 @@ from offers import capture_offers
 from release_mode import read_mode, read_phase2
 from reliability import IntegrityError, atomic_json, capture, digest, engine_hashes, load_json, stamp, utc
 from scorecard import build_scorecard, latest_outcomes
+from selection_publication import all_ten_outcome_identities, publish_selection_report
 from shadow import evaluate, make_shadow
 from verify import require_offline
 
@@ -79,7 +80,10 @@ def run_capture(root=ROOT, mode="live", replay_at=None):
         payload["calculation_completed_at"] = stamp(completed)
         shadow_path = write(root, "shadow" if mode == "live" else "shadow_replay", payload)
     offer_path = write(root, "offers" if mode == "live" else "offers_replay", offer_payload)
-    report, _ = build_scorecard(root, now, mode=mode, allow_replay=mode == "replay")
+    additional_coverage = {}
+    additional = all_ten_outcome_identities(root, now, coverage=additional_coverage) if mode == "live" else None
+    report, _ = build_scorecard(root, now, mode=mode, allow_replay=mode == "replay",
+                               additional_outcome_pairs=additional)
     report["shadow"] = probability_report(root, policy, mode)
     report["offers"] = {"coverage": offer_payload["coverage"], "collected_at": observation["collected_at"],
                         "source_status": offer_payload["source_status"], "complete_executable_entries": 0,
@@ -91,6 +95,10 @@ def run_capture(root=ROOT, mode="live", replay_at=None):
                         "production_model": policy["baseline"], "offer_coverage": offer_payload["coverage"],
                         "unique_forecast_opportunities": report["coverage"]["unique_opportunities"]}
     if mode == "live":
+        health["phase2"]["selection_outcome_identity_coverage"] = additional_coverage
+        publication = publish_selection_report(root, now)
+        health["phase2"]["selection_report_sha256"] = publication["report_id"]
+        health["phase2"]["selection_report_generated_at"] = publication["generated_at"]
         atomic_json(root / "output/data/forecast-scorecard.json", report)
         atomic_json(root / "output/data/offer-capture.json", report["offers"])
         atomic_json(root / "output/data/health.json", health)

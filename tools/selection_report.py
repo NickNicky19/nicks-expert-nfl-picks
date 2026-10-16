@@ -22,7 +22,7 @@ from scorecard import identity, latest_outcomes, paired_forecasts, score, snapsh
 import grade
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "selection-report-v1"
+VERSION = "selection-report-v2"
 CHICAGO = ZoneInfo("America/Chicago")
 RESULTS = ("win", "loss", "push", "dnp", "pending", "unresolved", "excluded", "no_action", "not_due")
 PATTERNS = ("data/forward/**/*.json.gz", "data/outcomes/**/*.json.gz",
@@ -364,6 +364,49 @@ def archive_decisions(archives, policy):
     return reconciled
 
 
+def outcome_provenance(outcome):
+    """Classify only the validated record selected for the numeric outcome.
+
+    A historical observation, cached flag or copied source string cannot supply
+    this binding. Conflicts deliberately have no selected-source provenance.
+    """
+    if not outcome:
+        return "missing"
+    if outcome.get("outcome_conflict") or outcome.get("outcome_selection") == "conflict":
+        return "conflicting_outcome_evidence"
+    selected = outcome.get("selected_outcome_provenance")
+    if (not isinstance(selected, dict)
+            or digest(selected) != outcome.get("selected_outcome_provenance_sha256")
+            or selected.get("outcome_snapshot_sha256") != outcome.get("outcome_snapshot_sha256")
+            or not selected.get("outcome_row_sha256")
+            or selected.get("outcome_row_sha256") != outcome.get("selected_outcome_row_sha256")
+            or digest(selected) not in {digest(observation) for observation in outcome.get("outcome_observations", [])}):
+        return "unknown_unverified"
+    if selected.get("source") == "git_pinned_saved_cache_statistical_regrade":
+        return "saved_cache_descriptive_regrade"
+    if selected.get("source") == "existing_Sleeper_stats_cache_and_ESPN_final_game_snapshot":
+        return "recorded_outcome_receipt"
+    return "unknown_unverified"
+
+
+def final_outcome_records(outcomes):
+    """Minimal derived outcome interface; never copy cache entries or paths."""
+    fields = ("season", "week", "game_id", "player_id", "category", "team", "kickoff", "status", "actual", "reason",
+              "game_state", "final_confirmed", "collected_at", "outcome_snapshot_sha256", "outcome_selection",
+              "outcome_conflict", "outcome_identity_status", "outcome_identity_reasons", "outcome_source_mix",
+              "outcome_revision", "selected_outcome_provenance_sha256")
+    records = []
+    for _, outcome in sorted(outcomes.items()):
+        row = {key: outcome.get(key) for key in fields}
+        row["final_confirmed"] = outcome.get("final_confirmed") is True
+        row["outcome_conflict"] = outcome.get("outcome_conflict") is True
+        selected = outcome.get("selected_outcome_provenance") or {}
+        row.update(selected_outcome_row_sha256=selected.get("outcome_row_sha256"),
+                   outcome_provenance=outcome_provenance(outcome))
+        records.append(row)
+    return records
+
+
 def grade_decisions(records, outcomes):
     rows = []
     for decision in records:
@@ -390,9 +433,15 @@ def grade_decisions(records, outcomes):
                                          outcome.get("outcome_observations", [])] if outcome else [],
                    outcome_collected_at=outcome.get("collected_at") if outcome else None,
                    week_confirmed_complete=bool(outcome and outcome.get("week_confirmed_complete")),
-                   outcome_provenance=("saved_cache_descriptive_regrade" if outcome and
-                                       outcome.get("source") == "git_pinned_saved_cache_statistical_regrade" else
-                                       "recorded_outcome_receipt" if outcome else "missing"))
+                   outcome_provenance=outcome_provenance(outcome),
+                   selected_outcome_provenance_sha256=outcome.get("selected_outcome_provenance_sha256") if outcome else None,
+                   selected_outcome_row_sha256=(outcome.get("selected_outcome_provenance") or {}).get("outcome_row_sha256") if outcome else None,
+                   outcome_selection=outcome.get("outcome_selection") if outcome else None,
+                   outcome_conflict=bool(outcome and outcome.get("outcome_conflict")),
+                   outcome_source_mix=outcome.get("outcome_source_mix") if outcome else None,
+                   outcome_revision=bool(outcome and outcome.get("outcome_revision")),
+                   outcome_identity_status=outcome.get("outcome_identity_status") if outcome else None,
+                   outcome_identity_reasons=outcome.get("outcome_identity_reasons", []) if outcome else [])
         rows.append(row)
     return rows
 
@@ -527,7 +576,14 @@ def _inventory(roots, input_pins=None):
 def _frozen_decisions(output, records, at):
     previous, seen_history = {}, set()
     for path in sorted((output / "data/selection_decisions").rglob("*.json.gz")):
-        for row in read(path)["rows"]:
+        payload = read(path)
+        if (payload.get("schema_version") != "derived-selection-ledger-v1"
+                or utc(payload["derived_at"]) > utc(at) or not isinstance(payload.get("rows"), list)):
+            raise IntegrityError("Unsupported or future frozen decision ledger")
+        for row in payload["rows"]:
+            if (not isinstance(row, dict) or row.get("schema_version") != "selection-decision-v1"
+                    or row.get("decision_sha256") != digest({k: v for k, v in row.items() if k != "decision_sha256"})):
+                raise IntegrityError("Frozen decision content identity mismatch")
             if row["checkpoint"] == "history":
                 seen_history.add(row["decision_sha256"])
                 continue
@@ -535,6 +591,7 @@ def _frozen_decisions(output, records, at):
             if old != row:
                 raise IntegrityError("Conflicting frozen decision ledger")
     stable, conflicts = [], []
+    current_keys = {record["decision_key"] for record in records}
     for record in records:
         old = previous.get(record["decision_key"]) if record["checkpoint"] != "history" else None
         if old and old != record and record["action"] != "NOT_DUE":
@@ -545,6 +602,9 @@ def _frozen_decisions(output, records, at):
             record.pop("decision_sha256")
             record["decision_sha256"] = digest(record)
         stable.append(record)
+    # Prior frozen decisions are observations in their own right. A later
+    # partial input root cannot silently erase them from the public report.
+    stable.extend(row for key, row in sorted(previous.items()) if key not in current_keys)
     by_week = defaultdict(list)
     for row in stable:
         if (row["action"] in ("SELECT", "NO_ACTION") and row["decision_key"] not in previous
@@ -688,6 +748,7 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
     code = {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in
             (Path(__file__), ROOT / "tools/scorecard.py", ROOT / "pull/grade.py")}
     report = {"schema_version": VERSION, "rows": rows, "summary": summary, "coverage": coverage,
+              "final_outcomes": final_outcome_records(outcomes),
               "outcome_observation_index": {digest(observation): observation for outcome in outcomes.values()
                                             for observation in outcome.get("outcome_observations", [])},
               "matched_checkpoints": matched_checkpoints(rows),
@@ -698,7 +759,7 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
                               "Original captured-population independent evidence review pending.",
                               "Provider/quote freshness, full contract and venue settlement unverified.",
                               "Inherited/unclocked history, offline checkpoint derivation and original captures are separate.",
-                              "No model fitted/promoted; no website integration, publication verification or deployment."],
+                              "No model fitted/promoted; report derivation alone does not establish publication or deployment."],
               "input_manifest_sha256": digest(manifest), "code_sha256": code,
               "timing_policy_sha256": digest(policy), "evaluation_policy_sha256": digest(primary_policy)}
     # Outputs are content-addressed; operational clocks live in a separate run receipt.

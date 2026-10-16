@@ -183,6 +183,7 @@ def _verified_week_complete(payload):
 
 
 COUNT_STATS = frozenset(("pass_td", "pass_cmp", "pass_att", "pass_int", "rush_att", "rec"))
+PICKABLE_STATS = COUNT_STATS | frozenset(("pass_yd", "rush_yd", "rec_yd", "rush_rec_yd"))
 
 
 def source_statistic(category, stats):
@@ -200,6 +201,60 @@ def source_statistic(category, stats):
         if int(value) != value or key in COUNT_STATS and value < 0:
             raise IntegrityError("Invalid integer/count outcome")
     return None if any(value is None for value in values) else sum(values)
+
+
+def _outcome_identity(payload, row, entry):
+    """Check recorded bindings only; missing legacy mappings remain explicit.
+
+    This is shared by fresh snapshots and immutable saved-outcome consumption.
+    Contradictions quarantine the observation, not unrelated valid players.
+    No provider-specific event-ID crosswalk or absent opponent is invented.
+    """
+    reasons, missing = [], []
+    games = payload.get("games")
+    if games is not None and not isinstance(games, list):
+        raise IntegrityError("Malformed saved game population")
+    if any(not isinstance(game, dict) for game in games or []):
+        raise IntegrityError("Malformed saved game record")
+    matches = [game for game in games or [] if game.get("id") == row["game_id"]]
+    if len(matches) > 1:
+        reasons.append("duplicate_recorded_game_identity")
+    game = matches[0] if len(matches) == 1 else None
+    if game is None:
+        # Old receipts may have retained only row-level final-game evidence.
+        # A present nonempty board contradicting the row is different.
+        if games:
+            reasons.append("recorded_game_not_found")
+        else:
+            missing.append("recorded_game_mapping_unavailable")
+    elif game.get("kickoff") and row.get("kickoff"):
+        if utc(game["kickoff"]) != utc(row["kickoff"]):
+            reasons.append("recorded_game_kickoff_mismatch")
+    else:
+        missing.append("recorded_kickoff_binding_unavailable")
+    home, away = (game.get("home"), game.get("away")) if game else (None, None)
+    clubs = [club for club in (home, away) if club is not None]
+    if any(not isinstance(club, str) or not club.strip() for club in clubs):
+        reasons.append("malformed_recorded_club_identity")
+    elif len(clubs) == 2 and (home == away or row.get("team") not in clubs):
+        reasons.append("player_team_absent_from_recorded_game")
+    elif len(clubs) < 2:
+        missing.append("recorded_club_mapping_incomplete")
+    if isinstance(entry, dict):
+        team, opponent = entry.get("team"), entry.get("opp")
+        if team is not None and team != row.get("team"):
+            reasons.append("statistics_team_mismatch")
+        if team is None:
+            missing.append("statistics_team_unavailable")
+        if opponent is not None and len(clubs) == 2 and row.get("team") in clubs:
+            if opponent != (away if row["team"] == home else home):
+                reasons.append("statistics_opponent_mismatch")
+        elif opponent is None:
+            missing.append("statistics_opponent_unavailable")
+    else:
+        missing.append("statistics_identity_unavailable")
+    return {"outcome_identity_status": "quarantined" if reasons else "partial_legacy" if missing else "bound_to_recorded_game",
+            "outcome_identity_reasons": sorted(set(reasons or missing))}
 
 
 def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None, derived_context=None,
@@ -252,6 +307,7 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
             game = games.get(row["game_id"])
             status, actual, reason = "pending", None, "game_not_confirmed_final"
             entry = cache.get(row["player_id"])
+            binding = _outcome_identity({"games": board["games"]}, row, entry)
             if game and confirmed_final(game):
                 if utc(game["kickoff"]) >= observed_at:
                     raise IntegrityError("Final-game evidence has a future kickoff")
@@ -261,24 +317,23 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
                     reason = "explicit_sourced_dnp"
                 elif status == "played":
                     status, reason = "resolved", "played_sparse_stats"
-                    if entry.get("team") != row["team"]:
-                        status, reason = "unresolved", "player_team_mismatch"
-                    elif (derived_context is not None and game.get("home") and game.get("away")
-                          and (row["team"] not in (game["home"], game["away"])
-                               or entry.get("opp") is not None
-                               and entry["opp"] != (game["away"] if row["team"] == game["home"] else game["home"]))):
+                    value = source_statistic(row["category"], entry.get("stats", {}))
+                    if binding["outcome_identity_status"] == "quarantined":
                         status, reason = "unresolved", "saved_player_game_identity_mismatch"
-                    elif source_statistic(row["category"], entry.get("stats", {})) is None:
+                    elif value is None:
                         status, reason = "unresolved", "explicit_null_stat"
                     else:
-                        actual = source_statistic(row["category"], entry["stats"])
+                        actual = value
                 if status != "resolved":
                     actual = None
+            if binding["outcome_identity_status"] == "quarantined":
+                status, actual, reason = "unresolved", None, "saved_player_game_identity_mismatch"
             outcomes.append({k: row[k] for k in ("season", "week", "game_id", "player_id", "category", "team")} |
                             {"status": status, "actual": actual, "reason": reason,
                              "kickoff": game.get("kickoff") if game else None, "stats_entry": entry,
                              "game_state": game.get("state") if game else None,
-                             "final_confirmed": bool(game and confirmed_final(game)), "week_confirmed_complete": week_complete})
+                             "final_confirmed": bool(game and confirmed_final(game)), "week_confirmed_complete": week_complete,
+                             **binding})
         payload = {"schema_version": "forecast-outcomes-v1", "mode": mode, "season": season, "week": week,
                    "collected_at": stamp(observed_at), "source_timestamp": None,
                    "source": "existing_Sleeper_stats_cache_and_ESPN_final_game_snapshot",
@@ -335,6 +390,7 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
     if entry is not None and not isinstance(entry, dict):
         raise IntegrityError("Invalid saved statistics entry")
     past_final = _past_final(row, collected)
+    binding = _outcome_identity(payload, row, entry)
     week_complete = bool(week_complete and (row.get("season"), row.get("week")) ==
                          (payload.get("season"), payload.get("week")) and row.get("kickoff")
                          and any(game["id"] == row.get("game_id") and utc(game["kickoff"]) == utc(row["kickoff"])
@@ -350,8 +406,8 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
         if int(actual) != actual or row["category"] in COUNT_STATS and actual < 0:
             raise IntegrityError("Invalid integer/count outcome")
         if isinstance(entry, dict):
-            if grade.participation(entry) != "played" or entry.get("team") != row["team"]:
-                raise IntegrityError("Resolved outcome has contradictory participation/team")
+            if grade.participation(entry) != "played":
+                raise IntegrityError("Resolved outcome has contradictory participation")
             observed = source_statistic(row["category"], entry.get("stats", {}))
             finite(observed, "saved source statistic", optional=False)
             if observed != actual:
@@ -364,6 +420,10 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
         normalized["actual"] = None
         if status in ("dnp", "void"):
             normalized.update(status="unresolved", reason="unconfirmed_exclusion")
+    normalized.update(binding)
+    if binding["outcome_identity_status"] == "quarantined":
+        normalized.update(status="unresolved", actual=None, reason="saved_player_game_identity_mismatch")
+        terminal, week_complete = False, False
     derived = payload.get("derived_context")
     if derived is not None and (not isinstance(derived, dict) or not derived
                                or payload.get("source") != "git_pinned_saved_cache_statistical_regrade"):
@@ -381,6 +441,7 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
                   "kickoff": row.get("kickoff"), "final_confirmed": row.get("final_confirmed"),
                   "week_confirmed_complete": row.get("week_confirmed_complete", False),
                   "week_completion_verified": week_complete}
+    provenance.update(binding)
     if derived is not None:
         provenance["derived_context"] = derived
     return {"row": normalized, "provenance": provenance, "collected": collected,
@@ -463,10 +524,27 @@ def latest_outcomes(snapshots, allow_replay=False):
                   "outcome_observations": [r["provenance"] for r in records],
                   "outcome_conflict": conflict,
                   "outcome_selection": "confirmed" if frontier else "incomplete_observation"}
+        # Bind reporting provenance to this exact selected source record. The
+        # first historical observation need not be the selected correction.
+        result["selected_outcome_provenance"] = selected["provenance"]
+        result["selected_outcome_provenance_sha256"] = digest(selected["provenance"])
+        result["selected_outcome_row_sha256"] = selected["provenance"]["outcome_row_sha256"]
+        result["outcome_active_observations"] = sorted({digest(r["provenance"]) for r in frontier})
+        sources = {r["provenance"].get("source") for r in frontier}
+        result["outcome_source_mix"] = ("unknown_source" if not sources or None in sources or "" in sources else
+                                         "mixed_agreeing_sources" if len(sources) > 1 else "single_source")
+        versions = defaultdict(set)
+        for record in records:
+            if record["terminal"] and record["attributed"] and record["version"]:
+                versions[record["origin"]].add((record["row"]["status"], record["row"].get("actual")))
+        result["outcome_revision"] = any(len(values) > 1 for values in versions.values())
         if conflict:
             result.update(status="unresolved", actual=None, stats_entry=None,
                           reason="conflicting_confirmed_outcomes", outcome_snapshot_sha256=None,
-                          outcome_selection="conflict", collected_at=records[-1]["provenance"]["collected_at"])
+                          outcome_selection="conflict", collected_at=records[-1]["provenance"]["collected_at"],
+                          selected_outcome_provenance=None, selected_outcome_provenance_sha256=None,
+                          selected_outcome_row_sha256=None,
+                          outcome_source_mix="conflicting_sources")
         # Completion proof is separate from the statistic's selected receipt.
         # A later missing stat may still document a confirmed complete week.
         completion = [r["provenance"]["outcome_snapshot_sha256"] for r in records
@@ -561,14 +639,54 @@ def score(pairs, outcomes, coverage, policy):
             "calibration": "NOT_ESTABLISHED", "profitability": "NOT_ESTABLISHED"}
 
 
-def build_scorecard(root=ROOT, observed_at=None, mode="live", allow_replay=False):
+def _additional_pairs(requested, primary, receipts, now, allow_replay):
+    """Accept only original pregame identities; never fabricate extra outcomes."""
+    if not isinstance(requested, dict):
+        raise IntegrityError("Additional outcome identities must be a mapping")
+    original = set()
+    for payload in receipts:
+        if payload.get("mode") != "live" and not (allow_replay and payload.get("mode") == "replay"):
+            continue
+        captured = utc(payload["captured_at"])
+        if captured > utc(now):
+            continue
+        for row in payload["rows"]:
+            if row["category"] in PICKABLE_STATS and captured < utc(row["kickoff"]):
+                original.add((identity(row), row["team"], utc(row["kickoff"])))
+    result = {}
+    for key, row in requested.items():
+        try:
+            valid = (isinstance(row, dict) and key == identity(row) and row["category"] in PICKABLE_STATS
+                     and type(row["season"]) is int and type(row["week"]) is int and 1 <= row["week"] <= 18
+                     and all(isinstance(row[name], str) and row[name].strip()
+                             for name in ("game_id", "player_id", "team"))
+                     and (key, row["team"], utc(row["kickoff"])) in original)
+        except (KeyError, TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise IntegrityError("Additional outcome identity is not an original saved pregame observation")
+        if key in primary:
+            if row["team"] != primary[key]["team"] or utc(row["kickoff"]) != utc(primary[key]["kickoff"]):
+                raise IntegrityError("Additional outcome conflicts with primary identity")
+        else:
+            result[key] = row
+    return result
+
+
+def build_scorecard(root=ROOT, observed_at=None, mode="live", allow_replay=False, *, additional_outcome_pairs=None):
     root = Path(root)
     now = observed_at or datetime.now(timezone.utc)
     policy = load_json(root / "config/evaluation-policy.json")
     lane = "forward" if mode == "live" else "replay"
     receipts = [read(p) for p in sorted((root / "data" / lane).rglob("*.json.gz"))]
     pairs, coverage = paired_forecasts(receipts, policy, engine_hashes(root), allow_replay=allow_replay)
+    additional = (_additional_pairs(additional_outcome_pairs, pairs, receipts, now, allow_replay)
+                  if additional_outcome_pairs is not None else {})
     paths = snapshot_outcomes(root, pairs, now, mode=mode)
+    if additional:
+        # The primary call and registered scoring population stay intact.
+        # Extra descriptive categories cannot certify a completed week.
+        paths.extend(snapshot_outcomes(root, additional, now, mode=mode, include_populations=False))
     outcome_lane = "outcomes" if mode == "live" else "outcomes_replay"
     outcomes = latest_outcomes([read(p) for p in (root / "data" / outcome_lane).rglob("*.json.gz")], allow_replay)
     report = score(pairs, outcomes, coverage, policy)
