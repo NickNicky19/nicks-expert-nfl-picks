@@ -526,3 +526,152 @@ but is never original pregame proof. Results may show improvement, no establishe
 improvement or insufficient valid evidence. Minimum-week requirements constrain
 the defined inference/promotion claims, not useful descriptive reporting,
 synthetic development or separately authorized shadow research.
+
+## Fixed receptions updater integration and native receipt compatibility
+
+This bounded source checkpoint follows the owner-relayed
+NICK-REC-HALF-SOURCE-REVIEW-20261016-67fa603. The owner accepts the fixed formula
+and direct-library comparison components for nonproduction integration.
+That review inspected published source/tests/protocol, the release recommendation,
+both CI statuses and the exact-source 429-test log. It did not rerun the full
+suite locally, inspect restricted captures or test public deployment. It is not
+whole-PR acceptance, original-capture authentication or release approval.
+
+### CLI-01: reproduced and retained standalone limitation
+
+The full pinned checkout at
+67fa6037f3ef61d97a1e9c048a5d0b2a4582eb48 reproduced
+NICK-REC-HALF-SOURCE-REVIEW-20261016-67fa603:CLI-01 with the existing fictional
+test_reliability.fixture and actual reliability.capture. The unchanged native
+file passed evidence.read; the frozen point_challenger._receipt rejected its
+filename. Native baseline filenames are:
+
+    digest({"data": payload["input_sha256"],
+            "engine": payload["engine_sha256"],
+            "mode": payload["mode"]}) + ".json.gz"
+
+They are not digest(payload) filenames. Original names/bytes are preserved.
+The updater's schema-specific read_native_baseline checks the native identity
+and envelope, lane/season/week, model, unchanged engine, unique opportunities
+and original clocks. Generic candidate/outcome/report receipts retain their own
+payload-digest filename contract. These contracts are not interchangeable.
+
+The supported end-to-end interface is the existing
+`python tools/phase2_capture.py --mode live` in the exact candidate checkout,
+or its run_capture API with an isolated validation root. It first requires the
+existing exact-root original-input proof, then captures the original baseline
+and calls the frozen candidate's direct APIs. It does not use the incompatible
+standalone baseline reader. Saved native-file consumption, creation, retries
+and later outcome evaluation are tested through that path.
+
+The original `tools/point_challenger.py capture --baseline ...` and
+`evaluate --baseline ...` commands still reject native baseline filenames.
+They are **not corrected or accepted as fully working** by this integration.
+Do not rename evidence as a workaround. A future compatible standalone
+interface needs explicit source scope; the frozen candidate module is unchanged.
+
+### Recording, retries and saved comparisons
+
+`tools/rec_half_registration_v1.json` contains the exact official payload
+0ffd81a0d2708418d1d1b072cf9ce7750f42c554f04c2456f2a5206be199e0c6,
+registered 2026-10-16T19:36:46.224755Z, with the unchanged Weeks 7–14 window.
+Its original offline-status and protocol metadata are historical freeze records,
+not mutable operating flags. Current hook/attempt/report status lives separately
+in health and derived research reports. No registration clock or model file is
+regenerated to change eligibility.
+
+On a genuinely new, verified original live baseline, calculate promptly before
+the heavier shadow/outcome/report stages, using actual start/completion clocks
+from the frozen direct API. Raw, adjusted and candidate values remain bound to
+that same original receipt and row. Completion at or after saved kickoff is
+retained as an exclusion, never a prospective forecast. Missing pairs, empty
+populations, outside-window observations and observations preceding registration
+receive explicit treatment. No fitting, tuning, ranking or engine change occurs.
+
+An ordinary retry or restart reads and validates the first saved candidate.
+It does not create a new prediction for an existing original baseline. If a
+crash left an original baseline without a candidate, record MISSED_NOT_BACKFILLED;
+do not reconstruct its missed calculation or replace its clock. A genuinely new
+later original baseline may create a new eligible candidate. Malformed,
+conflicting, unsupported or missing required saved evidence fails validation;
+there is no permissive source-check fallback. A missing registration supports
+explicit NOT_CONFIGURED baseline-only compatibility; a present invalid one
+fails closed. Replay does not activate this prospective hook.
+
+Create-only candidate receipts remain under data/verification/point-candidates.
+Saved native baselines, candidates and original outcome receipts are consumed
+again for comparison; do not score only an in-memory formula result. New outcome
+versions can update the descriptive comparison without creating a new candidate
+or changing older evidence. Full comparisons remain separately versioned saved
+research records; any public-facing summary must have an explicit field
+allowlist. Original selection grading, rankings, fantasy scoring, all-ten-category
+outcome handling and registered primary/shadow comparisons are retained.
+
+A local RECORDED or REUSED_FIRST_RECORDING status describes that observed
+entrypoint call. It does not prove continuous production operation, independently
+verified publication, calibrated probabilities or improved accuracy. The
+registration remains production_enabled:false. Original full-week qualification
+and uncertainty requirements still apply independently of valid point results.
+
+### Actual live readiness boundary and release handoff
+
+The authorized one-time public-source readiness check completed
+2026-10-16T21:10:52.923858Z using source
+67fa6037f3ef61d97a1e9c048a5d0b2a4582eb48. Sleeper selected regular-season
+2026 Week 6; the independently requested selected-week ESPN board was also Week 6,
+with one final and thirteen pregame games. Week 7 was not eligible. Live
+preparation stopped: no recorded build, prediction artifact or genuine candidate
+capture was produced, no week/clock was forced and no provider polling or
+scheduler was installed. Raw readiness responses and internal manifests remain
+local. The initial sandbox transport failure obtained no provider response;
+the permitted network retry completed this single readiness check.
+
+This source integration and synthetic demonstrations do not activate the
+production updater. Continuous operation, public candidate-receipt persistence,
+public-artifact disclosure, merge and Pages deployment require the later explicit
+normal-release approval. Existing verification-lane staging provides persistence
+when that existing updater is separately released; no competing scheduler or
+workflow redesign is added. Missed observations remain in Weeks 7–14 without
+moving the evaluation window.
+
+The preferred release remains the normal exact-artifact/original-proof path.
+Once the provider actually selects eligible pregame Week 7, resume the
+owner-authorized isolated preparation at the exact reviewed hook source:
+recorded builder, exact-root offline verification, capture and sanitized report.
+A build using this new hook and its actual artifacts still needs independent
+review. Do not claim an earlier CI or a neighboring checkout verifies a later
+generated artifact. Preserve the original Week 6 missing-proof failure; a new
+Week 7 proof cannot authenticate it.
+
+Before release, bind the complete refreshed source/main scope, exact proposed
+output/proof/game origins/input/report identities and permitted public fields.
+Then obtain bounded normal release plus ongoing existing-updater/candidate
+persistence and post-deployment acceptance/recovery approval. No release is
+authorized by this source checkpoint. If the existing workflow rebuilds after
+integration, its actual output must independently pass the same required checks
+and have its actual deployed identity verified; staging and deployment are not
+silently represented as identical bytes.
+
+Retain the earlier measured phone-emulation evidence: cold Chromium 390x844,
+4 Mbps/150 ms, local gzip and mocked remote calls; summary 4.006 seconds and
+1,242,231 initial compressed body bytes; complete optional 1,487-row drill-down
+34.098 additional seconds and 5,894,508 additional compressed body bytes.
+The combined decoded body size was 60,315,736 bytes. These are local throttled
+measurements, not public/cellular or physical iPhone/Safari acceptance. Proposed
+loading limits are not automatically accepted or proof of adequate hosting
+performance.
+
+The eventual bounded release must test actual public #/record and #/props,
+deployed code/output/report identities, reconciled summaries and complete rows,
+filters, retained device selections, own-line My Picks grading, pending,
+unresolved, DNP and push states, stale/missing assets, browser/network errors,
+and initial versus complete optional loading under documented network/cache
+conditions with measured compressed and decoded sizes. Identify emulation and
+any separate physical owner phone check honestly. Preserve prior published
+assets and the documented evidence-preserving code-only recovery path.
+
+The canonical all-category research roadmap above is unchanged. Accepted IR-01
+and scoped website/LABEL-01 conclusions remain retained. Original-capture
+evidence review stays separately pending; the original archive and derivative
+remain restricted. This checkpoint neither reconstructs historical forecasts
+nor authenticates or exports old captures.

@@ -24,11 +24,14 @@ from phase2_capture import probability_report, run_capture
 from reliability import ENGINE_PATHS, atomic_json, digest, load_json, stamp
 from scorecard import build_scorecard
 import phase2_capture
+import point_challenger
 import selection_publication
 from selection_publication import publish_selection_report, validate_publication
 from selection_report import run_report, summarize
 from test_offers import offer_fixture
-from test_reliability import NOW
+from test_reliability import NOW, fixture as reliability_fixture
+from reliability import capture as capture_baseline, engine_hashes, immutable_write
+from test_point_challenger import saved_outcome
 from test_scorecard import setup
 from test_source_evidence import fictional_response, fictional_status
 
@@ -39,13 +42,14 @@ class ReplayClock(datetime):
         return NOW
 
 
-def prepare(root, source_unavailable=False, *, mode="replay", at=NOW, kickoff_hours=1, all_ten=False):
+def prepare(root, source_unavailable=False, *, mode="replay", at=NOW, kickoff_hours=1, all_ten=False, week=5):
     for path in ENGINE_PATHS:
         target = root / path; target.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(ROOT / path, target)
     (root / "config").mkdir(exist_ok=True)
     for path in ("phase2.json", "release-mode.json", "sleeper-rules-provenance.json", "timing-policy.json"):
         shutil.copyfile(ROOT / "config" / path, root / "config" / path)
     data, _, policy = setup()
+    data["week"] = week
     data["generated_at"] = stamp(at)
     data["games"][0]["kickoff"] = stamp(at + timedelta(hours=kickoff_hours))
     if at != NOW:
@@ -75,27 +79,27 @@ def prepare(root, source_unavailable=False, *, mode="replay", at=NOW, kickoff_ho
     source_rows = [{"player_id": "fictional-1", **meta["fictional-1"], "stats": projected_stats}]
     def responses(url, *args, **kwargs):
         if url == build.sources.ESPN + "/scoreboard":
-            return fictional_response(data["games"])
+            return fictional_response(data["games"], week=week)
         if "/projections/nfl/" in url:
             rows = copy.deepcopy(source_rows)
-            if url.endswith("/6"):
+            if url.endswith(f"/{week + 1}"):
                 rows[0]["game_id"] = "future-game-that-must-not-overwrite-current-mapping"
             return rows
         if source_unavailable:
             raise TimeoutError("fictional unavailable source")
         return observed["markets"]
     def fake_build():
-        build.sources.get_json(build.sources.ESPN + "/scoreboard", {"dates": 2026, "week": 5, "seasontype": 2})
-        build.sources.get_json("https://api.sleeper.app/projections/nfl/2026/5")
+        build.sources.get_json(build.sources.ESPN + "/scoreboard", {"dates": 2026, "week": week, "seasontype": 2})
+        build.sources.get_json(f"https://api.sleeper.app/projections/nfl/2026/{week}")
         try:
             build.sources.get_json("https://api.sleeper.app/lines/available")
         except TimeoutError:
             pass  # Mirrors the retained builder's explicit fallback, recorded above.
         build.Matchups({4: {"fictional-1": {"opp": "CCC", "stats": {"gp": 1, "rec": 3}}}}, {"fictional-1": "WR"})
-        build.sources.get_json("https://api.sleeper.app/projections/nfl/2026/6")
+        build.sources.get_json(f"https://api.sleeper.app/projections/nfl/2026/{week + 1}")
         atomic_json(root / "output/data/week.json", data)
         atomic_json(root / "output/data/meta.json", {k: data[k] for k in ("season", "week", "generated_at")})
-        atomic_json(root / "data/cache/stats_2026_05.json", {"fictional-1": {"team": "AAA", "opp": "BBB", "stats": actual_stats}})
+        atomic_json(root / f"data/cache/stats_2026_{week:02d}.json", {"fictional-1": {"team": "AAA", "opp": "BBB", "stats": actual_stats}})
     class BuildClock(datetime):
         @classmethod
         def now(cls, tz=None):
@@ -598,6 +602,401 @@ class PublicSelectionPipelineTests(unittest.TestCase):
             self.assertEqual(coverage["unique_recorded_identities"], 13)
             self.assertEqual(coverage["excluded_unbound_identities"], {
                 "ambiguous_saved_kickoff": 1, "unknown_recorded_team": 1, "no_bound_original_observation": 1})
+
+
+class CandidateRecordingPipelineTests(unittest.TestCase):
+    """Fictional native-file updater integration; no live collection or release."""
+    AT = datetime(2026, 10, 20, 12, tzinfo=timezone.utc)
+    KICKOFF = datetime(2026, 10, 23, 0, 15, tzinfo=timezone.utc)
+    REGISTRATION_SHA256 = "0ffd81a0d2708418d1d1b072cf9ce7750f42c554f04c2456f2a5206be199e0c6"
+
+    def registration(self, root):
+        path = root / "tools/rec_half_registration_v1.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "tools/rec_half_registration_v1.json", path)
+        return load_json(path)
+
+    def native(self, root, *, at=None, kickoff=None, week=7, raw=4.8, adjusted=5.2, no_lean=False):
+        """Use the retained real fixture and real native capture, never rename."""
+        for name in (*ENGINE_PATHS, "config/evaluation-policy.json"):
+            target = root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, target)
+        at = at or self.AT
+        data, _ = reliability_fixture()
+        data.update(week=week, generated_at=stamp(at - timedelta(minutes=1)))
+        data["games"][0]["kickoff"] = stamp(kickoff or self.KICKOFF)
+        prop = data["players"][0]["props"][0]
+        prop.update(proj=raw, adj=adjusted)
+        data["picks"]["over"][0].update(proj=raw, adj=adjusted)
+        if no_lean:
+            prop.update(lean=None, line=None, line_from="ours")
+            data["picks"] = {"over": [], "under": []}
+        meta = {key: data[key] for key in ("season", "week", "generated_at")}
+        path, health = capture_baseline(data, meta, root, at, engine_hashes(ROOT), mode="live")
+        return path, health, data
+
+    def run_hook(self, root, path, *, created=True, at=None, completed=None):
+        at = at or self.AT + timedelta(seconds=1)
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return completed or at
+        with patch.object(phase2_capture, "datetime", Clock), patch.object(point_challenger, "datetime") as clock, \
+                patch("requests.sessions.Session.request", side_effect=AssertionError("No live HTTP")):
+            clock.now.side_effect = [at, completed or at]
+            return phase2_capture.run_point_candidate(root, path, baseline_created=created,
+                                                      code_commit="a" * 40)
+
+    def run_live(self, root, at=None):
+        at = at or self.AT
+        self.registration(root)
+        prepare(root, mode="live", at=at, kickoff_hours=(self.KICKOFF - at).total_seconds() / 3600,
+                all_ten=True, week=7)
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return at
+        with patch.object(phase2_capture, "datetime", Clock), patch.object(point_challenger, "datetime", Clock), \
+                patch("requests.sessions.Session.request", side_effect=AssertionError("No live HTTP")):
+            return run_capture(root, mode="live")
+
+    def candidate_paths(self, root):
+        return sorted((root / "data/verification/point-candidates/2026/w07").glob("*.json.gz"))
+
+    def test_official_registration_is_unchanged_not_regenerated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            registry = self.registration(Path(directory))
+            self.assertEqual(digest(registry), self.REGISTRATION_SHA256)
+            self.assertEqual(registry["registered_at"], "2026-10-16T19:36:46.224755Z")
+            self.assertEqual(registry["protocol"]["window"]["weeks"], list(range(7, 15)))
+            self.assertEqual(registry["recording_status"], "OFFLINE_NOT_ACTIVATED")
+            self.assertEqual(registry["protocol"]["recording"], "OFFLINE_ONLY_NO_UPDATER_HOOK")
+
+    def test_cli01_native_filename_reproduces_but_supported_saved_file_hook_works(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root)
+            path, health, _ = self.native(root)
+            original = path.read_bytes()
+            payload = read(path)
+            native_name = digest({"data": payload["input_sha256"], "engine": payload["engine_sha256"],
+                                  "mode": payload["mode"]}) + ".json.gz"
+            self.assertEqual(path.name, native_name)
+            self.assertNotEqual(path.name, digest(payload) + ".json.gz")
+            with self.assertRaisesRegex(ValueError, "Receipt filename digest mismatch"):
+                point_challenger._receipt(path)  # Frozen standalone CLI limitation stays visible.
+            self.assertEqual(phase2_capture.read_native_baseline(path, root, expected_hashes=engine_hashes(ROOT),
+                                                               now=self.AT), payload)
+            report, status = self.run_hook(root, path, created=health["capture_created"])
+            self.assertEqual(status["status"], "RECORDED")
+            candidate = read(root / status["candidate_receipt"])
+            self.assertEqual(candidate["baseline_payload_sha256"], digest(payload))
+            self.assertEqual(candidate["rows"][0]["candidate_projection"], 5.0)
+            self.assertEqual(report["coverage"]["unique_opportunities"], 1)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertFalse(status["continuous_recording_operational"])
+
+    def test_retry_reuses_first_saved_recording_and_actual_calculation_clocks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+            _, first = self.run_hook(root, path)
+            candidate_path = root / first["candidate_receipt"]; before = candidate_path.read_bytes()
+            with patch.object(point_challenger, "make_candidate", side_effect=AssertionError("Must not recalculate retry")):
+                _, retry = self.run_hook(root, path, created=False, at=self.AT + timedelta(minutes=5))
+            self.assertEqual(retry["status"], "REUSED_FIRST_RECORDING")
+            self.assertEqual(retry["candidate_receipt"], first["candidate_receipt"])
+            self.assertEqual(candidate_path.read_bytes(), before)
+            self.assertEqual(len(self.candidate_paths(root)), 1)
+            self.assertEqual(read(candidate_path)["calculation_started_at"], stamp(self.AT + timedelta(seconds=1)))
+
+    def test_restart_gap_is_explicitly_missed_and_next_new_observation_can_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+            with patch.object(point_challenger, "make_candidate", side_effect=AssertionError("Never backfill old baseline")):
+                report, missed = self.run_hook(root, path, created=False, at=self.AT + timedelta(minutes=5))
+            self.assertEqual(missed["status"], "MISSED_NOT_BACKFILLED")
+            self.assertIsNone(missed["candidate_receipt"])
+            self.assertEqual(report["status"], "NOT_RECORDED")
+            later_path, health, _ = self.native(root, at=self.AT + timedelta(minutes=10))
+            self.assertTrue(health["capture_created"])
+            _, recorded = self.run_hook(root, later_path, at=self.AT + timedelta(minutes=10, seconds=1))
+            self.assertEqual(recorded["status"], "RECORDED")
+            self.assertEqual(len(self.candidate_paths(root)), 1)
+            self.assertEqual(read(root / recorded["candidate_receipt"])["captured_at"], stamp(self.AT + timedelta(minutes=10)))
+
+    def test_successive_real_updater_entrypoints_persist_forecasts_without_rank_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, health = self.run_live(root)
+            prediction_bytes = (root / "output/data/week.json").read_bytes()
+            old_baseline = (root / health["receipt"]).read_bytes()
+            first_candidate = root / health["phase2"]["point_candidate"]["candidate_receipt"]
+            before = first_candidate.read_bytes()
+            self.assertEqual(first["point_candidate"]["coverage"]["unique_opportunities"], 1)
+            self.assertEqual(set(first["categories"]), {"rec", "rush_att", "pass_yd"})
+            expected_picks = load_json(root / "output/data/week.json")["picks"]
+            _, retry = self.run_hook(root, root / health["receipt"], created=False,
+                                     at=self.AT + timedelta(minutes=1))
+            self.assertEqual(retry["status"], "REUSED_FIRST_RECORDING")
+            self.assertEqual((root / "output/data/week.json").read_bytes(), prediction_bytes)
+            second, latest = self.run_live(root, self.AT + timedelta(minutes=10))
+            self.assertEqual(len(self.candidate_paths(root)), 2)
+            self.assertEqual(first_candidate.read_bytes(), before)
+            self.assertEqual((root / health["receipt"]).read_bytes(), old_baseline)
+            self.assertEqual(load_json(root / "output/data/week.json")["picks"], expected_picks)
+            self.assertEqual(second["point_candidate"]["coverage"]["unique_opportunities"], 1)
+            self.assertEqual(second["point_candidate"]["coverage"]["repeated_capture_rows"], 1)
+            self.assertFalse(latest["phase2"]["point_candidate"]["continuous_recording_operational"])
+            self.assertFalse(second["point_candidate"]["predictive_improvement_established"])
+            self.assertEqual(engine_hashes(root), engine_hashes(ROOT))
+
+    def test_saved_outcome_and_correction_re_evaluate_without_new_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+            _, first = self.run_hook(root, path)
+            candidate_path = root / first["candidate_receipt"]; original = candidate_path.read_bytes()
+            final_at = self.KICKOFF + timedelta(hours=5)
+            snapshot = saved_outcome(read(path), actual=6, collected=final_at)
+            write(root, "outcomes", snapshot)
+            report, status = self.run_hook(root, path, created=False, at=final_at)
+            self.assertEqual(status["status"], "REUSED_FIRST_RECORDING")
+            self.assertEqual(report["categories"]["rec"]["candidate"]["n"], 1)
+            self.assertEqual(report["categories"]["rec"]["candidate"]["mae"], 1.0)
+            self.assertEqual(read(root / status["report_receipt"]), report)
+            write(root, "outcomes", saved_outcome(read(path), actual=7, collected=final_at + timedelta(minutes=5)))
+            changed, newer = self.run_hook(root, path, created=False, at=final_at + timedelta(minutes=5))
+            self.assertEqual(changed["categories"]["rec"]["candidate"]["mae"], 2.0)
+            self.assertNotEqual(newer["report_receipt"], status["report_receipt"])
+            self.assertTrue((root / status["report_receipt"]).exists())
+            self.assertEqual(candidate_path.read_bytes(), original)
+            self.assertEqual(len(self.candidate_paths(root)), 1)
+
+    def test_missing_registration_preserves_baseline_only_behavior(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); path, _, _ = self.native(root); original = path.read_bytes()
+            report, status = self.run_hook(root, path)
+            self.assertIsNone(report)
+            self.assertEqual(status["status"], "NOT_CONFIGURED")
+            self.assertIsNone(status["candidate_receipt"])
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(self.candidate_paths(root), [])
+
+    def test_missing_registration_does_not_interrupt_existing_live_pipeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); prepare(root, mode="live", at=self.AT, all_ten=True, week=7)
+            class Clock(datetime):
+                @classmethod
+                def now(cls, tz=None): return CandidateRecordingPipelineTests.AT
+            with patch.object(phase2_capture, "datetime", Clock), patch("requests.sessions.Session.request", side_effect=AssertionError("No live HTTP")):
+                report, health = run_capture(root, mode="live")
+            self.assertEqual(health["phase2"]["point_candidate"]["status"], "NOT_CONFIGURED")
+            self.assertEqual(report["coverage"]["unique_opportunities"], 3)
+            self.assertTrue((root / "output/data/selection-grading/latest.json").exists())
+
+    def test_present_but_altered_or_malformed_registration_fails_closed(self):
+        for malformed in (False, True):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); registry = self.registration(root); path, _, _ = self.native(root)
+                target = root / "tools/rec_half_registration_v1.json"
+                if malformed:
+                    target.write_text("{broken", encoding="utf-8")
+                else:
+                    registry["recording_status"] = "ACTIVATED"
+                    atomic_json(target, registry)
+                with self.assertRaises(ValueError): self.run_hook(root, path)
+                self.assertEqual(self.candidate_paths(root), [])
+
+    def test_native_generic_filename_and_wrong_lane_are_not_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+            payload = read(path)
+            generic = path.with_name(digest(payload) + ".json.gz")
+            immutable_write(generic, payload)
+            with self.assertRaises(ValueError):
+                phase2_capture.read_native_baseline(generic, root, expected_hashes=engine_hashes(ROOT), now=self.AT)
+            replay_path = root / "data/replay/2026/w07" / path.name
+            replay_path.parent.mkdir(parents=True); shutil.copyfile(path, replay_path)
+            with self.assertRaises(ValueError):
+                phase2_capture.read_native_baseline(replay_path, root, expected_hashes=engine_hashes(ROOT), now=self.AT)
+
+    def test_native_envelope_and_missing_file_fail_without_candidate(self):
+        for broken in (False, True):
+            with self.subTest(broken=broken), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+                if broken: path.write_bytes(b"FICTIONAL invalid gzip")
+                else: path.unlink()  # Disposable fixture simulates interrupted evidence persistence.
+                with self.assertRaises((ValueError, OSError, EOFError)):
+                    self.run_hook(root, path)
+                self.assertEqual(self.candidate_paths(root), [])
+
+    def test_native_rehashed_wrong_engine_duplicate_identity_and_future_clock_rejected(self):
+        for alteration in ("engine", "duplicate", "future", "schema"):
+            with self.subTest(alteration=alteration), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+                payload = read(path)
+                if alteration == "engine": payload.update(engine_files={"foreign": "engine"}, engine_sha256=digest({"foreign": "engine"}))
+                elif alteration == "duplicate": payload["rows"].append(copy.deepcopy(payload["rows"][0]))
+                elif alteration == "future": payload["captured_at"] = stamp(self.AT + timedelta(days=1))
+                else: payload["schema_version"] = "unknown-baseline"
+                path.unlink()  # Rehashed malicious fixture, never a real historical receipt.
+                bad = path.with_name(digest({"data": payload["input_sha256"], "engine": payload["engine_sha256"],
+                                            "mode": payload["mode"]}) + ".json.gz")
+                immutable_write(bad, payload)
+                with self.assertRaises(ValueError): self.run_hook(root, bad)
+                self.assertEqual(self.candidate_paths(root), [])
+
+    def test_exact_or_after_kickoff_completion_is_retained_as_exclusion_not_forecast(self):
+        for late in (timedelta(), timedelta(seconds=1)):
+            with self.subTest(late=late), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+                report, status = self.run_hook(root, path, at=self.KICKOFF - timedelta(seconds=1),
+                                              completed=self.KICKOFF + late)
+                self.assertEqual(status["status"], "RECORDED_NO_ELIGIBLE_RECEPTIONS")
+                candidate = read(root / status["candidate_receipt"])
+                self.assertEqual(candidate["rows"], [])
+                self.assertEqual(candidate["coverage"]["excluded"], {"calculation_not_pregame": 1})
+                self.assertEqual(candidate["calculation_completed_at"], stamp(self.KICKOFF + late))
+                self.assertEqual(report["coverage"]["unique_opportunities"], 0)
+
+    def test_outside_window_does_not_silently_shift_registered_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); registry = self.registration(root)
+            path, _, _ = self.native(root, week=6)
+            _, status = self.run_hook(root, path)
+            self.assertEqual(status["status"], "OUTSIDE_FIXED_WINDOW")
+            self.assertEqual(self.candidate_paths(root), [])
+            self.assertEqual(load_json(root / "tools/rec_half_registration_v1.json"), registry)
+
+    def test_corrupted_saved_candidate_or_unavailable_original_blocks_evaluation(self):
+        for missing_source in (False, True):
+            with self.subTest(missing_source=missing_source), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+                _, status = self.run_hook(root, path)
+                if missing_source:
+                    path.unlink()
+                else:
+                    (root / status["candidate_receipt"]).write_bytes(b"FICTIONAL invalid saved candidate")
+                with self.assertRaises((ValueError, OSError, EOFError)):
+                    self.run_hook(root, path, created=False, at=self.AT + timedelta(minutes=1))
+
+    def test_replay_pipeline_never_calls_or_activates_point_hook(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); prepare(root)
+            with patch.object(phase2_capture, "run_point_candidate", side_effect=AssertionError("Replay must not record candidate")):
+                report, health = run_capture(root, mode="replay", replay_at=stamp(NOW))
+            self.assertEqual(report["evidence"], "REPLAY_TEST_NOT_PROSPECTIVE")
+            self.assertEqual(self.candidate_paths(root), [])
+            self.assertFalse((root / "data/forward").exists())
+
+    def test_no_lean_reference_forecast_retains_fraction_and_same_original_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root)
+            path, _, data = self.native(root, raw=.25, adjusted=1.0, no_lean=True)
+            report, status = self.run_hook(root, path)
+            row = read(root / status["candidate_receipt"])["rows"][0]
+            self.assertEqual(row["candidate_projection"], .625)
+            self.assertEqual(report["coverage"]["unique_opportunities"], 1)
+            self.assertIsNone(read(path)["rows"][0]["lean"])
+            self.assertEqual(read(path)["input_sha256"], digest(data))
+
+    def test_pre_registration_observation_is_not_relabelled_prospective(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root)
+            path, _, _ = self.native(root, at=datetime(2026, 10, 15, 12, tzinfo=timezone.utc))
+            report, status = self.run_hook(root, path)
+            self.assertEqual(status["status"], "PRIOR_REGISTRATION_OBSERVATION")
+            self.assertEqual(report["status"], "NOT_RECORDED")
+            self.assertEqual(self.candidate_paths(root), [])
+
+    def test_competing_substantive_candidate_for_same_observation_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); registry = self.registration(root); path, _, _ = self.native(root)
+            _, status = self.run_hook(root, path)
+            first = root / status["candidate_receipt"]; original = first.read_bytes()
+            with patch.object(point_challenger, "datetime") as clock:
+                clock.now.side_effect = [self.AT + timedelta(seconds=2), self.AT + timedelta(seconds=3)]
+                competing = point_challenger.make_candidate(read(path), registry, code_commit="a" * 40)
+            write(root, "verification/point-candidates", competing)
+            with self.assertRaisesRegex(ValueError, "Multiple candidate recordings"):
+                self.run_hook(root, path, created=False, at=self.AT + timedelta(seconds=4))
+            self.assertEqual(first.read_bytes(), original)
+
+    def test_candidate_is_calculated_before_shadow_and_heavy_outcome_reporting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); events = []
+            original_hook, original_shadow = phase2_capture.run_point_candidate, phase2_capture.make_shadow
+            original_scorecard = phase2_capture.build_scorecard
+            def hook(*args, **kwargs):
+                events.append("point")
+                self.assertFalse(kwargs["evaluate_saved"])
+                return original_hook(*args, **kwargs)
+            def shadow(*args, **kwargs):
+                events.append("shadow")
+                return original_shadow(*args, **kwargs)
+            def scorecard(*args, **kwargs):
+                events.append("outcomes")
+                return original_scorecard(*args, **kwargs)
+            with patch.object(phase2_capture, "run_point_candidate", side_effect=hook), \
+                    patch.object(phase2_capture, "make_shadow", side_effect=shadow), \
+                    patch.object(phase2_capture, "build_scorecard", side_effect=scorecard):
+                self.run_live(root)
+            self.assertEqual(events[:3], ["point", "shadow", "outcomes"])
+
+    def test_saved_unreadable_outcome_prevents_new_comparison_without_recalculating(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+            _, status = self.run_hook(root, path)
+            candidate = root / status["candidate_receipt"]; original = candidate.read_bytes()
+            bad = root / "data/outcomes/2026/w07" / ("0" * 64 + ".json.gz")
+            bad.parent.mkdir(parents=True); bad.write_bytes(b"FICTIONAL invalid outcome gzip")
+            with patch.object(point_challenger, "make_candidate", side_effect=AssertionError("Never recalculate")):
+                with self.assertRaises((ValueError, OSError, EOFError)):
+                    self.run_hook(root, path, created=False, at=self.KICKOFF + timedelta(hours=5))
+            self.assertEqual(candidate.read_bytes(), original)
+
+    def test_rehashed_invalid_candidate_sibling_cannot_hide_behind_valid_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+            _, status = self.run_hook(root, path)
+            original = read(root / status["candidate_receipt"])
+            invalid = copy.deepcopy(original)
+            invalid["protocol_version"] = "unsupported-protocol"
+            write(root, "verification/point-candidates", invalid)
+            with self.assertRaises(ValueError):
+                self.run_hook(root, path, created=False, at=self.AT + timedelta(minutes=1))
+            self.assertEqual(read(root / status["candidate_receipt"]), original)
+
+    def test_public_candidate_summary_is_bound_but_excludes_private_row_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); report, health = self.run_live(root)
+            local = read(root / health["phase2"]["point_candidate"]["report_receipt"])
+            public = report["point_candidate"]
+            self.assertEqual(public["report_payload_sha256"], digest(local))
+            self.assertEqual(public["coverage"], local["coverage"])
+            self.assertEqual(len(local["rows"]), 1)
+            self.assertNotIn("rows", public)  # Aggregate sample_context.rows is an allowed count.
+            self.assertEqual(public["schema_version"], "point-candidate-evaluation-summary-v1")
+            self.assertEqual(public["source_report_schema_version"], local["schema_version"])
+            for forbidden in ("outcome_observations", "selected_outcome_provenance", "cache_path", "source_observations"):
+                self.assertNotIn('"' + forbidden + '"', json.dumps(public))
+            self.assertNotIn("/workspace/", json.dumps(public))
+            self.assertEqual(load_json(root / "output/data/forecast-scorecard.json")["point_candidate"], public)
+
+
+    def test_supported_void_remains_visible_in_public_aggregate_counts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.registration(root)
+            path, health, _ = self.native(root)
+            self.run_hook(root, path, created=health["capture_created"])
+            final_at = self.KICKOFF + timedelta(hours=5)
+            write(root, "outcomes", saved_outcome(read(path), status="void", collected=final_at))
+            report, _ = self.run_hook(root, path, created=False, at=final_at)
+            public = phase2_capture._point_summary(report)
+            self.assertEqual(report["outcome_status"], {"void": 1})
+            self.assertEqual(public["outcome_status"], report["outcome_status"])
+            self.assertEqual(public["weekly"][0]["outcome_status"], {"void": 1})
+            self.assertEqual(public["categories"]["rec"]["candidate"]["n"], 0)
 
 
 if __name__ == "__main__":
