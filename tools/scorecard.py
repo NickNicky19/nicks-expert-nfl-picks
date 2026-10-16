@@ -182,9 +182,38 @@ def _verified_week_complete(payload):
         return False
 
 
-def snapshot_outcomes(root, pairs, observed_at, mode="live"):
+COUNT_STATS = frozenset(("pass_td", "pass_cmp", "pass_att", "pass_int", "rush_att", "rec"))
+
+
+def source_statistic(category, stats):
+    """Called only after participation is confirmed; absent sparse values are zero.
+
+    The provider's combined yards contract uses components, never an aggregate
+    plus those components. Explicit null is unknown, including either component.
+    """
+    keys = ("rush_yd", "rec_yd") if category == "rush_rec_yd" else (category,)
+    values = [stats.get(key, 0) for key in keys]
+    for key, value in zip(keys, values):
+        if value is None:
+            continue
+        finite(value, "source statistic", optional=False)
+        if int(value) != value or key in COUNT_STATS and value < 0:
+            raise IntegrityError("Invalid integer/count outcome")
+    return None if any(value is None for value in values) else sum(values)
+
+
+def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None, derived_context=None,
+                      include_populations=True):
     """Snapshot sourced final status and sparse statistics; never infer DNP."""
     root, observed_at = Path(root), utc(observed_at)
+    if (output_root is None) != (derived_context is None):
+        raise IntegrityError("External outcomes require explicit derived-source provenance")
+    if derived_context is not None and (not isinstance(derived_context, dict) or not derived_context):
+        raise IntegrityError("Missing derived input identity")
+    if output_root is not None:
+        sink, source = Path(output_root).resolve(), root.resolve()
+        if sink.is_relative_to(source) or source.is_relative_to(sink) or sink.is_relative_to(ROOT):
+            raise IntegrityError("Derived output sink must be outside source/input roots")
     groups = defaultdict(list)
     for row in pairs.values():
         groups[(row["season"], row["week"])].append(row)
@@ -209,7 +238,10 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live"):
             # Legacy ESPN snapshots have a saved Final/Final-OT detail but did
             # not retain completed. A bare post flag can also mean cancelled.
             return str(game.get("detail", "")).lower().startswith("final")
-        populations, population_errors = _read_populations(root, season, week)
+        if include_populations:
+            populations, population_errors = _read_populations(root, season, week)
+        else:
+            populations, population_errors = [], [{"error_type": "POPULATION_NOT_CONSUMED_BY_OFFLINE_REPORT"}]
         week_evidence = {"season": season, "week": week, "mode": mode, "collected_at": stamp(observed_at),
                          "games": board["games"], "source_game_status": source_status,
                          "week_game_populations": populations,
@@ -231,13 +263,15 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live"):
                     status, reason = "resolved", "played_sparse_stats"
                     if entry.get("team") != row["team"]:
                         status, reason = "unresolved", "player_team_mismatch"
-                    elif entry.get("stats", {}).get(row["category"], 0) is None:
+                    elif (derived_context is not None and game.get("home") and game.get("away")
+                          and (row["team"] not in (game["home"], game["away"])
+                               or entry.get("opp") is not None
+                               and entry["opp"] != (game["away"] if row["team"] == game["home"] else game["home"]))):
+                        status, reason = "unresolved", "saved_player_game_identity_mismatch"
+                    elif source_statistic(row["category"], entry.get("stats", {})) is None:
                         status, reason = "unresolved", "explicit_null_stat"
                     else:
-                        actual = entry["stats"].get(row["category"], 0)
-                        finite(actual, "actual statistic", optional=False)
-                        if int(actual) != actual or (row["category"] in ("rec", "rush_att") and actual < 0):
-                            raise IntegrityError("Invalid integer/count outcome")
+                        actual = source_statistic(row["category"], entry["stats"])
                 if status != "resolved":
                     actual = None
             outcomes.append({k: row[k] for k in ("season", "week", "game_id", "player_id", "category", "team")} |
@@ -254,7 +288,26 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live"):
                    "week_game_populations": populations,
                    "week_population_read_errors": population_errors, "rows": outcomes,
                    "settlement_scope": "STATISTICAL_ONLY_NOT_VENUE_SETTLEMENT"}
-        paths.append(write(root, "outcomes" if mode == "live" else "outcomes_replay", payload))
+        if derived_context is None:
+            paths.append(write(root, "outcomes" if mode == "live" else "outcomes_replay", payload))
+        else:
+            payload.update(source="git_pinned_saved_cache_statistical_regrade", derived_context=derived_context)
+            # A run clock alone is not a new observation. Retain the first actual
+            # derivation clock, rather than backdating a new observation.
+            material = {k: v for k, v in payload.items() if k != "collected_at"}
+            payload["derived_substantive_sha256"] = digest(material)
+            directory = Path(output_root) / "data/outcomes_derived" / str(season) / f"w{week:02d}"
+            existing = None
+            for path in sorted(directory.glob("*.json.gz")):
+                old = read(path)
+                if old.get("derived_substantive_sha256") == payload["derived_substantive_sha256"]:
+                    if {k: v for k, v in old.items() if k not in ("collected_at", "derived_substantive_sha256")} != material:
+                        raise IntegrityError("Conflicting derived outcome identity")
+                    if utc(old["collected_at"]) > observed_at:
+                        raise IntegrityError("Derived outcome is from the future")
+                    existing = path
+                    break
+            paths.append(existing or write(output_root, "outcomes_derived", payload))
     return paths
 
 
@@ -294,12 +347,12 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
             raise IntegrityError("Outcome lacks confirmed past final")
         actual = row["actual"]
         finite(actual, "outcome", optional=False)
-        if int(actual) != actual or row["category"] in ("rec", "rush_att") and actual < 0:
+        if int(actual) != actual or row["category"] in COUNT_STATS and actual < 0:
             raise IntegrityError("Invalid integer/count outcome")
         if isinstance(entry, dict):
             if grade.participation(entry) != "played" or entry.get("team") != row["team"]:
                 raise IntegrityError("Resolved outcome has contradictory participation/team")
-            observed = entry.get("stats", {}).get(row["category"], 0)
+            observed = source_statistic(row["category"], entry.get("stats", {}))
             finite(observed, "saved source statistic", optional=False)
             if observed != actual:
                 raise IntegrityError("Resolved outcome differs from its saved source statistic")
@@ -311,6 +364,15 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
         normalized["actual"] = None
         if status in ("dnp", "void"):
             normalized.update(status="unresolved", reason="unconfirmed_exclusion")
+    derived = payload.get("derived_context")
+    if derived is not None and (not isinstance(derived, dict) or not derived
+                               or payload.get("source") != "git_pinned_saved_cache_statistical_regrade"):
+        raise IntegrityError("Invalid derived outcome provenance")
+    origin = (payload.get("mode"), source, path)
+    if derived is not None:
+        # Different pinned sources cannot acquire correction precedence from a
+        # newer derivation clock. Disagreement across origins stays unresolved.
+        origin += (digest(derived), cache_sha, payload.get("game_snapshot_sha256"))
     provenance = {"outcome_snapshot_sha256": payload_sha, "outcome_row_sha256": digest(row),
                   "collected_at": payload["collected_at"], "source": source, "cache_path": path,
                   "cache_sha256": cache_sha, "source_timestamp": payload.get("source_timestamp"),
@@ -319,8 +381,10 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
                   "kickoff": row.get("kickoff"), "final_confirmed": row.get("final_confirmed"),
                   "week_confirmed_complete": row.get("week_confirmed_complete", False),
                   "week_completion_verified": week_complete}
+    if derived is not None:
+        provenance["derived_context"] = derived
     return {"row": normalized, "provenance": provenance, "collected": collected,
-            "source_time": source_time, "origin": (payload.get("mode"), source, path),
+            "source_time": source_time, "origin": origin,
             "attributed": attributed,
             "version": cache_sha or (digest(entry) if isinstance(entry, dict) else None),
             "terminal": terminal, "past_final": past_final, "week_complete": week_complete}
@@ -365,6 +429,10 @@ def latest_outcomes(snapshots, allow_replay=False):
             raise IntegrityError("Unexpected outcome schema")
         if payload.get("mode") != "live" and not (allow_replay and payload.get("mode") == "replay"):
             continue
+        if payload.get("derived_context") is not None:
+            material = {k: v for k, v in payload.items() if k not in ("collected_at", "derived_substantive_sha256")}
+            if payload.get("derived_substantive_sha256") != digest(material):
+                raise IntegrityError("Derived substantive outcome checksum mismatch")
         payload_sha = digest(payload)
         week_complete = _verified_week_complete(payload)
         for row in payload["rows"]:

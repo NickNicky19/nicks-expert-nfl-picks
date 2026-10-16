@@ -772,5 +772,123 @@ class SavedWeekPopulationRegressionTests(unittest.TestCase):
                 self.assertFalse(result["week_confirmed_complete"])
 
 
+class AllPickableOutcomeTests(unittest.TestCase):
+    def snapshot(self, stats, *, output=None, context=None):
+        data, baseline, _ = setup()
+        row = baseline["rows"][0]
+        categories = json.loads((ROOT / "config/timing-policy.json").read_text())["categories"]
+        pairs = {tuple([row["season"], row["week"], row["game_id"], row["player_id"], category]):
+                 {**row, "category": category} for category in categories}
+        data["games"][0].update(state="post", detail="Final")
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / "output/data").mkdir(parents=True)
+        (root / "data/cache").mkdir(parents=True)
+        (root / "output/data/week.json").write_text(json.dumps(data))
+        (root / "data/cache/stats_2026_05.json").write_text(json.dumps({
+            row["player_id"]: {"team": row["team"], "stats": {"gp": 1, **stats}}}))
+        paths = snapshot_outcomes(root, pairs, NOW + timedelta(hours=5),
+                                  output_root=output, derived_context=context)
+        return read(paths[0]), paths, root, pairs
+
+    def test_all_ten_categories_fresh_and_saved_component_contract(self):
+        stats = {"pass_yd": 100, "pass_td": 1, "pass_cmp": 10, "pass_att": 15, "pass_int": 0,
+                 "rush_yd": 10, "rush_att": 3, "rec": 2, "rec_yd": 20, "rush_rec_yd": 999}
+        payload, _, _, _ = self.snapshot(stats)
+        actual = {row["category"]: row["actual"] for row in payload["rows"]}
+        self.assertEqual(actual, {**{k: stats[k] for k in stats if k != "rush_rec_yd"}, "rush_rec_yd": 30})
+        saved = latest_outcomes([payload])
+        self.assertEqual({key[-1]: value["actual"] for key, value in saved.items()}, actual)
+        self.assertEqual({r["status"] for r in payload["rows"]}, {"resolved"})
+
+    def test_combined_explicit_null_is_unresolved_not_zero(self):
+        payload, _, _, _ = self.snapshot({"rush_yd": None, "rec_yd": 20})
+        combined = next(r for r in payload["rows"] if r["category"] == "rush_rec_yd")
+        self.assertEqual((combined["status"], combined["actual"]), ("unresolved", None))
+        payload, _, _, _ = self.snapshot({"rec_yd": 20})
+        self.assertEqual(next(r["actual"] for r in payload["rows"] if r["category"] == "rush_rec_yd"), 20)
+
+    def test_null_does_not_mask_malformed_other_component(self):
+        with self.assertRaises(ValueError):
+            self.snapshot({"rush_yd": None, "rec_yd": "invalid"})
+
+    def test_negative_yards_allowed_but_every_negative_count_rejected(self):
+        payload, _, _, _ = self.snapshot({"rush_yd": -2, "rec_yd": -3})
+        self.assertEqual(next(r["actual"] for r in payload["rows"] if r["category"] == "rush_rec_yd"), -5)
+        for category in ("pass_td", "pass_cmp", "pass_att", "pass_int", "rush_att", "rec"):
+            with self.subTest(category=category), self.assertRaises(ValueError):
+                self.snapshot({category: -1})
+
+    def test_bad_legacy_combined_value_not_reinterpreted_or_rewritten(self):
+        payload, _, _, _ = self.snapshot({"rush_yd": 10, "rec_yd": 20})
+        row = next(r for r in payload["rows"] if r["category"] == "rush_rec_yd")
+        row["actual"] = 0
+        before = copy.deepcopy(payload)
+        with self.assertRaisesRegex(ValueError, "differs from its saved source"):
+            latest_outcomes([payload])
+        self.assertEqual(payload, before)
+
+    def test_external_regrade_is_isolated_and_substantively_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sink = Path(directory)
+            payload, paths, root, pairs = self.snapshot({"rec": 3}, output=sink,
+                                                       context={"input_git_pin": "a" * 40})
+            self.assertFalse((root / "data/outcomes").exists())
+            self.assertTrue(paths[0].is_relative_to(sink / "data/outcomes_derived"))
+            again = snapshot_outcomes(root, pairs, NOW + timedelta(hours=6), output_root=sink,
+                                      derived_context={"input_git_pin": "a" * 40})
+            self.assertEqual(again, paths)
+            self.assertEqual(read(again[0]), payload)
+            self.assertEqual(len(list((sink / "data/outcomes_derived").rglob("*.json.gz"))), 1)
+
+    def test_old_pinned_regrade_cannot_supersede_saved_live_correction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            derived, _, _, _ = self.snapshot({"rec": 3}, output=Path(directory),
+                                             context={"input_git_pin": "a" * 40})
+            live = copy.deepcopy(derived)
+            live.pop("derived_context")
+            live.pop("derived_substantive_sha256")
+            live.update(source="existing_Sleeper_stats_cache_and_ESPN_final_game_snapshot",
+                        collected_at=stamp(NOW + timedelta(hours=4)))
+            for row in live["rows"]:
+                if row["category"] == "rec":
+                    row["actual"] = 5
+                    row["stats_entry"]["stats"]["rec"] = 5
+            result = latest_outcomes([derived, live])
+            rec = next(value for key, value in result.items() if key[-1] == "rec")
+            self.assertEqual(rec["status"], "unresolved")
+            self.assertTrue(rec["outcome_conflict"])
+            self.assertEqual(derived["rows"][0]["stats_entry"]["stats"]["rec"], 3)
+
+    def test_external_sink_cannot_omit_derived_provenance(self):
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(ValueError):
+            self.snapshot({}, output=Path(directory))
+
+    def test_unsafe_external_sink_and_changed_substantive_id_rejected(self):
+        payload, _, root, pairs = self.snapshot({"rec": 3})
+        with self.assertRaisesRegex(ValueError, "outside"):
+            snapshot_outcomes(root, pairs, NOW + timedelta(hours=5), output_root=root / "report",
+                              derived_context={"input_git_pin": "a" * 40})
+        with tempfile.TemporaryDirectory() as directory:
+            paths = snapshot_outcomes(root, pairs, NOW + timedelta(hours=5), output_root=Path(directory),
+                                      derived_context={"input_git_pin": "a" * 40})
+            forged = read(paths[0])
+            forged["derived_substantive_sha256"] = "0" * 64
+            with self.assertRaisesRegex(ValueError, "substantive"):
+                latest_outcomes([forged])
+
+    def test_offline_report_does_not_open_separate_population_files(self):
+        from unittest.mock import patch
+        _, _, root, pairs = self.snapshot({"rec": 3})
+        with tempfile.TemporaryDirectory() as directory, patch("scorecard._read_populations",
+                                                              side_effect=AssertionError("Unapproved source read")):
+            paths = snapshot_outcomes(root, pairs, NOW + timedelta(hours=5), output_root=Path(directory),
+                                      derived_context={"input_git_pin": "a" * 40}, include_populations=False)
+            result = latest_outcomes([read(paths[0])])
+            self.assertTrue(all(not r["week_confirmed_complete"] for r in result.values()))
+            self.assertTrue(all(r["status"] == "resolved" for r in result.values()))
+
+
 if __name__ == "__main__":
     unittest.main()
