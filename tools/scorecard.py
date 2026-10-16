@@ -2,18 +2,59 @@
 import argparse
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+import hashlib
 import math
 from pathlib import Path
 import random
 import statistics
 import sys
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pull"))
 import grade
+import week_population
 from evidence import read, write
 from reliability import IntegrityError, atomic_json, digest, engine_hashes, finite, load_json, stamp, utc
 from source_evidence import verified_status
+
+# Retain this v1 implementation for its saved receipts. Future adapters need
+# separate reviewed implementations/dispatch entries, not a changed v1 file.
+POPULATION_V1_SHA256 = "1e50c60ce2636f4534a63f517341c393bac19b8df7cbd2b1fcba1e9eed16c40e"
+
+
+def _population_document(population):
+    contract = (population.get("schema_version"), population.get("adapter_version"),
+                population.get("adapter_code_sha256"))
+    if contract != ("week-game-population-v1", "week-population-espn-nfl-v1", POPULATION_V1_SHA256):
+        raise IntegrityError("UNSUPPORTED_POPULATION_CONTRACT")
+    try:
+        available = week_population.code_sha256() == POPULATION_V1_SHA256
+    except OSError as err:
+        raise IntegrityError("RETAINED_POPULATION_VALIDATOR_UNAVAILABLE") from err
+    if not available:
+        raise IntegrityError("RETAINED_POPULATION_VALIDATOR_UNAVAILABLE")
+    return week_population.validate_receipt(population)
+
+
+def _read_populations(root, season, week):
+    """Optional population failures cannot erase independently valid statistics."""
+    directory = root / "data/week_populations" / str(season) / f"w{week:02d}"
+    populations, errors = [], []
+    for path in sorted(directory.glob("*.json.gz")):
+        raw_sha = None
+        try:
+            raw_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+            payload = read(path)
+            if path.name != digest(payload) + ".json.gz":
+                raise IntegrityError("POPULATION_FILENAME_CHECKSUM_MISMATCH")
+        except (OSError, EOFError, zlib.error, ValueError, TypeError, AttributeError) as err:
+            errors.append({"path": path.relative_to(root).as_posix(),
+                           "error_type": type(err).__name__, "raw_file_sha256": raw_sha})
+        else:
+            # Semantic-invalid but readable evidence is retained for inspection.
+            populations.append({"payload_sha256": digest(payload), "payload": payload})
+    return populations, errors
 
 
 def identity(row):
@@ -81,10 +122,13 @@ def _verified_week_complete(payload):
         if type(season) is not int or type(week) is not int or not 1 <= week <= 18 or mode not in ("live", "replay"):
             return False
         observed = utc(payload["collected_at"])
+        read_errors = payload.get("week_population_read_errors", [])
+        if not isinstance(read_errors, list) or read_errors:
+            return False
         populations = payload.get("week_game_populations")
         if not isinstance(populations, list) or not populations:
             return False
-        expected = None
+        expected = membership = None
         for envelope in populations:
             population = envelope["payload"]
             if envelope["payload_sha256"] != digest(population):
@@ -95,7 +139,7 @@ def _verified_week_complete(payload):
                     or population.get("population_scope") != "FULL_NFL_REGULAR_SEASON_WEEK"
                     or not isinstance(population.get("source"), str) or not population["source"].strip()):
                 return False
-            document = population["source_document"]
+            document = _population_document(population)
             if (population.get("source_document_sha256") != digest(document)
                     or document.get("season") != season or document.get("week") != week):
                 return False
@@ -109,6 +153,11 @@ def _verified_week_complete(payload):
                 return False
             if expected is not None and games != expected:
                 return False
+            members = sorted((g["id"], g["nfl_id"], g["away"], g["home"], utc(g["kickoff"]))
+                             for g in document["games"])
+            if membership is not None and members != membership:
+                return False
+            membership = members
             expected = games
         board = payload.get("games")
         if _game_kickoffs(board) != expected:
@@ -160,12 +209,11 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live"):
             # Legacy ESPN snapshots have a saved Final/Final-OT detail but did
             # not retain completed. A bare post flag can also mean cancelled.
             return str(game.get("detail", "")).lower().startswith("final")
-        population_dir = root / "data/week_populations" / str(season) / f"w{week:02d}"
-        populations = [{"payload_sha256": path.stem.split(".")[0], "payload": read(path)}
-                       for path in sorted(population_dir.glob("*.json.gz"))]
+        populations, population_errors = _read_populations(root, season, week)
         week_evidence = {"season": season, "week": week, "mode": mode, "collected_at": stamp(observed_at),
                          "games": board["games"], "source_game_status": source_status,
-                         "week_game_populations": populations}
+                         "week_game_populations": populations,
+                         "week_population_read_errors": population_errors}
         week_complete = _verified_week_complete(week_evidence)
         outcomes = []
         for row in rows:
@@ -203,7 +251,8 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live"):
                    "cache_path": cache_path.relative_to(root).as_posix(), "cache_sha256": digest(cache),
                    "game_snapshot_path": board_path.relative_to(root).as_posix(), "game_snapshot_sha256": digest(board),
                    "games": board["games"], "source_game_status": source_status,
-                   "week_game_populations": populations, "rows": outcomes,
+                   "week_game_populations": populations,
+                   "week_population_read_errors": population_errors, "rows": outcomes,
                    "settlement_scope": "STATISTICAL_ONLY_NOT_VENUE_SETTLEMENT"}
         paths.append(write(root, "outcomes" if mode == "live" else "outcomes_replay", payload))
     return paths

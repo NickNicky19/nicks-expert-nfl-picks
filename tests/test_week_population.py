@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlencode
+import zlib
 
 import requests
 
@@ -26,14 +27,14 @@ NOW = datetime(2026, 10, 20, 12, tzinfo=timezone.utc)
 KICKOFF = datetime(2026, 10, 23, 0, 15, tzinfo=timezone.utc)
 
 
-def fixtures(first=KICKOFF, week=7):
+def fixtures(first=KICKOFF, week=7, spacing=timedelta(hours=6)):
     """Full fictional 14-game slate and four byes using pinned club identities."""
     names = sorted(population.CLUBS_2026)
     byes = names[-4:]
     events, games = [], []
     for i in range(14):
         away, home = names[2*i:2*i+2]
-        kickoff = first + timedelta(hours=6*i)
+        kickoff = first + spacing*i
         status = {"state": "pre", "completed": False, "shortDetail": "Scheduled"}
         events.append({"id": str(10000+i), "date": stamp(kickoff), "competitions": [{
             "status": {"type": status}, "competitors": [
@@ -46,7 +47,7 @@ def fixtures(first=KICKOFF, week=7):
     espn = {"fixture": "FICTIONAL_ONLY", "season": {"year": 2026, "type": 2},
             "week": {"number": week, "teamsOnBye": [{"displayName": n} for n in byes]}, "events": events}
     metadata = {"season": 2026, "week": week, "seasonType": "REG", "weekType": "REG",
-                "dateBegin": stamp(first), "dateEnd": stamp(first + timedelta(hours=78)),
+                "dateBegin": stamp(first), "dateEnd": stamp(first + spacing*13),
                 "teamsOnBye": [{"fullName": n, "id": population.CLUBS_2026[n]} for n in byes]}
     queries = [{"queryKey": ["useFetchFootballWeeklyGameDetails", {"season": "2026", "seasonType": "REG", "week": week}],
                 "state": {"status": "success", "data": games}},
@@ -66,6 +67,21 @@ class Response:
     def __init__(self, content, url, status=200):
         self.content, self.url, self.status_code = content, url, status
         self.headers = {"Date": "Tue, 20 Oct 2026 12:00:00 GMT"}
+
+
+def fictional_receipt(first=KICKOFF, week=7, captured_at=NOW, spacing=timedelta(hours=6)):
+    """Create a genuine v1-format receipt from wholly fictional saved responses."""
+    espn, queries = fixtures(first, week, spacing)
+    def get(url, params, **kwargs):
+        assert kwargs["allow_redirects"] is False
+        if url == population.SCOREBOARD_URL:
+            return Response(json.dumps(espn).encode(), url + "?" + urlencode(params))
+        return Response(nfl_html(queries).encode(), url)
+    with tempfile.TemporaryDirectory() as directory, \
+            patch.object(population.requests, "get", side_effect=get), \
+            patch.object(population, "datetime") as clock:
+        clock.now.return_value = captured_at
+        return read(population.capture_week(Path(directory), 2026, week))
 
 
 class PopulationCaptureTests(unittest.TestCase):
@@ -396,6 +412,233 @@ class PopulationCaptureTests(unittest.TestCase):
             with self.assertRaises(IntegrityError):population.capture_week(ROOT,2026,7)
             with self.assertRaises(IntegrityError):population.capture_week(self.root,2025,7)
             get.assert_not_called()
+
+
+class PopulationConsumerRegressionTests(unittest.TestCase):
+    """Actual consumers must validate original source semantics, not outer hashes."""
+
+    def setUp(self):
+        self.population = fictional_receipt()
+        self.policy = json.loads((ROOT / 'config/evaluation-policy.json').read_text())
+
+    def pairs(self, week=7):
+        row = {'season': 2026, 'week': week, 'game_id': '10000',
+               'player_id': 'fictional-player', 'category': 'rec', 'team': 'AAA',
+               'kickoff': stamp(KICKOFF), 'raw_projection': 4, 'adjusted_projection': 5,
+               'captured_at': stamp(NOW)}
+        return {(2026, week, '10000', 'fictional-player', 'rec'): row}
+
+    def snapshot(self, populations, *, week=7, extra=None, read_error=None, raw_read_error=False, bad_input=None):
+        final, _ = fixtures(week=week)
+        for event in final['events']:
+            event['competitions'][0]['status']['type'].update(state='post', completed=True, shortDetail='Final')
+        observed = KICKOFF + timedelta(days=5)
+        board = {'season': 2026, 'week': week, 'games': [
+            {'id': e['id'], 'kickoff': e['date'], 'state': 'post', 'detail': 'Final'}
+            for e in final['events']]}
+        status = record_scoreboard(final, {'dates': 2026, 'seasontype': 2, 'week': week}, observed)
+        cache = {'fictional-player': {'team': 'AAA', 'stats': {'gp': 1, 'rec': 3}}}
+        if bad_input == 'statistic':
+            cache['fictional-player']['stats']['rec'] = 'not-a-number'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'output/data').mkdir(parents=True)
+            (root / 'data/cache').mkdir(parents=True)
+            (root / 'output/data/week.json').write_text('invalid' if bad_input == 'board' else json.dumps(board))
+            (root / 'output/data/game-status.json').write_text(json.dumps({'weeks': {f'2026_{week:02d}': status}}))
+            (root / f'data/cache/stats_2026_{week:02d}.json').write_text(
+                'invalid' if bad_input == 'cache' else json.dumps(cache))
+            for payload in populations:
+                write(root, 'week_populations', payload)
+            if extra is not None:
+                path = root / f'data/week_populations/2026/w{week:02d}' / ('0' * 64 + '.json.gz')
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(extra)
+            before = {p: p.read_bytes() for p in root.rglob('*.json.gz')}
+            def population_read(path):
+                if read_error is not None and path.name == '0' * 64 + '.json.gz':
+                    raise read_error
+                return read(path)
+            original_read_bytes = Path.read_bytes
+            def file_bytes(path):
+                if raw_read_error and path.name == '0' * 64 + '.json.gz':
+                    raise PermissionError('fictional private file-read message')
+                return original_read_bytes(path)
+            with patch('scorecard.read', side_effect=population_read), \
+                    patch.object(Path, 'read_bytes', autospec=True, side_effect=file_bytes), \
+                    patch.object(population.requests, 'get', side_effect=AssertionError('No refetch')) as get:
+                path, = snapshot_outcomes(root, self.pairs(week), observed)
+                result = read(path)
+                get.assert_not_called()
+            self.assertEqual({p: p.read_bytes() for p in before}, before)
+        # The source/cache/population files are now unavailable to consumption.
+        return result
+
+    def assert_scored(self, saved, complete):
+        before = copy.deepcopy(saved)
+        week = saved['week']
+        with patch.object(population.requests, 'get', side_effect=AssertionError('No refetch')) as get:
+            self.assertEqual(_verified_week_complete(saved), complete)
+            outcomes = latest_outcomes([saved])
+            report = score(self.pairs(week), outcomes, {'unique_opportunities': 1}, self.policy)
+            get.assert_not_called()
+        selected = next(iter(outcomes.values()))
+        self.assertEqual((selected['status'], selected['actual']), ('resolved', 3))
+        self.assertEqual(selected['week_confirmed_complete'], complete)
+        self.assertEqual(len(selected['week_completion_snapshot_sha256']), int(complete))
+        category = report['categories']['rec']
+        self.assertEqual(category['raw_sleeper']['n'], 1)
+        self.assertEqual(category['raw_sleeper']['mae'], 1)
+        self.assertEqual(category['unchanged_clone']['mae'], 2)
+        self.assertEqual(category['uncertainty']['completed_weeks'], int(complete))
+        self.assertIsNone(category['uncertainty']['interval'])
+        self.assertEqual(saved, before)
+        return selected
+
+    def invalid_cases(self):
+        name = sorted(population.CLUBS_2026)[0]
+        return [
+            ('wrong_adapter_code_digest', lambda p: p.update(adapter_code_sha256='0' * 64)),
+            ('missing_source_observations', lambda p: p['source_document'].pop('source_observations')),
+            ('changed_body_without_matching_body_hash', lambda p: p['source_document']['source_observations']['espn'].update(body='{}')),
+            ('wrong_source_request_week', lambda p: p['source_document']['source_observations']['espn']['request']['params'].update(week=6)),
+            ('reversed_capture_clocks', lambda p: p.update(capture_started_at=stamp(NOW + timedelta(seconds=1)))),
+            ('changed_club_identity_mapping', lambda p: p['source_document']['club_identities'].update({name: 'wrong-identity'}))]
+
+    def test_valid_retained_v1_fresh_and_saved_consumers_qualify_offline(self):
+        self.assertEqual(population.code_sha256(), '1e50c60ce2636f4534a63f517341c393bac19b8df7cbd2b1fcba1e9eed16c40e')
+        original = copy.deepcopy(self.population)
+        saved = self.snapshot([self.population])
+        self.assertTrue(saved['rows'][0]['week_confirmed_complete'])
+        self.assert_scored(saved, True)
+        # Older otherwise valid saved outcomes lacked this additive diagnostic.
+        saved.pop('week_population_read_errors')
+        self.assert_scored(saved, True)
+        self.assertEqual(self.population, original)
+
+    def test_all_six_rehashed_invalid_cases_fail_fresh_and_saved_consumption(self):
+        valid = self.snapshot([self.population])
+        for name, mutate in self.invalid_cases():
+            with self.subTest(case=name):
+                altered = copy.deepcopy(self.population)
+                mutate(altered)
+                altered['source_document_sha256'] = digest(altered['source_document'])
+                with self.assertRaises(IntegrityError):
+                    population.validate_receipt(altered)
+                fresh = self.snapshot([altered])
+                self.assertFalse(fresh['rows'][0]['week_confirmed_complete'])
+                self.assert_scored(fresh, False)
+                forged = copy.deepcopy(valid)
+                forged['week_game_populations'] = [{'payload_sha256': digest(altered), 'payload': altered}]
+                self.assertTrue(forged['rows'][0]['week_confirmed_complete'])
+                # Persist the altered outcome with a freshly computed outer
+                # envelope as well; ordinary byte corruption is not the issue.
+                with tempfile.TemporaryDirectory() as directory:
+                    forged = read(write(Path(directory), 'outcomes', forged))
+                self.assert_scored(forged, False)
+                # A valid sibling must not hide this invalid source record.
+                self.assert_scored(self.snapshot([self.population, altered]), False)
+
+    def test_legacy_unknown_and_replay_contracts_never_use_generic_fallback(self):
+        changes = [lambda p: p.update(schema_version='unsupported'),
+                   lambda p: p.update(adapter_version='fictional-future-v2'),
+                   lambda p: p.update(adapter_code_sha256='f' * 64),
+                   lambda p: [p.pop(k) for k in ('adapter_version', 'adapter_code_sha256')],
+                   lambda p: p.update(mode='replay')]
+        for change in changes:
+            altered = copy.deepcopy(self.population)
+            change(altered)
+            for siblings in ([altered], [self.population, altered]):
+                with self.subTest(contract={k: altered.get(k) for k in ('schema_version', 'adapter_version', 'mode')}, mixed=len(siblings) > 1):
+                    self.assert_scored(self.snapshot(siblings), False)
+        self.assert_scored(self.snapshot([]), False)
+
+    def test_source_valid_membership_conflict_cannot_choose_a_winning_receipt(self):
+        other = copy.deepcopy(self.population)
+        _, queries = fixtures()
+        queries[0]['state']['data'][0]['id'] = '00000000-0000-0000-0000-999999999999'
+        obs = other['source_document']['source_observations']
+        obs['nfl']['body'] = nfl_html(queries)
+        obs['nfl']['body_sha256'] = hashlib.sha256(obs['nfl']['body'].encode()).hexdigest()
+        other['source_document'] = population._document(obs, 2026, 7, NOW, NOW)
+        other['source_document_sha256'] = digest(other['source_document'])
+        population.validate_receipt(other)
+        self.assert_scored(self.snapshot([other]), True)
+        for siblings in ([self.population, other], [other, self.population]):
+            self.assert_scored(self.snapshot(siblings), False)
+
+    def test_optional_population_corruption_preserves_points_and_saved_read_errors(self):
+        good = gzip.compress(json.dumps({'payload_sha256': digest(self.population), 'payload': self.population}).encode())
+        bad_envelope = gzip.compress(json.dumps({'payload_sha256': '0' * 64, 'payload': self.population}).encode())
+        corruptions = [b'FICTIONAL_NOT_GZIP', good[:-8], gzip.compress(b'\xff'),
+                       gzip.compress(b'not-json'), gzip.compress(b'[]'),
+                       gzip.compress(b'{"payload":{},"payload":{}}'),
+                       gzip.compress(b'{"payload":NaN}'), bad_envelope, good]
+        for content in corruptions:
+            for populations in ([], [self.population]):
+                with self.subTest(digest=hashlib.sha256(content).hexdigest(), mixed=bool(populations)):
+                    saved = self.snapshot(populations, extra=content)
+                    errors = saved['week_population_read_errors']
+                    self.assertEqual(len(errors), 1)
+                    self.assertEqual(errors[0]['raw_file_sha256'], hashlib.sha256(content).hexdigest())
+                    self.assertEqual(set(errors[0]), {'path', 'error_type', 'raw_file_sha256'})
+                    self.assert_scored(saved, False)
+
+    def test_unreadable_and_deflate_read_failures_are_narrowly_recorded(self):
+        for error in (PermissionError('fictional private message must not be saved'), zlib.error('fictional deflate failure')):
+            saved = self.snapshot([self.population], extra=b'FICTIONAL', read_error=error)
+            self.assertEqual(saved['week_population_read_errors'][0]['error_type'], type(error).__name__)
+            self.assertNotIn(str(error), json.dumps(saved))
+            self.assert_scored(saved, False)
+
+    def test_failure_before_population_bytes_are_read_preserves_point_outcome(self):
+        saved = self.snapshot([self.population], extra=b'FICTIONAL', raw_read_error=True)
+        error, = saved['week_population_read_errors']
+        self.assertEqual(error['error_type'], 'PermissionError')
+        self.assertIsNone(error['raw_file_sha256'])
+        self.assertNotIn('fictional private file-read message', json.dumps(saved))
+        self.assert_scored(saved, False)
+
+    def test_validator_unavailable_or_modified_cannot_reinterpret_saved_v1(self):
+        saved = self.snapshot([self.population])
+        for failure in ('different-code', 'unreadable-code'):
+            with self.subTest(failure=failure), patch.object(population, 'code_sha256',
+                    **({'return_value': '0' * 64} if failure == 'different-code' else {'side_effect': OSError('fixture')})):
+                self.assert_scored(saved, False)
+        self.assert_scored(saved, True)
+
+    def test_read_error_metadata_is_fail_closed_and_saved_flags_are_not_authority(self):
+        saved = self.snapshot([self.population])
+        for errors in ([{'error_type': 'FICTIONAL'}], {}, None, 'invalid'):
+            bad = copy.deepcopy(saved)
+            bad['week_population_read_errors'] = errors
+            self.assert_scored(bad, False)
+        saved['rows'][0]['week_confirmed_complete'] = False
+        self.assert_scored(saved, True)
+
+    def test_population_tolerance_does_not_hide_board_cache_stat_or_outcome_errors(self):
+        for bad in ('board', 'cache', 'statistic'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.snapshot([self.population], extra=b'bad-gzip', bad_input=bad)
+        saved = self.snapshot([self.population])
+        saved['rows'][0]['actual'] = 9
+        with self.assertRaises(IntegrityError):
+            latest_outcomes([saved])
+
+    def test_eight_invalid_source_weeks_keep_points_without_opening_registered_gate(self):
+        pairs, outcomes = {}, {}
+        for week in range(1, 9):
+            altered = fictional_receipt(week=week)
+            altered['adapter_code_sha256'] = '0' * 64
+            saved = self.snapshot([altered], week=week)
+            pairs.update(self.pairs(week))
+            outcomes.update(latest_outcomes([saved]))
+        report = score(pairs, outcomes, {}, self.policy)
+        category = report['categories']['rec']
+        self.assertEqual(category['raw_sleeper']['n'], 8)
+        self.assertEqual(category['uncertainty']['completed_weeks'], 0)
+        self.assertEqual(category['uncertainty']['excluded_incomplete_outcomes'], 8)
+        self.assertIsNone(category['uncertainty']['interval'])
 
 
 if __name__ == '__main__':

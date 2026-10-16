@@ -78,7 +78,9 @@ It retains both **full source bodies**, exact requests/final URLs, HTTP results,
 actual request/collection/seal clocks, the official week/club partition,
 provider IDs and their crosswalk, canonical kickoffs, adapter version and exact
 source-code digest. The source document and entire payload are content addressed.
-The existing reader can embed the receipt without any scoring/policy changes.
+Embedding a receipt alone does not validate its source contract. The scorecard
+consumer validation below is required for complete-week qualification; registered
+scoring targets, uncertainty and promotion policies remain unchanged.
 
 `sha256-http-decoded-utf8-body-v1` hashes the UTF-8 bytes of `requests`' HTTP-decoded
 body. These are **not raw wire/compressed transport bytes**. ESPN additionally
@@ -133,6 +135,81 @@ The old committed Week 6 `tools/verify.py --offline` missing-proof failure remai
 visible and unchanged. A successful separate A07 artifact or new population
 receipt does not authenticate that old forecast. No original projection,
 selection clock, line, decision or historical proof is reconstructed here.
+
+## Source validation at consumption (IR-01)
+
+The corrective source review is
+`NICK-WEB-REVIEW-20261016-6e8fb50:IR-01`. Its six fictional alterations exposed
+one gap: the old consumer checked outer hashes and final membership without
+enforcing the adapter's saved-source validation. This finding does not establish
+that the actual Week 7 receipt was altered or invalid. Independent review of that
+original captured evidence remains pending and separate from source-code review.
+
+Both `snapshot_outcomes` and `latest_outcomes` now use the same completion
+predicate. Every population must match the explicitly supported contract:
+
+- Schema `week-game-population-v1`.
+- Adapter `week-population-espn-nfl-v1`.
+- Retained implementation SHA-256
+  `1e50c60ce2636f4534a63f517341c393bac19b8df7cbd2b1fcba1e9eed16c40e`.
+
+The consumer calls the retained `validate_receipt` offline and uses the document
+rederived from original saved bodies. Outer checksums and existing period,
+pregame-clock, independent final-status and row bindings are also retained.
+Multiple receipts must agree on both provider IDs, clubs and kickoffs; an invalid,
+unsupported or conflicting sibling prevents qualification. There is no latest-
+receipt/hash winner, current-provider refetch or trusted saved `validated` flag.
+Saved outcome completion flags are recomputed from their embedded source evidence.
+
+### Retained-version compatibility
+
+`tools/week_population.py` is the unchanged v1 implementation, including its
+VERSION and exact bytes. Legitimately saved v1 receipts remain verifiable against
+that implementation after consumer, tests or documentation changes. A future
+adapter needs a separate reviewed implementation and dispatch entry while
+retaining the old validator for old receipts; do not replace v1 and compare old
+proof with a moving latest-code digest. Unavailable or changed retained code fails
+explicitly (`RETAINED_POPULATION_VALIDATOR_UNAVAILABLE`), rather than reinterpreting
+the saved receipt. No code supplied inside evidence is executed.
+
+Bare legacy documents, unknown schemas/adapter/digest tuples and replay records
+remain readable evidence, but cannot qualify a live completed week. Even alongside
+a valid v1 receipt they keep the week unqualified. Historical receipt bytes are
+never upgraded, rewritten or replaced with newly fetched sources. These evidence
+compatibility decisions do not amend the registered experiment or its eight-week
+uncertainty gate. A source-valid v1 receipt remains supported; source checks are
+not waived to preserve earlier generic-document positive fixtures.
+
+### Optional population read failures and individual results
+
+Malformed gzip/UTF-8/JSON/envelopes, unreadable population files and filename/hash
+mismatches are handled only at the optional population-file read boundary. The
+original file is retained. New outcome receipts add `week_population_read_errors`,
+with relative path, bounded error type and raw-file SHA-256 when readable; no raw
+response body or exception message is copied into the diagnostic. Readable but
+source-invalid populations remain embedded for inspection.
+
+Any saved read error prevents completion, including when a valid sibling exists.
+Older saved outcomes may lack this additive field; that absence is not proof of
+completion, and their embedded receipts still need full source validation. The
+error list is retained for offline reconsumption after the original files are
+unavailable. Board, cache, participation/statistic and outcome-integrity failures
+are not suppressed by this optional-population handling.
+
+Independently valid individual point outcomes still produce descriptive
+category-specific scores while full-week evidence is missing or fails. Their
+week is excluded from completed-week uncertainty, not from all point scoring.
+Regressions exercise actual snapshot writing, saved consumption, point scores
+and completed-week counts for all six alterations, valid/invalid siblings,
+source-valid membership conflicts, legacy/unknown versions and read failures.
+Original positive controls now use full source-valid fictional captures; eight
+verified fictional weeks still open the unchanged gate and eight invalid weeks
+retain eight point results with zero qualified weeks. Tests use no live sources
+and do not establish source authenticity or improved prediction accuracy.
+
+This repair does not wire the collector into production or publish evidence,
+change the forecasting engine, authorize archive export, authenticate the original
+capture, resolve the old Week 6 missing-proof failure, or approve a release.
 
 ## Verification and handoff
 

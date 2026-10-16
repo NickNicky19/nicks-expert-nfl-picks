@@ -16,28 +16,39 @@ from test_reliability import fixture, NOW
 from test_source_evidence import fictional_status
 
 
-def setup():
+def setup(*, population=False):
     data, _ = fixture()
+    # The recognized ESPN population contract requires numeric event IDs.
+    # Bind every fixture forecast/selection to the same fictional event.
+    # Keep the shared default used by unrelated end-to-end/shadow tests.
+    if population:
+        data["games"][0]["id"] = "10000"
+        for player in data["players"]:
+            player["game_id"] = "10000"
+        for picks in data["picks"].values():
+            for pick in picks:
+                pick["game_id"] = "10000"
     payload = make_payload(data, NOW, {"test": "fixture"}, "live")
     policy = json.loads((ROOT / "config/evaluation-policy.json").read_text())
     policy["registered_at"] = stamp(NOW - timedelta(days=1))
     return data, payload, policy
 
 
-def fictional_week_population(games, week=5, mode="live"):
-    """A fictional, separately sourced full-week membership document, not live proof."""
-    document = {"season": 2026, "week": week,
-                "games": [{"id": g["id"], "kickoff": g["kickoff"]} for g in games]}
-    return {"schema_version": "week-game-population-v1", "mode": mode, "season": 2026, "week": week,
-            "collected_at": stamp(NOW), "source_timestamp": None,
-            "source": "fictional_independently_checked_full_week_schedule",
-            "population_scope": "FULL_NFL_REGULAR_SEASON_WEEK", "source_document": document,
-            "source_document_sha256": digest(document)}
+def fictional_week_population(week=5):
+    """A source-valid full fictional slate; never a bare self-certified document."""
+    import test_week_population as population_fixtures
+    return population_fixtures.fictional_receipt(first=NOW + timedelta(hours=1), week=week,
+                                                captured_at=NOW, spacing=timedelta(minutes=1))
+
+
+def final_games(population):
+    return [{**game, "state": "post", "detail": "Final"}
+            for game in population["source_document"]["games"]]
 
 
 class ScorecardTests(unittest.TestCase):
     def test_repeated_receipts_use_first_matched_pair_once(self):
-        _, first, policy = setup()
+        _, first, policy = setup(population=True)
         second = copy.deepcopy(first); second["captured_at"] = stamp(NOW + timedelta(minutes=1))
         second["rows"][0].update(raw_projection=99, adjusted_projection=88)
         pairs, coverage = paired_forecasts([second, first, first], policy, {"test": "fixture"})
@@ -49,7 +60,7 @@ class ScorecardTests(unittest.TestCase):
         self.assertEqual(row["baseline_payload_sha256"], digest(first))
 
     def test_missing_pair_not_compared_against_different_time(self):
-        _, a, policy = setup(); b = copy.deepcopy(a)
+        _, a, policy = setup(population=True); b = copy.deepcopy(a)
         a["rows"][0]["adjusted_projection"] = None
         b["rows"][0]["raw_projection"] = None
         pairs, coverage = paired_forecasts([a, b], policy, {"test": "fixture"})
@@ -57,7 +68,7 @@ class ScorecardTests(unittest.TestCase):
         self.assertEqual(coverage["excluded"]["missing_pair"], 2)
 
     def test_mixed_timestamp_precision_orders_actual_instants(self):
-        _, older, policy = setup(); newer = copy.deepcopy(older)
+        _, older, policy = setup(population=True); newer = copy.deepcopy(older)
         older["captured_at"] = "2026-10-10T19:00:00Z"
         newer["captured_at"] = "2026-10-10T19:00:00.900000Z"
         newer["rows"][0]["raw_projection"] = 99
@@ -74,20 +85,20 @@ class ScorecardTests(unittest.TestCase):
         self.assertEqual(next(iter(latest_outcomes([a, b]).values()))["actual"], 5)
 
     def test_replay_and_started_receipts_excluded(self):
-        _, p, policy = setup(); replay = copy.deepcopy(p); replay["mode"] = "replay"
+        _, p, policy = setup(population=True); replay = copy.deepcopy(p); replay["mode"] = "replay"
         late = copy.deepcopy(p); late["captured_at"] = p["rows"][0]["kickoff"]
         pairs, coverage = paired_forecasts([late, replay], policy, {"test": "fixture"})
         self.assertFalse(pairs)
         self.assertEqual(coverage["excluded"], {"non_live_receipt": 1, "not_pregame": 1})
 
     def test_duplicate_row_and_wrong_engine_fail(self):
-        _, p, policy = setup()
+        _, p, policy = setup(population=True)
         with self.assertRaises(ValueError): paired_forecasts([p], policy, {"wrong": "engine"})
         p["rows"].append(copy.deepcopy(p["rows"][0]))
         with self.assertRaises(ValueError): paired_forecasts([p], policy, {"test": "fixture"})
 
     def outcomes(self, entry, final=True):
-        data, p, policy = setup()
+        data, p, policy = setup(population=True)
         pairs, coverage = paired_forecasts([p], policy, {"test": "fixture"})
         if final:
             data["games"][0]["state"] = "post"
@@ -128,13 +139,13 @@ class ScorecardTests(unittest.TestCase):
         self.assertEqual(report["outcome_status"], {"unresolved": 1})
 
     def test_pre_registration_games_excluded_from_primary(self):
-        _, p, policy = setup(); policy["registered_at"] = p["rows"][0]["kickoff"]
+        _, p, policy = setup(population=True); policy["registered_at"] = p["rows"][0]["kickoff"]
         pairs, coverage = paired_forecasts([p], policy, {"test": "fixture"})
         report = score(pairs, {}, coverage, policy)
         self.assertEqual(report["outcome_status"], {"excluded_pre_registration_game": 1})
 
     def test_corrections_keep_forecasts_and_prior_outcomes(self):
-        _, p, policy = setup(); pairs, coverage = paired_forecasts([p], policy, {"test": "fixture"})
+        _, p, policy = setup(population=True); pairs, coverage = paired_forecasts([p], policy, {"test": "fixture"})
         row = next(iter(pairs.values()))
         a = {"schema_version": "forecast-outcomes-v1", "mode": "live", "collected_at": stamp(NOW + timedelta(hours=5)),
              "rows": [{**row, "status": "resolved", "actual": 3, "game_state": "post", "final_confirmed": True}]}
@@ -149,7 +160,7 @@ class ScorecardTests(unittest.TestCase):
         self.assertEqual(p, before)
 
     def test_week_cluster_uncertainty_requires_eight_weeks(self):
-        _, _, policy = setup()
+        _, _, policy = setup(population=True)
         rows = [{"season": 2026, "week": w, "raw_projection": 5, "adjusted_projection": 4, "actual": 3,
                  "week_confirmed_complete": True} for w in range(1, 9)]
         self.assertIsNone(cluster_interval(rows[:7], policy)["interval"])
@@ -158,7 +169,7 @@ class ScorecardTests(unittest.TestCase):
         self.assertIsNone(cluster_interval(rows, policy)["interval"])
 
     def test_cancelled_post_flag_does_not_establish_a_final(self):
-        data, p, policy = setup(); data["games"][0].update(state="post", detail="Cancelled")
+        data, p, policy = setup(population=True); data["games"][0].update(state="post", detail="Cancelled")
         pairs, _ = paired_forecasts([p], policy, {"test": "fixture"})
         with tempfile.TemporaryDirectory() as d:
             root = Path(d); (root / "output/data").mkdir(parents=True); (root / "data/cache").mkdir(parents=True)
@@ -175,7 +186,7 @@ class OutcomePrecedenceRegressionTests(unittest.TestCase):
     """Fictional final observations exercise precedence without changing evidence."""
 
     def snapshot(self, actual=3, status="resolved", hour=5, source="fictional_stats_A", complete=False):
-        _, baseline, policy = setup()
+        _, baseline, policy = setup(population=True)
         pairs, _ = paired_forecasts([baseline], policy, {"test": "fixture"})
         row = copy.deepcopy(next(iter(pairs.values())))
         entry = {"team": row["team"], "stats": {"gp": 1, row["category"]: actual}}
@@ -194,11 +205,11 @@ class OutcomePrecedenceRegressionTests(unittest.TestCase):
                 "game_snapshot_sha256": digest({"kickoff": row["kickoff"], "state": row["game_state"]}),
                 "rows": [row]}
         if complete:
-            game = {"id": row["game_id"], "kickoff": row["kickoff"], "state": "post", "detail": "Final"}
-            population = fictional_week_population([game])
-            result.update(season=2026, week=5, games=[game],
+            population = fictional_week_population()
+            games = final_games(population)
+            result.update(season=2026, week=5, games=games,
                           week_game_populations=[{"payload_sha256": digest(population), "payload": population}],
-                          source_game_status=fictional_status([game], collected_at=result["collected_at"]))
+                          source_game_status=fictional_status(games, collected_at=result["collected_at"]))
         return result
 
     def chosen(self, *snapshots):
@@ -236,7 +247,7 @@ class OutcomePrecedenceRegressionTests(unittest.TestCase):
         self.assertEqual(result["status"], "unresolved")
         self.assertIsNone(result["actual"])
         self.assertTrue(result["outcome_conflict"])
-        _, baseline, policy = setup()
+        _, baseline, policy = setup(population=True)
         pairs, coverage = paired_forecasts([baseline], policy, {"test": "fixture"})
         report = score(pairs, latest_outcomes([a, b]), coverage, policy)
         self.assertEqual(report["categories"]["rec"]["raw_sleeper"]["n"], 0)
@@ -403,7 +414,7 @@ class CompletedWeekRegressionTests(unittest.TestCase):
                  "week_confirmed_complete": True} for week in range(1, 9)]
 
     def test_incomplete_week_cannot_change_primary_interval(self):
-        _, _, policy = setup()
+        _, _, policy = setup(population=True)
         complete = self.rows()
         extra = {**complete[0], "week": 9, "adjusted_projection": 999,
                  "week_confirmed_complete": False}
@@ -415,7 +426,7 @@ class CompletedWeekRegressionTests(unittest.TestCase):
         self.assertEqual(after["excluded_incomplete_week_clusters"], 1)
 
     def test_mixed_completion_flags_do_not_open_the_eight_week_gate(self):
-        _, _, policy = setup()
+        _, _, policy = setup(population=True)
         rows = self.rows()
         rows.append({**rows[-1], "week_confirmed_complete": False})
         result = cluster_interval(rows, policy)
@@ -424,7 +435,7 @@ class CompletedWeekRegressionTests(unittest.TestCase):
         self.assertIsNone(result["interval"])
 
     def test_reordered_input_has_identical_seeded_complete_week_interval(self):
-        _, _, policy = setup()
+        _, _, policy = setup(population=True)
         rows = self.rows()
         for i, row in enumerate(rows):
             row["adjusted_projection"] = 3 + i * i
@@ -432,7 +443,7 @@ class CompletedWeekRegressionTests(unittest.TestCase):
         self.assertEqual(cluster_interval(rows, policy), cluster_interval(list(reversed(rows)), policy))
 
     def test_all_rows_of_a_week_resample_as_one_cluster(self):
-        _, _, policy = setup()
+        _, _, policy = setup(population=True)
         rows = []
         for week in range(1, 9):
             rows.extend([{"season": 2026, "week": week, "actual": 0,
@@ -446,7 +457,7 @@ class CompletedWeekRegressionTests(unittest.TestCase):
         self.assertEqual(result["resampled_outcomes"], 16)
 
     def test_completed_week_denominator_weights_paired_outcomes(self):
-        _, _, policy = setup()
+        _, _, policy = setup(population=True)
         rows = [{"season": 2026, "week": 1, "raw_projection": 0, "adjusted_projection": 0,
                  "actual": 0, "week_confirmed_complete": True} for _ in range(100)]
         rows.extend({"season": 2026, "week": w, "raw_projection": 0, "adjusted_projection": 10,
@@ -456,7 +467,7 @@ class CompletedWeekRegressionTests(unittest.TestCase):
         self.assertAlmostEqual(result["completed_week_mae_delta_clone_minus_raw"], 70 / 107)
 
     def test_empty_population_and_insufficient_weeks_keep_gate_and_counts(self):
-        _, _, policy = setup()
+        _, _, policy = setup(population=True)
         result = cluster_interval([], policy)
         self.assertEqual(result["status"], "insufficient_completed_weeks")
         self.assertEqual(result["completed_weeks"], 0)
@@ -509,7 +520,7 @@ class ParticipationContradictionRegressionTests(unittest.TestCase):
         self.assertEqual(len(result["outcome_observations"]), 3)
 
     def test_contradictory_participation_is_excluded_from_point_scores(self):
-        _, baseline, policy = setup()
+        _, baseline, policy = setup(population=True)
         pairs, coverage = paired_forecasts([baseline], policy, {"test": "fixture"})
         records = [self.snapshot(3), self.snapshot(status="dnp", hour=6)]
         result = score(pairs, latest_outcomes(records), coverage, policy)
@@ -520,16 +531,15 @@ class ParticipationContradictionRegressionTests(unittest.TestCase):
 
 class SavedWeekPopulationRegressionTests(unittest.TestCase):
     def world(self, week=5):
-        board, baseline, policy = setup()
+        board, baseline, policy = setup(population=True)
         board["week"], baseline["week"] = week, week
         for row in baseline["rows"]:
             row["week"] = week
-        board["games"][0].update(state="post", detail="Final")
-        board["games"].append({"id": "fictional-other-game", "home": "CCC", "away": "DDD",
-                               "kickoff": stamp(NOW + timedelta(hours=2)), "state": "post", "detail": "Final"})
+        population = fictional_week_population(week)
+        board["games"] = final_games(population)
         return {"board": board, "baseline": baseline, "policy": policy,
                 "status": fictional_status(board["games"], week),
-                "populations": [fictional_week_population(board["games"], week)]}
+                "populations": [population]}
 
     def capture(self, world):
         from evidence import write
@@ -571,8 +581,8 @@ class SavedWeekPopulationRegressionTests(unittest.TestCase):
 
     def test_truncated_board_and_status_cannot_certify_each_other(self):
         world = self.world()
-        world["board"]["games"].pop()
-        world["status"]["games"].pop("fictional-other-game")
+        removed = world["board"]["games"].pop()
+        world["status"]["games"].pop(removed["id"])
         _, result, _, _ = self.capture(world)
         self.assertFalse(result["week_confirmed_complete"])
 
@@ -663,11 +673,11 @@ class SavedWeekPopulationRegressionTests(unittest.TestCase):
                 world = self.world()
                 raw = world["status"]["games"]
                 if alteration == "missing":
-                    raw.pop("fictional-other-game")
+                    raw.pop(world["board"]["games"][1]["id"])
                 elif alteration == "extra":
-                    raw["fictional-extra-game"] = copy.deepcopy(raw["fictional-other-game"])
+                    raw["fictional-extra-game"] = copy.deepcopy(raw[world["board"]["games"][1]["id"]])
                 elif alteration == "kickoff":
-                    raw["fictional-other-game"]["kickoff"] = stamp(NOW + timedelta(hours=3))
+                    raw[world["board"]["games"][1]["id"]]["kickoff"] = stamp(NOW + timedelta(hours=3))
                 elif alteration == "unavailable":
                     world["status"] = None
                 else:
@@ -678,7 +688,7 @@ class SavedWeekPopulationRegressionTests(unittest.TestCase):
     def test_changed_board_kickoff_does_not_rewrite_frozen_population(self):
         world = self.world()
         world["board"]["games"][1]["kickoff"] = stamp(NOW + timedelta(hours=3))
-        world["status"]["games"]["fictional-other-game"]["kickoff"] = world["board"]["games"][1]["kickoff"]
+        world["status"]["games"][world["board"]["games"][1]["id"]]["kickoff"] = world["board"]["games"][1]["kickoff"]
         _, result, _, _ = self.capture(world)
         self.assertFalse(result["week_confirmed_complete"])
 
@@ -688,7 +698,7 @@ class SavedWeekPopulationRegressionTests(unittest.TestCase):
                 world = self.world()
                 world["board"]["games"][1].update(state=state, detail=detail)
                 # Even an inconsistent completed:true flag is insufficient.
-                world["status"]["games"]["fictional-other-game"].update(state=state, detail=detail)
+                world["status"]["games"][world["board"]["games"][1]["id"]].update(state=state, detail=detail)
                 _, result, _, _ = self.capture(world)
                 self.assertFalse(result["week_confirmed_complete"])
 
@@ -696,7 +706,7 @@ class SavedWeekPopulationRegressionTests(unittest.TestCase):
         for alteration in ("nonfinal", "future"):
             with self.subTest(alteration=alteration):
                 world = self.world()
-                raw = world["status"]["games"]["fictional-other-game"]
+                raw = world["status"]["games"][world["board"]["games"][1]["id"]]
                 if alteration == "nonfinal":
                     world["board"]["games"][1].update(state="pre", detail="Scheduled")
                     raw.update(state="pre", completed=False, detail="Scheduled")
@@ -714,8 +724,8 @@ class SavedWeekPopulationRegressionTests(unittest.TestCase):
         rows, pairs_all, outcomes_all = [], {}, {}
         for week in range(1, 9):
             world = self.world(week)
-            world["board"]["games"].pop()
-            world["status"]["games"].pop("fictional-other-game")
+            removed = world["board"]["games"].pop()
+            world["status"]["games"].pop(removed["id"])
             _, outcome, pairs, coverage = self.capture(world)
             key = next(iter(pairs))
             pairs_all.update(pairs)
