@@ -652,5 +652,149 @@ class SelectedOutcomeLabelIntegrationTests(unittest.TestCase):
                          (frozen["line"], frozen["side"], frozen["recorded_selection_at"]))
 
 
+class AllCategoryReportIntegration(unittest.TestCase):
+    def fixture(self, *, final=True, stats=None):
+        from test_scorecard import descriptive_fixture
+        from reliability import capture
+        import scoring
+        temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        root, output = base / "input", base / "derived"
+        root.mkdir()
+        board, _, hashes = descriptive_fixture()
+        board.update(week=7, generated_at=stamp(BOUNDARY - timedelta(minutes=16)),
+                     categories=copy.deepcopy(scoring.CATEGORIES))
+        board["games"][0].update(id="fictional-game-7", kickoff=stamp(KICKOFF))
+        for player in board["players"]: player["game_id"] = "fictional-game-7"
+        for picks in board["picks"].values():
+            for pick in picks: pick["game_id"] = "fictional-game-7"
+        for position, categories in (("QB", ["pass_yd", "pass_td", "pass_cmp", "pass_att", "pass_int"]),
+                                     ("RB", ["rush_yd", "rush_att"]), ("WR", ["rec_yd", "rush_rec_yd"])):
+            props = [{"key": category, "proj": 2.5, "adj": 3.5, "line": 3.5,
+                      "line_from": "ours", "lean": None} for category in categories]
+            board["players"].append({"id": "fictional-" + position, "name": "Fictional " + position,
+                "game_id": "fictional-game-7", "team": "AAA", "opp": "BBB", "pos": position,
+                "proj_ppr": None, "late": False, "props": props})
+        meta = {k: board[k] for k in ("season", "week", "generated_at")}
+        path, health = capture(board, meta, root, BOUNDARY - timedelta(minutes=15), hashes, mode="live")
+        self.assertEqual(health["capture_rows"], 12)
+        self.assertNotEqual(path.name, digest(read(path)) + ".json.gz", "native baseline contract must be exercised")
+        original = base / "original-board.json"
+        original.write_text(json.dumps(board))
+        final_board = copy.deepcopy(board)
+        final_board["games"][0].update(state="post" if final else "pre", detail="Final" if final else "Scheduled")
+        (root / "output/data").mkdir(parents=True)
+        (root / "output/data/week.json").write_text(json.dumps(final_board))
+        entries = {p["id"]: {"team": "AAA", "opp": "BBB", "pos": p["pos"], "stats": {"gp": 1}}
+                   for p in board["players"]}
+        entries["fictional-1"]["stats"].update(stats or {"pass_yd": 1, "rec": 1, "rec_yd": -2, "fum_lost": 1})
+        (root / "data/cache").mkdir(parents=True)
+        (root / "data/cache/stats_2026_07.json").write_text(json.dumps(entries))
+        return root, output, original, hashes
+
+    def report(self, root, output, hashes, original=None, *, at=None, enabled=True):
+        with patch("requests.sessions.Session.request", side_effect=AssertionError("No provider collection")):
+            return run_report([root], output, now=at or KICKOFF + timedelta(days=1), expected_hashes=hashes,
+                              policy=timing_policy(), include_descriptive=enabled,
+                              original_board_paths=[original] if original else [])
+
+    def test_native_saved_file_to_report_primary_public_and_input_bytes_unchanged(self):
+        from selection_publication import _projection
+        root, output, original, hashes = self.fixture()
+        before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        legacy, legacy_dir = self.report(root, output.parent / "legacy", hashes, enabled=False)
+        report, directory = self.report(root, output, hashes, original)
+        for field in ("rows", "summary", "primary_raw_vs_adjusted", "final_outcomes", "outcome_observation_index",
+                      "matched_checkpoints", "coverage", "timing_policy_sha256", "evaluation_policy_sha256"):
+            self.assertEqual(report[field], legacy[field], field)
+        self.assertEqual(sum(v["raw_sleeper"]["n"] for v in report["primary_raw_vs_adjusted"]["categories"].values()), 3)
+        self.assertNotIn("descriptive_all_categories", legacy)
+        self.assertFalse((legacy_dir / "descriptive-evaluation.json").exists())
+        report["descriptive_all_categories"]["private_canary"] = "PRIVATE_LOCAL_ONLY_CANARY"
+        projected = _projection(report, source_sha="a" * 40, input_digest="b" * 64)
+        self.assertEqual(projected, _projection(legacy, source_sha="a" * 40, input_digest="b" * 64))
+        self.assertNotIn("PRIVATE_LOCAL_ONLY_CANARY", json.dumps(projected))
+        report["descriptive_all_categories"].pop("private_canary")
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+        self.assertFalse((root / "data/outcomes").exists())
+        value = report["descriptive_all_categories"]
+        self.assertEqual((len(value["rows"]), len(value["paired_rows"]), len(value["td_rows"])), (12, 11, 1))
+        self.assertEqual(value["coverage"]["unique_games"], 1)
+        self.assertEqual(value["categories"]["fpts"]["paired"]["raw"]["n"], 1)
+        ppr = next(r for r in value["paired_rows"] if r["category"] == "fpts")
+        self.assertEqual(ppr["actual"], -1.16)
+        self.assertEqual(ppr["provider_ppr"], 10.1)
+        self.assertEqual(ppr["outcome_provenance"], "saved_cache_descriptive_regrade")
+        self.assertEqual(value["td_rows"][0]["probability_provenance"], "originally_recorded_probability")
+        self.assertEqual(json.loads((directory / "descriptive-evaluation.json").read_text()), value)
+
+    def test_rows_metrics_csv_and_retry_content_identity_reconcile(self):
+        import csv
+        root, output, original, hashes = self.fixture()
+        report, directory = self.report(root, output, hashes, original)
+        value = report["descriptive_all_categories"]
+        for category, result in value["categories"].items():
+            rows = [r for r in value["paired_rows"] if r["category"] == category and r["evaluation_status"] == "resolved"]
+            self.assertEqual(result["paired"]["raw"]["n"], len(rows))
+            for prefix, field in (("raw", "raw_projection"), ("adjusted", "adjusted_projection")):
+                metric = result["paired"][prefix]
+                self.assertAlmostEqual(metric["absolute_error_sum"], sum(r[field + "_absolute_error"] for r in rows))
+                self.assertAlmostEqual(metric["signed_error_sum"], sum(r[field + "_error"] for r in rows))
+            self.assertEqual(sum(result["paired"][k] for k in ("helps", "hurts", "ties")), len(rows))
+        for label, rows in (("forecasts", value["rows"]), ("pairs", value["paired_rows"]), ("td", value["td_rows"])):
+            with (directory / f"descriptive-{label}.csv").open() as handle:
+                self.assertEqual(len(list(csv.DictReader(handle))), len(rows))
+        saved = {p: p.read_bytes() for p in output.rglob("*") if p.is_file()}
+        repeated, same = self.report(root, output, hashes, original, at=KICKOFF + timedelta(days=1, minutes=1))
+        self.assertEqual((repeated, same), (report, directory))
+        self.assertEqual({p: p.read_bytes() for p in saved}, saved)
+        typed = [read(p) for p in (output / "descriptive-evaluation/data/outcomes_derived").rglob("*.json.gz")]
+        self.assertEqual(len(typed), 1)
+        saved_results = latest_outcomes(typed)
+        self.assertEqual(next(r for k, r in saved_results.items() if k[-1] == "fpts")["actual"], -1.16)
+        self.assertTrue(all(not r["week_confirmed_complete"] for r in saved_results.values()))
+
+    def test_missing_board_reference_only_and_missing_pair_remain_explicit(self):
+        root, output, original, hashes = self.fixture()
+        report, _ = self.report(root, output, hashes)
+        value = report["descriptive_all_categories"]
+        self.assertGreater(sum(v["paired_no_lean"] for v in value["categories"].values()), 0)
+        self.assertGreater(sum(v["paired_reference_only"] for v in value["categories"].values()), 0)
+        self.assertEqual(value["categories"]["fpts"]["direct_provider_forecast_coverage"], 0)
+        self.assertTrue(value["td_rows"][0]["probability_provenance"].startswith("rederived"))
+        with self.assertRaisesRegex(ValueError, "explicit"):
+            self.report(root, output, hashes, original, enabled=False)
+
+    def test_pending_missing_unknown_and_conflicting_saved_evidence(self):
+        from scorecard import DERIVED_STAT_SCHEMA
+        root, output, original, hashes = self.fixture(final=False)
+        pending, _ = self.report(root, output, hashes, original)
+        self.assertEqual(pending["descriptive_all_categories"]["outcome_status"], {"pending": 12})
+        board_path = root / "output/data/week.json"
+        board = json.loads(board_path.read_text()); board["games"][0].update(state="post", detail="Final")
+        board_path.write_text(json.dumps(board))
+        cache = root / "data/cache/stats_2026_07.json"
+        entries = json.loads(cache.read_text()); entries.pop("fictional-1")
+        cache.write_text(json.dumps(entries))
+        missing, _ = self.report(root, output, hashes, original, at=KICKOFF + timedelta(days=1, minutes=1))
+        self.assertEqual(missing["descriptive_all_categories"]["categories"]["fpts"]["outcome_status"], {"unresolved": 1})
+        entries["fictional-1"] = {"team": "AAA", "opp": "BBB", "pos": "WR", "participation_status": "dnp", "participation_source": "fictional"}
+        cache.write_text(json.dumps(entries))
+        dnp, _ = self.report(root, output, hashes, original, at=KICKOFF + timedelta(days=1, minutes=2))
+        self.assertEqual(dnp["descriptive_all_categories"]["categories"]["fpts"]["outcome_status"], {"dnp": 1})
+        write(root, "outcomes", {"schema_version": "future-unsupported-v9", "season": 2026, "week": 7})
+        unsupported, _ = self.report(root, output, hashes, original, at=KICKOFF + timedelta(days=1, minutes=3))
+        self.assertEqual(unsupported["descriptive_all_categories"]["unsupported_outcome_receipts"][0]["reason"], "unsupported_descriptive_outcome_contract")
+        # New typed saved files are read from the input lane too. Opposing
+        # independently pinned derivations have no winner based on a new clock.
+        other_root, other_output, other_original, other_hashes = self.fixture(stats={"gp": 1, "rec": 2})
+        self.report(other_root, other_output, other_hashes, other_original)
+        typed = next(read(p) for p in (other_output / "descriptive-evaluation/data/outcomes_derived").rglob("*.json.gz"))
+        self.assertEqual(typed["schema_version"], DERIVED_STAT_SCHEMA)
+        write(root, "outcomes", typed)
+        conflict, _ = self.report(root, output, hashes, original, at=KICKOFF + timedelta(days=1, minutes=4))
+        self.assertEqual(conflict["descriptive_all_categories"]["categories"]["fpts"]["outcome_status"], {"unresolved": 1})
+
+
 if __name__ == "__main__":
     unittest.main()

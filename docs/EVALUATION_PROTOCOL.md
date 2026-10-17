@@ -675,3 +675,102 @@ and scoped website/LABEL-01 conclusions remain retained. Original-capture
 evidence review stays separately pending; the original archive and derivative
 remain restricted. This checkpoint neither reconstructs historical forecasts
 nor authenticates or exports old captures.
+
+## Local all-category descriptive evaluator v1
+
+`all-category-descriptive-v1` is an opt-in measurement extension, separate
+from the registered three-target comparison and its unchanged promotion rules.
+It evaluates the ten existing numeric prop categories, offensive standard PPR
+(QB/RB/WR/TE), and the retained RB/WR/TE rushing-or-receiving anytime-TD event.
+It does not fit, tune, rank, promote, activate collection, or publish new fields.
+The canonical all-category forecasting and testing roadmap above remains the
+single research roadmap. The fixed receptions candidate, its registration and
+Weeks 7–14 window are unchanged; this descriptive Week 6 analysis is not added
+to that experiment.
+
+Use the existing offline command with an external output directory:
+
+```sh
+python tools/selection_report.py --input-root /frozen/input \
+  --input-pin /frozen/input=FULL_GIT_SHA --output-root /external/derived \
+  --all-category-evaluation --original-board /saved/original-board.json
+```
+
+`--original-board` is optional and repeatable. No provider is contacted. Input
+receipts retain their native envelope and filename checks. An external Git pin
+without a local Git object is explicitly a reference, not authenticated bytes.
+Inputs and optional boards are hashed before and after the run. Original
+receipts and previous report assets are never rewritten. New descriptive bytes
+participate in the existing report content identity, under its retained v2
+outer contract, with separate local JSON/CSV and HTML links. The flag defaults
+off; existing updater behavior, public-v1 whitelists and browser interfaces are
+unchanged. Rich local provenance is not approved for public disclosure.
+
+For each eligible original pregame opportunity, population coverage uses the
+earliest live observation by actual capture time then original payload digest.
+Paired numerical scoring separately uses the earliest eligible observation
+containing both saved raw and adjusted values: it never takes them from
+different captures. A later eligible pair can therefore have a different
+receipt from the first population observation. Engine identities, generation
+before collection, collection before kickoff, category/position and recorded
+periods are checked. Repeated receipts do not add independent outcomes. No
+Lean and reference-only forecasts are included without inventing offered lines.
+Missing raw or adjusted values and adjusted-only results remain separate.
+Per-category MAE, RMSE, forecast-minus-actual bias, absolute/squared/signed
+error sums and helps/hurts/ties reconcile to the paired rows. Sample context
+counts unique players, games and weeks; categories and repeated captures are
+not pooled into independent games or a mixed-unit score.
+
+The versioned statistic contract `offensive-ppr-rush-rec-td-v1` pins the
+unchanged `pull/scoring.py` SHA-256
+`31672c10d526d591db8951157b0ecd669b4d02b412a75deec337618bff18dab2`,
+standard PPR weights and its defensive-fumble-recovery exclusion. PPR actuals
+are computed from supported saved components with the retained two-decimal
+rounding. Fractional and negative PPR totals are valid. Missing `fpts` is not
+zero: that generic field is never the reader. Sparse omitted components mean
+zero only after independently supported participation; explicit null components
+remain unresolved, while malformed present components fail. Fantasy totals
+alone do not establish participation. Half-PPR, custom scoring, K and DEF are
+excluded. Explicit saved source-position contradictions are quarantined;
+missing source position remains identified as partial evidence.
+
+Native PPR raw forecasts are labeled saved component-derived values. A direct
+provider `proj_ppr` is a separate comparator, available only from a full
+original board whose canonical document digest matches that selected receipt's
+input identity. Period, clocks, player/game/team/opponent, position, scoring,
+saved prop values/line/source/lean/matchup and recorded Top membership must
+also agree. PPR components and TD expectation are checked using the retained
+builder formulas. A current, neighboring or later board cannot supply missing
+historical values. An invalid matching board suppresses its optional values;
+absence of a matching board is explicitly different. Recovering an original
+output board does not recover missing upstream original-input proof.
+
+Anytime TD means `rush_td + rec_td >= 1`, excluding passing, defensive,
+special-teams and fumble-recovery touchdowns. Its saved expectation is a count,
+not a probability. An originally saved probability is used only with the exact
+board binding above. Otherwise the recognized unchanged engine permits an
+explicitly labeled re-derivation from the original saved count using
+`round(1 - exp(-max(count, 0)), 3)`; it is never called originally recorded.
+There is no adjusted probability comparator. Brier score, natural-log loss,
+events and fixed decile calibration bins are descriptive. Probability 1 belongs
+to the final bin. An impossible event at probability 0 or 1 has mathematically
+infinite log loss: JSON uses `log_loss: null`, `log_loss_state:
+"positive_infinity"` and an explicit infinite-loss count. It is not clipped or
+averaged away; finite-loss sums remain separately inspectable.
+
+New PPR/TD snapshots use `descriptive-statistic-outcomes-v1` in an isolated
+external `descriptive-evaluation/data/outcomes_derived` lane. They retain source
+statistics, original clocks, identity and selected-source/correction history,
+reuse the existing finality/participation/conflict rules, and cannot qualify a
+complete week. The unchanged primary and public outcome maps stay separate.
+Typed saved receipts are validated again at consumption. Legacy unsupported
+PPR/TD rows and unknown formats are inventoried/excluded rather than silently
+upgraded; malformed recognized evidence fails. Pending, unresolved, confirmed
+DNP and supported corrections remain distinct. A saved-cache regrade's actual
+derivation clock is not a new provider observation; retries reuse the first
+substantive derivation. Conflicting pinned sources have no clock-based winner.
+
+The original Week 6 missing-matchup-proof failure remains visible. Valid
+individual descriptive results do not establish qualified whole-week evidence,
+independent original-capture review, improved forecasting, financial results,
+production activation, public release or deployment.

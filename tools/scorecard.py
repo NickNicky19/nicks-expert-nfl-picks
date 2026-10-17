@@ -2,6 +2,7 @@
 import argparse
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from decimal import Decimal
 import hashlib
 import math
 from pathlib import Path
@@ -13,6 +14,7 @@ import zlib
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pull"))
 import grade
+import scoring
 import week_population
 from evidence import read, write
 from reliability import IntegrityError, atomic_json, digest, engine_hashes, finite, load_json, stamp, utc
@@ -21,6 +23,60 @@ from source_evidence import verified_status
 # Retain this v1 implementation for its saved receipts. Future adapters need
 # separate reviewed implementations/dispatch entries, not a changed v1 file.
 POPULATION_V1_SHA256 = "1e50c60ce2636f4534a63f517341c393bac19b8df7cbd2b1fcba1e9eed16c40e"
+DESCRIPTIVE_VERSION = "all-category-descriptive-v1"
+DERIVED_STAT_SCHEMA = "descriptive-statistic-outcomes-v1"
+SCORING_V1_SHA256 = "31672c10d526d591db8951157b0ecd669b4d02b412a75deec337618bff18dab2"
+EXTRA_CATEGORIES = frozenset(("fpts", "anytime_td"))
+
+
+def descriptive_contract():
+    """Retained scoring, not a new forecast or a permissive generic-stat reader."""
+    if hashlib.sha256(Path(scoring.__file__).read_bytes()).hexdigest() != SCORING_V1_SHA256:
+        raise IntegrityError("Retained descriptive scoring implementation unavailable")
+    return {"version": "offensive-ppr-rush-rec-td-v1", "scoring_sha256": SCORING_V1_SHA256,
+            "ppr_weights": dict(scoring.PPR), "ppr_defensive_fumble_exclusion": "idp_fum_rec",
+            "td_event": "rush_td+rec_td>=1", "td_probability": "round(1-exp(-max(count,0)),3)"}
+
+
+def descriptive_statistic(category, stats):
+    if category not in EXTRA_CATEGORIES or not isinstance(stats, dict):
+        raise IntegrityError("Unsupported descriptive source statistic")
+    keys = set(scoring.PPR) | {"idp_fum_rec"} if category == "fpts" else {"rush_td", "rec_td"}
+    missing = False
+    for key in keys:
+        if key not in stats:
+            continue  # Sparse zeros are permitted only after the caller proves played.
+        value = stats[key]
+        if value is None:
+            missing = True
+            continue
+        finite(value, "descriptive statistic component", optional=False)
+        if int(value) != value or key not in {"pass_yd", "rush_yd", "rec_yd"} and value < 0:
+            raise IntegrityError("Invalid descriptive statistic component")
+    if missing:
+        return None
+    return scoring.ppr_points(stats) if category == "fpts" else stats.get("rush_td", 0) + stats.get("rec_td", 0)
+
+
+def _validate_descriptive_outcome(payload, row=None):
+    if payload.get("schema_version") != DERIVED_STAT_SCHEMA or payload.get("statistic_contract") != descriptive_contract():
+        raise IntegrityError("Unsupported descriptive outcome contract")
+    if (not isinstance(payload.get("source"), str) or not payload["source"].strip()
+            or not payload.get("cache_path") and "rows" in payload
+            or payload.get("source") == "git_pinned_saved_cache_statistical_regrade"
+            and payload.get("derived_context") is None):
+        raise IntegrityError("Descriptive outcomes require attributed source evidence")
+    if row is not None:
+        allowed = {"QB", "RB", "WR", "TE"} if row.get("category") == "fpts" else {"RB", "WR", "TE"}
+        if row.get("category") not in EXTRA_CATEGORIES or row.get("position") not in allowed:
+            raise IntegrityError("Unsupported descriptive category/position")
+        if (type(payload.get("season")) is not int or type(payload.get("week")) is not int
+                or not 1 <= payload["week"] <= 18
+                or (row.get("season"), row.get("week")) != (payload["season"], payload["week"])
+                or type(row.get("season")) is not int or type(row.get("week")) is not int
+                or any(not isinstance(row.get(k), str) or not row[k].strip()
+                       for k in ("game_id", "player_id", "team"))):
+            raise IntegrityError("Descriptive outcome period/identity mismatch")
 
 
 def _population_document(population):
@@ -61,7 +117,7 @@ def identity(row):
     return tuple(row[k] for k in ("season", "week", "game_id", "player_id", "category"))
 
 
-def paired_forecasts(receipts, policy, expected_hashes, allow_replay=False):
+def paired_forecasts(receipts, policy, expected_hashes, allow_replay=False, *, row_eligible=None):
     chosen = {}
     exclusions = Counter()
     observations = 0
@@ -84,6 +140,8 @@ def paired_forecasts(receipts, policy, expected_hashes, allow_replay=False):
             if key in seen:
                 raise IntegrityError("Duplicate opportunity within a receipt")
             seen.add(key)
+            if row_eligible is not None and not row_eligible(row):
+                continue
             if captured >= utc(row["kickoff"]):
                 exclusions["not_pregame"] += 1
                 continue
@@ -258,13 +316,16 @@ def _outcome_identity(payload, row, entry):
 
 
 def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None, derived_context=None,
-                      include_populations=True):
+                      include_populations=True, statistic_contract=None):
     """Snapshot sourced final status and sparse statistics; never infer DNP."""
     root, observed_at = Path(root), utc(observed_at)
     if (output_root is None) != (derived_context is None):
         raise IntegrityError("External outcomes require explicit derived-source provenance")
     if derived_context is not None and (not isinstance(derived_context, dict) or not derived_context):
         raise IntegrityError("Missing derived input identity")
+    extended = statistic_contract is not None
+    if extended and (statistic_contract != descriptive_contract() or output_root is None or include_populations):
+        raise IntegrityError("Extended statistics require the versioned isolated local contract")
     if output_root is not None:
         sink, source = Path(output_root).resolve(), root.resolve()
         if sink.is_relative_to(source) or source.is_relative_to(sink) or sink.is_relative_to(ROOT):
@@ -304,6 +365,12 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
         week_complete = _verified_week_complete(week_evidence)
         outcomes = []
         for row in rows:
+            if extended:
+                _validate_descriptive_outcome({"schema_version": DERIVED_STAT_SCHEMA,
+                    "statistic_contract": statistic_contract, "derived_context": derived_context,
+                    "source": "git_pinned_saved_cache_statistical_regrade", "season": season, "week": week}, row)
+            elif row["category"] not in PICKABLE_STATS:
+                raise IntegrityError("Legacy outcome snapshot supports ten pickable statistics only")
             game = games.get(row["game_id"])
             status, actual, reason = "pending", None, "game_not_confirmed_final"
             entry = cache.get(row["player_id"])
@@ -317,7 +384,8 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
                     reason = "explicit_sourced_dnp"
                 elif status == "played":
                     status, reason = "resolved", "played_sparse_stats"
-                    value = source_statistic(row["category"], entry.get("stats", {}))
+                    reader = descriptive_statistic if extended else source_statistic
+                    value = reader(row["category"], entry.get("stats", {}))
                     if binding["outcome_identity_status"] == "quarantined":
                         status, reason = "unresolved", "saved_player_game_identity_mismatch"
                     elif value is None:
@@ -334,6 +402,8 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
                              "game_state": game.get("state") if game else None,
                              "final_confirmed": bool(game and confirmed_final(game)), "week_confirmed_complete": week_complete,
                              **binding})
+            if extended:
+                outcomes[-1].update(position=row["position"], forecast_kickoff=row["kickoff"])
         payload = {"schema_version": "forecast-outcomes-v1", "mode": mode, "season": season, "week": week,
                    "collected_at": stamp(observed_at), "source_timestamp": None,
                    "source": "existing_Sleeper_stats_cache_and_ESPN_final_game_snapshot",
@@ -343,6 +413,8 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
                    "week_game_populations": populations,
                    "week_population_read_errors": population_errors, "rows": outcomes,
                    "settlement_scope": "STATISTICAL_ONLY_NOT_VENUE_SETTLEMENT"}
+        if extended:
+            payload.update(schema_version=DERIVED_STAT_SCHEMA, statistic_contract=statistic_contract)
         if derived_context is None:
             paths.append(write(root, "outcomes" if mode == "live" else "outcomes_replay", payload))
         else:
@@ -374,6 +446,9 @@ def _past_final(row, collected):
 def _outcome_record(payload, row, payload_sha, week_complete=False):
     """Keep only recorded provenance; no current-cache lookup or source-time guess."""
     collected = utc(payload["collected_at"])
+    extended = payload.get("schema_version") == DERIVED_STAT_SCHEMA
+    if extended:
+        _validate_descriptive_outcome(payload, row)
     source = payload.get("source")
     path = payload.get("cache_path")
     if ((source is not None and not isinstance(source, str))
@@ -391,24 +466,48 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
         raise IntegrityError("Invalid saved statistics entry")
     past_final = _past_final(row, collected)
     binding = _outcome_identity(payload, row, entry)
-    week_complete = bool(week_complete and (row.get("season"), row.get("week")) ==
+    if extended and isinstance(entry, dict):
+        source_position = entry.get("pos")
+        if source_position is not None and source_position != row["position"]:
+            binding = {"outcome_identity_status": "quarantined",
+                       "outcome_identity_reasons": sorted(set(binding["outcome_identity_reasons"] +
+                                                              ["statistics_position_mismatch"]))}
+        elif source_position is None and binding["outcome_identity_status"] != "quarantined":
+            binding = {"outcome_identity_status": "partial_legacy",
+                       "outcome_identity_reasons": sorted(set(binding["outcome_identity_reasons"] +
+                                                              ["statistics_position_unavailable"]))}
+    if extended and (not row.get("forecast_kickoff") or not row.get("kickoff")
+                     or utc(row["forecast_kickoff"]) != utc(row["kickoff"])):
+        binding = {"outcome_identity_status": "quarantined",
+                   "outcome_identity_reasons": sorted(set(binding["outcome_identity_reasons"] +
+                                                          ["forecast_kickoff_differs_from_recorded_game"]))}
+    week_complete = bool(not extended and week_complete and (row.get("season"), row.get("week")) ==
                          (payload.get("season"), payload.get("week")) and row.get("kickoff")
                          and any(game["id"] == row.get("game_id") and utc(game["kickoff"]) == utc(row["kickoff"])
                                  for game in payload["games"]))
     status = row["status"]
     if status not in ("pending", "unresolved", "resolved", "dnp", "void"):
         raise IntegrityError("Unexpected outcome status")
+    if extended and status != "resolved" and row.get("actual") is not None:
+        raise IntegrityError("Undecided descriptive outcome carries a statistic")
+    unsupported_legacy = not extended and row["category"] not in PICKABLE_STATS
+    if unsupported_legacy:
+        status = "unresolved"
     if status == "resolved":
         if not past_final:
             raise IntegrityError("Outcome lacks confirmed past final")
         actual = row["actual"]
         finite(actual, "outcome", optional=False)
-        if int(actual) != actual or row["category"] in COUNT_STATS and actual < 0:
+        if ((not extended or row["category"] != "fpts") and int(actual) != actual
+                or row["category"] in COUNT_STATS | {"anytime_td"} and actual < 0):
             raise IntegrityError("Invalid integer/count outcome")
+        if extended and not isinstance(entry, dict):
+            raise IntegrityError("Descriptive result lacks original source statistics")
         if isinstance(entry, dict):
             if grade.participation(entry) != "played":
                 raise IntegrityError("Resolved outcome has contradictory participation")
-            observed = source_statistic(row["category"], entry.get("stats", {}))
+            reader = descriptive_statistic if extended else source_statistic
+            observed = reader(row["category"], entry.get("stats", {}))
             finite(observed, "saved source statistic", optional=False)
             if observed != actual:
                 raise IntegrityError("Resolved outcome differs from its saved source statistic")
@@ -416,6 +515,8 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
     terminal = status == "resolved" or (past_final and attributed and
                 (status == "void" or status == "dnp" and grade.participation(entry) == "dnp"))
     normalized = dict(row)
+    if unsupported_legacy:
+        normalized.update(status="unresolved", actual=None, reason="unsupported_legacy_statistic_contract")
     if not terminal:
         normalized["actual"] = None
         if status in ("dnp", "void"):
@@ -442,6 +543,8 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
                   "week_confirmed_complete": row.get("week_confirmed_complete", False),
                   "week_completion_verified": week_complete}
     provenance.update(binding)
+    if extended:
+        provenance.update(outcome_schema=DERIVED_STAT_SCHEMA, statistic_contract=payload["statistic_contract"])
     if derived is not None:
         provenance["derived_context"] = derived
     return {"row": normalized, "provenance": provenance, "collected": collected,
@@ -486,8 +589,10 @@ def latest_outcomes(snapshots, allow_replay=False):
     observations = defaultdict(list)
     seen = set()
     for payload in sorted(snapshots, key=lambda p: (utc(p["collected_at"]), digest(p))):
-        if payload.get("schema_version") != "forecast-outcomes-v1":
+        if payload.get("schema_version") not in ("forecast-outcomes-v1", DERIVED_STAT_SCHEMA):
             raise IntegrityError("Unexpected outcome schema")
+        if payload.get("schema_version") == DERIVED_STAT_SCHEMA:
+            _validate_descriptive_outcome(payload)
         if payload.get("mode") != "live" and not (allow_replay and payload.get("mode") == "replay"):
             continue
         if payload.get("derived_context") is not None:
@@ -562,6 +667,368 @@ def metrics(rows, field):
     return {"n": len(errors), "mae": statistics.mean(abs(e) for e in errors) if errors else None,
             "rmse": math.sqrt(statistics.mean(e * e for e in errors)) if errors else None,
             "mean_error": statistics.mean(errors) if errors else None}
+
+
+def outcome_provenance(outcome):
+    """Classify only the validated record selected for the numeric outcome.
+
+    A historical observation, cached flag or copied source string cannot supply
+    this binding. Conflicts deliberately have no selected-source provenance.
+    """
+    if not outcome:
+        return "missing"
+    if outcome.get("outcome_conflict") or outcome.get("outcome_selection") == "conflict":
+        return "conflicting_outcome_evidence"
+    selected = outcome.get("selected_outcome_provenance")
+    if (not isinstance(selected, dict)
+            or digest(selected) != outcome.get("selected_outcome_provenance_sha256")
+            or selected.get("outcome_snapshot_sha256") != outcome.get("outcome_snapshot_sha256")
+            or not selected.get("outcome_row_sha256")
+            or selected.get("outcome_row_sha256") != outcome.get("selected_outcome_row_sha256")
+            or digest(selected) not in {digest(observation) for observation in outcome.get("outcome_observations", [])}):
+        return "unknown_unverified"
+    if selected.get("source") == "git_pinned_saved_cache_statistical_regrade":
+        return "saved_cache_descriptive_regrade"
+    if selected.get("source") == "existing_Sleeper_stats_cache_and_ESPN_final_game_snapshot":
+        return "recorded_outcome_receipt"
+    return "unknown_unverified"
+
+
+def descriptive_forecasts(receipts, expected_hashes, observed_at):
+    """Same native receipt selection as paired_forecasts; no policy mutation."""
+    first, references, excluded = {}, {}, Counter()
+    unique = {digest(payload): payload for payload in receipts}
+    captures, paired_captures = Counter(), Counter()
+    valid = []
+    categories = PICKABLE_STATS | EXTRA_CATEGORIES
+    supported = []
+    for sha, payload in unique.items():
+        if (payload.get("schema_version") != "baseline-capture-v1"
+                or payload.get("model") != "original_sleeper_matchup_baseline"
+                or payload.get("engine_files") != expected_hashes
+                or payload.get("engine_sha256") != digest(expected_hashes)):
+            excluded["unsupported_forecast_contract_or_engine"] += 1
+            continue
+        supported.append((sha, payload))
+    for sha, payload in sorted(supported, key=lambda item: (utc(item[1]["captured_at"]), item[0])):
+        if payload.get("mode") != "live":
+            excluded["non_live_receipt"] += 1
+            continue
+        captured, generated = utc(payload["captured_at"]), utc(payload["forecast_generated_at"])
+        if generated > captured:
+            raise IntegrityError("Forecast generated after capture")
+        if captured > utc(observed_at):
+            excluded["future_receipt"] += 1
+            continue
+        if expected_hashes.get("pull/scoring.py") != SCORING_V1_SHA256:
+            raise IntegrityError("Unrecognized original descriptive scoring engine")
+        valid.append(payload)
+        references[sha] = payload
+        periods = {(row["season"], row["week"]) for row in payload["rows"]}
+        if len(periods) > 1 or any(payload.get(k, value) != value for period in periods
+                                   for k, value in zip(("season", "week"), period)):
+            raise IntegrityError("Descriptive forecast period differs from original rows")
+        seen = set()
+        for row in payload["rows"]:
+            if row["category"] not in categories:
+                excluded["unsupported_category"] += 1
+                continue
+            key = identity(row)
+            if key in seen:
+                raise IntegrityError("Duplicate opportunity within a receipt")
+            seen.add(key)
+            if (type(row["season"]) is not int or type(row["week"]) is not int or not 1 <= row["week"] <= 18
+                    or any(not isinstance(row.get(k), str) or not row[k].strip()
+                           for k in ("game_id", "player_id", "team"))):
+                raise IntegrityError("Malformed descriptive forecast identity")
+            if row["category"] not in scoring.POSITION_CATEGORIES.get(row.get("position"), ()):
+                excluded["unsupported_category_position"] += 1
+                continue
+            if captured >= utc(row["kickoff"]):
+                excluded["not_pregame"] += 1
+                continue
+            for name in ("raw_projection", "adjusted_projection"):
+                finite(row.get(name), name)
+            if row.get("raw_projection") is None and row.get("adjusted_projection") is None:
+                excluded["missing_forecast"] += 1
+                continue
+            if row["category"] == "anytime_td" and (row.get("raw_projection") is None
+                                                     or row["raw_projection"] < 0):
+                raise IntegrityError("Missing/negative saved TD expectation")
+            captures[row["category"]] += 1
+            paired_captures[row["category"]] += (row.get("raw_projection") is not None
+                                                and row.get("adjusted_projection") is not None)
+            first.setdefault(key, {**row, "captured_at": payload["captured_at"],
+                "forecast_generated_at": payload["forecast_generated_at"], "baseline_payload_sha256": sha,
+                "baseline_input_sha256": payload["input_sha256"], "engine_sha256": payload["engine_sha256"],
+                "model_version": payload["model"],
+                "observation_row_sha256": digest(row)})
+    pairs, _ = paired_forecasts(valid, {"baseline": "original_sleeper_matchup_baseline",
+                                        "targets": sorted(PICKABLE_STATS | {"fpts"})}, expected_hashes,
+                               row_eligible=lambda row: row["category"] in
+                                   scoring.POSITION_CATEGORIES.get(row.get("position"), ()))
+    pairs = {key: {**row, "baseline_input_sha256": references[row["baseline_payload_sha256"]]["input_sha256"],
+                   "engine_sha256": references[row["baseline_payload_sha256"]]["engine_sha256"],
+                   "model_version": references[row["baseline_payload_sha256"]]["model"],
+                   "observation_row_sha256": digest({k: v for k, v in row.items() if k not in
+                       ("captured_at", "forecast_generated_at", "baseline_payload_sha256")})}
+             for key, row in pairs.items() if key in first
+             and row["category"] in scoring.POSITION_CATEGORIES.get(row.get("position"), ())}
+    return first, pairs, {"unique_receipts": len(unique), "duplicate_receipts": len(receipts) - len(unique),
+        "eligible_capture_rows": dict(captures), "paired_capture_rows": dict(paired_captures),
+        "excluded": dict(excluded)}
+
+
+def original_board_index(records):
+    """Hash actual complete documents once; a locator or validation flag is insufficient."""
+    result = {}
+    for record in records:
+        board = record["document"]
+        if not isinstance(board, dict) or not isinstance(board.get("players"), list) or not isinstance(board.get("games"), list):
+            raise IntegrityError("Malformed original forecast board")
+        sha = digest(board)
+        if record.get("document_sha256", sha) != sha:
+            raise IntegrityError("Original board document checksum mismatch")
+        players, games = {}, {}
+        for game in board["games"]:
+            if not isinstance(game.get("id"), str) or game["id"] in games:
+                raise IntegrityError("Duplicate/malformed original board game")
+            games[game["id"]] = game
+        for player in board["players"]:
+            if not isinstance(player.get("id"), str) or player["id"] in players:
+                raise IntegrityError("Duplicate/malformed original board player")
+            props = player.get("props")
+            if not isinstance(props, list) or len({p["key"] for p in props}) != len(props):
+                raise IntegrityError("Duplicate/malformed original board category")
+            players[player["id"]] = player
+        source = {key: record[key] for key in ("file_sha256", "git_blob_sha1", "git_commit") if record.get(key)}
+        result.setdefault(sha, {"document": board, "players": players, "games": games, "source": source})
+    return result
+
+
+def bind_original_board(row, boards):
+    record = boards.get(row["baseline_input_sha256"])
+    if record is None:
+        return {"status": "missing_exact_original_board"}
+    board, player = record["document"], record["players"].get(row["player_id"])
+    game = record["games"].get(row["game_id"])
+    try:
+        if ((board["season"], board["week"]) != (row["season"], row["week"])
+                or utc(board["generated_at"]) != utc(row["forecast_generated_at"])
+                or utc(board["generated_at"]) > utc(row["captured_at"])
+                or board.get("scoring") != scoring.PPR or not player or not game
+                or player.get("game_id") != row["game_id"] or player.get("team") != row["team"]
+                or player.get("pos") != row["position"] or player.get("late")
+                or game.get("state") != "pre"
+                or utc(game["kickoff"]) != utc(row["kickoff"])
+                or utc(row["captured_at"]) >= utc(game["kickoff"])
+                or row["team"] not in (game.get("home"), game.get("away"))):
+            raise IntegrityError("Original board identity/clock/scoring mismatch")
+        if player.get("opp") is not None and player["opp"] != (game["away"] if row["team"] == game["home"] else game["home"]):
+            raise IntegrityError("Original board opponent mismatch")
+        props = [p for p in player["props"] if p["key"] == row["category"]]
+        if len(props) != 1:
+            raise IntegrityError("Original board category missing")
+        prop = props[0]
+        fields = {"proj": "raw_projection", "adj": "adjusted_projection", "line": "line",
+                  "lean": "lean", "mf": "matchup_factor"}
+        if (any(prop.get(source) != row.get(target) for source, target in fields.items())
+                or prop.get("line_from", "ours") != row.get("line_from")):
+            raise IntegrityError("Original board forecast differs from receipt")
+        for side in ("over", "under"):
+            selected = any(p["player_id"] == row["player_id"] and p["key"] == row["category"]
+                           for p in board["picks"][side])
+            if type(row.get("top_" + side)) is not bool or row["top_" + side] != selected:
+                raise IntegrityError("Original board Top membership differs from receipt")
+        if row["category"] == "fpts" and row.get("raw_projection") is not None:
+            # Projection components are fractional; validate, then use the exact
+            # retained scoring function (actual component counts are stricter).
+            projection = player.get("proj")
+            if not isinstance(projection, dict) or not projection:
+                raise IntegrityError("Original PPR projection components missing")
+            for key in set(scoring.PPR) | {"idp_fum_rec"}:
+                if key in projection:
+                    finite(projection[key], "original PPR projection component", optional=False)
+            if scoring.ppr_points(projection) != row["raw_projection"]:
+                raise IntegrityError("Original component PPR differs from receipt")
+        if row["category"] == "anytime_td":
+            projection = player.get("proj")
+            if not isinstance(projection, dict):
+                raise IntegrityError("Original TD projection components missing")
+            for key in ("rush_td", "rec_td"):
+                finite(projection.get(key, 0), "original TD projection component", optional=False)
+            if round(scoring.stat_value("anytime_td", projection), 2) != row["raw_projection"]:
+                raise IntegrityError("Original TD expectation differs from receipt")
+        provider = player.get("proj_ppr") if row["category"] == "fpts" else None
+        probability = prop.get("td_chance") if row["category"] == "anytime_td" else None
+        finite(provider, "saved provider fantasy total")
+        finite(probability, "saved TD probability")
+        if probability is not None and (not 0 <= probability <= 1 or
+                probability != round(scoring.td_probability(row["raw_projection"]), 3)):
+            raise IntegrityError("Saved TD probability differs from retained formula")
+    except (KeyError, TypeError, ValueError) as err:
+        return {"status": "invalid_exact_original_board", "reason": str(err),
+                "document_sha256": row["baseline_input_sha256"], **record["source"]}
+    return {"status": "bound_exact_original_board", "document_sha256": row["baseline_input_sha256"],
+            "prop_sha256": digest(prop), "provider_ppr": provider, "recorded_probability": probability,
+            **record["source"]}
+
+
+def _sample_context(rows):
+    return {"opportunities": len(rows), "unique_players": len({r["player_id"] for r in rows}),
+            "unique_games": len({(r["season"], r["week"], r["game_id"]) for r in rows}),
+            "unique_weeks": len({(r["season"], r["week"]) for r in rows})}
+
+
+def _point_metrics(rows, field):
+    result = metrics(rows, field)
+    errors = [Decimal(str(r[field])) - Decimal(str(r["actual"])) for r in rows]
+    result.update(bias=result["mean_error"], absolute_error_sum=float(sum(map(abs, errors))),
+                  squared_error_sum=float(sum(e * e for e in errors)), signed_error_sum=float(sum(errors)))
+    return result
+
+
+def _paired_metrics(rows, raw="raw_projection"):
+    changes = [abs(Decimal(str(r["adjusted_projection"])) - Decimal(str(r["actual"]))) -
+               abs(Decimal(str(r[raw])) - Decimal(str(r["actual"]))) for r in rows]
+    return {"raw": _point_metrics(rows, raw), "adjusted": _point_metrics(rows, "adjusted_projection"),
+            "helps": sum(v < 0 for v in changes), "hurts": sum(v > 0 for v in changes),
+            "ties": sum(v == 0 for v in changes), "absolute_error_change_sum": float(sum(changes)),
+            "sample": _sample_context(rows)}
+
+
+def probability_scores(probability, event):
+    finite(probability, "probability", optional=False)
+    if not 0 <= probability <= 1 or type(event) is not int or event not in (0, 1):
+        raise IntegrityError("Invalid binary probability/event")
+    impossible = probability == 0 and event == 1 or probability == 1 and event == 0
+    return {"brier": (probability - event) ** 2,
+            "log_loss": None if impossible else -math.log(probability) if event else -math.log1p(-probability),
+            "log_loss_state": "positive_infinity" if impossible else "finite"}
+
+
+def _td_metrics(rows):
+    resolved = [r for r in rows if r["evaluation_status"] == "resolved" and r.get("probability") is not None]
+    infinite = sum(r["log_loss_state"] == "positive_infinity" for r in resolved)
+    finite_losses = [r["log_loss"] for r in resolved if r["log_loss_state"] == "finite"]
+    bins = []
+    for i in range(10):
+        group = [r for r in resolved if min(int(r["probability"] * 10), 9) == i]
+        bins.append({"lower": i / 10, "upper": (i + 1) / 10, "upper_inclusive": i == 9,
+                     "n": len(group), "events": sum(r["actual_event"] for r in group),
+                     "predicted_mean": statistics.mean(r["probability"] for r in group) if group else None,
+                     "event_rate": statistics.mean(r["actual_event"] for r in group) if group else None,
+                     "sample": _sample_context(group)})
+    return {"n": len(resolved), "events": sum(r["actual_event"] for r in resolved),
+            "sample": _sample_context(resolved), "brier_sum": math.fsum(r["brier"] for r in resolved),
+            "brier": statistics.mean(r["brier"] for r in resolved) if resolved else None,
+            "finite_log_loss_sum": math.fsum(finite_losses), "infinite_log_loss_count": infinite,
+            "log_loss": None if infinite or not resolved else math.fsum(finite_losses) / len(resolved),
+            "log_loss_state": "positive_infinity" if infinite else "finite" if resolved else "unavailable",
+            "probability_provenance": dict(Counter(r["probability_provenance"] for r in rows)),
+            "expected_count": _point_metrics([dict(r, actual=r["actual"]) for r in rows
+                                               if r["evaluation_status"] == "resolved"], "raw_projection"),
+            "calibration": bins}
+
+
+def evaluate_descriptive(first, pairs, numeric_outcomes, extra_outcomes, *, original_boards=()):
+    """Local additive metrics. Never promotes, pools units or edits an observation."""
+    boards = original_board_index(original_boards)
+    def outcome_row(row):
+        outcomes = extra_outcomes if row["category"] in EXTRA_CATEGORIES else numeric_outcomes
+        outcome = outcomes.get(identity(row), {})
+        status = outcome.get("status", "pending")
+        reason = outcome.get("reason", "no_saved_outcome")
+        if outcome.get("kickoff") and utc(outcome["kickoff"]) != utc(row["kickoff"]):
+            status = "excluded_schedule_changed"
+        elif outcome and (outcome.get("team") != row["team"] or not outcome.get("kickoff")):
+            status, reason = "unresolved", "outcome_team_or_saved_kickoff_mismatch"
+        elif outcome.get("outcome_conflict"):
+            status, reason = "unresolved", "conflicting_outcome_evidence"
+        item = {**row, "evaluation_status": status,
+                "actual": outcome.get("actual") if status == "resolved" else None,
+                "outcome_reason": reason,
+                "outcome_conflict": outcome.get("outcome_conflict", False),
+                "outcome_source_mix": outcome.get("outcome_source_mix"),
+                "outcome_selection": outcome.get("outcome_selection"),
+                "outcome_identity_status": outcome.get("outcome_identity_status"),
+                "selected_outcome_provenance": outcome.get("selected_outcome_provenance"),
+                "outcome_observations": outcome.get("outcome_observations", []),
+                "outcome_revision": outcome.get("outcome_revision", False),
+                "forecast_provenance": "original_recorded_pregame_observation",
+                "outcome_provenance": outcome_provenance(outcome)}
+        if item["category"] == "fpts":
+            binding = bind_original_board(row, boards)
+            item.update(original_board=binding, provider_ppr=binding.get("provider_ppr"),
+                        raw_comparator="saved_component_derived_offensive_PPR" if row.get("raw_projection") is not None else "missing_raw_forecast",
+                        adjusted_comparator="saved_component_PPR_times_original_matchup_factor" if row.get("raw_projection") is not None
+                                            else "saved_season_average_PPR_times_original_matchup_factor")
+        if item["evaluation_status"] == "resolved":
+            for field in ("raw_projection", "adjusted_projection", "provider_ppr"):
+                if item.get(field) is not None:
+                    error = Decimal(str(item[field])) - Decimal(str(item["actual"]))
+                    item[field + "_error"] = float(error)
+                    item[field + "_absolute_error"] = float(abs(error))
+                    item[field + "_squared_error"] = float(error * error)
+            if item.get("raw_projection") is not None and item.get("adjusted_projection") is not None:
+                delta = Decimal(str(item["adjusted_projection_absolute_error"])) - Decimal(str(item["raw_projection_absolute_error"]))
+                item.update(absolute_error_delta=float(delta), adjustment_effect="helps" if delta < 0 else "hurts" if delta > 0 else "ties")
+        return item
+    population = [outcome_row(row) for _, row in sorted(first.items())]
+    paired = [outcome_row(row) for _, row in sorted(pairs.items())]
+    td_rows = []
+    for row in population:
+        if row["category"] != "anytime_td":
+            continue
+        binding = bind_original_board(row, boards)
+        probability, provenance = None, "invalid_exact_original_board"
+        if binding["status"] != "invalid_exact_original_board":
+            probability = binding.get("recorded_probability")
+            provenance = "originally_recorded_probability" if probability is not None else "rederived_from_original_count_retained_formula"
+            if probability is None:
+                probability = round(scoring.td_probability(row["raw_projection"]), 3)
+        item = dict(row, original_board=binding, probability=probability,
+                    probability_provenance=provenance, adjusted_probability=None, actual_event=None)
+        if row["evaluation_status"] == "resolved" and probability is not None:
+            item["actual_event"] = int(row["actual"] >= 1)
+            item.update(probability_scores(probability, item["actual_event"]))
+        td_rows.append(item)
+    categories = {}
+    for category in sorted(PICKABLE_STATS | EXTRA_CATEGORIES):
+        group = [r for r in population if r["category"] == category]
+        matched = [r for r in paired if r["category"] == category]
+        final = [r for r in matched if r["evaluation_status"] == "resolved"]
+        unpaired = [r for r in group if identity(r) not in pairs and category != "anytime_td"]
+        final_unpaired = [r for r in unpaired if r["evaluation_status"] == "resolved" and r.get("adjusted_projection") is not None]
+        value = {"coverage": _sample_context(group), "outcome_status": dict(Counter(r["evaluation_status"] for r in group)),
+                 "paired_coverage": _sample_context(matched), "paired_status": dict(Counter(r["evaluation_status"] for r in matched)),
+                 "paired_no_lean": sum(r.get("lean") is None for r in matched),
+                 "paired_reference_only": sum(r.get("line_from") not in ("dk", "sleeper") for r in matched),
+                 "paired": _paired_metrics(final), "unpaired_coverage": _sample_context(unpaired),
+                 "unpaired_status": dict(Counter(r["evaluation_status"] for r in unpaired)),
+                 "adjusted_only": _point_metrics(final_unpaired, "adjusted_projection"),
+                 "unpaired_missingness": dict(Counter("raw_missing" if r.get("raw_projection") is None else
+                                                       "adjusted_missing" for r in unpaired)),
+                 "positions": {pos: _paired_metrics([r for r in final if r["position"] == pos]) for pos in sorted({r["position"] for r in matched})}}
+        if category == "fpts":
+            direct = [r for r in final if r.get("provider_ppr") is not None]
+            value["direct_provider_vs_adjusted_component_PPR"] = _paired_metrics(direct, "provider_ppr")
+            value["direct_provider_forecast_coverage"] = sum(r.get("provider_ppr") is not None for r in matched)
+        if category == "anytime_td":
+            value["probability"] = _td_metrics(td_rows)
+        categories[category] = value
+    unpaired_rows = [r for r in population if identity(r) not in pairs and r["category"] != "anytime_td"]
+    return {"schema_version": DESCRIPTIVE_VERSION, "statistic_contract": descriptive_contract(),
+            "scope": "DESCRIPTIVE_EXTENSION_NOT_REGISTERED_PRIMARY_EXPERIMENT",
+            "observation_selection": "earliest_eligible_same_receipt_values_by_capture_time_then_payload_digest",
+            "coverage": _sample_context(population), "outcome_status": dict(Counter(r["evaluation_status"] for r in population)),
+            "paired_coverage": _sample_context(paired), "categories": categories,
+            "rows": population, "paired_rows": paired, "unpaired_rows": unpaired_rows,
+            "adjusted_only_rows": [r for r in unpaired_rows if r.get("adjusted_projection") is not None], "td_rows": td_rows,
+            "limitations": ["No original Week 6 matchup proof reconstructed; whole-week qualification is separate.",
+                            "Inherited/unclocked archives are excluded from this original-observation comparison.",
+                            "No mixed-unit metric, fitting, promotion, profitability or production activation.",
+                            "Originally recorded and formula-rederived probabilities remain distinct."]}
 
 
 def cluster_interval(rows, policy):

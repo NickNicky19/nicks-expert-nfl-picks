@@ -1085,5 +1085,298 @@ class AdditionalOutcomePairsRegressionTests(unittest.TestCase):
                     build_scorecard(root, NOW + timedelta(hours=5), additional_outcome_pairs={key: row})
 
 
+def descriptive_fixture():
+    """Native fictional pregame values plus the retained offensive scoring."""
+    from reliability import engine_hashes
+    import scoring
+    data, _ = fixture()
+    player = data["players"][0]
+    player.update(opp="BBB", proj={"rec": 4.8, "rec_yd": 10, "rush_td": .1, "rec_td": .56}, proj_ppr=10.1)
+    raw = scoring.ppr_points(player["proj"])
+    player["props"].extend([
+        {"key": "fpts", "proj": raw, "adj": 9.5, "line": 9.5, "line_from": "ours", "lean": None},
+        {"key": "anytime_td", "proj": .66, "adj": None, "line": .5, "line_from": "ours", "lean": None,
+         "td_chance": .483},
+    ])
+    data["scoring"] = dict(scoring.PPR)
+    hashes = engine_hashes(ROOT)
+    payload = make_payload(data, NOW, hashes, "live")
+    return data, payload, hashes
+
+
+class DescriptiveCategoryContracts(unittest.TestCase):
+    def pipeline(self, stats=None, *, entry=None, final=True):
+        from scorecard import descriptive_contract, descriptive_forecasts
+        data, payload, hashes = descriptive_fixture()
+        first, pairs, coverage = descriptive_forecasts([payload], hashes, NOW)
+        d = tempfile.TemporaryDirectory(); self.addCleanup(d.cleanup)
+        root, output = Path(d.name) / "input", Path(d.name) / "derived"
+        (root / "output/data").mkdir(parents=True); (root / "data/cache").mkdir(parents=True)
+        board = copy.deepcopy(data)
+        if final:
+            board["games"][0].update(state="post", detail="Final")
+        (root / "output/data/week.json").write_text(json.dumps(board))
+        if entry is None and stats is not None:
+            entry = {"team": "AAA", "opp": "BBB", "pos": "WR", "stats": stats}
+        cache = {} if entry is None else {"fictional-1": entry}
+        (root / "data/cache/stats_2026_05.json").write_text(json.dumps(cache))
+        extra = {key: row for key, row in first.items() if row["category"] in ("fpts", "anytime_td")}
+        paths = snapshot_outcomes(root, extra, NOW + timedelta(hours=5), output_root=output,
+            derived_context={"test": "FICTIONAL_SAVED_CACHE_ONLY"}, include_populations=False,
+            statistic_contract=descriptive_contract())
+        payload = read(paths[0])
+        return root, output, data, first, pairs, payload, latest_outcomes([payload]), coverage
+
+    def test_fractional_negative_ppr_survives_fresh_saved_consumption(self):
+        from scorecard import DERIVED_STAT_SCHEMA
+        _, _, _, _, _, payload, outcomes, _ = self.pipeline(
+            {"gp": 1, "pass_yd": 1, "rec": 1, "rec_yd": -2, "fum_lost": 1, "fpts": 999})
+        ppr = next(v for k, v in outcomes.items() if k[-1] == "fpts")
+        self.assertEqual(payload["schema_version"], DERIVED_STAT_SCHEMA)
+        self.assertEqual((ppr["status"], ppr["actual"]), ("resolved", -1.16))
+        self.assertEqual(ppr["outcome_identity_status"], "bound_to_recorded_game")
+        self.assertFalse(ppr["week_confirmed_complete"])
+        self.assertEqual(ppr["selected_outcome_provenance"]["outcome_schema"], DERIVED_STAT_SCHEMA)
+
+    def test_sparse_zero_absent_null_and_dnp_are_distinct(self):
+        cases = [({"gp": 1}, None, "resolved", 0), (None, None, "unresolved", None),
+                 ({"pts_ppr": 0}, None, "unresolved", None),
+                 ({"gp": 1, "rec": None}, None, "unresolved", None),
+                 (None, {"participation_status": "dnp", "participation_source": "fictional"}, "dnp", None),
+                 (None, {"stats": {"gp": 1}, "participation_status": "dnp", "participation_source": "fictional"}, "unresolved", None)]
+        for stats, entry, status, actual in cases:
+            with self.subTest(stats=stats, entry=entry):
+                *_, outcomes, _ = self.pipeline(stats, entry=entry)
+                ppr = next(v for k, v in outcomes.items() if k[-1] == "fpts")
+                self.assertEqual((ppr["status"], ppr["actual"]), (status, actual))
+
+    def test_pending_game_never_consumes_statistics_as_final(self):
+        *_, outcomes, _ = self.pipeline({"gp": 1, "rec": 1}, final=False)
+        self.assertTrue(all(r["status"] == "pending" and r["actual"] is None for r in outcomes.values()))
+
+    def test_td_event_is_rushing_plus_receiving_not_passing_or_returns(self):
+        for stats, expected in [({"gp": 1, "pass_td": 4, "st_td": 1, "fum_rec_td": 1}, 0),
+                                ({"gp": 1, "rush_td": 1}, 1), ({"gp": 1, "rec_td": 1}, 1),
+                                ({"gp": 1, "rush_td": 1, "rec_td": 2}, 3)]:
+            with self.subTest(stats=stats):
+                *_, outcomes, _ = self.pipeline(stats)
+                td = next(v for k, v in outcomes.items() if k[-1] == "anytime_td")
+                self.assertEqual(td["actual"], expected)
+        *_, outcomes, _ = self.pipeline({"gp": 1, "rush_td": 1, "rec_td": None})
+        self.assertEqual(next(v for k, v in outcomes.items() if k[-1] == "anytime_td")["status"], "unresolved")
+
+    def test_component_validation_including_null_with_malformed_sibling(self):
+        from scorecard import descriptive_statistic
+        for key, value in [("rec", True), ("rec_td", -1), ("rush_td", .5), ("pass_yd", float("nan")), ("fum_lost", "1")]:
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                descriptive_statistic("fpts", {"rec_yd": None, key: value})
+        self.assertEqual(descriptive_statistic("fpts", {"gp": 1, "idp_fum_rec": 1, "fum_rec_td": 1}), 0)
+        self.assertEqual(descriptive_statistic("fpts", {"gp": 1, "fum_rec_td": 1}), 6)
+
+    def test_saved_contract_position_source_component_and_actual_tampering_fail(self):
+        *_, saved, _, _ = self.pipeline({"gp": 1, "rec": 1})
+        # Rehash after corruption, as required for semantic rather than envelope checks.
+        for mutation in (lambda p: p["statistic_contract"].update(scoring_sha256="0" * 64),
+                         lambda p: p["rows"][0].update(position="K"),
+                         lambda p: p["rows"][0].update(actual=123),
+                         lambda p: p["rows"][0].update(stats_entry=None)):
+            broken = copy.deepcopy(saved); mutation(broken)
+            broken["derived_substantive_sha256"] = digest({k: v for k, v in broken.items() if k not in ("collected_at", "derived_substantive_sha256")})
+            with self.assertRaises(ValueError): latest_outcomes([broken])
+
+    def test_saved_identity_and_changed_schedule_remain_quarantined(self):
+        *_, saved, _, _ = self.pipeline({"gp": 1, "rec": 1})
+        for mutation in (lambda p: p["rows"][0]["stats_entry"].update(opp="WRONG"),
+                         lambda p: p["rows"][0].update(forecast_kickoff=stamp(NOW + timedelta(hours=2)))):
+            changed = copy.deepcopy(saved); mutation(changed)
+            changed["derived_substantive_sha256"] = digest({k: v for k, v in changed.items() if k not in ("collected_at", "derived_substantive_sha256")})
+            result = latest_outcomes([changed])
+            affected = result[tuple(changed["rows"][0][k] for k in ("season", "week", "game_id", "player_id", "category"))]
+            self.assertEqual(affected["status"], "unresolved")
+            self.assertEqual(affected["outcome_identity_status"], "quarantined")
+
+    def test_typed_period_and_source_position_are_bound(self):
+        *_, saved, _, _ = self.pipeline({"gp": 1, "rec": 1})
+        bad = copy.deepcopy(saved); bad.update(season=2025, week=1)
+        bad["derived_substantive_sha256"] = digest({k: v for k, v in bad.items() if k not in ("collected_at", "derived_substantive_sha256")})
+        with self.assertRaisesRegex(ValueError, "period"):
+            latest_outcomes([bad])
+        for position in ("K", "DEF", "QB", None):
+            changed = copy.deepcopy(saved)
+            for row in changed["rows"]: row["stats_entry"]["pos"] = position
+            changed["derived_substantive_sha256"] = digest({k: v for k, v in changed.items() if k not in ("collected_at", "derived_substantive_sha256")})
+            result = latest_outcomes([changed])
+            self.assertTrue(all(r["status"] == ("resolved" if position is None else "unresolved") for r in result.values()))
+            self.assertTrue(all(r["outcome_identity_status"] == ("partial_legacy" if position is None else "quarantined") for r in result.values()))
+
+    def test_legacy_unsupported_categories_do_not_gain_new_meaning(self):
+        *_, saved, _, _ = self.pipeline({"gp": 1, "rec": 1})
+        legacy = copy.deepcopy(saved); legacy.update(schema_version="forecast-outcomes-v1")
+        legacy.pop("statistic_contract"); legacy.pop("derived_context"); legacy.pop("derived_substantive_sha256")
+        result = latest_outcomes([legacy])
+        self.assertTrue(all(r["status"] == "unresolved" and r["actual"] is None for r in result.values()))
+        self.assertTrue(all(r["reason"] == "unsupported_legacy_statistic_contract" for r in result.values()))
+
+    def test_descriptive_snapshots_cannot_write_native_or_certify_whole_week(self):
+        from scorecard import descriptive_contract
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                snapshot_outcomes(Path(d), {}, NOW, statistic_contract=descriptive_contract())
+
+    def test_corrections_agreement_conflicts_and_new_missing_keep_shared_precedence(self):
+        *_, derived, _, _ = self.pipeline({"gp": 1, "rec": 1})
+        a = copy.deepcopy(derived)
+        a.pop("derived_context"); a.pop("derived_substantive_sha256")
+        a["source"] = "FICTIONAL_VERSIONED_PROVIDER_A"
+        b = copy.deepcopy(a); b["collected_at"] = stamp(NOW + timedelta(hours=6))
+        for row in b["rows"]:
+            row["stats_entry"]["stats"]["rec"] = 2
+            if row["category"] == "fpts": row["actual"] = 2
+        b["cache_sha256"] = digest({"fictional": "version2"})
+        selected = latest_outcomes([a, b, a])
+        ppr = next(v for k, v in selected.items() if k[-1] == "fpts")
+        self.assertEqual(ppr["actual"], 2)
+        self.assertTrue(ppr["outcome_revision"])
+        pending = copy.deepcopy(b); pending["collected_at"] = stamp(NOW + timedelta(hours=7))
+        for row in pending["rows"]: row.update(status="unresolved", actual=None, stats_entry=None)
+        self.assertEqual(next(v for k, v in latest_outcomes([a, b, pending]).items() if k[-1] == "fpts")["actual"], 2)
+        agreeing = copy.deepcopy(b); agreeing["source"] = "FICTIONAL_PROVIDER_B"
+        self.assertEqual(next(v for k, v in latest_outcomes([b, agreeing]).items() if k[-1] == "fpts")["outcome_source_mix"], "mixed_agreeing_sources")
+        disagreeing = copy.deepcopy(a); disagreeing["source"] = "FICTIONAL_PROVIDER_B"
+        conflict = next(v for k, v in latest_outcomes([b, disagreeing]).items() if k[-1] == "fpts")
+        self.assertEqual((conflict["status"], conflict["actual"]), ("unresolved", None))
+        with_derived = next(v for k, v in latest_outcomes([derived, b]).items() if k[-1] == "fpts")
+        self.assertEqual(with_derived["status"], "unresolved", "a new clock cannot replace another pinned derivation")
+
+
+class DescriptiveForecastAndProbabilityTests(unittest.TestCase):
+    def test_same_receipt_pair_selection_duplicate_clocks_and_kickoff(self):
+        from scorecard import descriptive_forecasts
+        _, first, hashes = descriptive_fixture()
+        before = copy.deepcopy(first)
+        second = copy.deepcopy(first); second["captured_at"] = stamp(NOW + timedelta(minutes=1))
+        target = next(r for r in first["rows"] if r["category"] == "rec")
+        target["raw_projection"] = None
+        next(r for r in second["rows"] if r["category"] == "rec")["adjusted_projection"] = None
+        population, pairs, cov = descriptive_forecasts([second, first, first], hashes, NOW + timedelta(minutes=2))
+        key = tuple(target[k] for k in ("season", "week", "game_id", "player_id", "category"))
+        self.assertNotIn(key, pairs)
+        self.assertIn(key, population)
+        self.assertEqual(cov["duplicate_receipts"], 1)
+        third = copy.deepcopy(before); third["captured_at"] = stamp(NOW + timedelta(minutes=2))
+        _, pairs, _ = descriptive_forecasts([first, second, third], hashes, NOW + timedelta(minutes=3))
+        self.assertEqual(pairs[key]["captured_at"], third["captured_at"])
+        late = copy.deepcopy(before); late["captured_at"] = late["rows"][0]["kickoff"]
+        self.assertFalse(descriptive_forecasts([late], hashes, NOW + timedelta(hours=2))[0])
+        self.assertFalse(descriptive_forecasts([third], hashes, NOW)[0])
+        duplicate = copy.deepcopy(before); duplicate["rows"].append(copy.deepcopy(duplicate["rows"][0]))
+        with self.assertRaises(ValueError): descriptive_forecasts([duplicate], hashes, NOW)
+
+    def test_no_lean_reference_values_and_positions(self):
+        from scorecard import descriptive_forecasts
+        _, receipt, hashes = descriptive_fixture()
+        rows, pairs, _ = descriptive_forecasts([receipt], hashes, NOW)
+        self.assertEqual(len(rows), 3); self.assertEqual(len(pairs), 2)
+        bad = copy.deepcopy(receipt)
+        for row in bad["rows"]: row["position"] = "DEF"
+        self.assertFalse(descriptive_forecasts([bad], hashes, NOW)[0])
+        invalid_early = copy.deepcopy(receipt)
+        for r in invalid_early["rows"]: r["position"] = "K"
+        later = copy.deepcopy(receipt); later["captured_at"] = stamp(NOW + timedelta(minutes=1))
+        valid_first, valid_pairs, _ = descriptive_forecasts([invalid_early, later], hashes, NOW + timedelta(minutes=2))
+        self.assertEqual(len(valid_pairs), 2)
+        self.assertTrue(all(r["baseline_payload_sha256"] == digest(later) for r in valid_pairs.values()))
+        wrong = copy.deepcopy(receipt); wrong["forecast_generated_at"] = stamp(NOW + timedelta(seconds=1))
+        with self.assertRaises(ValueError): descriptive_forecasts([wrong], hashes, NOW + timedelta(minutes=1))
+
+    def test_original_board_vs_rederived_probability_and_ppr_roles(self):
+        from scorecard import descriptive_forecasts, evaluate_descriptive
+        board, receipt, hashes = descriptive_fixture()
+        population, pairs, _ = descriptive_forecasts([receipt], hashes, NOW)
+        original = copy.deepcopy(board)
+        actuals = {k: {"status": "resolved", "actual": 0, "kickoff": row["kickoff"], "team": row["team"]} for k, row in population.items()}
+        no_board = evaluate_descriptive(population, pairs, actuals, actuals)
+        with_board = evaluate_descriptive(population, pairs, actuals, actuals, original_boards=[{"document": board}])
+        a, b = no_board["td_rows"][0], with_board["td_rows"][0]
+        self.assertEqual((a["probability"], b["probability"]), (.483, .483))
+        self.assertTrue(a["probability_provenance"].startswith("rederived"))
+        self.assertEqual(b["probability_provenance"], "originally_recorded_probability")
+        self.assertIsNone(b["adjusted_probability"])
+        ppr = next(r for r in with_board["paired_rows"] if r["category"] == "fpts")
+        self.assertEqual(ppr["provider_ppr"], 10.1)
+        self.assertNotEqual(ppr["provider_ppr"], ppr["raw_projection"])
+        self.assertEqual(board, original)
+
+    def test_original_board_contract_and_selected_outcome_team_cannot_drift(self):
+        from scorecard import descriptive_forecasts, evaluate_descriptive
+        board, receipt, hashes = descriptive_fixture()
+        population, pairs, _ = descriptive_forecasts([receipt], hashes, NOW)
+        for field, value in (("line", 999), ("line_from", "other"), ("lean", "under"),
+                             ("top_over", True), ("matchup_factor", 9)):
+            changed = copy.deepcopy(population)
+            for r in changed.values(): r[field] = value
+            result = evaluate_descriptive(changed, {}, {}, {}, original_boards=[{"document": board}])
+            self.assertEqual(result["td_rows"][0]["original_board"]["status"], "invalid_exact_original_board")
+            self.assertIsNone(result["td_rows"][0]["probability"])
+        actuals = {k: {"status": "resolved", "actual": 0, "team": "WRONG", "kickoff": r["kickoff"]} for k, r in population.items()}
+        result = evaluate_descriptive(population, pairs, actuals, actuals)
+        self.assertTrue(all(r["evaluation_status"] == "unresolved" and r["actual"] is None for r in result["rows"]))
+        self.assertEqual(result["categories"]["rec"]["paired"]["raw"]["n"], 0)
+
+    def test_wrong_original_board_cannot_supply_saved_comparator(self):
+        from scorecard import descriptive_forecasts, evaluate_descriptive
+        board, receipt, hashes = descriptive_fixture()
+        population, pairs, _ = descriptive_forecasts([receipt], hashes, NOW)
+        for change in ("clock", "identity", "forecast", "scoring"):
+            bad = copy.deepcopy(board)
+            if change == "clock": bad["generated_at"] = stamp(NOW + timedelta(minutes=1))
+            elif change == "identity": bad["players"][0]["team"] = "WRONG"
+            elif change == "forecast": bad["players"][0]["props"][-1]["td_chance"] = .9
+            else: bad["scoring"]["rec"] = .5
+            # A later/altered complete board's new digest cannot match this receipt.
+            result = evaluate_descriptive(population, pairs, {}, {}, original_boards=[{"document": bad}])
+            self.assertEqual(result["td_rows"][0]["original_board"]["status"], "missing_exact_original_board")
+            self.assertTrue(result["td_rows"][0]["probability_provenance"].startswith("rederived"))
+        forged = copy.deepcopy(board); forged["players"][0]["team"] = "WRONG"
+        for row in population.values(): row["baseline_input_sha256"] = digest(forged)
+        result = evaluate_descriptive(population, pairs, {}, {}, original_boards=[{"document": forged}])
+        self.assertIsNone(result["td_rows"][0]["probability"])
+        self.assertEqual(result["td_rows"][0]["original_board"]["status"], "invalid_exact_original_board")
+
+    def test_duplicate_original_identities_and_unknown_formula_engine_rejected(self):
+        from scorecard import original_board_index, descriptive_forecasts
+        board, receipt, hashes = descriptive_fixture()
+        for kind in ("players", "games"):
+            bad = copy.deepcopy(board); bad[kind].append(copy.deepcopy(bad[kind][0]))
+            with self.assertRaises(ValueError): original_board_index([{"document": bad}])
+        bad = copy.deepcopy(board); bad["players"][0]["props"].append(copy.deepcopy(bad["players"][0]["props"][0]))
+        with self.assertRaises(ValueError): original_board_index([{"document": bad}])
+        changed = dict(hashes, **{"pull/scoring.py": "0" * 64})
+        receipt.update(engine_files=changed, engine_sha256=digest(changed))
+        with self.assertRaises(ValueError): descriptive_forecasts([receipt], changed, NOW)
+
+    def test_binary_extreme_losses_are_json_safe_and_calibration_includes_one(self):
+        from scorecard import probability_scores, _td_metrics
+        from reliability import canonical
+        rows = []
+        for p, y in ((0, 0), (1, 1), (0, 1), (1, 0)):
+            value = probability_scores(p, y)
+            if p == y:
+                self.assertEqual((value["brier"], value["log_loss"]), (0, 0))
+            else:
+                self.assertIsNone(value["log_loss"])
+                self.assertEqual(value["log_loss_state"], "positive_infinity")
+            rows.append({"season": 2026, "week": 6, "game_id": "fictional", "player_id": str(len(rows)),
+                         "evaluation_status": "resolved", "probability": p, "actual_event": y,
+                         "raw_projection": p, "actual": y, "probability_provenance": "fictional", **value})
+        report = _td_metrics(rows)
+        self.assertEqual(report["infinite_log_loss_count"], 2)
+        self.assertEqual(report["log_loss_state"], "positive_infinity")
+        self.assertIsNone(report["log_loss"])
+        self.assertEqual(sum(b["n"] for b in report["calibration"]), 4)
+        self.assertEqual(report["calibration"][-1]["n"], 2)
+        self.assertEqual(json.loads(canonical(report))["infinite_log_loss_count"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

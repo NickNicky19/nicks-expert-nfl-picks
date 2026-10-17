@@ -18,7 +18,9 @@ from zoneinfo import ZoneInfo
 
 from evidence import read, write
 from reliability import IntegrityError, canonical, digest, engine_hashes, finite, load_json, stamp, utc
-from scorecard import identity, latest_outcomes, paired_forecasts, score, snapshot_outcomes
+from scorecard import (identity, latest_outcomes, paired_forecasts, score, snapshot_outcomes,
+                       DERIVED_STAT_SCHEMA, EXTRA_CATEGORIES, descriptive_contract,
+                       descriptive_forecasts, evaluate_descriptive, outcome_provenance)
 import grade
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -364,31 +366,6 @@ def archive_decisions(archives, policy):
     return reconciled
 
 
-def outcome_provenance(outcome):
-    """Classify only the validated record selected for the numeric outcome.
-
-    A historical observation, cached flag or copied source string cannot supply
-    this binding. Conflicts deliberately have no selected-source provenance.
-    """
-    if not outcome:
-        return "missing"
-    if outcome.get("outcome_conflict") or outcome.get("outcome_selection") == "conflict":
-        return "conflicting_outcome_evidence"
-    selected = outcome.get("selected_outcome_provenance")
-    if (not isinstance(selected, dict)
-            or digest(selected) != outcome.get("selected_outcome_provenance_sha256")
-            or selected.get("outcome_snapshot_sha256") != outcome.get("outcome_snapshot_sha256")
-            or not selected.get("outcome_row_sha256")
-            or selected.get("outcome_row_sha256") != outcome.get("selected_outcome_row_sha256")
-            or digest(selected) not in {digest(observation) for observation in outcome.get("outcome_observations", [])}):
-        return "unknown_unverified"
-    if selected.get("source") == "git_pinned_saved_cache_statistical_regrade":
-        return "saved_cache_descriptive_regrade"
-    if selected.get("source") == "existing_Sleeper_stats_cache_and_ESPN_final_game_snapshot":
-        return "recorded_outcome_receipt"
-    return "unknown_unverified"
-
-
 def final_outcome_records(outcomes):
     """Minimal derived outcome interface; never copy cache entries or paths."""
     fields = ("season", "week", "game_id", "player_id", "category", "team", "kickoff", "status", "actual", "reason",
@@ -573,6 +550,103 @@ def _inventory(roots, input_pins=None):
     return manifest, data
 
 
+def _original_boards(paths, roots, pins):
+    """Explicit read-only documents, never provider refetches or historical replay."""
+    records, manifest, visited = [], [], set()
+    for supplied in sorted(paths, key=str):
+        path = Path(supplied).absolute()
+        if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+            raise IntegrityError("Original board symlink refused")
+        path = path.resolve()
+        if path in visited:
+            continue
+        visited.add(path)
+        if not path.is_file():
+            raise IntegrityError("Original board must be an existing JSON file")
+        raw, board = path.read_bytes(), load_json(path)
+        blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        pin = None
+        for root in roots:
+            if path.is_relative_to(root) and (root / ".git").exists():
+                pin = _input_pin(root, pins)
+                expected = subprocess.check_output(["git", "-C", str(root), "rev-parse",
+                                                     f"{pin}:{path.relative_to(root).as_posix()}"], text=True).strip()
+                if expected != blob:
+                    raise IntegrityError("Original board differs from declared Git pin")
+                break
+        item = {"root": str(path.parent), "path": path.name, "bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(), "payload_sha256": digest(board),
+                "git_blob_sha": blob, "input_git_pin": pin,
+                "pin_binding": "LOCAL_GIT_BLOB_VERIFIED" if pin else "EXACT_DOCUMENT_HASH_BINDING_REQUIRED",
+                "record_type": "optional_original_forecast_board"}
+        manifest.append(item)
+        records.append({"document": board, "document_sha256": digest(board),
+                        "file_sha256": item["sha256"], "git_blob_sha1": blob,
+                        **({"git_commit": pin} if pin else {})})
+    return records, manifest
+
+
+def _descriptive_report(roots, output, inputs, outcomes, expected_hashes, now, pins, boards):
+    first, pairs, coverage = descriptive_forecasts(inputs["forward"], expected_hashes, now)
+    extra = {key: row for key, row in first.items() if row["category"] in EXTRA_CATEGORIES}
+    sink = output / "descriptive-evaluation"
+    for root in roots:
+        if (root / "output/data/week.json").exists():
+            snapshot_outcomes(root, extra, now, output_root=sink,
+                derived_context={"statistic_contract": descriptive_contract()["version"],
+                                 "scope": "saved_input_bytes_only_not_provider_observation",
+                                 "input_git_pin": _input_pin(root, pins)},
+                include_populations=False, statistic_contract=descriptive_contract())
+    saved, unsupported = [], []
+    for payload in inputs["outcomes"] + [read(path) for path in (sink / "data/outcomes_derived").rglob("*.json.gz")]:
+        if payload.get("schema_version") == "forecast-outcomes-v1":
+            # Existing ten-category evidence is consumed through the unchanged
+            # map. Old unsupported fpts/TD rows are not silently reinterpreted.
+            if any(row.get("category") in EXTRA_CATEGORIES for row in payload.get("rows", [])):
+                unsupported.append({"payload_sha256": digest(payload), "reason": "unsupported_legacy_extra_statistic"})
+            continue
+        if (payload.get("schema_version") != DERIVED_STAT_SCHEMA or
+                not isinstance(payload.get("statistic_contract"), dict) or
+                payload["statistic_contract"].get("version") != descriptive_contract()["version"]):
+            unsupported.append({"payload_sha256": digest(payload), "reason": "unsupported_descriptive_outcome_contract"})
+            continue
+        if utc(payload["collected_at"]) > now:
+            raise IntegrityError("Saved descriptive outcome is in the future")
+        saved.append(payload)
+    result = evaluate_descriptive(first, pairs, outcomes, latest_outcomes(saved), original_boards=boards)
+    result.update(capture_coverage=coverage, unsupported_outcome_receipts=unsupported)
+    return result
+
+
+def _descriptive_html(report, prefix):
+    value = report.get("descriptive_all_categories")
+    if value is None:
+        return ""
+    rows = []
+    for category, item in value["categories"].items():
+        pair = item["paired"]
+        rows.append("<tr>" + "".join(f"<td>{html.escape(str(v))}</td>" for v in
+            (category, item["coverage"]["opportunities"], item["paired_coverage"]["opportunities"],
+             pair["raw"]["n"], pair["raw"]["mae"], pair["adjusted"]["mae"],
+             pair["raw"]["rmse"], pair["adjusted"]["rmse"],
+             pair["raw"]["bias"], pair["adjusted"]["bias"], pair["helps"], pair["hurts"], pair["ties"])) + "</tr>")
+    td = value["categories"]["anytime_td"]["probability"]
+    return ('<h2>All-category descriptive forecast evaluation</h2>'
+            '<p>Separate from the registered three-target experiment. Units are category-specific. '
+            'PPR raw below is component-derived; direct provider PPR is a distinct comparator in the JSON. '
+            'Repeated captures and categories are not independent games.</p><div class="scroll"><table><thead><tr>' +
+            "".join(f"<th>{name}</th>" for name in ("Category", "Saved", "Pairs", "Resolved pairs", "Raw MAE", "Adjusted MAE",
+                "Raw RMSE", "Adjusted RMSE", "Raw bias", "Adjusted bias", "Helps", "Hurts", "Ties")) +
+            '</tr></thead><tbody>' + "".join(rows) + '</tbody></table></div>' +
+            f'<p>Anytime rushing/receiving TD: {td["n"]} resolved; {td["events"]} events; Brier {td["brier"]}; '
+            f'log loss {td["log_loss"]} ({td["log_loss_state"]}). Saved versus re-derived probability provenance, '
+            'fixed calibration bins, coverage and complete rows are separate in '
+            f'<a href="{prefix}descriptive-evaluation.json">evaluation JSON</a>; '
+            f'<a href="{prefix}descriptive-pairs.csv">paired CSV</a>, '
+            f'<a href="{prefix}descriptive-forecasts.csv">all saved forecasts CSV</a>, '
+            f'<a href="{prefix}descriptive-td.csv">TD CSV</a>.</p>')
+
+
 def _frozen_decisions(output, records, at):
     previous, seen_history = {}, set()
     for path in sorted((output / "data/selection_decisions").rglob("*.json.gz")):
@@ -677,12 +751,13 @@ def render_html(report, group=None):
             '<p>All category/side/day/timing/venue tables and full provenance: '
             f'<a href="{prefix}summary.json">summary JSON</a>, <a href="{prefix}rows.json">auditable rows JSON</a>, '
             f'<a href="{prefix}rows.csv">CSV</a>, <a href="{prefix}manifest.json">input/code/policy manifest</a>.</p>' +
-            "".join(summary) + '<h2>Auditable rows</h2>' + preview + anchor + '<div class="scroll"><table><thead><tr>' +
+            _descriptive_html(report, prefix) + "".join(summary) + '<h2>Auditable rows</h2>' + preview + anchor + '<div class="scroll"><table><thead><tr>' +
             "".join(f"<th>{escape(k)}</th>" for k in fields) + "</tr></thead><tbody>" +
             "".join(body) + "</tbody></table></div></html>")
 
 
-def run_report(input_roots, output_root, *, now=None, expected_hashes=None, policy=None, input_pins=None):
+def run_report(input_roots, output_root, *, now=None, expected_hashes=None, policy=None, input_pins=None,
+               include_descriptive=False, original_board_paths=()):
     now = utc(now or datetime.now(timezone.utc))
     roots = sorted({Path(root).resolve() for root in input_roots})
     output = Path(output_root).resolve()
@@ -693,6 +768,10 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
     policy = policy or load_json(ROOT / "config/timing-policy.json")
     expected_hashes = expected_hashes or engine_hashes(ROOT)
     manifest, inputs = _inventory(roots, input_pins)
+    if original_board_paths and not include_descriptive:
+        raise IntegrityError("Original boards require explicit all-category evaluation")
+    boards, board_manifest = _original_boards(original_board_paths, roots, input_pins) if include_descriptive else ([], [])
+    manifest.extend(board_manifest)
     decisions, coverage = build_decisions(inputs["forward"], policy, now, expected_hashes)
     decisions.extend(archive_decisions(inputs["archives"], policy))
     # Unknown schemas are inventoried, not silently upgraded to qualified data.
@@ -762,6 +841,9 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
                               "No model fitted/promoted; report derivation alone does not establish publication or deployment."],
               "input_manifest_sha256": digest(manifest), "code_sha256": code,
               "timing_policy_sha256": digest(policy), "evaluation_policy_sha256": digest(primary_policy)}
+    if include_descriptive:
+        report["descriptive_all_categories"] = _descriptive_report(roots, output, inputs, outcomes,
+                                                                  expected_hashes, now, input_pins, boards)
     # Outputs are content-addressed; operational clocks live in a separate run receipt.
     report_id = digest(report)
     directory = output / "reports" / report_id
@@ -775,6 +857,17 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
     for row in rows:
         writer.writerow({k: json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v for k, v in row.items()})
     _create_file(directory / "rows.csv", stream.getvalue())
+    if include_descriptive:
+        value = report["descriptive_all_categories"]
+        _create_file(directory / "descriptive-evaluation.json", canonical(value) + b"\n")
+        for label, records in (("forecasts", value["rows"]), ("pairs", value["paired_rows"]), ("td", value["td_rows"])):
+            columns = sorted({key for row in records for key in row})
+            data = io.StringIO(newline="")
+            writer = csv.DictWriter(data, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows({k: json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v
+                             for k, v in row.items()} for row in records)
+            _create_file(directory / f"descriptive-{label}.csv", data.getvalue())
     _create_file(directory / "index.html", render_html(report))
     for group in summary["tables"]:
         _create_file(directory / "groups" / (group["summary_id"] + ".html"), render_html(report, group))
@@ -794,6 +887,10 @@ def main():
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--input-pin", action="append", default=[], metavar="ROOT=GIT_SHA",
                         help="Optional frozen input reference; local Git blobs are verified when available.")
+    parser.add_argument("--all-category-evaluation", action="store_true",
+                        help="Opt-in local descriptive evaluation; primary/public-v1 behavior stays unchanged.")
+    parser.add_argument("--original-board", action="append", type=Path, default=[],
+                        help="Optional exact original full forecast JSON; never substitute a later board.")
     args = parser.parse_args()
     pins = {}
     for value in args.input_pin:
@@ -801,7 +898,9 @@ def main():
         if not separator or len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
             parser.error("--input-pin requires ROOT=40-character Git SHA")
         pins[str(Path(name).resolve())] = sha
-    report, directory = run_report(args.input_root, args.output_root, input_pins=pins)
+    report, directory = run_report(args.input_root, args.output_root, input_pins=pins,
+                                  include_descriptive=args.all_category_evaluation,
+                                  original_board_paths=args.original_board)
     print(json.dumps({"report": str(directory / "index.html"), "rows": len(report["rows"]),
                       "selected_decision_rows_overlapping": sum(r["action"] == "SELECT" for r in report["rows"]),
                       "status": "LOCAL_DESCRIPTIVE_ONLY_NOT_DEPLOYED"}))
