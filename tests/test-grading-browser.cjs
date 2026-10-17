@@ -112,7 +112,8 @@ function fictionalWeek() {
   return original;
 }
 
-const fixture = fictionalPublication(), week = fictionalWeek();
+const fixture = fictionalPublication();
+let week = fictionalWeek();
 let variant = 'valid', transferred = 0;
 const requests = [];
 const server = http.createServer((req, res) => {
@@ -139,11 +140,140 @@ const server = http.createServer((req, res) => {
   res.end(bytes);
 });
 
+async function presentationChecks(browser, origin, width) {
+  // Reuse the real application and normal HTTP reload path with fictional,
+  // frozen-in-time boards. Never consult outcomes to choose display order.
+  const previous = week;
+  week = structuredClone(previous);
+  const base = week.players[3].props[0];
+  week.players[3].props = [
+    { ...base, key: 'rec', proj: 5, adj: 5.5, line: 5, lean: 'over' },
+    { ...base, key: 'rec_yd', proj: 30, adj: 35, line: 25, lean: 'over' },
+    { ...base, key: 'rush_rec_yd', proj: 40, adj: 30, line: 50, lean: 'under' },
+    { ...base, key: 'anytime_td', proj: .8, adj: null, line: .5, lean: 'over', td_chance: .55 },
+    { ...base, key: 'fpts', proj: 20, adj: 24, line: 20, lean: 'over', adj_h: 1, line_h: .5, proj_h: 1 },
+  ];
+  week.players[0].props = week.players[3].props.map(prop => ({ ...prop, lean: null, line_from: 'ours' }));
+  const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 900 } });
+  const errors = [];
+  let checks = 0;
+  const equal = (a, b, reason) => { assert.deepEqual(a, b, reason); checks++; };
+  const normal = ['rec', 'rec_yd', 'rush_rec_yd', 'anytime_td', 'fpts'];
+  const ordered = ['rec_yd', 'rush_rec_yd', 'fpts', 'rec', 'anytime_td'];
+  try {
+    await context.route('**/*', route => {
+      const url = route.request().url();
+      if (url.startsWith(origin + '/')) return route.continue();
+      return route.fulfill({ status: 200, contentType: 'application/json', body: url.includes('api.sleeper.app/stats') ? '[]' : '{"events":[]}' });
+    });
+    const page = await context.newPage();
+    page.on('pageerror', error => errors.push(error.message));
+    await page.goto(origin + '/#/props');
+    await page.waitForFunction(() => S.data && !ticking && document.querySelector('#f-sort'));
+    equal(await page.evaluate(() => S.f.sort), 'proj', 'default sort is unchanged');
+    equal(await page.evaluate(() => S.open.size), 0, 'cards remain collapsed initially');
+    const original = await page.evaluate(() => JSON.stringify(S.data.players));
+    const top = await page.evaluate(() => JSON.stringify(S.data.picks));
+    await page.evaluate(() => { S.f.q = 'Pending Player'; S.f.hideOut = false; S.f.sort = 'edge'; render(); });
+    const order = async (id = 'fixture-3', panels = false) => page.evaluate(({ id, panels }) => {
+      const card = document.querySelector(`[data-player="${id}"]`);
+      if (panels) return [...card.querySelectorAll('.pbody > .cat')].map(el => el.dataset.cat.split('|')[1]);
+      const labels = Object.entries(SHORT).sort((a, b) => b[1].length - a[1].length);
+      return [...card.querySelectorAll('.pchip')].map(el => labels.find(([, label]) => el.textContent.trim().startsWith(label))?.[0]);
+    }, { id, panels });
+    equal(await order(), ordered, 'collapsed chips lead with rec_yd, score .4; equal-score rush_rec_yd follows');
+    equal(await page.locator('[data-player="fixture-3"] .pbody').count(), 0, 'sorting does not auto-expand');
+    await page.locator('[data-toggle="fixture-3"]').click();
+    equal(await order('fixture-3', true), ordered, 'expanded panels match chips');
+    const topText = await page.locator('.picks-wrap').innerText();
+    for (const sort of ['name', 'live', 'proj', 'edge']) {
+      await page.locator('#f-sort').selectOption(sort);
+      equal(await order(), sort === 'edge' ? ordered : normal, 'sort switching chip order');
+      equal(await order('fixture-3', true), sort === 'edge' ? ordered : normal, 'sort switching panel order');
+      equal(await page.evaluate(() => S.open.has('fixture-3')), true, 'sort switch retains expanded player');
+      equal(await page.locator('.picks-wrap').innerText(), topText, 'Top Picks content unchanged on identical inputs');
+    }
+    await page.locator('#f-cat').selectOption('rec');
+    equal(await order(), ['rec'], 'category filter applies before sorting');
+    equal(await order('fixture-3', true), ['rec'], 'panels respect category filter');
+    await page.locator('#f-cat').selectOption('');
+    await page.locator('#f-q').focus();
+    await page.evaluate(() => renderLiveParts());
+    equal(await page.locator('#f-q').inputValue(), 'Pending Player', 'focused query survives live refresh');
+    equal(await page.evaluate(() => document.activeElement.id), 'f-q', 'live refresh retains input focus');
+    equal(await order(), ordered, 'focused-input live refresh keeps chips');
+    equal(await order('fixture-3', true), ordered, 'focused-input live refresh keeps panels');
+    const saved = [{ pid: 'fixture-3', key: 'rec_yd', dir: 'over', line: 45, season: 2026, week: 6, at: 1 }];
+    await page.evaluate(picks => { S.mine = picks; store('mine', picks); }, saved);
+    await page.locator('[data-line="fixture-3|rec_yd"]').fill('35');
+    equal(await page.evaluate(() => S.lines['fixture-3|rec_yd']), 35, 'personal line editor still works');
+    equal(await page.evaluate(() => S.byId['fixture-3'].props[1].line), 25, 'saved board line unchanged');
+    equal(await order(), ordered, 'personal line does not supply display score');
+    equal(await order('fixture-3', true), ordered, 'personal-line edit retains panel positions');
+    equal(await page.evaluate(() => document.activeElement.dataset.line), 'fixture-3|rec_yd', 'line editor focus retained');
+    for (const settings of [{ mode: 'sleeper', half: true }, { mode: 'espn', half: false }]) {
+      await page.evaluate(settings => { S.sc = settings; applyScoring(); }, settings);
+      equal(await order(), ordered, 'scoring changes do not replace saved-board ranking inputs');
+      equal(await order('fixture-3', true), ordered, 'custom-scoring panels keep saved-board order');
+    }
+    equal(await page.evaluate(() => pv(S.byId['fixture-3'], S.byId['fixture-3'].props[4]).adj !== 24), true, 'custom scoring actually changes displayed fantasy value');
+    await page.evaluate(() => { S.sc = { mode: 'sleeper', half: false }; applyScoring(); });
+    for (const state of ['pre', 'in', 'post']) {
+      await page.evaluate(state => { S.games[S.byId['fixture-3'].game_id].state = state; renderProps(); }, state);
+      equal(await order(), ordered, 'game state does not change presentation eligibility');
+    }
+    const grades = await page.evaluate(() => {
+      const p = S.byId['fixture-3'], g = S.games[p.game_id];
+      S.finalOutcomes.set(finalIdentity(p, 'rec_yd'), { season: 2026, week: 6, player_id: p.id, game_id: p.game_id,
+        category: 'rec_yd', team: p.team, kickoff: g.kickoff, status: 'resolved', actual: 30,
+        final_confirmed: true, outcome_conflict: false });
+      return [propStatus(p, 'rec_yd', 25, 'over').res, propStatus(p, 'rec_yd', S.mine[0].line, 'over').res];
+    });
+    equal(grades, ['hit', 'miss'], 'board and own saved contract remain independently graded');
+    // Exercise the shared player-card renderer with the real game-page guard.
+    const reused = await page.evaluate(() => {
+      S.gameView = S.byId['fixture-3'].game_id;
+      const container = document.createElement('div');
+      gs(S.gameView).sort = 'lean';
+      container.innerHTML = renderGameProps(S.games[S.gameView], { away: { abbr: 'BBB' }, home: { abbr: 'AAA' } });
+      const result = [...container.querySelectorAll('.pbody > .cat')].map(el => el.dataset.cat.split('|')[1]);
+      S.gameView = null;
+      S.games[S.byId['fixture-3'].game_id].state = 'pre';
+      S.finalOutcomes.delete(finalIdentity(S.byId['fixture-3'], 'rec_yd'));
+      return result;
+    });
+    equal(reused, normal, 'game-page card reuse retains normal category order');
+    await page.evaluate(() => { S.f.q = 'Zero Played'; S.open.add('fixture-0'); render(); });
+    equal(await order('fixture-0'), normal, 'all No Lean/reference chips retain normal order');
+    equal(await order('fixture-0', true), normal, 'all No Lean/reference panels retain normal order');
+    await page.evaluate(() => { S.f.q = 'Pending Player'; render(); document.activeElement?.blur(); renderLiveParts(); });
+    equal(await order(), ordered, 'unfocused live refresh retains ordering');
+    await page.evaluate(() => { document.querySelector('#banner').hidden = false; });
+    await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname === '/data/week.json'), page.locator('#reload').click()]);
+    await page.waitForFunction(() => !ticking && document.querySelector('[data-player="fixture-3"] .pbody'));
+    equal(await order(), ordered, 'ordinary update reload retains edge chips');
+    equal(await order('fixture-3', true), ordered, 'ordinary update reload retains expanded panels');
+    equal(await page.evaluate(() => [S.f.sort, S.f.q, S.open.has('fixture-3')]), ['edge', 'Pending Player', true], 'ordinary refresh retains sort/filter/open');
+    equal(await page.evaluate(() => JSON.stringify(S.data.players)), original, 'original forecasts and prop arrays immutable');
+    equal(await page.evaluate(() => JSON.stringify(S.data.picks)), top, 'recorded Top memberships unchanged');
+    equal(await page.evaluate(() => S.mine), saved, 'all interactions retain own saved contract');
+    equal(await page.evaluate(() => S.lines['fixture-3|rec_yd']), 35, 'ordinary refresh retains temporary personal line');
+    await page.reload();
+    await page.waitForFunction(() => S.data && !ticking && document.querySelector('#f-sort'));
+    equal(await page.evaluate(() => [S.f.sort, S.f.q, S.f.cat, S.open.size]), ['proj', '', '', 0], 'full browser reload preserves existing reset behavior');
+    equal(await page.evaluate(() => S.mine), saved, 'full browser reload preserves device selections');
+    equal(await page.evaluate(() => S.lines['fixture-3|rec_yd']), undefined, 'full browser reload retains existing temporary-line reset');
+    equal(errors, [], 'no browser errors');
+    return { width, checks, assertions: 'passed', leading_prop: 'rec_yd', score: .4, phone: width === 390 ? 'Chromium width emulation, not physical iPhone/Safari' : null };
+  } finally { await context.close(); week = previous; }
+}
+
 (async () => {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = 'http://127.0.0.1:' + server.address().port;
   const browser = await chromium.launch({ executablePath: process.env.NFL_CHROMIUM_PATH || '/usr/bin/chromium', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   const measurements = [];
+  const presentation = [];
   try {
     for (const width of [1280, 390]) {
       variant = 'valid';
@@ -259,10 +389,14 @@ const server = http.createServer((req, res) => {
         assert.equal(await page.evaluate(() => S.finalOutcomes.size), 0);
       }
       await context.close();
+      if (!arg('--root')) {
+        variant = 'valid';
+        presentation.push(await presentationChecks(browser, origin, width));
+      }
     }
     const result = { fixture: arg('--root') ? 'AUTHORIZED_SAVED_DATA_ISOLATED_ROOT' : 'FICTIONAL_ONLY', public_deployment_test: false,
       external_network_requests: 0, app_sha256: sha(fs.readFileSync(path.join(staticRoot, 'app.js'))),
-      html_sha256: sha(fs.readFileSync(path.join(staticRoot, 'index.html'))), measurements, requests: [...new Set(requests)], assertions: 'passed' };
+      html_sha256: sha(fs.readFileSync(path.join(staticRoot, 'index.html'))), measurements, presentation, requests: [...new Set(requests)], assertions: 'passed' };
     if (evidence) fs.writeFileSync(path.join(evidence, 'grading-browser-results.json'), JSON.stringify(result, null, 2) + '\n');
     console.log(JSON.stringify(result, null, 2));
   } finally { await browser.close(); }
