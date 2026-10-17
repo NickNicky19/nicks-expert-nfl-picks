@@ -1,0 +1,21 @@
+{
+  "schema_version": "implementation-handoff-policy-v1",
+  "version": "phase2-handoff-v1",
+  "repository": "NickNicky19/nicks-expert-nfl-picks",
+  "repository_id": 1411185749,
+  "pull_request": 1,
+  "development_branch": "upgrade/phase2-reproducible-comparison",
+  "coordination_branch": "coordination/phase2-writer",
+  "state_path": "coordination/writer-state.json",
+  "trusted_requester": {"login": "NickNicky19", "id": 208912933},
+  "automatic_implementation_enabled": false,
+  "evaluation_policy_version": "phase2-evaluation-v1.1",
+  "timing_policy_version": "phase2-timing-v1",
+  "maximum_attempts_per_finding": 2,
+  "lease_expiration": "NONE; explicit verified owner release required",
+  "allowed_scope": ["tools/", "tests/", "docs/", "output/app.js", "output/index.html", "README.md", "UPGRADE_NOTES.md", "ROLLBACK.md", "config/timing-policy.json"],
+  "protected_scope": ["pull/", "data/", "output/data/", "config/evaluation-policy.json", "config/policies/", "config/handoff-policy.json", "AGENTS.md", ".github/"],
+  "boundaries": {"main_writes": false, "merge": false, "deployment": false, "model_promotion": false, "force_push": false},
+  "scheduler": "reuse_existing_hourly_ChatGPT_audit; no_new_implementation_scheduler",
+  "readiness_requirements": ["owner_handoff_complete", "native_environment_verified", "native_entrypoint_uses_gate_verified", "report_audit_ack_readback_verified", "rejection_tests_verified"]
+}

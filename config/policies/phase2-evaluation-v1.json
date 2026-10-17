@@ -1,0 +1,74 @@
+{
+  "schema_version": "forecast-evaluation-policy-v1",
+  "version": "phase2-evaluation-v1",
+  "registered_at": "2026-10-14T00:15:47Z",
+  "targets": [
+    "rec",
+    "rush_att",
+    "pass_yd"
+  ],
+  "baseline": "original_sleeper_matchup_baseline",
+  "opportunity": [
+    "season",
+    "week",
+    "game_id",
+    "player_id",
+    "category"
+  ],
+  "primary_capture": "earliest_valid_live_paired_capture_before_kickoff",
+  "duplicates": "one_player_game_target_outcome_per_primary_comparison",
+  "prospective_game_cutoff": "kickoff_strictly_after_registered_at",
+  "forecast_time": "raw_and_clone_from_the_same_receipt",
+  "outcomes": "confirmed_final_game_and_sourced_participation; absent_stats_unresolved; confirmed_played_omitted_stat_zero",
+  "primary_metrics": [
+    "mae",
+    "rmse",
+    "mean_error"
+  ],
+  "uncertainty": {
+    "cluster": "season_week",
+    "bootstrap_replicates": 2000,
+    "seed": 1906,
+    "simultaneous_confidence": 0.9833333333333333,
+    "minimum_completed_weeks": 8
+  },
+  "promotion": {
+    "automatic": false,
+    "minimum_outcomes_per_target": 200,
+    "minimum_completed_weeks": 8,
+    "point_mae_improvement_fraction": 0.02,
+    "maximum_rmse_regression_fraction": 0.02,
+    "probability_metrics": [
+      "negative_log_likelihood",
+      "three_way_brier",
+      "interval_coverage_80"
+    ],
+    "requirements": [
+      "fresh_frozen_candidate_version_and_forward_holdout",
+      "matched_times_opportunities_and_coverage_audit",
+      "simultaneous_week_cluster_interval_for_mae_delta_below_zero_each_target",
+      "proper_probability_scores_improve_over_saved_clone_distribution_reference",
+      "calibration_and_tail_error_review_on_holdout",
+      "no_material_data_integrity_failures",
+      "explicit_owner_approval_before_production_switch"
+    ],
+    "economics": "ROI_and_EV_require_complete_executable_entry_prices_payouts_and_verified_venue_settlement"
+  },
+  "challenger": {
+    "version": "shadow-dispersion-v1",
+    "production_enabled": false,
+    "centers": {
+      "challenger": "unchanged_clone",
+      "raw_reference": "raw_sleeper",
+      "clone_reference": "unchanged_clone"
+    },
+    "count_distribution": "negative_binomial_or_poisson",
+    "count_dispersion_prior_excess_variance": 0.15,
+    "yards_distribution": "integer_discretized_normal",
+    "yards_prior_sd": 65.0,
+    "dispersion_prior_games": 8,
+    "training": "confirmed_played_current_season_weeks_strictly_before_forecast_week_in_exact_input_snapshot",
+    "probability_reference": "same_distribution_family_with_fixed_priors_and_raw_or_clone_center",
+    "no_tuning_on_evaluation_outcomes": true
+  }
+}
