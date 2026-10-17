@@ -216,7 +216,11 @@ def _coverage(coverage):
 def _projection(report, *, source_sha, input_digest):
     if report.get("schema_version") != "selection-report-v2":
         raise IntegrityError("Unsupported source selection report")
-    rows = sorted((_row(row) for row in report["rows"]), key=lambda row: row["decision_sha256"])
+    # Physical locality only; recommendation membership and ranking stay recorded.
+    rows = sorted((_row(row) for row in report["rows"]), key=lambda row: (
+        row["provenance_class"], row["model_version"], row.get("engine_sha256") or "",
+        row["season"], row["week"], row["cohort"], row["checkpoint"],
+        row["category"], row.get("side") or "", row["decision_sha256"]))
     row_ids = [row["decision_sha256"] for row in rows]
     if len(set(row_ids)) != len(row_ids):
         raise IntegrityError("Duplicate public decision identity")

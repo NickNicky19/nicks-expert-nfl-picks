@@ -702,6 +702,203 @@ class PublicSelectionPipelineTests(unittest.TestCase):
             self.assertEqual(coverage["excluded_unbound_identities"], {
                 "ambiguous_saved_kickoff": 1, "unknown_recorded_team": 1, "no_bound_original_observation": 1})
 
+    def locality_report(self, root, analysis):
+        self.run_live(root)
+        report, _ = run_report([root], analysis, now=self.AT,
+                               expected_hashes=selection_publication.engine_hashes(root))
+        template = next(row for row in report["rows"] if row["action"] == "SELECT")
+        rows = []
+        # Twenty logical blocks, forty opportunities each: exercise
+        # every key field and 250-row boundaries without a large test population.
+        for index in range(800):
+            block, member = divmod(index, 40)
+            result = ("win", "loss", "push", "dnp", "pending", "unresolved", "no_action")[member % 7]
+            side = None if result == "no_action" else ("over" if member % 2 else "under")
+            top = block % 3 == 0 and side is not None
+            row = dict(template, player_id=f"fictional-layout-{index}",
+                       game_id=f"fictional-layout-game-{block % 14}",
+                       provenance_class=("local_pregame_membership_observation" if block < 10
+                                         else "inherited_archive_decision"),
+                       model_version=f"fictional-layout-model-{block % 2}",
+                       engine_sha256=None if block % 5 == 0 else digest({"fictional_engine": block % 2}),
+                       season=2025 + block % 2, week=5 + block % 3,
+                       cohort="top_picks" if block % 3 == 0 else "all_qualifying_leans",
+                       checkpoint=("history", "24h", "6h", "90m")[block % 4],
+                       category=("rec", "rush_att", "pass_yd")[block % 3],
+                       side=side, top_over=bool(top and side == "over"),
+                       top_under=bool(top and side == "under"), top_at_decision=top,
+                       action="NO_ACTION" if result == "no_action" else "SELECT",
+                       reason="source_unavailable" if result == "no_action" else "recorded_membership",
+                       result=result, line=None if side is None else 4.0 if result == "push" else 4.5,
+                       actual=(4 if result == "push" else
+                               (6 if side == "over" else 3) if result == "win" else
+                               (3 if side == "over" else 6) if result == "loss" else None))
+            row.pop("decision_sha256")
+            row["decision_sha256"] = digest(row)
+            rows.append(row)
+        report.update(rows=rows, summary=summarize(rows))
+        return report
+
+    @staticmethod
+    def legacy_layout(projected):
+        """Independent test-only re-encoding of the retained decision-ID layout."""
+        summary, original_rows, outcomes, _, _ = copy.deepcopy(projected)
+        rows = sorted(original_rows, key=lambda row: row["decision_sha256"])
+        positions = {row["decision_sha256"]: index for index, row in enumerate(rows)}
+        for table in summary["summary"]["tables"]:
+            members = [original_rows[position]["decision_sha256"] for position in table["row_positions"]]
+            table["row_positions"] = sorted(positions[member] for member in members)
+            table["row_chunks"] = sorted({position // selection_publication.CHUNK_SIZE
+                                           for position in table["row_positions"]})
+            table["row_ids_sha256"] = digest([rows[position]["decision_sha256"]
+                                               for position in table["row_positions"]])
+        chunks = [rows[index:index + selection_publication.CHUNK_SIZE]
+                  for index in range(0, len(rows), selection_publication.CHUNK_SIZE)]
+        public_id = digest({"summary": summary, "rows": rows, "outcomes": outcomes})
+        return summary, rows, outcomes, chunks, public_id
+
+    @staticmethod
+    def write_layout(base, projected, at):
+        """Write ordinary v1 assets; validation is the unchanged real reader."""
+        summary, rows, outcomes, chunks, public_id = projected
+        def save(name, value):
+            raw = selection_publication.canonical(value) + b"\n"
+            selection_publication._create_file(base / public_id / name, raw)
+            return {"path": public_id + "/" + name, "sha256": hashlib.sha256(raw).hexdigest()}
+        descriptors = [dict(save(f"rows-{index:04d}.json", {
+            "schema_version": selection_publication.ROWS_VERSION,
+            "report_id": public_id, "rows": chunk}), count=len(chunk))
+            for index, chunk in enumerate(chunks)]
+        pointer = {"schema_version": selection_publication.POINTER_VERSION,
+                   "report_id": public_id, "generated_at": stamp(at), "row_count": len(rows),
+                   "summary": save("summary.json", dict(summary, report_id=public_id)),
+                   "rows": descriptors,
+                   "outcomes": save("outcomes.json", {
+                       "schema_version": selection_publication.OUTCOMES_VERSION,
+                       "report_id": public_id, "outcomes": outcomes})}
+        validate_publication(base, pointer)
+        return pointer
+
+    def test_logical_layout_is_deterministic_and_v1_memberships_are_equivalent(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as analysis:
+            root = Path(directory)
+            report = self.locality_report(root, Path(analysis))
+            kwargs = {"source_sha": "1" * 40, "input_digest": "2" * 64}
+            grouped = selection_publication._projection(report, **kwargs)
+            for permutation in (list(reversed(report["rows"])), report["rows"][237:] + report["rows"][:237]):
+                permuted = dict(report, rows=permutation, summary=summarize(permutation))
+                self.assertEqual(selection_publication._projection(permuted, **kwargs), grouped)
+            legacy = self.legacy_layout(grouped)
+            summary, rows, outcomes, chunks, public_id = grouped
+            self.assertEqual(len(rows), 800)
+            self.assertEqual([len(chunk) for chunk in chunks], [250, 250, 250, 50])
+            self.assertNotEqual([row["decision_sha256"] for row in rows],
+                                [row["decision_sha256"] for row in legacy[1]])
+            self.assertNotEqual(public_id, legacy[4])
+            self.assertEqual({row["decision_sha256"]: row for row in rows},
+                             {row["decision_sha256"]: row for row in legacy[1]})
+            self.assertTrue(any(row["engine_sha256"] is None for row in rows))
+            self.assertTrue(any(row["side"] is None for row in rows))
+            source_by_id = {row["decision_sha256"]: row for row in report["rows"]}
+            for row in rows:
+                self.assertEqual(row, {key: value for key, value in source_by_id[row["decision_sha256"]].items()
+                                       if key in selection_publication.ROW_FIELDS})
+            self.assertEqual(outcomes, legacy[2])
+            old_tables = {table["summary_id"]: table for table in legacy[0]["summary"]["tables"]}
+            physical = {"row_positions", "row_chunks", "row_ids_sha256"}
+            for table in summary["summary"]["tables"]:
+                old = old_tables[table["summary_id"]]
+                self.assertEqual({key: value for key, value in table.items() if key not in physical},
+                                 {key: value for key, value in old.items() if key not in physical})
+                expected = {legacy[1][position]["decision_sha256"] for position in old["row_positions"]}
+                retrieved = [rows[position] for position in table["row_positions"]]
+                self.assertEqual({row["decision_sha256"] for row in retrieved}, expected)
+                self.assertEqual(digest([row["decision_sha256"] for row in retrieved]), table["row_ids_sha256"])
+                self.assertEqual(table["row_chunks"], sorted({position // 250 for position in table["row_positions"]}))
+                # Read precisely the declared chunks, as the browser does; then
+                # select positions. Physical order cannot change a group grade.
+                loaded = {chunk_id * 250 + offset: row
+                          for chunk_id in table["row_chunks"]
+                          for offset, row in enumerate(chunks[chunk_id])}
+                self.assertEqual([loaded[position] for position in table["row_positions"]], retrieved)
+                self.assertLessEqual(len(table["row_chunks"]), 4)
+            base = root / "fictional-layout-assets"
+            old_pointer = self.write_layout(base, legacy, self.AT)
+            old_bytes = {path: path.read_bytes() for path in (base / legacy[4]).glob("*.json")}
+            new_pointer = self.write_layout(base, grouped, self.AT)
+            validate_publication(base, old_pointer)
+            validate_publication(base, new_pointer)
+            self.assertTrue(all(path.read_bytes() == raw for path, raw in old_bytes.items()))
+
+    def test_real_publisher_retains_legacy_assets_and_pointer_when_advancing_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.run_live(root)
+            actual_projection = selection_publication._projection
+            def legacy_projection(*args, **kwargs):
+                return self.legacy_layout(actual_projection(*args, **kwargs))
+            with patch.object(selection_publication, "_projection", side_effect=legacy_projection):
+                publish_selection_report(root, self.AT, source_sha="1" * 40)
+            base = root / "output/data/selection-grading"
+            old_pointer = load_json(base / "latest.json")
+            old_bytes = {path: path.read_bytes() for path in (base / old_pointer["report_id"]).glob("*.json")}
+            _, _, old_rows, old_outcomes = self.assets(root)
+            publish_selection_report(root, self.AT, source_sha="1" * 40)
+            pointer, _, rows, outcomes = self.assets(root)
+            self.assertNotEqual(pointer["report_id"], old_pointer["report_id"])
+            self.assertEqual({row["decision_sha256"]: row for row in rows},
+                             {row["decision_sha256"]: row for row in old_rows})
+            self.assertEqual(outcomes, old_outcomes)
+            self.assertTrue(all(path.read_bytes() == raw for path, raw in old_bytes.items()))
+            validate_publication(base, old_pointer)
+
+    def test_representative_groups_have_exact_bounded_logical_chunk_requests(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as analysis:
+            root = Path(directory)
+            report = self.locality_report(root, Path(analysis))
+            template = report["rows"][0]
+            rows = []
+            for checkpoint in ("history", "24h"):
+                for category in ("rec", "rush_att", "pass_yd"):
+                    for index in range(100):
+                        side = "over" if index % 2 else "under"
+                        win = index % 3 != 0
+                        top = index < 12
+                        row = dict(template, player_id=f"fictional-bounded-{checkpoint}-{category}-{index}",
+                                   season=2026, week=6, provenance_class="local_pregame_membership_observation",
+                                   model_version="original_sleeper_matchup_baseline", engine_sha256=digest({"fictional_engine": 1}),
+                                   cohort="all_qualifying_leans", checkpoint=checkpoint, category=category,
+                                   action="SELECT", reason="recorded_membership", side=side, line=4.5,
+                                   result="win" if win else "loss", actual=6 if (side == "over") == win else 3,
+                                   top_at_decision=top, top_over=top and side == "over", top_under=top and side == "under")
+                        row.pop("decision_sha256")
+                        row["decision_sha256"] = digest(row)
+                        rows.append(row)
+            report.update(rows=rows, summary=summarize(rows))
+            grouped = selection_publication._projection(report, source_sha="1" * 40, input_digest="2" * 64)
+            legacy = self.legacy_layout(grouped)
+            old = {table["summary_id"]: table for table in legacy[0]["summary"]["tables"]}
+            self.assertEqual([len(chunk) for chunk in grouped[3]], [250, 250, 100])
+            dimensions, improved = set(), 0
+            for table in grouped[0]["summary"]["tables"]:
+                if (table["view"] != "all_qualifying_leans" or table["period"] != "2026-w06"
+                        or table["dimension"] not in ("overall", "category", "side", "checkpoint")):
+                    continue
+                dimensions.add(table["dimension"])
+                self.assertLessEqual(len(table["row_chunks"]), 2)
+                improved += len(table["row_chunks"]) < len(old[table["summary_id"]]["row_chunks"])
+                loaded = {chunk_id * 250 + offset: row
+                          for chunk_id in table["row_chunks"]
+                          for offset, row in enumerate(grouped[3][chunk_id])}
+                retrieved = [loaded[position] for position in table["row_positions"]]
+                self.assertEqual(len(retrieved), table["rows"])
+                self.assertEqual({row["decision_sha256"] for row in retrieved},
+                                 {legacy[1][position]["decision_sha256"]
+                                  for position in old[table["summary_id"]]["row_positions"]})
+                self.assertEqual(digest([row["decision_sha256"] for row in retrieved]), table["row_ids_sha256"])
+            self.assertEqual(dimensions, {"overall", "category", "side", "checkpoint"})
+            self.assertGreater(improved, 0)
+
 
 class CandidateRecordingPipelineTests(unittest.TestCase):
     """Fictional native-file updater integration; no live collection or release."""
