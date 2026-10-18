@@ -7,15 +7,15 @@
   "partial_week": {
     "plan": {
       "schema_version": "partial-week-cutover-plan-v1",
-      "plan_id": "NFL-WEB-W06-PARTIAL-PLAN-20261018-131818Z",
-      "plan_prepared_at": "2026-10-18T13:50:07.746131Z",
-      "effective_not_before": "2026-10-18T13:50:07.746131Z",
+      "plan_id": "NFL-WEB-W06-PARTIAL-AMENDMENT-20261018-182356Z",
+      "plan_prepared_at": "2026-10-18T18:23:54.485969Z",
+      "effective_not_before": "2026-10-18T18:23:54.485969Z",
       "authorization_status": "PROPOSED_NOT_REGISTERED_OR_ACTIVATED",
       "season": 2026,
       "week": 6,
       "validator_contract": "partial-week-input-reproduction-v1",
-      "source_start": "5d4e6458ad2fc4028f46ff96bd5466926de94dee",
-      "initial_data_pin": "885e165e41b9cc0c34b68c1cf57888443505cd7e",
+      "source_start": "755eef83e4303f5ded77e3b4a564eedc2febf2f6",
+      "initial_data_pin": "66a37e454eff4cd10e3b7a4f408a8c49c8a509de",
       "engine_files": {
         "pull/build.py": "75bf99c55b5f2561a60a120c82db368ad3b996a8a64e9ab08828b586a9314419",
         "pull/matchup.py": "15b1739b203e1757b0ebaefa3a6994034d56bb4a92a9e07572527ef1a90e914c",
@@ -25,9 +25,9 @@
         "pull/sources.py": "36555cdbc55d73ba632d5adae1130288f4f532073857c642ac3ebc7e626b0061",
         "pull/news.py": "17ce1b3b6b72694e6b543bd767e287c26a9d1f6dd5dba2de6c873543036842e9"
       },
-      "initial_complete_board_sha256": "4f2459cc44ab82ffb61a069e3b4180e6139d720ed140b85c457b6601f9e91afd",
-      "schedule_status_payload_sha256": "b7a81623f27df96a5f0347303c6c38a3669081b253cc032f9ffb9540ca32a91a",
-      "schedule_status_observed_at": "2026-10-18T12:29:42.586848Z",
+      "initial_complete_board_sha256": "38d365d668561aab21511ea3efd8b9ea6dce1c2d4d4a614eb896f60cf66b5c04",
+      "schedule_status_payload_sha256": "b011e93416895e71b30478a2624c85e7ebb65b80912d8ec0e9425170b032c2b1",
+      "schedule_status_observed_at": "2026-10-18T18:23:54.474780Z",
       "schedule_status_use": "FIXED_SCHEDULE_BASELINE_NOT_A_FRESH_OPERATIONAL_ELIGIBILITY_CHECK",
       "games": [
         {
@@ -118,16 +118,57 @@
       "legacy_exemptions": [
         {
           "game_id": "401872995",
-          "reason": "already_frozen_SEA_DEN_original_origin_missing",
+          "reason": "already_started_at_fixed_cutover;no_matching_qualifying_original_pregame_model_inputs_or_completed_bundle_retained",
           "forecast_contract_sha256": "49d9e33f8b6c87018e3a39f8f3552f81080005408c4f16fc2b07febfc6f8eae6",
           "exemption": "retain_unverified_never_new_pregame_or_complete_week_qualified"
         },
         {
           "game_id": "401872996",
-          "reason": "saved_kickoff_elapsed_before_this_proposed_cutover;current_saved_contract_differs_from_12_29_original",
+          "reason": "already_started_at_fixed_cutover;no_matching_qualifying_original_pregame_model_inputs_or_completed_bundle_retained",
           "forecast_contract_sha256": "82db3d0d9af2378f2d0b010273c1ebbd81ee35c754f21f0b583e4a2f0ff07017",
-          "status_limit": "saved_board_state_pre_is_not_a_current_status;fresh_operational_status_must_confirm_started_or_fail",
-          "exemption": "EXPLICIT_OWNER_PROPOSED_ONLY;retain_current_frozen_unverified;not_a_dynamic_runtime_addition"
+          "exemption": "retain_unverified_never_new_pregame_or_complete_week_qualified"
+        },
+        {
+          "game_id": "401872997",
+          "reason": "already_started_at_fixed_cutover;no_matching_qualifying_original_pregame_model_inputs_or_completed_bundle_retained",
+          "forecast_contract_sha256": "67718ad1f846f15dc6d6eaa84319dea488a31d339b0ef8674f872ef08b488401",
+          "exemption": "retain_unverified_never_new_pregame_or_complete_week_qualified"
+        },
+        {
+          "game_id": "401872998",
+          "reason": "already_started_at_fixed_cutover;no_matching_qualifying_original_pregame_model_inputs_or_completed_bundle_retained",
+          "forecast_contract_sha256": "2a381de98109a54753a61f5d87caac38ee46d4f3bce1b0d923c9152edc71b101",
+          "exemption": "retain_unverified_never_new_pregame_or_complete_week_qualified"
+        },
+        {
+          "game_id": "401872999",
+          "reason": "already_started_at_fixed_cutover;no_matching_qualifying_original_pregame_model_inputs_or_completed_bundle_retained",
+          "forecast_contract_sha256": "fbbb2fd7f4948396c03d1b85cc0d7e1e84cb68973ba7480ce7d99ee2fad32fad",
+          "exemption": "retain_unverified_never_new_pregame_or_complete_week_qualified"
+        },
+        {
+          "game_id": "401873000",
+          "reason": "already_started_at_fixed_cutover;no_matching_qualifying_original_pregame_model_inputs_or_completed_bundle_retained",
+          "forecast_contract_sha256": "9059ec7f8829d2ed6b374b6db42baa478d1d58fba090d0ce4faa7a7202a96d15",
+          "exemption": "retain_unverified_never_new_pregame_or_complete_week_qualified"
+        },
+        {
+          "game_id": "401873001",
+          "reason": "already_started_at_fixed_cutover;no_matching_qualifying_original_pregame_model_inputs_or_completed_bundle_retained",
+          "forecast_contract_sha256": "f9a2e99bf1f872ea3054b8cabe9856f51069a86219eef9907e0b8320e1ad3883",
+          "exemption": "retain_unverified_never_new_pregame_or_complete_week_qualified"
+        },
+        {
+          "game_id": "401873002",
+          "reason": "already_started_at_fixed_cutover;no_matching_qualifying_original_pregame_model_inputs_or_completed_bundle_retained",
+          "forecast_contract_sha256": "7d5654ac2df385c31dc5c7d3ffe4c9b57406c1de72dfa88f27502e4d630a4ca6",
+          "exemption": "retain_unverified_never_new_pregame_or_complete_week_qualified"
+        },
+        {
+          "game_id": "401873003",
+          "reason": "already_started_at_fixed_cutover;no_matching_qualifying_original_pregame_model_inputs_or_completed_bundle_retained",
+          "forecast_contract_sha256": "66ac35ada9e50f62e5102c8913b7b39cc6cbdd3dc2f4994582f7f6a90e44ff8a",
+          "exemption": "retain_unverified_never_new_pregame_or_complete_week_qualified"
         }
       ],
       "nonexempt_rule": "matching_original_inputs_for_all_frozen_games_and_current_verified_inputs_for_all_new_eligible_games_or_fail",
@@ -142,9 +183,9 @@
       "experimental_recording_enabled": false,
       "old_prototype_certificate": "preserved_not_accepted_by_final_schema;independent_revalidation_needs_new_version_clock_result_identity"
     },
-    "plan_sha256": "d1d2b076a9be544b16d29d333f895ab2336892a6d9c16539c6671eb5cfd19024",
+    "plan_sha256": "fbd74ed0809e178481492517f0fbf3d15f2ef0b2a679ca9f519d011873cefbfe",
     "validator_sha256": "5dbcf1a9244b04be4fd0c15f09e15f377884af806796274e07608bb1745d1083",
-    "owner_authorization": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6251535619",
+    "owner_authorization": "NFL-WEB-W06-PARTIAL-AMENDMENT-20261018-182356Z-OWNER-APPROVAL-REQUIRED",
     "source_stage1": "88af48046126cf298307f63105f101b9ec13305e"
   }
 }
