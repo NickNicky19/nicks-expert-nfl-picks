@@ -963,12 +963,24 @@ function catCard(p, raw) {
   </div>`;
 }
 
+function displayedProps(p) {
+  const props = p.props.filter((x) => !S.f.cat || x.key === S.f.cat);
+  if (S.tab !== "props" || S.gameView || S.f.sort !== "edge") return props;
+  // Presentation only: mirror the existing Biggest lean score, retaining saved props.
+  return props.map((prop, index) => ({ prop, index,
+    eligible: !!(prop.lean && prop.adj != null),
+    score: Math.abs(prop.adj - prop.line) / Math.max(1, prop.line),
+  })).sort((a, b) => Number(b.eligible) - Number(a.eligible)
+    || (a.eligible ? b.score - a.score : 0) || a.index - b.index)
+    .map((item) => item.prop);
+}
+
 function playerCard(p) {
   const open = S.open.has(p.id);
   const g = S.games[p.game_id];
   const live = livePPR(p);
   const c = current(p);
-  const props = p.props.filter((x) => !S.f.cat || x.key === S.f.cat);
+  const props = displayedProps(p);
   const out = UNAVAILABLE.has(injOf(p).status);
   return `<div class="player ${out ? "out" : ""} ${isMine(p.id) ? "is-mine" : ""}" data-player="${p.id}">
     <div class="phead" data-toggle="${p.id}">
@@ -4402,7 +4414,7 @@ function renderLiveParts() {
     // Don't redraw while someone is typing; just refresh the numbers that don't hold focus
     document.querySelectorAll("[data-chips]").forEach((el) => {
       const p = S.byId[el.dataset.chips];
-      el.innerHTML = p.props.filter((x) => !S.f.cat || x.key === S.f.cat).map((x) => propChip(p, x)).join("");
+      el.innerHTML = displayedProps(p).map((x) => propChip(p, x)).join("");
     });
     return;
   }
@@ -4740,7 +4752,7 @@ document.addEventListener("input", (e) => {
     const p = S.byId[pid];
     const pos = t.selectionStart;
     $(`[data-cat="${CSS.escape(t.dataset.line)}"]`).outerHTML = catCard(p, p.props.find((x) => x.key === key));
-    $(`[data-chips="${pid}"]`).innerHTML = p.props.filter((x) => !S.f.cat || x.key === S.f.cat).map((x) => propChip(p, x)).join("");
+    $(`[data-chips="${pid}"]`).innerHTML = displayedProps(p).map((x) => propChip(p, x)).join("");
     const box = $(`[data-line="${CSS.escape(t.dataset.line)}"]`);
     box.focus();
     try { box.setSelectionRange(pos, pos); } catch { /* number inputs don't support selection */ }
