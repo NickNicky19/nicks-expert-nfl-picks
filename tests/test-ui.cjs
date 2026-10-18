@@ -172,3 +172,50 @@ const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8')
   });
   console.log('Biggest-lean presentation: ' + checks + ' focused preservation checks passed.');
 }
+
+// Versioned reporting uses one full context for headlines and category cells.
+{
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8');
+  const code = source.slice(source.indexOf('const GRADING_LABELS ='), source.indexOf('function gradingRowsHtml'));
+  const base = { provenance_class: 'local_pregame_membership_observation', model_version: 'original', engine_sha256: 'a'.repeat(64),
+    policy_version: 'policy-v1', policy_sha256: 'b'.repeat(64), view: 'all_qualifying_leans', checkpoint: 'history', period: 'cumulative',
+    line_source_scope: 'all', win: 2, loss: 1, push: 1, dnp: 1, pending: 2, unresolved: 1, excluded: 0, no_action: 1, not_due: 0,
+    decided: 3, rows: 9, unique_players: 3, unique_games: 2, unique_weeks: 1 };
+  const tables = [];
+  for (const policy of ['b', 'c']) for (const source of ['all', 'dk', 'sleeper']) for (const period of ['cumulative', '2026-w06']) {
+    for (const [dimension, value] of [['overall', 'all'], ['category', 'rec'], ['category_side', 'rec:over'], ['category_side', 'rec:under']]) {
+      tables.push({ ...base, policy_sha256: policy.repeat(64), period, line_source_scope: source, dimension, value,
+        summary_id: [policy, source, period, dimension, value].join('|') });
+    }
+  }
+  const S = { gradingFilters: {}, grading: { summary: { schema_version: 'selection-public-report-v2', summary: { tables } } },
+    data: { categories: { rec: { label: 'Receptions', lean: true }, fpts: { label: 'PPR', lean: true } } } };
+  const context = { S, SHORT: {}, esc: x => String(x ?? ''), fmt: n => n.toFixed(1) };
+  vm.createContext(context); vm.runInContext(code + '\nthis.helpers={selectedGradingTables,selectionPerformanceHtml};', context);
+  const ui = context.helpers;
+  let selected = ui.selectedGradingTables();
+  assert.equal(selected.baseTables.length, 4);
+  assert.ok(selected.baseTables.every(t => t.policy_sha256 === 'b'.repeat(64) && t.line_source_scope === 'all' && t.period === 'cumulative'));
+  let html = ui.selectionPerformanceHtml(selected.baseTables);
+  assert.match(html, /Recorded selection performance/); assert.match(html, /2–1/); assert.match(html, /66\.7%/);
+  assert.doesNotMatch(html, /data-category-performance="fpts"/);
+  for (const [field, value] of [['policy_sha256', 'c'.repeat(64)], ['line_source_scope', 'dk'], ['period', '2026-w06']]) S.gradingFilters[field] = value;
+  S.gradingFilters.dimension = 'selection_weekday';
+  selected = ui.selectedGradingTables();
+  assert.equal(S.gradingFilters.dimension, 'overall', 'unavailable source-specific day view resets truthfully');
+  assert.ok(selected.baseTables.every(t => t.policy_sha256 === 'c'.repeat(64) && t.line_source_scope === 'dk' && t.period === '2026-w06'));
+  html = ui.selectionPerformanceHtml(selected.baseTables.map(t => ({ ...t, win: 0, loss: 0, decided: 0 })));
+  assert.match(html, /Unavailable/); assert.doesNotMatch(html, />0\.0%/);
+  assert.match(html, /pending/); assert.match(html, /confirmed DNP/); assert.match(html, /no-side coverage/);
+  assert.match(html, /Our selections by line source/);
+  const legacy = tables.filter(t => t.policy_sha256 === 'b'.repeat(64) && t.line_source_scope === 'all').map(t => {
+    const row = { ...t }; delete row.policy_version; delete row.policy_sha256; delete row.line_source_scope; return row;
+  });
+  S.grading.summary = { schema_version: 'selection-public-report-v1', summary: { tables: legacy } };
+  selected = ui.selectedGradingTables();
+  assert.match(selected.controls, /Legacy aggregate — policy not separated/);
+  assert.equal(S.gradingFilters.line_source_scope, 'all');
+  assert.match(ui.selectionPerformanceHtml(selected.baseTables), /Legacy aggregates/);
+  console.log('Report context and category presentation: 17 focused assertions passed.');
+}

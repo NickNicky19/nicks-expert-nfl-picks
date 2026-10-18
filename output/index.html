@@ -20,6 +20,26 @@
 #selection-grading td { white-space:normal; overflow-wrap:anywhere; max-width:360px; }
 #selection-grading details p { font-size:12px; }
 @media(max-width:560px) { #selection-grading .grading-filters label { width:100%; } }
+
+/* Recorded category/side results; responsive display only. */
+#selection-grading .card, #selection-grading .grading-filters { min-width:0; max-width:100%; }
+#selection-grading .grading-filters label { min-width:0; }
+#selection-grading .grading-filters select { width:100%; text-overflow:ellipsis; }
+#selection-grading .note, #selection-grading code { overflow-wrap:anywhere; }
+#selection-grading .tbl-wrap { max-width:100%; }
+#selection-grading [data-grading-details] button { max-width:100%; white-space:normal; }
+#selection-grading .performance-desktop { min-width:0; width:100%; table-layout:fixed; }
+#selection-grading .performance-desktop th { white-space:normal; }
+#selection-grading .performance-desktop td { vertical-align:top; }
+#selection-grading .performance-phone { display:none; }
+#selection-grading [data-performance-primary] .tbtn { white-space:normal; }
+#selection-grading [data-performance-primary] small { display:block; }
+.performance-side { display:grid; grid-template-columns:90px minmax(0,1fr); gap:8px; padding:10px 0; }
+@media(max-width:560px) {
+ #selection-grading .performance-desktop { display:none; }
+ #selection-grading .performance-phone { display:block; }
+ #selection-grading [data-performance-primary] .card { min-width:0; }
+}
 </style>
 </head>
 <body>
@@ -69,6 +89,6 @@
   Data: Sleeper (projections, stats, injuries, Picks lines) and ESPN (DraftKings lines, live scores, play-by-play).
 </footer>
 <script src="reliability-ui.js?v=1"></script>
-<script src="app.js?v=52"></script>
+<script src="app.js?v=53"></script>
 </body>
 </html>

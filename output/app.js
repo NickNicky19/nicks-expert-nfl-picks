@@ -94,6 +94,14 @@ async function getJSON(url) {
   return r.json();
 }
 
+async function boundJSON(url) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error("Unavailable generation asset");
+  const bytes = await response.arrayBuffer();
+  const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(value => value.toString(16).padStart(2, "0")).join("");
+  return { value: JSON.parse(new TextDecoder().decode(bytes)), hash };
+}
+
 function normName(name) {
   return name.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
     .replace(/[.'’,]/g, "").replace(/\b(jr|sr|ii|iii|iv|v)\b/g, "").replace(/\s+/g, " ").trim();
@@ -175,10 +183,17 @@ async function loadGrading() {
     if (pointer.rows.slice(0, -1).some((chunk) => chunk.count !== 250)
         || !Number.isInteger(pointer.row_count) || pointer.row_count !== pointer.rows.reduce((n, chunk) => n + chunk.count, 0)) throw new Error("Invalid grading row population");
     const [summary, finals] = await Promise.all([checkedGradingAsset(pointer, pointer.summary, "summary"), checkedGradingAsset(pointer, pointer.outcomes, "outcomes")]);
-    if (summary.schema_version !== "selection-public-report-v1" || summary.report_schema_version !== "selection-report-v2" || !Array.isArray(summary.summary?.tables)
+    const supported = (summary.schema_version === "selection-public-report-v1" && summary.report_schema_version === "selection-report-v2")
+      || (summary.schema_version === "selection-public-report-v2" && summary.report_schema_version === "selection-report-v3");
+    if (!supported || !Array.isArray(summary.summary?.tables)
         || finals.schema_version !== "selection-final-outcomes-v1" || !Array.isArray(finals.outcomes)) throw new Error("Unsupported grading data schema");
     const tableIds = new Set();
     for (const table of summary.summary.tables) {
+      if (summary.schema_version === "selection-public-report-v2" &&
+          (!Object.hasOwn(table, "policy_version") || !Object.hasOwn(table, "policy_sha256")
+            || typeof table.policy_version !== "string" || !table.policy_version.trim() || !HASH64.test(table.policy_sha256)
+            || !["all", "dk", "sleeper", "ours", "unknown"].includes(table.line_source_scope)
+            || table.line_source_scope !== "all" && !["overall", "category", "category_side"].includes(table.dimension))) throw new Error("Invalid grading policy/source context");
       if (!HASH64.test(table.summary_id) || tableIds.has(table.summary_id) || !Array.isArray(table.row_positions)
           || table.row_positions.length !== table.rows || new Set(table.row_positions).size !== table.rows || !HASH64.test(table.row_ids_sha256)
           || table.row_positions.some((i) => !Number.isInteger(i) || i < 0 || i >= pointer.row_count)
@@ -696,13 +711,31 @@ async function checkMeta() {
 // ---------------------------------------------------------------- load
 
 async function load() {
-  S.data = await getJSON(`data/week.json?t=${Date.now()}`);
+  const board = await boundJSON(`data/week.json?t=${Date.now()}`);
+  S.data = board.value;
   S.rosKey = null; S.gradeKey = null;
   S.future = null; S.futureLoading = null; S.ideas = null; S.teamWeeksMap = null; S.teamOppsMap = null;
   S.generatedAt = S.data.generated_at;
   try { S.track = await getJSON(`data/track_record.json?t=${Date.now()}`); } catch { S.track = null; }
   try { S.dk = await getJSON(`data/dk_backtest.json?t=${Date.now()}`); } catch { S.dk = null; }
   try { S.forecastScorecard = await getJSON(`data/forecast-scorecard.json?t=${Date.now()}`); } catch { S.forecastScorecard = null; }
+  S.verificationScope = null; let verifiedGeneration = null;
+  try {
+    const [savedScope, savedGeneration, savedHealth] = await Promise.all(["verification-scope", "release-identity", "health"].map(name => boundJSON(`data/${name}.json?t=${Date.now()}`)));
+    const scope = savedScope.value, generation = savedGeneration.value, health = savedHealth.value;
+    if (generation.schema_version === "website-generation-v1" && health.generation_sha256 === generation.generation_sha256
+        && health.board_sha256 === generation.board_sha256 && scope.output_sha256 === generation.board_sha256
+        && health.source_sha === generation.source_sha && HASH64.test(generation.generation_sha256)
+        && generation.bindings?.["data/week.json"] === board.hash
+        && generation.bindings?.["data/verification-scope.json"] === savedScope.hash
+        && ["partial-week-public-scope-v1", "strict-full-board-public-scope-v1"].includes(scope.schema_version)
+        && (scope.schema_version !== "partial-week-public-scope-v1" || (scope.full_board_verified === false
+          && scope.complete_week_qualified === false && Array.isArray(scope.games)
+          && new Set(scope.games.map(game => game.game_id)).size === scope.games.length
+          && scope.games.every(game => typeof game.game_id === "string" && typeof game.home === "string" && typeof game.away === "string"
+            && Number.isFinite(Date.parse(game.kickoff)) && ["new_pregame_original_inputs_verified", "frozen_original_inputs_verified",
+              "retained_legacy_original_proof_missing"].includes(game.classification))))) verifiedGeneration = { scope, generation };
+  } catch { /* Legacy, unavailable or mixed generation: no verification claim. */ }
   S.byId = {};
   S.byKey = {};
   S.byEspn = {};
@@ -713,6 +746,8 @@ async function load() {
   }
   for (const g of S.data.games) S.games[g.id] = { ...g, ...(S.games[g.id] || {}) };
   await loadGrading();
+  if (verifiedGeneration && S.grading?.pointer.report_id === verifiedGeneration.generation.selection_report_id
+      && S.grading?.summary.source_sha === verifiedGeneration.generation.source_sha) S.verificationScope = verifiedGeneration.scope;
   const built = new Date(S.data.generated_at);
   updateSub();
 }
@@ -2702,23 +2737,24 @@ function pctText(t) {
 
 function dkSection(c) {
   const b = S.dk;
+  const benchmarkRate = value => value == null ? "Unavailable" : fmt(value) + "%";
   const dl = c.dk_leans || {};
   const leanStat = (side) => `<div class="card stat"><div class="k">Leans ${side} the real line</div><div class="v">${pctText(dl[side])}</div><div class="d">${dl[side] ? `${dl[side].hit}-${dl[side].miss}` : "0-0"}, DraftKings or Sleeper Picks lines</div></div>`;
   return `<h2>Against real lines</h2>
     <div class="stats">${leanStat("over")}${leanStat("under")}</div>
     ${b ? `<h2>Historical season-average benchmark vs DraftKings <small>${b.season} weeks ${b.weeks[0]}-${b.weeks[b.weeks.length - 1]}, ${b.props.toLocaleString()} props</small></h2>
     <div class="stats">
-      ${b.our_side != null ? `<div class="card stat"><div class="k">When we disagreed with DraftKings</div><div class="v">${fmt(b.our_side)}%</div><div class="d">of the time the result landed on our side (${b.our_side_n.toLocaleString()} props; 50% is a coin flip)</div></div>` : ""}
-      <div class="card stat"><div class="k">DraftKings closer to the result</div><div class="v">${fmt(b.dk_closer)}%</div><div class="d">vs the matchup-adjusted season average</div></div>
-      <div class="card stat"><div class="k">Unders at DraftKings' line</div><div class="v">${fmt(b.dk_under)}%</div><div class="d">a fair line would be 50%</div></div>
-      <div class="card stat"><div class="k">Ours well below DK: under hit</div><div class="v">${fmt(b.below_under)}%</div><div class="d">${b.below_n} props</div></div>
-      <div class="card stat"><div class="k">Ours well above DK: over hit</div><div class="v">${fmt(b.above_over)}%</div><div class="d">${b.above_n} props</div></div>
+      ${b.our_side != null ? `<div class="card stat"><div class="k">When the historical benchmark differed from DraftKings</div><div class="v">${fmt(b.our_side)}%</div><div class="d">of the time the result landed on our side (${b.our_side_n.toLocaleString()} props; reconstructed benchmark, not saved model selections)</div></div>` : ""}
+      <div class="card stat"><div class="k">DraftKings closer to the result</div><div class="v">${benchmarkRate(b.dk_closer)}</div><div class="d">vs the matchup-adjusted season average</div></div>
+      <div class="card stat"><div class="k">Unders at DraftKings' line</div><div class="v">${benchmarkRate(b.dk_under)}</div><div class="d">actual finished below DK; not a model under recommendation</div></div>
+      <div class="card stat"><div class="k">Benchmark sufficiently below DK: under hit</div><div class="v">${benchmarkRate(b.below_under)}</div><div class="d">${b.below_n} props</div></div>
+      <div class="card stat"><div class="k">Benchmark sufficiently above DK: over hit</div><div class="v">${benchmarkRate(b.above_over)}</div><div class="d">${b.above_n} props</div></div>
     </div>
     <div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th class="l">Category</th><th>Props</th><th>Ours minus DK</th><th>Unders at DK</th><th>DK closer</th></tr></thead>
-      <tbody>${b.categories.filter((x) => x.dk_under != null).map((x) => `<tr><td class="l">${S.data.categories[x.key].label}</td><td>${x.n}</td><td>${x.gap > 0 ? "+" : ""}${fmt(x.gap)}</td><td>${fmt(x.dk_under)}%</td><td>${x.dk_closer != null ? fmt(x.dk_closer) + "%" : "-"}</td></tr>`).join("")}</tbody>
+      <thead><tr><th class="l">Category</th><th>Props</th><th>Benchmark minus DK</th><th>Actual below DK</th><th>DK closer</th><th>Benchmark above: Over / N</th><th>Benchmark below: Under / N</th></tr></thead>
+      <tbody>${b.categories.filter((x) => x.dk_under != null).map((x) => `<tr><td class="l">${S.data.categories[x.key].label}</td><td>${x.n}</td><td>${x.gap > 0 ? "+" : ""}${fmt(x.gap)}</td><td>${fmt(x.dk_under)}%</td><td>${x.dk_closer != null ? fmt(x.dk_closer) + "%" : "-"}</td><td>${x.above_over == null ? "Unavailable" : fmt(x.above_over) + "%"} · N ${x.above_n ?? "Unavailable"}</td><td>${x.below_under == null ? "Unavailable" : fmt(x.below_under) + "%"} · N ${x.below_n ?? "Unavailable"}</td></tr>`).join("")}</tbody>
     </table></div>
-    <p class="note">DraftKings' closing lines, via ESPN, for every finished game this season, compared with each player's average so far this season adjusted for the matchup, using only earlier games (tools/compare_lines.py). Players need 2+ earlier games, so week 1 and 2 have few props. Sleeper's projections can't be tested on past weeks (Sleeper revises them after the games), so this tests the matchup adjustment on its own.</p>` : ""}`;
+    <p class="note">DraftKings' closing lines, via ESPN, for every finished game this season, compared with each player's average so far this season adjusted for the matchup, using only earlier games (tools/compare_lines.py). Players need 2+ earlier games, so week 1 and 2 have few props. Sleeper's projections can't be tested on past weeks (Sleeper revises them after the games), this is a separate reconstructed season-average benchmark with its own large-gap definition, not the saved Sleeper-adjusted model-selection record. Saved rates are rounded and exact win/loss counts are unavailable; no financial return is established.</p>` : ""}`;
 }
 
 const GRADING_LABELS = {
@@ -2728,22 +2764,41 @@ const GRADING_LABELS = {
   inherited_or_unclocked_archive: "Inherited / unclocked history", history: "First recorded selection (descriptive)",
   overall: "Overall", category_side: "Category × side", selection_weekday: "Chicago selection weekday",
   kickoff_weekday: "Chicago kickoff weekday", lead_time_bucket: "Actual pregame lead time",
+  venue: "Our selections by line source", all: "All line sources", legacy_aggregate_not_separated: "Legacy aggregate — policy not separated",
   saved_cache_descriptive_regrade: "Saved-cache descriptive regrade", recorded_outcome_receipt: "Recorded outcome receipt",
 };
 const gradingLabel = (value) => value == null ? "Unknown / unavailable" : GRADING_LABELS[value] || SHORT[value] || String(value).replaceAll("_", " ");
+const gradingContextFields = ["provenance_class", "model_version", "engine_sha256", "policy_version", "policy_sha256", "view", "checkpoint", "period", "line_source_scope"];
+const gradingContextValue = (table, field) => table[field] ?? (field === "line_source_scope" ? "all" : "legacy_aggregate_not_separated");
 function selectedGradingTables() {
   let tables = S.grading.summary.summary.tables;
-  const fields = ["provenance_class", "model_version", "engine_sha256", "view", "checkpoint", "period", "dimension"];
-  const defaults = { provenance_class: "local_pregame_membership_observation", view: "all_qualifying_leans", checkpoint: "history", period: "cumulative", dimension: "overall" };
-  const controls = [];
-  const labels = { provenance_class: "Forecast provenance", model_version: "Model", engine_sha256: "Engine version", view: "Cohort", checkpoint: "Decision policy", period: "Reporting period", dimension: "Breakdown" };
+  const fields = [...gradingContextFields, "dimension"];
+  const defaults = { provenance_class: "local_pregame_membership_observation", view: "all_qualifying_leans", checkpoint: "history", period: "cumulative", line_source_scope: "all", dimension: "overall" };
+  const labels = { provenance_class: "Forecast provenance", model_version: "Model", engine_sha256: "Engine version", policy_version: "Timing policy version", policy_sha256: "Timing policy identity", view: "Cohort", checkpoint: "Decision checkpoint", period: "Reporting period", line_source_scope: "Line source", dimension: "Supporting breakdown" };
+  const controls = []; let baseTables = [];
   for (const field of fields) {
-    const values = [...new Set(tables.map((table) => table[field]))].sort((a, b) => String(a).localeCompare(String(b)));
+    const values = [...new Set(tables.map(table => gradingContextValue(table, field)))].sort((a,b) => String(a).localeCompare(String(b)));
     if (!values.includes(S.gradingFilters[field])) S.gradingFilters[field] = values.includes(defaults[field]) ? defaults[field] : values[0];
-    controls.push(`<label>${labels[field]}<select data-grading-filter="${field}" aria-label="${labels[field]}">${values.map((value) => `<option value="${esc(value)}" ${value === S.gradingFilters[field] ? "selected" : ""}>${esc(gradingLabel(value))}</option>`).join("")}</select></label>`);
-    tables = tables.filter((table) => table[field] === S.gradingFilters[field]);
+    controls.push(`<label>${labels[field]}<select data-grading-filter="${field}" aria-label="${labels[field]}">${values.map(value => `<option value="${esc(value)}" ${value === S.gradingFilters[field] ? "selected" : ""}>${esc(gradingLabel(value))}</option>`).join("")}</select></label>`);
+    if (field === "dimension") baseTables = tables;
+    tables = tables.filter(table => gradingContextValue(table, field) === S.gradingFilters[field]);
   }
-  return { tables, controls: controls.join("") };
+  return { tables, baseTables, controls: controls.join("") };
+}
+function selectionPerformanceHtml(baseTables) {
+  const one = (dimension,value) => { const matches=baseTables.filter(t=>t.dimension===dimension && t.value===value);return matches.length===1?matches[0]:null; };
+  const counts = t => t ? `${t.pending} pending · ${t.push} push · ${t.dnp} confirmed DNP · ${t.unresolved} unresolved · ${t.excluded} excluded · ${t.no_action} NO_ACTION · ${t.not_due} not due` : "No matching aggregate available";
+  const cell = (t,kind) => !t ? `<span data-performance-unavailable>Unavailable</span>` : `<button class="tbtn" data-grading-group="${t.summary_id}" data-performance-cell="${kind}" data-summary-id="${t.summary_id}"><b>${t.win}–${t.loss}</b> · ${t.decided ? fmt(100*t.win/t.decided)+"%" : "Unavailable"}<br><small>${t.decided} decided · W / (W + L)</small></button><details><summary>Other outcomes and coverage</summary><p>${esc(counts(t))}<br>${t.rows} coverage rows · ${t.unique_players} players · ${t.unique_games} games · ${t.unique_weeks} weeks</p></details>`;
+  const order=Object.entries(S.data.categories).filter(([key,info])=>info.lean && !["fpts","anytime_td"].includes(key)).map(([key])=>key);
+  const rows=order.map(key=>({key,label:S.data.categories[key].label,over:one("category_side",key+":over"),under:one("category_side",key+":under"),combined:one("category",key)}));
+  const total=one("overall","all");
+  const context=gradingContextFields.map(field=>gradingLabel(S.gradingFilters[field])).join(" · ");
+  const unclassified=r=>Math.max(0,(r.combined?.rows||0)-(r.over?.rows||0)-(r.under?.rows||0));
+  return `<section data-performance-primary><h3>Recorded selection performance</h3><p class="note" data-performance-context>${esc(context)}</p>
+    <div class="card" data-performance-headline>${cell(total,"overall")}</div>
+    <p class="note">Choose any W–L result to inspect its exact supporting rows. No decided sample means unavailable. Combined includes no-side coverage; it is not an independent sample of Over and Under. ${S.grading.summary.schema_version === "selection-public-report-v2" ? "Our selections by line source use matched joint decision groups. Source-specific day breakdowns are unavailable; choose All line sources for those views." : "Legacy aggregates do not separate timing policies or offer source jointly; only All line sources is available."}</p>
+    <table class="tbl performance-desktop"><thead><tr><th class="l">Category</th><th>Over W–L / hit rate / decided N</th><th>Under W–L / hit rate / decided N</th><th>Combined</th></tr></thead><tbody>${rows.map(r=>`<tr data-category-performance="${r.key}"><th class="l">${esc(r.label)}</th><td>${cell(r.over,"over")}</td><td>${cell(r.under,"under")}</td><td>${cell(r.combined,"combined")}<small>${unclassified(r)} no-side coverage rows</small></td></tr>`).join("")}</tbody></table>
+    <div class="performance-phone">${rows.map(r=>`<article class="card" data-category-performance="${r.key}"><h4>${esc(r.label)}</h4><div class="performance-side"><b>Over</b><div>${cell(r.over,"over")}</div></div><div class="performance-side"><b>Under</b><div>${cell(r.under,"under")}</div></div><div class="performance-side"><b>Combined</b><div>${cell(r.combined,"combined")}<small>${unclassified(r)} no-side coverage rows</small></div></div></article>`).join("")}</div></section>`;
 }
 function gradingRowsHtml(group) {
   if (group.error) return `<p role="alert">Rows unavailable: ${esc(group.error)}. No partial rows qualify as a reconciled report.</p>`;
@@ -2757,18 +2812,25 @@ function gradingRowsHtml(group) {
 function gradingReportHtml() {
   if (!S.grading) return `<section id="selection-grading"><h2>Selection and timing grading</h2><div class="card note" role="status">The integrated report is unavailable. ${esc(S.gradingError || "No approved publication has been loaded.")} Existing historical reporting below is separate; missing report assets do not establish zero outcomes or verified final participation.</div></section>`;
   const { pointer, summary } = S.grading;
-  const { tables, controls } = selectedGradingTables();
+  const { tables, baseTables, controls } = selectedGradingTables();
   const age = Date.now() - Date.parse(pointer.generated_at);
   const freshness = age < 0 ? "Generation clock is in the future; freshness unknown." : age > 2 * 3600000 ? "Stale report: no new generation clock is implied by loading these saved bytes." : "Saved report generation is recent; provider and quote freshness remain unverified.";
   const statusCounts = (table) => `${table.win} W · ${table.loss} L · ${table.push} push · ${table.dnp} confirmed DNP · ${table.pending} pending · ${table.unresolved} unresolved · ${table.excluded} excluded · ${table.no_action} NO_ACTION · ${table.not_due} not due`;
   const pointCategories = summary.primary_raw_vs_adjusted?.categories || {};
-  return `<section id="selection-grading"><h2>Selection and timing grading</h2>
-    <div class="card note"><b>Descriptive statistical results, not venue settlement or ROI.</b><p data-grading-freshness>${esc(freshness)} Generated ${esc(pointer.generated_at)}.</p><p>Top Picks overlap all leans. The disjoint non-Top view partitions the all-lean decision at its own original clock. Repeated checkpoint policies are related observations. Never add these tables as independent outcomes.</p><p>Whole-week intervals and confirmed subgroup advantages are unavailable unless their registered evidence requirements are met. These views do not identify the best weekday to consult the website.</p><p>Original Week 6 matchup proof remains missing. A new report does not authenticate that historical prediction artifact. Full offer coverage, quote freshness and complete venue contracts remain unestablished where the saved records do not prove them.</p></div>
+  const scope = S.verificationScope;
+  const verification = scope?.schema_version === "partial-week-public-scope-v1"
+    ? `Partial-week original-model-input reproduction only. ${scope.games.filter(game => game.classification === "new_pregame_original_inputs_verified").length} newly verified pregame games; ${scope.games.filter(game => game.classification === "frozen_original_inputs_verified").length} frozen games with retained originals; ${scope.games.filter(game => game.classification === "retained_legacy_original_proof_missing").length} retained legacy games with missing proof. Full-board and complete-week qualification: No. This does not establish provider projection authentication, quote freshness, executable offers or prediction accuracy.`
+    : scope ? "Strict original-model-input reproduction. Complete-week research qualification is separate; predictive accuracy and quote freshness are not established by this check."
+      : "Current prediction verification scope is unavailable or legacy. Saved individual grading remains descriptive; missing original proof has not passed.";
+  return `<section id="selection-grading"><h2>Selection and timing grading</h2><div class="card note" data-verification-scope>${esc(verification)}</div>
+    <div class="card note"><b>Descriptive statistical results, not venue settlement or ROI.</b><p data-grading-freshness>${esc(freshness)} Generated ${esc(pointer.generated_at)}.</p><p>Top Picks overlap all leans. The disjoint non-Top view partitions the all-lean decision at its own original clock. Repeated checkpoint policies are related observations. Never add these tables as independent outcomes.</p><p>Whole-week intervals and confirmed subgroup advantages are unavailable unless their registered evidence requirements are met. These views do not identify the best weekday to consult the website.</p><p>The original full-board Week 6 proof is incomplete. Game-level evidence must be read separately; this report does not authenticate missing historical inputs. Full offer coverage, quote freshness and complete venue contracts remain unestablished where the saved records do not prove them.</p></div>
     <div class="filters grading-filters">${controls}</div>
+    ${selectionPerformanceHtml(baseTables)}
+    <h3>Supporting breakdown</h3>
     <div class="tbl-wrap"><table class="tbl" data-grading-summaries><thead><tr><th class="l">Group</th><th>Hit rate</th><th>Sample</th><th class="l">Results and coverage</th><th>Rows</th></tr></thead><tbody>${tables.map((table) => `<tr data-grading-summary="${table.summary_id}"><td class="l">${esc(gradingLabel(table.value))}</td><td>${table.hit_rate == null ? "Unavailable" : fmt(100 * table.hit_rate) + "%"}<br><small>W / (W + L)</small></td><td>${table.decided} decided<br>${table.decided_unique_players} players · ${table.decided_unique_games} games · ${table.decided_unique_weeks} weeks</td><td class="l">${esc(statusCounts(table))}<br>${table.selected} selected / ${table.rows} coverage rows<br>${esc(Object.entries(table.coverage_reason_counts || {}).map(([reason, count]) => `${reason}: ${count}`).join(" · "))}<br>${table.unique_players} players · ${table.unique_games} games · ${table.unique_weeks} archived/observed weeks</td><td><button class="tbtn" data-grading-group="${table.summary_id}">Inspect ${table.rows} rows</button></td></tr>`).join("")}</tbody></table></div>
     <p class="note">NO_ACTION reasons remain in the rows: observed abstention or non-Top membership differs from missing/stale observations, absent source rows and an unknown universe. Reference-only records are not executable offers. Inherited clocks stay unknown; saved-cache regrades remain separately labelled outcomes.</p>
     ${S.gradingGroup ? `<div class="card" data-grading-details>${gradingRowsHtml(S.gradingGroup)}</div>` : ""}
-    <details class="card"><summary>Raw Sleeper versus unchanged adjusted point forecasts</summary><p>Same original observation and valid matched outcomes. Category-specific units; no mixed-unit accuracy claim. Descriptive comparisons do not prove improvement.</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Category</th><th>Matched n</th><th>Raw MAE / RMSE / bias</th><th>Adjusted MAE / RMSE / bias</th></tr></thead><tbody>${Object.entries(pointCategories).map(([key, item]) => { const raw = item.raw_sleeper || {}, adjusted = item.unchanged_clone || {}; return `<tr><td>${esc(SHORT[key] || key)}</td><td>${raw.n || 0}</td><td>${fmt(raw.mae, 3)} / ${fmt(raw.rmse, 3)} / ${fmt(raw.mean_error, 3)}</td><td>${fmt(adjusted.mae, 3)} / ${fmt(adjusted.rmse, 3)} / ${fmt(adjusted.mean_error, 3)}</td></tr>`; }).join("") || `<tr><td colspan="4">No matched point outcomes available.</td></tr>`}</tbody></table></div></details>
+    <details class="card"><summary>Raw Sleeper versus unchanged adjusted point forecasts</summary><p>Separate registered three-target comparison, independent of the selection filters above. Same original observation and valid matched outcomes. Category-specific units; no mixed-unit accuracy claim. Descriptive comparisons do not prove improvement. All-category numerical/PPR/TD evaluation remains local and opt-in.</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Category</th><th>Matched n</th><th>Raw MAE / RMSE / bias</th><th>Adjusted MAE / RMSE / bias</th></tr></thead><tbody>${Object.entries(pointCategories).map(([key, item]) => { const raw = item.raw_sleeper || {}, adjusted = item.unchanged_clone || {}; return `<tr><td>${esc(SHORT[key] || key)}</td><td>${raw.n || 0}</td><td>${fmt(raw.mae, 3)} / ${fmt(raw.rmse, 3)} / ${fmt(raw.mean_error, 3)}</td><td>${fmt(adjusted.mae, 3)} / ${fmt(adjusted.rmse, 3)} / ${fmt(adjusted.mean_error, 3)}</td></tr>`; }).join("") || `<tr><td colspan="4">No matched point outcomes available.</td></tr>`}</tbody></table></div></details>
     <details class="card"><summary>Coverage, limitations and report identity</summary><p>Report ${esc(pointer.report_id)} · ${esc(summary.report_schema_version)}. Source ${esc(summary.source_sha || "Unbound")}; generated input binding ${esc(summary.input_binding || "Unknown")}.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({ coverage: summary.coverage, limitations: summary.limitations, uncertainty: summary.uncertainty }, null, 2))}</pre></details></section>`;
 }
 async function loadGradingRows(id, more = false) {

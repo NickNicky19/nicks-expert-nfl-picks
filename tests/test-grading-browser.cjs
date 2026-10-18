@@ -28,7 +28,7 @@ function fictionalPublication() {
     game_id: 'fictional-game', team: 'AAA', category: cats[i % cats.length], side: i % 2 ? 'under' : 'over',
     line: 4, line_from: i % 2 ? 'sleeper' : 'dk', top_at_decision: i < 32,
     model_version: 'original_sleeper_matchup_baseline', engine_sha256: sha('fictional-engine'),
-    policy_version: 'phase2-timing-v1', checkpoint: 'history',
+    policy_version: 'phase2-timing-v1', policy_sha256: sha('fictional-policy'), checkpoint: 'history',
     provenance_class: 'local_pregame_membership_observation', recorded_selection_at: '2026-10-14T12:00:00Z',
     forecast_generated_at: '2026-10-14T11:59:00Z', collected_at: '2026-10-14T12:00:00Z',
     kickoff: '2026-10-15T00:15:00Z', selection_weekday: 'Wednesday', kickoff_weekday: 'Wednesday',
@@ -51,10 +51,11 @@ function fictionalPublication() {
     chunks.push({ ...put(`rows-${String(chunks.length).padStart(4, '0')}.json`, { schema_version: 'selection-public-rows-v1', report_id: reportId, rows: members }), count: members.length });
   }
   const location = new Map(rows.map((row, i) => [row.decision_sha256, Math.floor(i / 250)]));
-  function table(members, view, dimension, value) {
+  function table(members, view, dimension, value, source = 'all') {
     const counts = Object.fromEntries(statuses.map(status => [status, members.filter(row => row.result === status).length]));
     const decided = counts.win + counts.loss;
     const base = { provenance_class: 'local_pregame_membership_observation', model_version: 'original_sleeper_matchup_baseline', engine_sha256: sha('fictional-engine'),
+      policy_version: 'phase2-timing-v1', policy_sha256: sha('fictional-policy'), line_source_scope: source,
       view, checkpoint: 'history', period: 'cumulative', dimension, value, ...counts,
       rows: members.length, selected: members.filter(row => row.action === 'SELECT').length, decided,
       hit_rate: decided ? counts.win / decided : null, unique_players: members.length, unique_games: 1, unique_weeks: 1,
@@ -71,8 +72,16 @@ function fictionalPublication() {
       const value = row => dimension === 'category_side' ? row.category + ':' + row.side : dimension === 'venue' ? row.line_from : row[dimension];
       for (const key of [...new Set(members.map(value))]) tables.push(table(members.filter(row => value(row) === key), view, dimension, key));
     }
+    for (const source of ['dk', 'sleeper']) {
+      const scoped = members.filter(row => row.line_from === source);
+      tables.push(table(scoped, view, 'overall', 'all', source));
+      for (const dimension of ['category', 'category_side']) {
+        const value = row => dimension === 'category_side' ? row.category + ':' + row.side : row.category;
+        for (const key of [...new Set(scoped.map(value))]) tables.push(table(scoped.filter(row => value(row) === key), view, dimension, key, source));
+      }
+    }
   }
-  const summary = put('summary.json', { schema_version: 'selection-public-report-v1', report_schema_version: 'selection-report-v2', report_id: reportId,
+  const summary = put('summary.json', { schema_version: 'selection-public-report-v2', report_schema_version: 'selection-report-v3', report_id: reportId,
     summary: { tables }, source_sha: '7e5b499851a938f7b605ff2d43890d307da83e03', input_binding: 'NOT_YET_GIT_COMMITTED',
     coverage: { universe_scope: 'FICTIONAL_OBSERVED_UNION_ONLY' }, limitations: ['FICTIONAL ONLY. Not predictive evidence.'], uncertainty: null,
     primary_raw_vs_adjusted: { categories: { rec: { raw_sleeper: { n: 1, mae: 1, rmse: 1, mean_error: -1 }, unchanged_clone: { n: 1, mae: 0.5, rmse: 0.5, mean_error: -0.5 } } } } });
@@ -114,6 +123,19 @@ function fictionalWeek() {
 
 const fixture = fictionalPublication();
 let week = fictionalWeek();
+function scopeAssets(kind) {
+  const scope = { schema_version: 'partial-week-public-scope-v1', full_board_verified: false, complete_week_qualified: false,
+    output_sha256: sha('fictional-board-canonical'), games: week.games.map(game => ({ game_id: game.id, home: game.home, away: game.away,
+      kickoff: game.kickoff, classification: game.state === 'pre' ? 'new_pregame_original_inputs_verified' : 'retained_legacy_original_proof_missing' })) };
+  if (kind === 'scope-malformed') scope.games = null;
+  const rawScope = encode(scope), generationId = sha('fictional coherent generation');
+  const generation = { schema_version: 'website-generation-v1', generation_sha256: generationId,
+    board_sha256: scope.output_sha256, source_sha: '7e5b499851a938f7b605ff2d43890d307da83e03',
+    selection_report_id: kind === 'scope-mixed-report' ? sha('different report') : fixture.pointer.report_id,
+    bindings: { 'data/week.json': sha(encode(week)), 'data/verification-scope.json': sha(rawScope) } };
+  const health = { generation_sha256: generationId, board_sha256: scope.output_sha256, source_sha: generation.source_sha };
+  return { 'verification-scope': rawScope, 'release-identity': encode(generation), health: encode(health) };
+}
 let variant = 'valid', transferred = 0;
 const requests = [];
 const server = http.createServer((req, res) => {
@@ -121,7 +143,10 @@ const server = http.createServer((req, res) => {
   requests.push(pathname);
   let bytes;
   if (!arg('--root')) {
-    if (pathname === '/data/week.json') bytes = encode(week);
+    if (pathname === '/data/week.json') bytes = encode(variant === 'scope-mixed-board' ? { ...week, generated_at: '2026-10-15T11:00:00Z' } : week);
+    else if (variant.startsWith('scope-') && /^\/data\/(verification-scope|release-identity|health)\.json$/.test(pathname)) {
+      bytes = scopeAssets(variant)[pathname.split('/').pop().replace('.json', '')];
+    }
     else if (pathname === '/data/track_record.json' || pathname === '/data/dk_backtest.json' || pathname === '/data/forecast-scorecard.json') { res.writeHead(404); res.end(); return; }
     else if (pathname.startsWith('/data/selection-grading/')) {
       bytes = fixture.assets.get(pathname);
@@ -275,7 +300,7 @@ async function presentationChecks(browser, origin, width) {
   const measurements = [];
   const presentation = [];
   try {
-    for (const width of [1280, 390]) {
+    for (const width of [1280, 390, 320]) {
       variant = 'valid';
       const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 900 } });
       await context.route('**/*', async route => {
@@ -309,12 +334,12 @@ async function presentationChecks(browser, origin, width) {
         assert.equal(downloaded.report_id, fixture.pointer.report_id);
         assert.deepEqual(downloaded.rows.map(row => row.decision_sha256), ids);
         assert.equal(await page.locator('#selection-grading script').count(), 0, 'provider text is escaped');
-        await page.getByLabel('Breakdown', { exact: true }).selectOption('category_side');
+        await page.getByLabel('Supporting breakdown', { exact: true }).selectOption('category_side');
         assert.equal(await page.locator('[data-grading-summary]').count(), 10);
         await page.getByLabel('Cohort', { exact: true }).selectOption('non_top_at_all_lean_decision');
         assert.ok((await page.locator('[data-grading-summary]').count()) > 0);
-        await page.getByLabel('Breakdown', { exact: true }).selectOption('overall');
-        await page.locator('[data-grading-group]').click();
+        await page.getByLabel('Supporting breakdown', { exact: true }).selectOption('overall');
+        await page.locator('[data-grading-group]').first().click();
         await page.waitForFunction(() => !S.gradingGroup.loading);
         const nonTop = await page.evaluate(() => S.gradingGroup.rows.every(row => !row.top_at_decision));
         assert.equal(nonTop, true);
@@ -387,6 +412,12 @@ async function presentationChecks(browser, origin, width) {
         variant = 'missing'; await page.reload(); await page.waitForSelector('#selection-grading [role="status"]');
         assert.match(await page.locator('#selection-grading').innerText(), /unavailable/);
         assert.equal(await page.evaluate(() => S.finalOutcomes.size), 0);
+        for (const kind of ['scope-valid', 'scope-mixed-board', 'scope-mixed-report', 'scope-malformed']) {
+          variant = kind; await page.reload(); await page.waitForSelector('[data-performance-primary]');
+          assert.equal(await page.evaluate(() => S.verificationScope !== null), kind === 'scope-valid', kind + ' generation binding');
+          const label = await page.locator('[data-verification-scope]').innerText();
+          assert.match(label, kind === 'scope-valid' ? /Partial-week original-model-input reproduction only/ : /unavailable or legacy/);
+        }
       }
       await context.close();
       if (!arg('--root')) {
