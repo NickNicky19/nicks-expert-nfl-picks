@@ -1,16 +1,7 @@
 const assert = require('node:assert/strict');
-const { buildStatus, tallyDetails } = require('../output/reliability-ui.js');
-const now = Date.parse('2026-10-10T19:00:00Z');
-assert.equal(buildStatus('2026-10-10T18:00:00Z', now).state, 'recent');
-assert.equal(buildStatus('2026-10-10T16:59:00Z', now).state, 'stale');
-assert.equal(buildStatus('2026-10-10T17:00:00Z', now).state, 'recent');
-assert.equal(buildStatus('2026-10-10T20:00:00Z', now).state, 'unknown');
-assert.equal(buildStatus('not a timestamp', now).state, 'unknown');
-assert.equal(tallyDetails({ push: 2, dnp: 1, unresolved: 3 }), '2 push · 1 confirmed DNP · 3 unresolved');
-assert.equal(tallyDetails({}), '');
-assert.equal(tallyDetails(undefined), '');
-// Exercise the actual browser grading functions, including saved-line equality
-// and final evidence binding. Fictional fields never call a provider.
+
+// Accepted Phase 2 grading checks are separate from the retained production additions.
+{
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -83,7 +74,25 @@ const pointer = { report_id: 'a'.repeat(64) }, sha256 = 'b'.repeat(64);
 assert.match(ui.publicAssetPath(pointer, { path: pointer.report_id + '/rows-0000.json', sha256 }, 'rows'), /^data\/selection-grading\//);
 assert.throws(() => ui.publicAssetPath(pointer, { path: '../secret.json', sha256 }, 'rows'));
 assert.throws(() => ui.publicAssetPath(pointer, { path: 'https://example.com/rows-0000.json', sha256 }, 'rows'));
-console.log('8 retained UI helper assertions and 36 actual grading assertions passed.');
+console.log('36 actual Phase 2 grading assertions passed.');
+}
+
+const { buildStatus, tallyDetails } = require('../output/reliability-ui.js');
+const now = Date.parse('2026-10-10T19:00:00Z');
+assert.equal(buildStatus('2026-10-10T18:00:00Z', now).state, 'recent');
+assert.equal(buildStatus('2026-10-10T16:59:00Z', now).state, 'stale');
+assert.equal(buildStatus('2026-10-10T17:00:00Z', now).state, 'recent');
+assert.equal(buildStatus('2026-10-10T20:00:00Z', now).state, 'unknown');
+assert.equal(buildStatus('not a timestamp', now).state, 'unknown');
+assert.equal(tallyDetails({ push: 2, dnp: 1, unresolved: 3 }), '2 push · 1 confirmed DNP · 3 unresolved');
+assert.equal(tallyDetails({}), '');
+assert.equal(tallyDetails(undefined), '');
+console.log('8 UI helper assertions passed.');
+
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8');
 
 // Presentation uses saved-board values and the existing ranking eligibility.
 // Frozen inputs catch accidental mutation; arbitrary units are fictional.
