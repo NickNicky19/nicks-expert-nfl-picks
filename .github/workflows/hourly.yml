@@ -62,19 +62,17 @@ jobs:
       - name: Build unchanged projection engine
         run: |
           if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
-            python tools/build_recorded.py
+            GITHUB_SHA="$(git rev-parse HEAD)" python tools/phase2_capture.py --mode live --build-and-capture
           else
             python pull/build.py
           fi
-      - name: Required reproducible matchup verification
+      - name: Required explicit-route source and coherent-generation verification
         if: steps.mode.outputs.phase2_enabled == 'true'
-        run: python tools/verify.py --offline --json output/data/matchup-diagnostics.json
+        run: python tools/phase2_capture.py --mode live --validate-generation
       - name: Required integrity checks and pregame capture
         if: steps.mode.outputs.mode == 'phase1'
         run: |
-          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
-            GITHUB_SHA="$(git rev-parse HEAD)" python tools/phase2_capture.py --mode live
-          else
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' != 'true' ]; then
             GITHUB_SHA="$(git rev-parse HEAD)" python tools/reliability.py --mode live
           fi
 
@@ -118,10 +116,17 @@ jobs:
             git push origin HEAD:main
           fi
       - uses: actions/configure-pages@v5
+      - name: Stage approved Pages fields without altering retained originals
+        run: |
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            python tools/phase2_capture.py --mode live --stage-pages "$RUNNER_TEMP/nfl-pages"
+          else
+            cp -a output "$RUNNER_TEMP/nfl-pages"
+          fi
       - uses: actions/upload-pages-artifact@v3
         id: artifact
         with:
-          path: output
+          path: ${{ runner.temp }}/nfl-pages
       - name: Deploy validated output
         id: deployment
         uses: actions/deploy-pages@v4
