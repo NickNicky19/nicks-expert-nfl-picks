@@ -104,6 +104,44 @@ function fictionalPublication() {
   return { pointer, assets, rows, tables, finals };
 }
 
+// Same fictional rows and summary identities in a separately identified v3 layout.
+function partitionedPublication(legacy) {
+  const reportId = sha('FICTIONAL_PARTITIONED_PUBLICATION_NOT_REAL_EVIDENCE');
+  const assets = new Map(), canonical = value => JSON.stringify(value && typeof value === 'object' ? (Array.isArray(value) ? value.map(v => JSON.parse(canonical(v))) : Object.fromEntries(Object.keys(value).sort().map(k => [k, JSON.parse(canonical(value[k]))]))) : value);
+  const fields = ['provenance_class', 'model_version', 'engine_sha256', 'policy_version', 'policy_sha256', 'view', 'checkpoint', 'line_source_scope'];
+  const put = (filename, payload, part = false) => {
+    const bytes = encode({ ...payload, report_id: reportId }), hash = sha(bytes);
+    const descriptor = { path: (part ? hash : reportId) + '/' + filename, sha256: hash, decoded_bytes: bytes.length };
+    assets.set('/data/selection-grading/' + descriptor.path, bytes); return descriptor;
+  };
+  const contexts = {}, groups = new Map();
+  const tables = legacy.tables.flatMap(table => [table, { ...table, period: '2026-w06', summary_id: sha('weekly-' + table.summary_id) }]);
+  for (const table of tables) {
+    const context = Object.fromEntries(fields.map(k => [k, table[k]])), id = sha(canonical(context));
+    contexts[id] = context; const key = id + ':' + table.period;
+    if (!groups.has(key)) groups.set(key, { context_id: id, period: table.period, tables: [] });
+    groups.get(key).tables.push(table);
+  }
+  const parts = [...groups.values()].map(part => ({ ...put('summary.json', { schema_version: 'selection-public-summary-partition-v1', ...part }, true),
+    context_id: part.context_id, period: part.period, table_count: part.tables.length }));
+  const oldSummary = JSON.parse(legacy.assets.get('/data/selection-grading/' + legacy.pointer.summary.path));
+  const summary = put('summary.json', { ...oldSummary, schema_version: 'selection-public-report-v3', row_count: legacy.rows.length,
+    summary: {}, contexts, summary_partitions: parts });
+  const historical = legacy.finals.map(row => ({ ...row, week: 5, actual: row.status === 'resolved' ? 99 : null }));
+  const periods = [5, 6].map(week => {
+    const outcomes = week === 5 ? historical : legacy.finals;
+    return { ...put('outcomes.json', { schema_version: 'selection-final-outcome-period-v1', season: 2026, week, outcomes }, true), season: 2026, week, count: outcomes.length };
+  });
+  const outcomes = put('outcomes.json', { schema_version: 'selection-final-outcome-index-v1', outcome_count: legacy.finals.length + historical.length, periods });
+  const rows = legacy.pointer.rows.map(descriptor => {
+    const chunk = JSON.parse(legacy.assets.get('/data/selection-grading/' + descriptor.path));
+    const value = put(descriptor.path.split('/')[1], chunk); delete value.decoded_bytes; return { ...value, count: descriptor.count };
+  });
+  const pointer = { ...legacy.pointer, schema_version: 'selection-publication-pointer-v2', report_id: reportId, summary, outcomes, rows };
+  assets.set('/data/selection-grading/latest.json', encode(pointer));
+  return { ...legacy, pointer, assets, tables, parts, periods };
+}
+
 function fictionalWeek() {
   const original = JSON.parse(fs.readFileSync(path.join(repo, 'output/data/week.json'), 'utf8'));
   const template = original.players.find(player => player.pos === 'WR' && player.props.some(prop => prop.key === 'rec'));
@@ -121,7 +159,8 @@ function fictionalWeek() {
   return original;
 }
 
-const fixture = fictionalPublication();
+const legacyFixture = fictionalPublication();
+const fixture = partitionedPublication(legacyFixture);
 let week = fictionalWeek();
 function scopeAssets(kind) {
   const scope = { schema_version: 'partial-week-public-scope-v1', full_board_verified: false, complete_week_qualified: false,
@@ -149,9 +188,13 @@ const server = http.createServer((req, res) => {
     }
     else if (pathname === '/data/track_record.json' || pathname === '/data/dk_backtest.json' || pathname === '/data/forecast-scorecard.json') { res.writeHead(404); res.end(); return; }
     else if (pathname.startsWith('/data/selection-grading/')) {
-      bytes = fixture.assets.get(pathname);
+      bytes = (variant === 'legacy' ? legacyFixture : fixture).assets.get(pathname);
+      if (variant === 'oversized-pointer' && pathname.endsWith('/latest.json') && bytes) bytes = Buffer.concat([bytes, Buffer.alloc(1024 * 1024, 32)]);
+      const contentPart = !pathname.includes('/' + fixture.pointer.report_id + '/') && !pathname.endsWith('/latest.json');
+      if (variant === 'missing-summary-part' && contentPart && /summary.json$/.test(pathname)) bytes = null;
+      if (variant === 'missing-outcome-part' && contentPart && /outcomes.json$/.test(pathname)) bytes = null;
       if (variant === 'missing' || variant === 'missing-chunk' && /rows-/.test(pathname)) bytes = null;
-      if (variant === 'corrupt' && /outcomes.json$/.test(pathname) && bytes) bytes = Buffer.concat([bytes, Buffer.from(' ')]);
+      if (variant === 'corrupt' && /outcomes.json$/.test(pathname) && bytes) { bytes = Buffer.from(bytes); bytes[0] ^= 1; }
     }
   }
   if (!bytes && (!pathname.startsWith('/data/selection-grading/') || arg('--root'))) {
@@ -314,7 +357,13 @@ async function presentationChecks(browser, origin, width) {
       const startBytes = transferred, start = Date.now();
       await page.goto(origin + '/#/record');
       await page.waitForSelector('#selection-grading [data-grading-summaries]');
+      await page.waitForFunction(() => S.grading && !S.grading.partLoading);
       const loadMs = Date.now() - start;
+      if (!arg('--root')) {
+        assert.equal(await page.evaluate(() => S.grading.parts.size), 1, 'only selected exact-context summary initially loaded');
+        assert.equal(await page.evaluate(() => [...S.finalOutcomes.values()].every(row => row.week === 6)), true, 'historical outcomes cannot settle current picks');
+        assert.equal(requests.includes('/data/selection-grading/' + fixture.periods[0].path), false, 'unneeded historical outcomes are not prefetched');
+      }
       assert.equal(await page.locator('[data-grading-row]').count(), 0, 'rows load only after drill-down');
       const chunkRequestsBefore = requests.filter(request => /\/rows-\d+\.json$/.test(request)).length;
       await page.locator('[data-grading-group]').first().click();
@@ -337,6 +386,7 @@ async function presentationChecks(browser, origin, width) {
         await page.getByLabel('Supporting breakdown', { exact: true }).selectOption('category_side');
         assert.equal(await page.locator('[data-grading-summary]').count(), 10);
         await page.getByLabel('Cohort', { exact: true }).selectOption('non_top_at_all_lean_decision');
+        await page.waitForFunction(() => !S.grading.partLoading);
         assert.ok((await page.locator('[data-grading-summary]').count()) > 0);
         await page.getByLabel('Supporting breakdown', { exact: true }).selectOption('overall');
         await page.locator('[data-grading-group]').first().click();
@@ -412,6 +462,51 @@ async function presentationChecks(browser, origin, width) {
         variant = 'missing'; await page.reload(); await page.waitForSelector('#selection-grading [role="status"]');
         assert.match(await page.locator('#selection-grading').innerText(), /unavailable/);
         assert.equal(await page.evaluate(() => S.finalOutcomes.size), 0);
+        for (const failure of ['oversized-pointer', 'missing-summary-part', 'missing-outcome-part']) {
+          variant = failure; await page.reload(); await page.waitForFunction(() => !ticking);
+          assert.match(await page.locator('#selection-grading').innerText(), /unavailable|size limit/i, failure);
+          assert.equal(await page.locator('[data-performance-headline]').count(), 0, 'no substitute totals on failed selected assets');
+          if (failure !== 'missing-summary-part') assert.equal(await page.evaluate(() => S.finalOutcomes.size), 0, 'required outcome failure remains unknown');
+        }
+        variant = 'legacy'; await page.reload(); await page.waitForSelector('[data-performance-primary]');
+        assert.equal(await page.evaluate(() => S.grading.partitioned), false, 'explicit retained legacy reader');
+        variant = 'valid'; await page.reload(); await page.waitForSelector('[data-performance-primary]');
+        await page.waitForFunction(() => !S.grading.partLoading);
+        const initialRequestCount = requests.length;
+        await page.getByLabel('Reporting period', { exact: true }).selectOption('2026-w06');
+        await page.waitForFunction(() => !S.grading.partLoading);
+        assert.equal(await page.evaluate(() => S.grading.summary.summary.tables.every(t => t.period === '2026-w06')), true);
+        assert.equal(requests.slice(initialRequestCount).filter(p => /summary.json$/.test(p)).length, 1);
+        // Delay source A, select source B, and complete A last. Old totals must not win.
+        await page.evaluate(async () => {
+          const original = checkedGradingAsset, grading = S.grading;
+          let release, started;
+          const waiting = new Promise(resolve => { started = resolve; });
+          checkedGradingAsset = async function(...args) {
+            if (args[1].context_id && grading.index.contexts[args[1].context_id].line_source_scope === 'dk') {
+              started(); await new Promise(resolve => { release = resolve; });
+            }
+            return original(...args);
+          };
+          S.gradingFilters.line_source_scope = 'dk'; const old = loadSelectedGradingSummary(); await waiting;
+          S.gradingFilters.line_source_scope = 'sleeper'; await loadSelectedGradingSummary();
+          release(); await old; checkedGradingAsset = original; renderRecord();
+        });
+        assert.equal(await page.evaluate(() => S.grading.summary.summary.tables.every(t => t.line_source_scope === 'sleeper')), true, 'delayed context cannot overwrite selected totals');
+        // A delayed failed old publication cannot clear a subsequently loaded good one.
+        await page.evaluate(async () => {
+          const original = fetch; let release, started;
+          const waiting = new Promise(resolve => { started = resolve; }); let intercept = true;
+          window.fetch = async function(url, ...args) {
+            if (intercept && String(url).endsWith('selection-grading/latest.json')) {
+              intercept = false; started(); await new Promise(resolve => { release = resolve; }); throw Error('old-generation failure');
+            }
+            return original(url, ...args);
+          };
+          const old = loadGrading(); await waiting; await loadGrading(); release(); await old; window.fetch = original; renderRecord();
+        });
+        assert.equal(await page.evaluate(() => S.grading?.partitioned), true, 'old generation failure cannot clear new publication');
+        assert.equal(await page.evaluate(() => S.gradingError), null);
         for (const kind of ['scope-valid', 'scope-mixed-board', 'scope-mixed-report', 'scope-malformed']) {
           variant = kind; await page.reload(); await page.waitForSelector('[data-performance-primary]');
           assert.equal(await page.evaluate(() => S.verificationScope !== null), kind === 'scope-valid', kind + ' generation binding');

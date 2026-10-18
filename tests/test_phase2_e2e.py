@@ -472,7 +472,9 @@ class PublicSelectionPipelineTests(unittest.TestCase):
         pointer = load_json(base / "latest.json")
         summary = validate_publication(base, pointer)
         rows = [row for descriptor in pointer["rows"] for row in load_json(base / descriptor["path"])["rows"]]
-        outcomes = load_json(base / pointer["outcomes"]["path"])["outcomes"]
+        final = load_json(base / pointer["outcomes"]["path"])
+        outcomes = (final["outcomes"] if pointer["schema_version"] == selection_publication.POINTER_VERSION
+                    else sorted([row for part in final["periods"] for row in load_json(base / part["path"])["outcomes"]], key=selection_publication.identity))
         return pointer, summary, rows, outcomes
 
     def test_existing_live_pipeline_updates_all_ten_and_freezes_checkpoints(self):
@@ -602,9 +604,14 @@ class PublicSelectionPipelineTests(unittest.TestCase):
             with self.assertRaises(ValueError): validate_publication(base, altered)
             altered = copy.deepcopy(pointer)
             path = base / pointer["summary"]["path"]; original = path.read_bytes()
-            summary = load_json(path); summary["summary"]["tables"][0]["unique_games"] += 1
+            summary = load_json(path)
+            part = summary["summary_partitions"][0]
+            value = load_json(base / part["path"]); value["tables"][0]["unique_games"] += 1
+            raw = selection_publication.canonical(value) + b"\n"; checksum = hashlib.sha256(raw).hexdigest()
+            selection_publication._create_file(base / checksum / "summary.json", raw)
+            part.update(path=checksum + "/summary.json", sha256=checksum, decoded_bytes=len(raw))
             atomic_json(path, summary)
-            altered["summary"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            altered["summary"].update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), decoded_bytes=len(path.read_bytes()))
             with self.assertRaises(ValueError): validate_publication(base, altered)
             path.write_bytes(original)  # Restore disposable malicious-fixture bytes only.
 
@@ -906,6 +913,116 @@ class PublicSelectionPipelineTests(unittest.TestCase):
                 self.assertEqual(digest([row["decision_sha256"] for row in retrieved]), table["row_ids_sha256"])
             self.assertEqual(dimensions, {"overall", "category", "side", "checkpoint"})
             self.assertGreater(improved, 0)
+
+
+class PartitionedPublicationTests(unittest.TestCase):
+    AT = PublicSelectionPipelineTests.AT
+    run_live = PublicSelectionPipelineTests.run_live
+    locality_report = PublicSelectionPipelineTests.locality_report
+    assets = PublicSelectionPipelineTests.assets
+    # Inherit fixtures only; unittest's normal discovery also retains all original
+    # end-to-end checks on the production publisher above.
+    def projection(self, directory):
+        root = Path(directory) / "inputs"
+        report = self.locality_report(root, Path(directory) / "analysis")
+        return root, selection_publication._projection(report, source_sha="1" * 40, input_digest="2" * 64)
+
+    def test_partition_roundtrip_exact_semantics_determinism_and_legacy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, projected = self.projection(directory)
+            summary, rows, outcomes, chunks, _ = projected
+            base = root / "output/data/selection-grading"
+            old = selection_publication.prepare_publication(base, summary, rows, outcomes, chunks, self.AT, partitioned=False)
+            retained = {p: p.read_bytes() for p in base.rglob("*.json")}
+            new = selection_publication.prepare_publication(base, summary, rows, outcomes, chunks, self.AT)
+            self.assertNotEqual(old["report_id"], new["report_id"])
+            expected = dict(validate_publication(base, old)); expected.pop("report_id")
+            actual = dict(validate_publication(base, new)); actual.pop("report_id")
+            self.assertEqual(actual, expected)
+            permuted = dict(summary, summary=dict(summary["summary"], tables=list(reversed(summary["summary"]["tables"]))))
+            self.assertEqual(selection_publication.prepare_publication(base, permuted, rows, list(reversed(outcomes)), chunks, self.AT), new)
+            self.assertTrue(all(p.read_bytes() == raw for p, raw in retained.items()))
+            index = load_json(base / new["summary"]["path"])
+            for part in index["summary_partitions"]:
+                self.assertEqual(part["path"], part["sha256"] + "/summary.json")
+                self.assertLessEqual(part["decoded_bytes"], selection_publication.SUMMARY_LIMIT)
+            self.assertLessEqual(new["summary"]["decoded_bytes"], selection_publication.INDEX_LIMIT)
+            # The unchanged Pages allowlist accepts every immutable old/new asset.
+            with patch.object(phase2_capture, "read_phase2", return_value=False):
+                staged = phase2_capture.stage_pages(root, root / "pages")
+            for path in base.rglob("*.json"):
+                self.assertEqual((staged / path.relative_to(root / "output")).read_bytes(), path.read_bytes())
+            cold = root / "clean-copy"; shutil.copytree(base, cold)
+            self.assertEqual(validate_publication(cold, new), validate_publication(base, new))
+
+    def test_producer_checks_every_partition_and_rejects_tampered_contexts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, projected = self.projection(directory); base = root / "assets"
+            pointer = selection_publication.prepare_publication(base, *projected[:4], self.AT)
+            descriptor = pointer["summary"]; path = base / descriptor["path"]
+            original = path.read_bytes(); index = load_json(path)
+            # A cold producer must reject corruption even in a non-default part.
+            part = index["summary_partitions"][-1]; target = base / part["path"]; raw = target.read_bytes()
+            for replacement in (b"{}", raw + b" "):
+                target.write_bytes(replacement)
+                with self.assertRaises(IntegrityError): validate_publication(base, pointer)
+            target.unlink()
+            with self.assertRaises(FileNotFoundError): validate_publication(base, pointer)
+            target.write_bytes(raw)
+            for change in ("duplicate", "period", "context", "generation", "membership"):
+                altered = copy.deepcopy(index)
+                if change == "duplicate": altered["summary_partitions"].append(altered["summary_partitions"][0])
+                else:
+                    part = altered["summary_partitions"][-1]
+                    payload = load_json(base / part["path"])
+                    if change == "period": payload["period"] = "2026-w18"
+                    elif change == "context": payload["context_id"] = "0" * 64
+                    elif change == "generation": payload["report_id"] = "0" * 64
+                    else: payload["tables"][0]["row_positions"] = []
+                    body = selection_publication.canonical(payload) + b"\n"; sha = hashlib.sha256(body).hexdigest()
+                    selection_publication._create_file(base / sha / "summary.json", body)
+                    part.update(path=sha + "/summary.json", sha256=sha, decoded_bytes=len(body))
+                atomic_json(path, altered); changed = copy.deepcopy(pointer)
+                changed["summary"].update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), decoded_bytes=len(path.read_bytes()))
+                with self.assertRaises(IntegrityError): validate_publication(base, changed)
+            path.write_bytes(original)
+            validate_publication(base, pointer)
+
+    def test_outcome_period_indexes_validate_all_records_and_exact_types(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root)
+            pointer, _, _, _ = self.assets(root); base = root / "output/data/selection-grading"
+            indexpath = base / pointer["outcomes"]["path"]; original = indexpath.read_bytes(); index = load_json(indexpath)
+            self.assertTrue(index["periods"])
+            for change in ("duplicate", "wrong_week", "bool_week", "wrong_generation", "wrong_count"):
+                altered = copy.deepcopy(index)
+                if change == "duplicate": altered["periods"].append(altered["periods"][0])
+                elif change == "wrong_count": altered["outcome_count"] += 1
+                else:
+                    part = altered["periods"][0]; payload = load_json(base / part["path"])
+                    if change == "wrong_week": payload["week"] = 18
+                    elif change == "bool_week": payload["week"] = True
+                    else: payload["report_id"] = "0" * 64
+                    body = selection_publication.canonical(payload) + b"\n"; sha = hashlib.sha256(body).hexdigest()
+                    selection_publication._create_file(base / sha / "outcomes.json", body)
+                    part.update(path=sha + "/outcomes.json", sha256=sha, decoded_bytes=len(body))
+                atomic_json(indexpath, altered); changed = copy.deepcopy(pointer)
+                changed["outcomes"].update(sha256=hashlib.sha256(indexpath.read_bytes()).hexdigest(), decoded_bytes=len(indexpath.read_bytes()))
+                with self.assertRaises(IntegrityError): validate_publication(base, changed)
+            indexpath.write_bytes(original); validate_publication(base, pointer)
+
+    def test_partition_bounds_do_not_advance_previous_coherent_pointer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root)
+            base = root / "output/data/selection-grading"; pointer = (base / "latest.json").read_bytes()
+            for constant in ("INDEX_LIMIT", "SUMMARY_LIMIT", "ROW_LIMIT"):
+                with patch.object(selection_publication, constant, 128), self.assertRaises(IntegrityError):
+                    publish_selection_report(root, self.AT + timedelta(seconds=1), source_sha="1" * 40)
+                self.assertEqual((base / "latest.json").read_bytes(), pointer)
+            summary = validate_publication(base, load_json(base / "latest.json"))
+            with self.assertRaisesRegex(IntegrityError, "chunk count"):
+                selection_publication.prepare_publication(base, summary, [], [], [[]] * 4001, self.AT)
+            validate_publication(base, load_json(base / "latest.json"))
 
 
 class CandidateRecordingPipelineTests(unittest.TestCase):

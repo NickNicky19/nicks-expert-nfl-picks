@@ -219,3 +219,38 @@ const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8')
   assert.match(ui.selectionPerformanceHtml(selected.baseTables), /Legacy aggregates/);
   console.log('Report context and category presentation: 17 focused assertions passed.');
 }
+
+// Real v3 asset/identity validators, without a provider or stored device data.
+(async () => {
+  const crypto = require('node:crypto');
+  const extract = name => source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`))[0];
+  let bytes, requests = 0;
+  const context = { HASH64: /^[a-f0-9]{64}$/, GRADING_BASE: 'data/selection-grading/', GRADING_RESULTS: ['win','loss','push','dnp','pending','unresolved','no_action','not_due','excluded'],
+    TextEncoder, TextDecoder, crypto: crypto.webcrypto, Map, Set,
+    fetch: async () => { requests++; return { ok: true, arrayBuffer: async () => Uint8Array.from(bytes).buffer }; } };
+  vm.createContext(context);
+  vm.runInContext(['gradingHash','publicAssetPath','checkedGradingAsset','validateFinalOutcomes','loadOutcomePeriod'].map(extract).join('\n') + '\nthis.ui={publicAssetPath,checkedGradingAsset,validateFinalOutcomes,loadOutcomePeriod};', context);
+  const ui = context.ui, pointer = { schema_version: 'selection-publication-pointer-v2', report_id: 'a'.repeat(64), generated_at: '2026-10-18T18:00:00Z' };
+  const payload = { schema_version: 'selection-final-outcome-period-v1', report_id: pointer.report_id, season: 2026, week: 6, outcomes: [] };
+  bytes = Buffer.from(JSON.stringify(payload));
+  const descriptor = { sha256: crypto.createHash('sha256').update(bytes).digest('hex'), decoded_bytes: bytes.length, season: 2026, week: 6, count: 0 };
+  descriptor.path = descriptor.sha256 + '/outcomes.json';
+  assert.equal(ui.publicAssetPath(pointer, descriptor, 'outcomes', true), 'data/selection-grading/' + descriptor.path);
+  assert.throws(() => ui.publicAssetPath({ ...pointer, schema_version: 'selection-publication-pointer-v1' }, descriptor, 'outcomes', true));
+  assert.equal((await ui.checkedGradingAsset(pointer, descriptor, 'outcomes', true)).week, 6);
+  await assert.rejects(ui.checkedGradingAsset(pointer, { ...descriptor, decoded_bytes: 12 * 1024 * 1024 + 1 }, 'outcomes', true), /size/);
+  const before = requests;
+  const absent = await ui.loadOutcomePeriod({ pointer, outcomeIndex: { periods: [descriptor] } }, 2026, 5);
+  assert.equal(absent.size, 0); assert.equal(requests, before, 'no unrelated outcome period request');
+  bytes = Buffer.from(JSON.stringify({ ...payload, week: 5 }));
+  const wrong = { ...descriptor, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), decoded_bytes: bytes.length };
+  wrong.path = wrong.sha256 + '/outcomes.json';
+  await assert.rejects(ui.loadOutcomePeriod({ pointer, outcomeIndex: { periods: [wrong] } }, 2026, 6), /period/);
+  bytes = Buffer.from(JSON.stringify({ ...payload, report_id: 'b'.repeat(64) }));
+  const mixed = { ...descriptor, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), decoded_bytes: bytes.length };
+  mixed.path = mixed.sha256 + '/outcomes.json';
+  await assert.rejects(ui.checkedGradingAsset(pointer, mixed, 'outcomes', true), /identity/);
+  bytes = Buffer.from('wrong bytes');
+  await assert.rejects(ui.checkedGradingAsset(pointer, descriptor, 'outcomes', true), /size|checksum/);
+  console.log('Partitioned outcome/asset contracts: 10 focused checks passed.');
+})().catch(error => { console.error(error); process.exitCode = 1; });

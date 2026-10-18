@@ -149,47 +149,38 @@ function finalIdentityMatches(row, p, category) {
     && row.game_id === String(p.game_id) && row.category === category && row.team === p.team
     && Number.isFinite(Date.parse(row.kickoff)) && Date.parse(row.kickoff) === Date.parse(S.games[p.game_id]?.kickoff);
 }
-function publicAssetPath(pointer, descriptor, type) {
+let gradingLoadRevision = 0;
+const PARTITION_CONTEXT_FIELDS = ["provenance_class", "model_version", "engine_sha256", "policy_version", "policy_sha256", "view", "checkpoint", "line_source_scope"];
+const gradingCanonical = value => JSON.stringify(value && typeof value === "object" ? (Array.isArray(value) ? value.map(value => JSON.parse(gradingCanonical(value))) : Object.fromEntries(Object.keys(value).sort().map(key => [key, JSON.parse(gradingCanonical(value[key]))]))) : value);
+async function gradingHash(bytes) {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(v => v.toString(16).padStart(2, "0")).join("");
+}
+function publicAssetPath(pointer, descriptor, type, partition = false) {
   const filename = type === "rows" ? "rows-[0-9]{4,}.json" : `${type}.json`;
-  const pattern = new RegExp(`^${pointer.report_id}/${filename.replaceAll(".", "\\.")}$`);
-  if (!descriptor || !pattern.test(descriptor.path) || !HASH64.test(descriptor.sha256)) throw new Error("Invalid grading asset binding");
+  const namespace = partition && pointer.schema_version === "selection-publication-pointer-v2" ? descriptor?.sha256 : pointer.report_id;
+  const pattern = new RegExp(`^${namespace}/${filename.replaceAll(".", "\\.")}$`);
+  if (!descriptor || !HASH64.test(namespace) || !pattern.test(descriptor.path) || !HASH64.test(descriptor.sha256)) throw new Error("Invalid grading asset binding");
   return GRADING_BASE + descriptor.path;
 }
-async function checkedGradingAsset(pointer, descriptor, type) {
-  const path = publicAssetPath(pointer, descriptor, type);
-  const response = await fetch(path, { cache: "no-store" });
+async function checkedGradingAsset(pointer, descriptor, type, partition = false) {
+  const path = publicAssetPath(pointer, descriptor, type, partition);
+  const modern = pointer.schema_version === "selection-publication-pointer-v2";
+  const limit = (type === "rows" ? 2 : modern && !partition ? 1 : 12) * 1024 * 1024;
+  if (modern && type !== "rows" && (!Number.isInteger(descriptor.decoded_bytes) || descriptor.decoded_bytes < 1 || descriptor.decoded_bytes > limit)) throw new Error("Invalid grading asset size");
+  const response = await fetch(path, { cache: modern ? "default" : "no-store" });
   if (!response.ok) throw new Error(`Grading ${type} unavailable`);
   const bytes = await response.arrayBuffer();
-  if (bytes.byteLength > (type === "rows" ? 2 : 12) * 1024 * 1024) throw new Error("Grading asset exceeds size limit");
-  const actual = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((v) => v.toString(16).padStart(2, "0")).join("");
-  if (actual !== descriptor.sha256) throw new Error("Grading asset checksum mismatch");
+  if (bytes.byteLength > limit || modern && type !== "rows" && bytes.byteLength !== descriptor.decoded_bytes) throw new Error("Grading asset exceeds size limit or declared size");
+  if (await gradingHash(bytes) !== descriptor.sha256) throw new Error("Grading asset checksum mismatch");
   const data = JSON.parse(new TextDecoder().decode(bytes));
   if (data.report_id !== pointer.report_id) throw new Error("Grading report identity mismatch");
   return data;
 }
-async function loadGrading() {
-  S.grading = null; S.gradingError = null; S.finalOutcomes = new Map();
-  try {
-    const pointer = await getJSON(GRADING_BASE + "latest.json");
-    if (pointer.schema_version !== "selection-publication-pointer-v1" || !HASH64.test(pointer.report_id)
-        || !Number.isFinite(Date.parse(pointer.generated_at)) || !Array.isArray(pointer.rows)
-        || pointer.rows.length > 4000) throw new Error("Unsupported grading publication");
-    const paths = new Set();
-    for (const chunk of pointer.rows) {
-      publicAssetPath(pointer, chunk, "rows");
-      if (!Number.isInteger(chunk.count) || chunk.count < 1 || chunk.count > 250 || paths.has(chunk.path)) throw new Error("Invalid grading row chunks");
-      paths.add(chunk.path);
-    }
-    if (pointer.rows.slice(0, -1).some((chunk) => chunk.count !== 250)
-        || !Number.isInteger(pointer.row_count) || pointer.row_count !== pointer.rows.reduce((n, chunk) => n + chunk.count, 0)) throw new Error("Invalid grading row population");
-    const [summary, finals] = await Promise.all([checkedGradingAsset(pointer, pointer.summary, "summary"), checkedGradingAsset(pointer, pointer.outcomes, "outcomes")]);
-    const supported = (summary.schema_version === "selection-public-report-v1" && summary.report_schema_version === "selection-report-v2")
-      || (summary.schema_version === "selection-public-report-v2" && summary.report_schema_version === "selection-report-v3");
-    if (!supported || !Array.isArray(summary.summary?.tables)
-        || finals.schema_version !== "selection-final-outcomes-v1" || !Array.isArray(finals.outcomes)) throw new Error("Unsupported grading data schema");
+function validateGradingTables(pointer, tables, version) {
+    if (!Array.isArray(tables)) throw new Error("Missing grading tables");
     const tableIds = new Set();
-    for (const table of summary.summary.tables) {
-      if (summary.schema_version === "selection-public-report-v2" &&
+    for (const table of tables) {
+      if (version !== "selection-public-report-v1" &&
           (!Object.hasOwn(table, "policy_version") || !Object.hasOwn(table, "policy_sha256")
             || typeof table.policy_version !== "string" || !table.policy_version.trim() || !HASH64.test(table.policy_sha256)
             || !["all", "dk", "sleeper", "ours", "unknown"].includes(table.line_source_scope)
@@ -206,7 +197,12 @@ async function loadGrading() {
           || GRADING_RESULTS.reduce((n, k) => n + table[k], 0) !== table.rows) throw new Error("Invalid grading summary reconciliation");
       tableIds.add(table.summary_id);
     }
-    for (const row of finals.outcomes) {
+
+}
+function validateFinalOutcomes(pointer, rows) {
+    if (!Array.isArray(rows)) throw new Error("Missing final outcomes");
+    const result = new Map();
+    for (const row of rows) {
       if (!Number.isInteger(row.season) || !Number.isInteger(row.week) || !["game_id", "player_id", "category", "team"].every((key) => typeof row[key] === "string" && row[key])
           || !Number.isFinite(Date.parse(row.kickoff)) || !["resolved", "dnp", "pending", "unresolved"].includes(row.status)
           || typeof row.final_confirmed !== "boolean" || typeof row.outcome_conflict !== "boolean"
@@ -221,12 +217,121 @@ async function loadGrading() {
           || (["resolved", "dnp"].includes(row.status) && (!HASH64.test(row.outcome_snapshot_sha256)
               || !HASH64.test(row.selected_outcome_provenance_sha256) || !HASH64.test(row.selected_outcome_row_sha256)))) throw new Error("Invalid final outcome index");
       const key = JSON.stringify([row.season, row.week, row.game_id, row.player_id, row.category, row.team, Date.parse(row.kickoff)]);
-      if (S.finalOutcomes.has(key)) throw new Error("Duplicate final outcome identity");
-      S.finalOutcomes.set(key, row);
+      if (result.has(key)) throw new Error("Duplicate final outcome identity");
+      result.set(key, row);
     }
-    S.grading = { pointer, summary, chunks: new Map() };
-    S.gradingGroup = null;
+
+    return result;
+}
+async function validateGradingIndexes(pointer, summary, outcomes) {
+  if (summary.schema_version !== "selection-public-report-v3" || summary.report_schema_version !== "selection-report-v3"
+      || summary.row_count !== pointer.row_count || !summary.contexts || typeof summary.contexts !== "object" || Array.isArray(summary.contexts)
+      || !Array.isArray(summary.summary_partitions) || Object.hasOwn(summary.summary || {}, "tables")
+      || outcomes.schema_version !== "selection-final-outcome-index-v1" || !Array.isArray(outcomes.periods)
+      || !Number.isInteger(outcomes.outcome_count) || outcomes.outcome_count < 0) throw new Error("Unsupported grading indexes");
+  const used = new Set(), pairs = new Set();
+  for (const [id, context] of Object.entries(summary.contexts)) {
+    if (!HASH64.test(id) || !context || JSON.stringify(Object.keys(context).sort()) !== JSON.stringify([...PARTITION_CONTEXT_FIELDS].sort())
+        || await gradingHash(new TextEncoder().encode(gradingCanonical(context))) !== id) throw new Error("Invalid exact grading context");
+  }
+  for (const part of summary.summary_partitions) {
+    publicAssetPath(pointer, part, "summary", true);
+    if (!Object.hasOwn(summary.contexts, part.context_id) || !/^(cumulative|[0-9]{4}-w(0[1-9]|1[0-8]))$/.test(part.period)
+        || !Number.isInteger(part.table_count) || part.table_count < 1 || !Number.isInteger(part.decoded_bytes) || part.decoded_bytes < 1
+        || part.decoded_bytes > 12 * 1024 * 1024 || pairs.has(part.context_id + ":" + part.period)) throw new Error("Invalid summary context/period index");
+    pairs.add(part.context_id + ":" + part.period); used.add(part.context_id);
+  }
+  if (used.size !== Object.keys(summary.contexts).length) throw new Error("Unreferenced grading context");
+  const periods = new Set(); let count = 0;
+  for (const part of outcomes.periods) {
+    publicAssetPath(pointer, part, "outcomes", true);
+    if (!Number.isInteger(part.season) || part.season < 2000 || part.season > 2200 || !Number.isInteger(part.week) || part.week < 1 || part.week > 18
+        || !Number.isInteger(part.count) || part.count < 1 || !Number.isInteger(part.decoded_bytes) || part.decoded_bytes < 1 || part.decoded_bytes > 12 * 1024 * 1024
+        || periods.has(part.season + ":" + part.week)) throw new Error("Invalid outcome period index");
+    periods.add(part.season + ":" + part.week); count += part.count;
+  }
+  if (count !== outcomes.outcome_count) throw new Error("Outcome index population mismatch");
+}
+async function loadOutcomePeriod(grading, season, week) {
+  const descriptor = grading.outcomeIndex.periods.find(part => part.season === season && part.week === week);
+  // An absent period is explicitly unknown, never borrowed from another week.
+  if (!descriptor) return new Map();
+  const part = await checkedGradingAsset(grading.pointer, descriptor, "outcomes", true);
+  if (part.schema_version !== "selection-final-outcome-period-v1" || part.season !== season || part.week !== week
+      || !Array.isArray(part.outcomes) || part.outcomes.length !== descriptor.count
+      || part.outcomes.some(row => row.season !== season || row.week !== week)) throw new Error("Wrong outcome partition period");
+  return validateFinalOutcomes(grading.pointer, part.outcomes);
+}
+async function loadSelectedGradingSummary(grading = S.grading) {
+  if (!grading?.partitioned) return;
+  const revision = ++grading.viewRevision;
+  const { descriptor } = selectedGradingTables();
+  const key = descriptor?.context_id + ":" + descriptor?.period;
+  grading.selectedKey = key; grading.partError = null;
+  if (!descriptor) { grading.partLoading = false; grading.summary.summary.tables = []; grading.partError = "No matching report context is available."; return; }
+  if (grading.parts.has(key)) {
+    grading.partLoading = false; grading.summary.summary.tables = grading.parts.get(key); return;
+  }
+  grading.partLoading = true;
+  try {
+    const part = await checkedGradingAsset(grading.pointer, descriptor, "summary", true);
+    if (part.schema_version !== "selection-public-summary-partition-v1" || part.context_id !== descriptor.context_id || part.period !== descriptor.period
+        || !Array.isArray(part.tables) || part.tables.length !== descriptor.table_count
+        || part.tables.some(table => table.period !== descriptor.period || PARTITION_CONTEXT_FIELDS.some(field => table[field] !== grading.index.contexts[descriptor.context_id][field]))) throw new Error("Wrong summary partition context/period");
+    validateGradingTables(grading.pointer, part.tables, "selection-public-report-v3");
+    if (S.grading !== grading || revision !== grading.viewRevision) return;
+    grading.parts.set(key, part.tables);
   } catch (err) {
+    if (S.grading === grading && revision === grading.viewRevision) grading.partError = String(err.message || "Unavailable selected summary");
+  } finally {
+    if (S.grading === grading && revision === grading.viewRevision) {
+      grading.partLoading = false;
+      grading.summary.summary.tables = grading.parts.get(key) || [];
+      if (S.tab === "record") renderRecord();
+    }
+  }
+}
+async function loadGrading() {
+  const revision = ++gradingLoadRevision;
+  S.grading = null; S.gradingError = null; S.finalOutcomes = new Map();
+  try {
+    const response = await fetch(GRADING_BASE + "latest.json", { cache: "no-store" });
+    if (!response.ok) throw new Error("Grading pointer unavailable");
+    const raw = await response.arrayBuffer();
+    if (raw.byteLength > 1024 * 1024) throw new Error("Grading pointer exceeds size limit");
+    const pointer = JSON.parse(new TextDecoder().decode(raw));
+    const partitioned = pointer.schema_version === "selection-publication-pointer-v2";
+    if ((!partitioned && pointer.schema_version !== "selection-publication-pointer-v1") || !HASH64.test(pointer.report_id)
+        || !Number.isFinite(Date.parse(pointer.generated_at)) || !Array.isArray(pointer.rows)
+        || pointer.rows.length > 4000) throw new Error("Unsupported grading publication");
+    const paths = new Set();
+    for (const chunk of pointer.rows) {
+      publicAssetPath(pointer, chunk, "rows");
+      if (!Number.isInteger(chunk.count) || chunk.count < 1 || chunk.count > 250 || paths.has(chunk.path)) throw new Error("Invalid grading row chunks");
+      paths.add(chunk.path);
+    }
+    if (pointer.rows.slice(0, -1).some(chunk => chunk.count !== 250)
+        || !Number.isInteger(pointer.row_count) || pointer.row_count !== pointer.rows.reduce((n, chunk) => n + chunk.count, 0)) throw new Error("Invalid grading row population");
+    const [summary, finals] = await Promise.all([checkedGradingAsset(pointer, pointer.summary, "summary"), checkedGradingAsset(pointer, pointer.outcomes, "outcomes")]);
+    const grading = { pointer, summary, chunks: new Map(), partitioned, viewRevision: 0, parts: new Map() };
+    let finalOutcomes;
+    if (partitioned) {
+      await validateGradingIndexes(pointer, summary, finals);
+      grading.index = summary; grading.outcomeIndex = finals;
+      grading.summary = { ...summary, summary: { ...summary.summary, tables: [] } };
+      finalOutcomes = await loadOutcomePeriod(grading, S.data.season, S.data.week);
+    } else {
+      const supported = summary.schema_version === "selection-public-report-v1" && summary.report_schema_version === "selection-report-v2"
+        || summary.schema_version === "selection-public-report-v2" && summary.report_schema_version === "selection-report-v3";
+      if (!supported || finals.schema_version !== "selection-final-outcomes-v1") throw new Error("Unsupported grading data schema");
+      validateGradingTables(pointer, summary.summary?.tables, summary.schema_version);
+      finalOutcomes = validateFinalOutcomes(pointer, finals.outcomes);
+    }
+    if (revision !== gradingLoadRevision) return;
+    S.grading = grading; S.finalOutcomes = finalOutcomes; S.gradingGroup = null;
+    if (partitioned) await loadSelectedGradingSummary(grading);
+  } catch (err) {
+    if (revision !== gradingLoadRevision) return;
     S.grading = null; S.finalOutcomes = new Map(); S.gradingError = String(err.message || "Unavailable saved grading");
   }
 }
@@ -2771,19 +2876,26 @@ const gradingLabel = (value) => value == null ? "Unknown / unavailable" : GRADIN
 const gradingContextFields = ["provenance_class", "model_version", "engine_sha256", "policy_version", "policy_sha256", "view", "checkpoint", "period", "line_source_scope"];
 const gradingContextValue = (table, field) => table[field] ?? (field === "line_source_scope" ? "all" : "legacy_aggregate_not_separated");
 function selectedGradingTables() {
-  let tables = S.grading.summary.summary.tables;
+  const grading = S.grading;
+  let tables = grading.partitioned ? grading.index.summary_partitions.map(part => ({ ...grading.index.contexts[part.context_id], period: part.period, descriptor: part })) : grading.summary.summary.tables;
   const fields = [...gradingContextFields, "dimension"];
   const defaults = { provenance_class: "local_pregame_membership_observation", view: "all_qualifying_leans", checkpoint: "history", period: "cumulative", line_source_scope: "all", dimension: "overall" };
   const labels = { provenance_class: "Forecast provenance", model_version: "Model", engine_sha256: "Engine version", policy_version: "Timing policy version", policy_sha256: "Timing policy identity", view: "Cohort", checkpoint: "Decision checkpoint", period: "Reporting period", line_source_scope: "Line source", dimension: "Supporting breakdown" };
   const controls = []; let baseTables = [];
+  let descriptor = null;
   for (const field of fields) {
+    if (field === "dimension" && grading.partitioned) {
+      descriptor = tables.length === 1 ? tables[0].descriptor : null;
+      const key = descriptor?.context_id + ":" + descriptor?.period;
+      tables = grading.parts.get(key) || [];
+    }
     const values = [...new Set(tables.map(table => gradingContextValue(table, field)))].sort((a,b) => String(a).localeCompare(String(b)));
     if (!values.includes(S.gradingFilters[field])) S.gradingFilters[field] = values.includes(defaults[field]) ? defaults[field] : values[0];
     controls.push(`<label>${labels[field]}<select data-grading-filter="${field}" aria-label="${labels[field]}">${values.map(value => `<option value="${esc(value)}" ${value === S.gradingFilters[field] ? "selected" : ""}>${esc(gradingLabel(value))}</option>`).join("")}</select></label>`);
     if (field === "dimension") baseTables = tables;
     tables = tables.filter(table => gradingContextValue(table, field) === S.gradingFilters[field]);
   }
-  return { tables, baseTables, controls: controls.join("") };
+  return { tables, baseTables, descriptor, controls: controls.join("") };
 }
 function selectionPerformanceHtml(baseTables) {
   const one = (dimension,value) => { const matches=baseTables.filter(t=>t.dimension===dimension && t.value===value);return matches.length===1?matches[0]:null; };
@@ -2796,7 +2908,7 @@ function selectionPerformanceHtml(baseTables) {
   const unclassified=r=>Math.max(0,(r.combined?.rows||0)-(r.over?.rows||0)-(r.under?.rows||0));
   return `<section data-performance-primary><h3>Recorded selection performance</h3><p class="note" data-performance-context>${esc(context)}</p>
     <div class="card" data-performance-headline>${cell(total,"overall")}</div>
-    <p class="note">Choose any W–L result to inspect its exact supporting rows. No decided sample means unavailable. Combined includes no-side coverage; it is not an independent sample of Over and Under. ${S.grading.summary.schema_version === "selection-public-report-v2" ? "Our selections by line source use matched joint decision groups. Source-specific day breakdowns are unavailable; choose All line sources for those views." : "Legacy aggregates do not separate timing policies or offer source jointly; only All line sources is available."}</p>
+    <p class="note">Choose any W–L result to inspect its exact supporting rows. No decided sample means unavailable. Combined includes no-side coverage; it is not an independent sample of Over and Under. ${["selection-public-report-v2", "selection-public-report-v3"].includes(S.grading.summary.schema_version) ? "Our selections by line source use matched joint decision groups. Source-specific day breakdowns are unavailable; choose All line sources for those views." : "Legacy aggregates do not separate timing policies or offer source jointly; only All line sources is available."}</p>
     <table class="tbl performance-desktop"><thead><tr><th class="l">Category</th><th>Over W–L / hit rate / decided N</th><th>Under W–L / hit rate / decided N</th><th>Combined</th></tr></thead><tbody>${rows.map(r=>`<tr data-category-performance="${r.key}"><th class="l">${esc(r.label)}</th><td>${cell(r.over,"over")}</td><td>${cell(r.under,"under")}</td><td>${cell(r.combined,"combined")}<small>${unclassified(r)} no-side coverage rows</small></td></tr>`).join("")}</tbody></table>
     <div class="performance-phone">${rows.map(r=>`<article class="card" data-category-performance="${r.key}"><h4>${esc(r.label)}</h4><div class="performance-side"><b>Over</b><div>${cell(r.over,"over")}</div></div><div class="performance-side"><b>Under</b><div>${cell(r.under,"under")}</div></div><div class="performance-side"><b>Combined</b><div>${cell(r.combined,"combined")}<small>${unclassified(r)} no-side coverage rows</small></div></div></article>`).join("")}</div></section>`;
 }
@@ -2825,7 +2937,7 @@ function gradingReportHtml() {
   return `<section id="selection-grading"><h2>Selection and timing grading</h2><div class="card note" data-verification-scope>${esc(verification)}</div>
     <div class="card note"><b>Descriptive statistical results, not venue settlement or ROI.</b><p data-grading-freshness>${esc(freshness)} Generated ${esc(pointer.generated_at)}.</p><p>Top Picks overlap all leans. The disjoint non-Top view partitions the all-lean decision at its own original clock. Repeated checkpoint policies are related observations. Never add these tables as independent outcomes.</p><p>Whole-week intervals and confirmed subgroup advantages are unavailable unless their registered evidence requirements are met. These views do not identify the best weekday to consult the website.</p><p>The original full-board Week 6 proof is incomplete. Game-level evidence must be read separately; this report does not authenticate missing historical inputs. Full offer coverage, quote freshness and complete venue contracts remain unestablished where the saved records do not prove them.</p></div>
     <div class="filters grading-filters">${controls}</div>
-    ${selectionPerformanceHtml(baseTables)}
+    ${S.grading.partitioned && (S.grading.partLoading || S.grading.partError) ? `<div class="card note" data-grading-part-status role="status">${esc(S.grading.partError || "Loading the selected context and period…")}. Totals are unavailable until its complete validated summary is loaded.</div>` : selectionPerformanceHtml(baseTables)}
     <h3>Supporting breakdown</h3>
     <div class="tbl-wrap"><table class="tbl" data-grading-summaries><thead><tr><th class="l">Group</th><th>Hit rate</th><th>Sample</th><th class="l">Results and coverage</th><th>Rows</th></tr></thead><tbody>${tables.map((table) => `<tr data-grading-summary="${table.summary_id}"><td class="l">${esc(gradingLabel(table.value))}</td><td>${table.hit_rate == null ? "Unavailable" : fmt(100 * table.hit_rate) + "%"}<br><small>W / (W + L)</small></td><td>${table.decided} decided<br>${table.decided_unique_players} players · ${table.decided_unique_games} games · ${table.decided_unique_weeks} weeks</td><td class="l">${esc(statusCounts(table))}<br>${table.selected} selected / ${table.rows} coverage rows<br>${esc(Object.entries(table.coverage_reason_counts || {}).map(([reason, count]) => `${reason}: ${count}`).join(" · "))}<br>${table.unique_players} players · ${table.unique_games} games · ${table.unique_weeks} archived/observed weeks</td><td><button class="tbtn" data-grading-group="${table.summary_id}">Inspect ${table.rows} rows</button></td></tr>`).join("")}</tbody></table></div>
     <p class="note">NO_ACTION reasons remain in the rows: observed abstention or non-Top membership differs from missing/stale observations, absent source rows and an unknown universe. Reference-only records are not executable offers. Inherited clocks stay unknown; saved-cache regrades remain separately labelled outcomes.</p>
@@ -5060,7 +5172,9 @@ document.addEventListener("input", (e) => {
 document.addEventListener("change", (e) => {
   if (e.target.dataset.gradingFilter) {
     S.gradingFilters[e.target.dataset.gradingFilter] = e.target.value;
-    S.gradingGroup = null; renderRecord(); return;
+    S.gradingGroup = null;
+    if (S.grading?.partitioned) loadSelectedGradingSummary();
+    renderRecord(); return;
   }
   if (e.target.matches("[data-wksel]")) { setWeek(+e.target.value); return; }
   if (e.target.matches("[data-mu-week]")) { S.muWeek = +e.target.value; renderLeagueTab(); return; }

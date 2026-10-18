@@ -546,3 +546,69 @@ was run for this handoff. The timing recorder/report is still the next bounded
 stage, and native environment/gate adoption and audit round-trip delivery remain
 separate readiness requirements. See the append-only CODEX_RESULT checkpoints
 and data/verification/reports/handoff_validation_20261014.json.
+
+### Bounded summary and outcome partitions (capacity checkpoint)
+
+`selection-publication-pointer-v2` selects the explicit public-v3 storage layout;
+legacy pointer-v1/public-v1 and public-v2 readers remain supported. The local
+selection-report-v3 contract, decision IDs and semantic summary IDs do not change.
+The publisher reconstructs **all** partitions and rows, then applies the retained
+complete semantic validator before the caller can atomically advance `latest.json`.
+A missing, corrupt, oversized or inconsistent non-default partition also fails
+producer validation. Failure preserves the previous coherent pointer with its real
+clock; it does not make that saved generation current.
+
+Summary contexts bind provenance, model, engine, timing-policy version and hash,
+cohort, checkpoint and line-source scope. Each summary partition binds one exact
+context and reporting period (weekly or cumulative). Outcome partitions bind one
+season/week and retain complete game/player/category/team/kickoff identities.
+Indexes carry report ID, context/period, exact byte hashes, decoded sizes and group
+or outcome counts. The new logical report ID includes the versioned layout
+ discriminator; original row positions, 250-row chunks, membership hashes and all
+counts/rates/sample context remain exact. Changed representations never reuse an
+older publication identity.
+
+The fixed limits are 1 MiB for the pointer and each index, 12 MiB per summary or
+outcome partition, 2 MiB per row chunk, 250 rows per chunk and 4,000 chunks. These
+are failure bounds, not targets to increase as data grows. Indexes retain safe
+`<logical-report-id>/summary.json` and `outcomes.json` paths. Partitions use
+`<sha256(actual-part-bytes)>/summary.json` or `outcomes.json`; their payload still
+binds the logical report. This fits the unchanged strict Pages staging allowlist;
+GitHub evidence and excluded original input files retain their existing paths and
+bytes. No new raw responses, device selections or private manifest fields are
+published.
+
+The browser initially loads both indexes, the selected exact-context summary and
+only the current board's required outcome period. It does not prefetch every
+context. Other contexts load on demand; each table still contains its complete
+membership and counts, independent of drill-down pagination. Publication and view
+revision checks prevent delayed responses from replacing newer filters or clearing
+a newer generation. Immutable v3 assets may use the normal browser cache; the
+latest pointer is revalidated. The shell cache identity advances from v53 to v54.
+
+Current My Picks remains current-week-only, with unchanged device storage and
+saved-line grading. Full outcome keys prevent another week's result from settling
+a current contract. Historical game views retain their existing saved-board-stat
+path; this checkpoint adds no historical My Picks interface. Unavailable outcomes
+remain unknown, never an inferred zero or DNP. All-twelve numerical/PPR/TD analysis
+remains local and opt-in. Forecasting, selection policies, strict verification,
+partial plans and candidate registration are unchanged.
+
+A code-only forward rollback preserves every immutable old/new asset. At the
+current under-cap dataset the old publisher can regenerate a legacy pointer, and
+the unchanged Pages allowlist can retain the v3 assets. Above the old monolithic
+cap, restoring the old publisher cannot promise continued complete reporting.
+Before production release, larger-data rollback must explicitly retain compatible
+partition publication support, or receive approval for the limited Phase 1 fallback
+with truthful unavailable/previous/stale grading status. This source scope does
+not alter protected configuration or implement that fallback. The production
+backup must include PR #2 and preserve all intervening evidence and My Picks.
+
+Capacity stress fixtures duplicate report shapes into fictional weeks; they are
+storage tests, not new football samples or evidence of predictive improvement.
+Browser loading measurements are local Chromium emulation under documented cache,
+compression and network conditions, not public cellular or physical iPhone/Safari
+acceptance. Visiting every context can increase total requests and compressed
+bytes. Exact measurements and rollback evidence belong to this run's CODEX_RESULT.
+The old Week 6 full-board missing-original-input failure remains a failure; partial
+original-model-input reproduction is not full-week qualification or accuracy proof.

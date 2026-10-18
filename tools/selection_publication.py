@@ -27,6 +27,15 @@ POINTER_VERSION = "selection-publication-pointer-v1"
 ROWS_VERSION = "selection-public-rows-v1"
 OUTCOMES_VERSION = "selection-final-outcomes-v1"
 CHUNK_SIZE = 250
+INDEX_LIMIT = 1024 * 1024
+PARTITION_POINTER_VERSION = "selection-publication-pointer-v2"
+PARTITION_PUBLIC_VERSION = "selection-public-report-v3"
+SUMMARY_PART_VERSION = "selection-public-summary-partition-v1"
+OUTCOME_INDEX_VERSION = "selection-final-outcome-index-v1"
+OUTCOME_PART_VERSION = "selection-final-outcome-period-v1"
+LAYOUT_VERSION = "exact-context-period-and-week-outcomes-v1"
+CONTEXT_FIELDS = ("provenance_class", "model_version", "engine_sha256", "policy_version",
+                  "policy_sha256", "view", "checkpoint", "line_source_scope")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 SOURCE_HEX = re.compile(r"[0-9a-f]{40}\Z")
 PRIVATE_TEXT = re.compile(r"(?:https?://|file://|/workspace/|/tmp/|[A-Za-z]:\\|\bBearer\s|\bgh[pousr]_|\bgithub_pat_)", re.I)
@@ -286,7 +295,7 @@ def _projection(report, *, source_sha, input_digest):
     return summary, rows, outcomes, chunks, public_id
 
 
-def validate_publication(base, pointer):
+def _validate_legacy_publication(base, pointer, *, _partitioned=None):
     """Read the exact written assets before advancing a mutable latest pointer."""
     base = Path(base)
     if set(pointer) != {"schema_version", "report_id", "generated_at", "row_count", "summary", "rows", "outcomes"}:
@@ -314,7 +323,7 @@ def validate_publication(base, pointer):
             raise IntegrityError("Public asset byte checksum mismatch")
         return load_json(path)
 
-    summary = asset(pointer["summary"], "summary.json")
+    summary = _partitioned[0] if _partitioned is not None else asset(pointer["summary"], "summary.json")
     expected_summary_fields = {"schema_version", "report_schema_version", "report_id", "row_count", "source_sha",
                                "input_binding", "input_content_sha256", "summary", "coverage",
                                "primary_raw_vs_adjusted", "uncertainty", "limitations"}
@@ -404,7 +413,7 @@ def validate_publication(base, pointer):
             raise IntegrityError("Public selected population does not reconcile")
         if table["row_chunks"] != sorted({locations[ref] // CHUNK_SIZE for ref in refs}):
             raise IntegrityError("Public summary chunk mapping does not reconcile")
-    final = asset(pointer["outcomes"], "outcomes.json")
+    final = _partitioned[1] if _partitioned is not None else asset(pointer["outcomes"], "outcomes.json")
     if set(final) != {"schema_version", "report_id", "outcomes"} or final["schema_version"] != OUTCOMES_VERSION or final["report_id"] != report_id:
         raise IntegrityError("Malformed public final-outcome index")
     if any(_outcome(row) != row for row in final["outcomes"]):
@@ -415,10 +424,217 @@ def validate_publication(base, pointer):
     if len({identity(row) for row in final["outcomes"]}) != len(final["outcomes"]):
         raise IntegrityError("Duplicate final-outcome identity")
     core = {key: value for key, value in summary.items() if key != "report_id"}
-    if digest({"summary": core, "rows": rows, "outcomes": final["outcomes"]}) != report_id:
+    content = {"summary": core, "rows": rows, "outcomes": final["outcomes"]}
+    if _partitioned is not None:
+        content["layout"] = LAYOUT_VERSION
+    if digest(content) != report_id:
         raise IntegrityError("Public content identity mismatch")
     _safe_value(summary)
     return summary
+
+
+def _context(table):
+    return {key: table.get(key) for key in CONTEXT_FIELDS}
+
+
+def _table_order(table):
+    # Exactly the registered summarizer's order, independent of shard load order.
+    return repr((tuple(table.get(key) for key in CONTEXT_FIELDS), table["period"],
+                 table["dimension"], table["value"]))
+
+
+def _partition_asset(base, descriptor, filename, *, index=False, report_id=None):
+    if not isinstance(descriptor, dict) or set(descriptor) - {"path", "sha256", "decoded_bytes", "context_id", "period", "table_count",
+                          "season", "week", "count"}:
+        raise IntegrityError("Unknown partition descriptor fields")
+    _hash(descriptor.get("sha256"))
+    namespace = report_id if index else descriptor["sha256"]
+    if descriptor.get("path") != namespace + "/" + filename:
+        raise IntegrityError("Unsafe partition asset path")
+    size = descriptor.get("decoded_bytes")
+    limit = INDEX_LIMIT if index else SUMMARY_LIMIT
+    if type(size) is not int or not 0 < size <= limit:
+        raise IntegrityError("Partition asset exceeds the supported reader size limit")
+    path = Path(base) / descriptor["path"]
+    _no_symlinks(path, Path(base))
+    if not path.resolve().is_relative_to(Path(base).resolve()):
+        raise IntegrityError("Partition asset escaped its root")
+    raw = path.read_bytes()
+    if len(raw) > limit:
+        raise IntegrityError("Partition asset exceeds the supported reader size limit")
+    if len(raw) != size or hashlib.sha256(raw).hexdigest() != descriptor["sha256"]:
+        raise IntegrityError("Partition asset byte checksum/size mismatch")
+    return load_json(path)
+
+
+def _read_partitions(base, pointer):
+    """Reconstruct every part before the existing complete semantic validation."""
+    if (set(pointer) != {"schema_version", "report_id", "generated_at", "row_count", "summary", "rows", "outcomes"}
+            or pointer.get("schema_version") != PARTITION_POINTER_VERSION
+            or len(canonical(pointer) + b"\n") > INDEX_LIMIT):
+        raise IntegrityError("Unsupported partitioned publication pointer")
+    _hash(pointer.get("report_id"))
+    report_id = pointer["report_id"]
+    utc(pointer["generated_at"])
+    if (type(pointer["row_count"]) is not int or not 0 <= pointer["row_count"] <= 250 * 4000
+            or not isinstance(pointer["rows"], list) or len(pointer["rows"]) > 4000):
+        raise IntegrityError("Partitioned row population exceeds supported bounds")
+    for key in ("summary", "outcomes"):
+        if set(pointer[key]) != {"path", "sha256", "decoded_bytes"}:
+            raise IntegrityError("Malformed partition index descriptor")
+    index = _partition_asset(base, pointer["summary"], "summary.json", index=True, report_id=report_id)
+    fields = {"schema_version", "report_schema_version", "report_id", "row_count", "source_sha",
+              "input_binding", "input_content_sha256", "summary", "coverage", "primary_raw_vs_adjusted",
+              "uncertainty", "limitations", "contexts", "summary_partitions"}
+    if (set(index) != fields or index["schema_version"] != PARTITION_PUBLIC_VERSION
+            or index["report_schema_version"] != "selection-report-v3" or index["report_id"] != report_id
+            or index["row_count"] != pointer["row_count"]
+            or set(index["summary"]) != {"warning", "disjoint_selected_partitions_reconciled"}
+            or not isinstance(index["contexts"], dict) or not isinstance(index["summary_partitions"], list)):
+        raise IntegrityError("Malformed partitioned summary index")
+    _safe_value(index)
+    for cid, context in index["contexts"].items():
+        if set(context) != set(CONTEXT_FIELDS) or digest(context) != cid:
+            raise IntegrityError("Invalid exact publication context")
+    tables, groups, ids, used_contexts = [], set(), set(), set()
+    for descriptor in index["summary_partitions"]:
+        if set(descriptor) != {"context_id", "period", "path", "sha256", "decoded_bytes", "table_count"}:
+            raise IntegrityError("Malformed summary partition descriptor")
+        cid, period = descriptor["context_id"], descriptor["period"]
+        if (cid not in index["contexts"] or not isinstance(period, str)
+                or not (period == "cumulative" or re.fullmatch(r"[0-9]{4}-w(?:0[1-9]|1[0-8])", period))
+                or (cid, period) in groups or type(descriptor["table_count"]) is not int
+                or descriptor["table_count"] < 1):
+            raise IntegrityError("Duplicate or invalid summary context/period")
+        groups.add((cid, period)); used_contexts.add(cid)
+        part = _partition_asset(base, descriptor, "summary.json")
+        if (set(part) != {"schema_version", "report_id", "context_id", "period", "tables"}
+                or part["schema_version"] != SUMMARY_PART_VERSION or part["report_id"] != report_id
+                or part["context_id"] != cid or part["period"] != period
+                or not isinstance(part["tables"], list) or len(part["tables"]) != descriptor["table_count"]):
+            raise IntegrityError("Mixed summary partition identity/context/period")
+        for table in part["tables"]:
+            if (_context(table) != index["contexts"][cid] or table.get("period") != period
+                    or table.get("summary_id") in ids):
+                raise IntegrityError("Mixed or duplicate partition summary")
+            ids.add(table.get("summary_id")); tables.append(table)
+    if used_contexts != set(index["contexts"]):
+        raise IntegrityError("Unreferenced publication context")
+    normalized = {key: value for key, value in index.items() if key not in ("contexts", "summary_partitions")}
+    normalized["schema_version"] = REPORT_CONTRACTS[index["report_schema_version"]]
+    normalized["summary"] = dict(index["summary"], tables=sorted(tables, key=_table_order))
+    final_index = _partition_asset(base, pointer["outcomes"], "outcomes.json", index=True, report_id=report_id)
+    if (set(final_index) != {"schema_version", "report_id", "outcome_count", "periods"}
+            or final_index["schema_version"] != OUTCOME_INDEX_VERSION or final_index["report_id"] != report_id
+            or type(final_index["outcome_count"]) is not int or final_index["outcome_count"] < 0
+            or not isinstance(final_index["periods"], list)):
+        raise IntegrityError("Malformed outcome period index")
+    outcomes, periods, identities = [], set(), set()
+    for descriptor in final_index["periods"]:
+        if (set(descriptor) != {"season", "week", "path", "sha256", "decoded_bytes", "count"}
+                or type(descriptor["season"]) is not int or not 2000 <= descriptor["season"] <= 2200
+                or type(descriptor["week"]) is not int or not 1 <= descriptor["week"] <= 18
+                or type(descriptor["count"]) is not int or descriptor["count"] < 1):
+            raise IntegrityError("Invalid outcome period descriptor")
+        period = descriptor["season"], descriptor["week"]
+        if period in periods:
+            raise IntegrityError("Duplicate outcome period")
+        periods.add(period)
+        part = _partition_asset(base, descriptor, "outcomes.json")
+        if (set(part) != {"schema_version", "report_id", "season", "week", "outcomes"}
+                or part["schema_version"] != OUTCOME_PART_VERSION or part["report_id"] != report_id
+                or type(part["season"]) is not int or type(part["week"]) is not int
+                or (part["season"], part["week"]) != period
+                or not isinstance(part["outcomes"], list) or len(part["outcomes"]) != descriptor["count"]):
+            raise IntegrityError("Mixed outcome partition identity/period")
+        for row in part["outcomes"]:
+            key = identity(row)
+            if (row.get("season"), row.get("week")) != period or key in identities:
+                raise IntegrityError("Mixed or duplicate outcome identity")
+            identities.add(key); outcomes.append(row)
+    if len(outcomes) != final_index["outcome_count"]:
+        raise IntegrityError("Outcome partition population differs")
+    final = {"schema_version": OUTCOMES_VERSION, "report_id": report_id,
+             "outcomes": sorted(outcomes, key=identity)}
+    virtual = dict(pointer, schema_version=POINTER_VERSION)
+    return _validate_legacy_publication(base, virtual, _partitioned=(normalized, final))
+
+
+def validate_publication(base, pointer):
+    """Version dispatch is explicit; unsupported data never falls back."""
+    if pointer.get("schema_version") == PARTITION_POINTER_VERSION:
+        return _read_partitions(Path(base), pointer)
+    return _validate_legacy_publication(base, pointer)
+
+
+def prepare_publication(base, summary, rows, outcomes, chunks, generated_at, *, partitioned=True):
+    """Create immutable assets and fully validate; caller alone advances latest."""
+    base = Path(base)
+    if len(chunks) > 4000:
+        raise IntegrityError("Public row-chunk count exceeds supported bounds")
+    use_parts = partitioned and summary["report_schema_version"] == "selection-report-v3"
+    summary = {key: value for key, value in summary.items() if key != "report_id"}
+    summary = dict(summary, summary=dict(summary["summary"]))
+    outcomes = sorted(outcomes, key=identity)
+    if use_parts:
+        summary["summary"]["tables"] = sorted(summary["summary"]["tables"], key=_table_order)
+    core = {"summary": summary, "rows": rows, "outcomes": outcomes}
+    if use_parts:
+        core["layout"] = LAYOUT_VERSION
+    public_id = digest(core)
+
+    def save(name, payload, limit, *, content_addressed=False):
+        raw = canonical(payload) + b"\n"
+        if len(raw) > limit:
+            raise IntegrityError("Public asset exceeds the supported reader size limit")
+        checksum = hashlib.sha256(raw).hexdigest()
+        namespace = checksum if content_addressed else public_id
+        path = base / namespace / name
+        _no_symlinks(path, base)
+        _create_file(path, raw)
+        return {"path": namespace + "/" + name, "sha256": checksum, "decoded_bytes": len(raw)}
+
+    descriptors = []
+    for number, chunk in enumerate(chunks):
+        value = save(f"rows-{number:04d}.json", {"schema_version": ROWS_VERSION,
+                     "report_id": public_id, "rows": chunk}, ROW_LIMIT)
+        descriptors.append({"path": value["path"], "sha256": value["sha256"], "count": len(chunk)})
+    if use_parts:
+        contexts, groups = {}, defaultdict(list)
+        for table in summary["summary"]["tables"]:
+            context = _context(table); cid = digest(context); contexts[cid] = context
+            groups[(cid, table["period"])].append(table)
+        parts = []
+        for (cid, period), tables in sorted(groups.items()):
+            value = save("summary.json", {"schema_version": SUMMARY_PART_VERSION, "report_id": public_id,
+                         "context_id": cid, "period": period, "tables": tables}, SUMMARY_LIMIT, content_addressed=True)
+            parts.append(dict(value, context_id=cid, period=period, table_count=len(tables)))
+        index = dict(summary, schema_version=PARTITION_PUBLIC_VERSION, report_id=public_id,
+                     summary={key: value for key, value in summary["summary"].items() if key != "tables"},
+                     contexts=contexts, summary_partitions=parts)
+        summary_descriptor = save("summary.json", index, INDEX_LIMIT)
+        by_period = defaultdict(list)
+        for row in outcomes:
+            by_period[(row["season"], row["week"])].append(row)
+        periods = []
+        for (season, week), members in sorted(by_period.items()):
+            value = save("outcomes.json", {"schema_version": OUTCOME_PART_VERSION, "report_id": public_id,
+                         "season": season, "week": week, "outcomes": members}, SUMMARY_LIMIT, content_addressed=True)
+            periods.append(dict(value, season=season, week=week, count=len(members)))
+        final_descriptor = save("outcomes.json", {"schema_version": OUTCOME_INDEX_VERSION, "report_id": public_id,
+                               "outcome_count": len(outcomes), "periods": periods}, INDEX_LIMIT)
+    else:
+        summary_descriptor = save("summary.json", dict(summary, report_id=public_id), SUMMARY_LIMIT)
+        final_descriptor = save("outcomes.json", {"schema_version": OUTCOMES_VERSION, "report_id": public_id,
+                                "outcomes": outcomes}, SUMMARY_LIMIT)
+        summary_descriptor.pop("decoded_bytes"); final_descriptor.pop("decoded_bytes")
+    pointer = {"schema_version": PARTITION_POINTER_VERSION if use_parts else POINTER_VERSION,
+               "report_id": public_id, "generated_at": stamp(utc(generated_at)), "row_count": len(rows),
+               "summary": summary_descriptor, "rows": descriptors, "outcomes": final_descriptor}
+    if use_parts and len(canonical(pointer) + b"\n") > INDEX_LIMIT:
+        raise IntegrityError("Public pointer exceeds the supported reader size limit")
+    validate_publication(base, pointer)
+    return pointer
 
 
 def _source_sha(root, source_sha):
@@ -612,25 +828,8 @@ def publish_selection_report(root, observed_at=None, *, source_sha=None):
         _no_symlinks(directory, root)
         _no_symlinks(base / "latest.json", root)
 
-        def save(name, payload):
-            raw = canonical(payload) + b"\n"
-            if len(raw) > (ROW_LIMIT if name.startswith("rows-") else SUMMARY_LIMIT):
-                raise IntegrityError("Public asset exceeds the supported reader size limit")
-            _create_file(directory / name, raw)
-            return {"path": public_id + "/" + name, "sha256": hashlib.sha256(raw).hexdigest()}
-
-        descriptors = []
-        for index, chunk in enumerate(chunks):
-            descriptor = save(f"rows-{index:04d}.json", {"schema_version": ROWS_VERSION,
-                                                       "report_id": public_id, "rows": chunk})
-            descriptors.append(dict(descriptor, count=len(chunk)))
-        pointer = {"schema_version": POINTER_VERSION, "report_id": public_id,
-                   "generated_at": stamp(observed_at), "row_count": len(rows),
-                   "summary": save("summary.json", dict(summary, report_id=public_id)),
-                   "rows": descriptors,
-                   "outcomes": save("outcomes.json", {"schema_version": OUTCOMES_VERSION,
-                                                       "report_id": public_id, "outcomes": outcomes})}
-        validate_publication(base, pointer)
+        pointer = prepare_publication(base, summary, rows, outcomes, chunks, observed_at)
+        public_id = pointer["report_id"]
         # Recheck every source byte before publishing either persistent state or
         # latest. Failure may leave unreachable content-addressed assets only.
         if any(hashlib.sha256((root / name).read_bytes()).hexdigest() != sha for name, sha in originals.items()):
