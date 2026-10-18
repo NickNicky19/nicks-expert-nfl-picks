@@ -1533,5 +1533,116 @@ class PartialOperationalPipelineTests(unittest.TestCase):
             self.assertEqual(load_json(root / "data/cache/espn_athletes.json"), {"fictional": "stage-only lookup"})
 
 
+class FailedNativeRecoveryConsumerTests(unittest.TestCase):
+    configure = PartialOperationalPipelineTests.configure
+    run_partial = PartialOperationalPipelineTests.run_partial
+
+    def test_failed_native_is_preserved_but_never_becomes_a_report_observation(self):
+        from test_partial_week import status
+        from selection_report import build_decisions
+        for barrier in (2, 4):
+            with self.subTest(barrier=barrier), tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as analysis:
+                root = Path(directory)
+                data, _, _, _ = self.configure(root)
+                original = phase2_capture.partial_week.record_bundle
+                captured = []
+                def crossed(*args, **kwargs):
+                    times = iter([NOW] * barrier + [NOW + timedelta(hours=2)] * 10)
+                    kwargs["clock"] = lambda: next(times)
+                    try:
+                        return original(*args, **kwargs)
+                    finally:
+                        captured.extend(path.read_bytes() for path in (args[0] / "data/forward").rglob("*.json.gz"))
+                class Clock(datetime):
+                    @classmethod
+                    def now(cls, tz=None): return NOW
+                with patch.object(phase2_capture, "datetime", Clock), \
+                        patch.object(phase2_capture, "_closing_status", return_value=status(data, NOW)), \
+                        patch.object(phase2_capture.partial_week, "record_bundle", side_effect=crossed):
+                    with self.assertRaises(IntegrityError): run_capture(root)
+                self.assertEqual(list((root / "data/forward").rglob("*.json.gz")), [])
+                saved = list((root / "data/verification/partial-unqualified-native").rglob("*.json.gz"))
+                self.assertEqual(len(saved), 1)
+                self.assertEqual(saved[0].read_bytes(), captured[0])
+                records, coverage = build_decisions([], load_json(root / "config/timing-policy.json"),
+                                                   NOW + timedelta(hours=3), engine_hashes(root))
+                self.assertEqual(coverage["unique_observed_opportunities"], 0)
+                self.assertEqual(records, [])
+                report, _ = run_report([root], Path(analysis), now=NOW + timedelta(hours=3),
+                                        expected_hashes=engine_hashes(root))
+                self.assertEqual(report["rows"], [])
+                self.assertEqual(report["primary_raw_vs_adjusted"]["coverage"]["unique_opportunities"], 0)
+
+    def test_completed_native_remains_usable_when_only_report_publication_fails(self):
+        from test_partial_week import status
+        from selection_report import build_decisions
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, _, _, _ = self.configure(root)
+            class Clock(datetime):
+                @classmethod
+                def now(cls, tz=None): return NOW
+            with patch.object(phase2_capture, "datetime", Clock), \
+                    patch.object(phase2_capture, "_closing_status", return_value=status(data, NOW)), \
+                    patch.object(phase2_capture, "publish_selection_report", side_effect=IntegrityError("fictional report-only failure")):
+                with self.assertRaisesRegex(IntegrityError, "report-only"):
+                    run_capture(root)
+            paths = list((root / "data/forward").rglob("*.json.gz"))
+            self.assertEqual(len(paths), 1)
+            self.assertEqual(list((root / "data/verification/partial-unqualified-native").rglob("*.json.gz")), [])
+            rows, coverage = build_decisions([read(paths[0])], load_json(root / "config/timing-policy.json"),
+                                             NOW + timedelta(minutes=1), engine_hashes(root))
+            self.assertEqual(coverage["unique_observed_opportunities"], 1)
+            self.assertTrue(any(row["action"] == "SELECT" for row in rows))
+
+    def test_failed_native_clean_checkout_keeps_bytes_outside_canonical_consumers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "writer"; root.mkdir()
+            data, _, spec, registration = self.configure(root)
+            # Deliberately incomplete NEW native; the failure-only persistence
+            # path must not turn it into a completed forecast on restart.
+            stage = Path(directory) / "stage"
+            shutil.copytree(root, stage)
+            path, _ = capture_baseline(data, load_json(stage / "output/data/meta.json"), stage, NOW,
+                                       engine_hashes(stage), mode="live")
+            original = path.read_bytes()
+            phase2_capture._copy_evidence(stage, root, failed_generation=True)
+            git = lambda *args: subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+            git("init", "-q"); git("config", "user.name", "Fictional test"); git("config", "user.email", "fixture@example.invalid")
+            git("add", "pull", "config")
+            workflow = (ROOT / ".github/workflows/hourly.yml").read_text()
+            start = workflow.index("          git add output/data data/cache\n")
+            end = workflow.index("          if ! git diff --cached --quiet;", start)
+            subprocess.run(["bash", "-eu", "-c", textwrap.dedent(workflow[start:end])], cwd=root, check=True)
+            git("commit", "-qm", "Fictional failed evidence only")
+            clone = Path(directory) / "clean"; git("clone", "--quiet", "--no-hardlinks", str(root), str(clone))
+            shutil.rmtree(root); shutil.rmtree(stage)
+            self.assertEqual(list((clone / "data/forward").rglob("*.json.gz")), [])
+            saved = list((clone / "data/verification/partial-unqualified-native").rglob("*.json.gz"))
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(saved[0].read_bytes(), original)
+
+    def test_new_failed_native_does_not_move_or_rewrite_existing_observations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "saved"; root.mkdir()
+            data, _, _, _ = self.configure(root)
+            old = copy.deepcopy(data)
+            old["generated_at"] = stamp(NOW - timedelta(minutes=5))
+            old_path, _ = capture_baseline(old, {key: old[key] for key in ("season", "week", "generated_at")},
+                                          root, NOW - timedelta(minutes=5), engine_hashes(root), mode="live")
+            original = old_path.read_bytes()
+            stage = Path(directory) / "failed-generation"; shutil.copytree(root, stage)
+            new_path, _ = capture_baseline(data, load_json(stage / "output/data/meta.json"), stage, NOW,
+                                          engine_hashes(stage), mode="live")
+            failed_bytes = new_path.read_bytes()
+            phase2_capture._copy_evidence(stage, root, failed_generation=True)
+            self.assertEqual(old_path.read_bytes(), original)
+            self.assertEqual(list((root / "data/forward").rglob("*.json.gz")), [old_path])
+            preserved = list((root / "data/verification/partial-unqualified-native").rglob("*.json.gz"))
+            self.assertEqual(len(preserved), 1)
+            self.assertEqual(preserved[0].read_bytes(), failed_bytes)
+
+
+
 if __name__ == "__main__":
     unittest.main()

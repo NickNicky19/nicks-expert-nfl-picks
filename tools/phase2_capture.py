@@ -471,7 +471,26 @@ def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, ini
     return report, health
 
 
-def _copy_evidence(stage, root):
+def _completed_partial_native(stage, path, spec):
+    name = path.relative_to(stage).as_posix()
+    matches = []
+    try:
+        for candidate in (stage / "data" / partial_week.COMPLETION_LANE).rglob("*.json.gz"):
+            payload = read(candidate)
+            if payload.get("baseline_receipt") == name:
+                matches.append(candidate.relative_to(stage).as_posix())
+        if len(matches) != 1:
+            return False
+        partial_week.read_bundle(stage, matches[0], spec, read_native_baseline,
+                                 now=datetime.now(timezone.utc))
+        return True
+    except (OSError, ValueError, KeyError, TypeError):
+        # This rejects only native qualification. The original generation
+        # failure still propagates; statistics/board/report errors are not hidden.
+        return False
+
+
+def _copy_evidence(stage, root, *, failed_generation=False):
     """Create-only evidence transfer; failure never deletes original evidence."""
     for lane in ("forward", "history", "verification", "shadow", "offers", "outcomes"):
         for path in sorted((stage / "data" / lane).rglob("*")):
@@ -482,6 +501,32 @@ def _copy_evidence(stage, root):
                 if destination.read_bytes() != path.read_bytes():
                     raise IntegrityError("Immutable generation evidence conflict")
             else:
+                if failed_generation and lane == "forward":
+                    config = load_json(stage / "config/phase2.json")
+                    spec = config.get("partial_week", {})
+                    plan = spec.get("plan", {})
+                    relative = path.relative_to(stage / "data/forward")
+                    partial_period = (str(plan.get("season")), f"w{plan.get('week', 0):02d}")
+                    if (config.get("verification_mode") == partial_week.VERSION
+                            and relative.parts[:2] == partial_period
+                            and not _completed_partial_native(stage, path, spec)):
+                        # Preserve exact NEW failed bytes outside the canonical
+                        # observation lane. No historical receipt is moved.
+                        raw_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+                        destination = (root / "data/verification/partial-unqualified-native"
+                                       / relative.parent / raw_hash / path.name)
+                        write(root, "verification/partial-failures", {
+                            "schema_version": "unqualified-native-preservation-v1",
+                            "season": plan["season"], "week": plan["week"],
+                            "original_forward_name": path.relative_to(stage).as_posix(),
+                            "retained_name": destination.relative_to(root).as_posix(),
+                            "native_file_sha256": raw_hash,
+                            "failed_at": stamp(datetime.now(timezone.utc)),
+                            "qualification": "NO_COMPLETED_PARTIAL_BUNDLE_NOT_A_PREGAME_OBSERVATION"})
+                        if destination.exists():
+                            if destination.read_bytes() != path.read_bytes():
+                                raise IntegrityError("Conflicting preserved failed native bytes")
+                            continue
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 # Source files are already fsynced immutable evidence. Link is
                 # create-only; copy fallback handles a separate filesystem.
@@ -591,7 +636,7 @@ def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
             _promote(stage, root)
             return result
         except BaseException as err:
-            _copy_evidence(stage, root)
+            _copy_evidence(stage, root, failed_generation=True)
             board_path = stage / "output/data/week.json"
             if board_path.exists() and (needs_initial or build_first):
                 board = load_json(board_path)
