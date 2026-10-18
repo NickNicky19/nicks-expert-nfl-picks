@@ -612,3 +612,151 @@ acceptance. Visiting every context can increase total requests and compressed
 bytes. Exact measurements and rollback evidence belong to this run's CODEX_RESULT.
 The old Week 6 full-board missing-original-input failure remains a failure; partial
 original-model-input reproduction is not full-week qualification or accuracy proof.
+## Owner-approved bounded hosting contract — 2026-10-18
+
+This contract is frozen before implementation under
+NFL-WEB-HOSTING-SOURCE-20261018-202256Z, starting at
+4efbca6559203e23af5e34a91132a71c74195e95. The eight-file scope is packaging only.
+The genuine five-game capture, original release identity, health and every
+input/native/scope/completion/report byte remain unchanged in the original local
+package. There is no new collection, forecast, candidate or exemption.
+
+### Encoded report contract
+
+The explicit new pointer is selection-publication-pointer-v3, the summary index
+selection-public-report-v4, and the content discriminator gzip-context-period-v1.
+Legacy pointer v1/v2 and public v1/v2/v3 readers remain explicit and unchanged.
+Summary/outcome root indexes stay plain JSON. Individual summary partitions,
+outcome periods and 250-row chunks use deterministic application gzip with empty
+filename, mtime zero, level 6. Payload filenames remain narrowly allowlisted JSON
+names; encoding is declared, never inferred from HTTP headers or a suffix.
+
+Each compressed descriptor retains path, decoded sha256 and decoded_bytes and
+adds encoding:gzip, encoded_sha256 and encoded_bytes, alongside its exact
+context/period/count. Physical part namespaces use the encoded hash; row chunks
+remain under the separately identified new report. Both encoded and decoded
+sizes/hashes are mandatory. Stream reads stop before exceeding declared sizes
+or existing caps: pointer/index/manifest/archive shard 1 MiB; summary/outcome
+partition 12 MiB; row chunk 2 MiB; 250 rows and 4,000 row chunks. Complete producer
+reconstruction validates every part and exact rows/members/counts before latest
+can advance. No corrupt modern object may fall back to a legacy reader.
+
+Fetch removes HTTP content coding. The delivered body must still equal the
+declared encoded application bytes before one application decompression. Thus
+outer HTTP gzip(application-gzip) is supported; incorrectly labeling stored
+application gzip as HTTP Content-Encoding is an explicit integrity failure.
+Feature-detect streaming/decompression support and show unavailable without
+touching My Picks if absent. Enforce delivered and expanded limits while
+streaming, before unbounded buffering or JSON parsing.
+
+### Complete generations and archive retrieval
+
+Immutable selection-hosting-generation-v1 manifests retain the exact report
+pointer, source/capture identities, actual packaging clock and immutable public
+board/meta/scope/scorecard/health/release-identity snapshots. The bounded
+selection-hosting-working-set-v1 pointer hosting.json selects latest and one
+previous SUCCESSFUL COMPLETE generation, not two weeks. A same finalized retry
+does not rotate. Every cumulative week remains in each complete report.
+
+Archive metadata is split by the first hex digit of the exact pointer digest into at most
+sixteen independently hash-validated, 1 MiB plain shards. Entries bind the exact pointer digest and report ID,
+immutable manifest path/hash/size and the exact Git commit that actually contains
+that manifest and its complete assets. New generations cannot invent their
+future generated-data commit. A prior generation is archived only after reading
+every required blob at an already-existing commit and matching actual bytes.
+Stage fully validates latest and previous graphs and proven archived backing
+before omitting an older generation. GitHub retains all originals/assets; Pages
+copies only the two reachable graphs, archive metadata and existing public static
+allowlist into a fresh directory. No evidence or older asset is deleted.
+
+An old open browser may resolve its exact report ID through current bounded
+archive metadata, then fetch only required assets from the hardcoded existing
+public repository at the verified immutable Git commit. Validate original
+descriptor hashes/context/generation again. Never substitute current totals or
+outcomes, clear storage, or retry indefinitely. Controlled two-origin tests must
+exercise CORS/content types and A-to-B-to-C-to-D fictional committed archives.
+Do not claim an unseen real remote archive URL exists.
+
+The conservative complete staged-file budget is 900,000,000 bytes, below the
+documented 1 GB Pages maximum. Check all files and actual uploader tar separately
+before staging succeeds. Failed/missing/oversized updates preserve the last
+coherent pointer and truthful clocks/status. Whole-tar gzip is diagnostic only.
+
+### Packaging-only descendant and recovery
+
+Ordinary new captures retain website-generation-v1. A repackage of saved evidence
+uses website-packaging-generation-v1 with distinct actual packaging source/time,
+original capture generation/source/clock, unchanged board/native/scope/completion,
+and exact new app/shell/report bindings. Required original generation/health/
+pointer evidence is create-only in the existing verification lane. Validate
+original capture independently, including original source app/shell bytes from
+retained Git history; then validate the derived generation. Never spoof
+GITHUB_SHA, rewrite original receipts, or imply newer code captured old inputs.
+Only derived copies receive new health/release identities.
+
+Recovery retains this versioned reader/writer/staging compatibility and may
+forward-pin/recover a fully validated retained generation before subsequent
+ordinary updater runs. It must preserve all latest/previous/archived evidence
+and the deployed PR #2 presentation. A blanket source rollback to the old
+monolithic publisher is not oversized-data recovery. Any limited Phase 1 fallback
+would lose current expanded reporting and still needs explicit protected release
+permission; it is not implemented here.
+
+Measure complete current/3/6/18-week and changed-generation staging plus
+repository working-tree, immutable file, Git pack and full-depth clean-checkout
+growth. Synthetic fixtures are storage tests, not football evidence. Neither
+compression nor a bounded Pages working set establishes unlimited GitHub archive
+capacity. No season-long operational claim without measured repository/hosting
+support. Source, original-evidence, artifact, both GitHub/Pages disclosure and
+combined release approvals remain separate.
+
+Contract clarification during implementation: registry/archive keys are the exact
+canonical pointer digest, rather than semantic report ID, because a later complete
+generation can retain report content while having its own clock. Each immutable
+manifest also references a create-only hosting-generation-proof receipt in the
+existing verification lane. This retains that generation's exact proof without
+publishing it to Pages or borrowing a newer mutable proof. The staged working-set
+pointer has a separately hashed delivery form; its archive pins are generated
+only AFTER the actual data commit exists and its public commit/tree is read back.
+The stored source form has no archive pins and no claimed public delivery hash.
+
+Implementation validation details: each staging operation fully validates each
+exact pointer graph at its source and again in the fresh destination. An
+operation-local cache avoids repeatedly decoding that same immutable graph;
+it is discarded after the call, and a later call rechecks changed/corrupt bytes.
+The first migration seals the existing coherent plain generation before alias
+replacement, so the first working set includes that previous complete report.
+Its plain assets remain supported until they rotate to the verified Git archive.
+An already encoded identical saved app/report is a validated no-op, not a new
+capture or manufactured packaging source identity. Original JSON pointer bytes
+retain their original canonical serialization without adding a newline.
+
+The conservative complete-stage budget is also checked before copying each
+allowed file; a 900,000,001-byte sparse negative control is rejected without
+materializing that oversized payload. Metadata is included in the final total.
+This negative storage fixture is not a forecast or a valid historical board.
+Recovery requires a reviewed partition/gzip-capable source floor. Reverting
+these eight paths to 4efbca65 alone is not a functioning modern-report recovery.
+A limited Phase 1 fallback would require separate explicit permission for its
+configuration/dispatch and honest unavailable/stale grading capability; it is
+not implemented by this source checkpoint. Primary evidence and all report
+copies remain retained in Git, whose measured growth is a separate operational
+budget and cannot be certified by the two-generation Pages size alone.
+
+The fresh public stage explicitly sets 0755 directories and 0644 files,
+including its atomically written delivery pointer, independent of local umask.
+Original capture/repository permissions and bytes are untouched. The first
+fictional tar probe's 0600 metadata failure remains in the local evidence.
+
+The unchanged hourly workflow records its two advisory-step outcomes after
+capture. The retained health snapshot is the health at qualification time;
+`legacy_verifier` and `historical_comparison` alone may later acquire a normal
+GitHub step outcome (success/failure/cancelled/skipped). All other health fields
+must match exactly, including capture/source/board/report/generation identities.
+This append neither rotates report generations nor upgrades a failed advisory
+or original proof. Tests execute the actual existing health-recording block.
+
+Browser scope labels match a packaging generation's explicit capture source,
+while checking the new packaging source/time against health separately. They
+do not relabel the retained selection report as newly captured by packaging.
+A wrong capture-source binding suppresses the verification claim.

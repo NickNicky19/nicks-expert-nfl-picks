@@ -7,6 +7,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
+const os = require('node:os');
+const cp = require('node:child_process');
 const { chromium } = require('playwright');
 const repo = path.resolve(__dirname, '..');
 const args = process.argv.slice(2);
@@ -159,8 +162,30 @@ function fictionalWeek() {
   return original;
 }
 
+
+function gzipPublication(plain, label = 'current') {
+  const reportId = sha('FICTIONAL_GZIP_PUBLICATION_' + label), assets = new Map();
+  const read = descriptor => JSON.parse(plain.assets.get('/data/selection-grading/' + descriptor.path));
+  const put = (filename, payload, compressed, part) => {
+    const bytes = encode({ ...payload, report_id: reportId }), stored = compressed ? zlib.gzipSync(bytes, { mtime: 0 }) : bytes;
+    const descriptor = { path: (part ? sha(stored) : reportId) + '/' + filename, sha256: sha(bytes), decoded_bytes: bytes.length };
+    if (compressed) Object.assign(descriptor, { encoding: 'gzip', encoded_sha256: sha(stored), encoded_bytes: stored.length });
+    assets.set('/data/selection-grading/' + descriptor.path, stored); return descriptor;
+  };
+  const oldSummary = read(plain.pointer.summary), oldOutcomes = read(plain.pointer.outcomes);
+  const parts = oldSummary.summary_partitions.map(old => ({ ...put('summary.json', read(old), true, true), context_id: old.context_id, period: old.period, table_count: old.table_count }));
+  const periods = oldOutcomes.periods.map(old => ({ ...put('outcomes.json', read(old), true, true), season: old.season, week: old.week, count: old.count }));
+  const summary = put('summary.json', { ...oldSummary, schema_version: 'selection-public-report-v4', summary_partitions: parts }, false, false);
+  const outcomes = put('outcomes.json', { ...oldOutcomes, periods }, false, false);
+  const rows = plain.pointer.rows.map(old => ({ ...put(old.path.split('/')[1], read(old), true, false), count: old.count }));
+  const pointer = { ...plain.pointer, schema_version: 'selection-publication-pointer-v3', report_id: reportId, summary, outcomes, rows };
+  assets.set('/data/selection-grading/latest.json', encode(pointer));
+  return { ...plain, pointer, assets, parts, periods };
+}
+const testCanonical = value => JSON.stringify(value && typeof value === 'object' ? (Array.isArray(value) ? value.map(v => JSON.parse(testCanonical(v))) : Object.fromEntries(Object.keys(value).sort().map(k => [k, JSON.parse(testCanonical(value[k]))]))) : value);
 const legacyFixture = fictionalPublication();
-const fixture = partitionedPublication(legacyFixture);
+const plainFixture = partitionedPublication(legacyFixture);
+let fixture = gzipPublication(plainFixture);
 let week = fictionalWeek();
 function scopeAssets(kind) {
   const scope = { schema_version: 'partial-week-public-scope-v1', full_board_verified: false, complete_week_qualified: false,
@@ -168,11 +193,17 @@ function scopeAssets(kind) {
       kickoff: game.kickoff, classification: game.state === 'pre' ? 'new_pregame_original_inputs_verified' : 'retained_legacy_original_proof_missing' })) };
   if (kind === 'scope-malformed') scope.games = null;
   const rawScope = encode(scope), generationId = sha('fictional coherent generation');
-  const generation = { schema_version: 'website-generation-v1', generation_sha256: generationId,
-    board_sha256: scope.output_sha256, source_sha: '7e5b499851a938f7b605ff2d43890d307da83e03',
+  const packaged = kind.startsWith('scope-packaged');
+  const generation = { schema_version: packaged ? 'website-packaging-generation-v1' : 'website-generation-v1', generation_sha256: generationId,
+    board_sha256: scope.output_sha256, source_sha: packaged ? '8'.repeat(40) : '7e5b499851a938f7b605ff2d43890d307da83e03',
     selection_report_id: kind === 'scope-mixed-report' ? sha('different report') : fixture.pointer.report_id,
     bindings: { 'data/week.json': sha(encode(week)), 'data/verification-scope.json': sha(rawScope) } };
   const health = { generation_sha256: generationId, board_sha256: scope.output_sha256, source_sha: generation.source_sha };
+  if (packaged) {
+    Object.assign(generation, { capture_source_sha: '7e5b499851a938f7b605ff2d43890d307da83e03', capture_generation_sha256: sha('original capture'), packaged_at: '2026-10-18T20:00:00Z' });
+    Object.assign(health, { capture_source_sha: kind === 'scope-packaged-mixed-capture' ? '9'.repeat(40) : generation.capture_source_sha,
+      capture_generation_sha256: generation.capture_generation_sha256, packaged_at: generation.packaged_at });
+  }
   return { 'verification-scope': rawScope, 'release-identity': encode(generation), health: encode(health) };
 }
 let variant = 'valid', transferred = 0;
@@ -188,7 +219,7 @@ const server = http.createServer((req, res) => {
     }
     else if (pathname === '/data/track_record.json' || pathname === '/data/dk_backtest.json' || pathname === '/data/forecast-scorecard.json') { res.writeHead(404); res.end(); return; }
     else if (pathname.startsWith('/data/selection-grading/')) {
-      bytes = (variant === 'legacy' ? legacyFixture : fixture).assets.get(pathname);
+      bytes = (variant === 'legacy' ? legacyFixture : variant === 'plain-partitioned' ? plainFixture : fixture).assets.get(pathname);
       if (variant === 'oversized-pointer' && pathname.endsWith('/latest.json') && bytes) bytes = Buffer.concat([bytes, Buffer.alloc(1024 * 1024, 32)]);
       const contentPart = !pathname.includes('/' + fixture.pointer.report_id + '/') && !pathname.endsWith('/latest.json');
       if (variant === 'missing-summary-part' && contentPart && /summary.json$/.test(pathname)) bytes = null;
@@ -203,8 +234,11 @@ const server = http.createServer((req, res) => {
     if (file.startsWith(staticRoot + path.sep) && fs.existsSync(file) && fs.statSync(file).isFile()) bytes = fs.readFileSync(file);
   }
   if (!bytes) { res.writeHead(404); res.end(); return; }
+  const applicationGzip = bytes[0] === 0x1f && bytes[1] === 0x8b;
+  const coding = applicationGzip && ['outer-http-gzip', 'wrong-http-coding'].includes(variant);
+  if (coding && variant === 'outer-http-gzip') bytes = zlib.gzipSync(bytes, { mtime: 0 });
   transferred += bytes.length;
-  res.writeHead(200, { 'Content-Type': pathname.endsWith('.js') ? 'application/javascript' : pathname.endsWith('.css') ? 'text/css' : pathname.endsWith('.json') ? 'application/json' : 'text/html', 'Cache-Control': 'no-store' });
+  res.writeHead(200, { ...(coding ? { 'Content-Encoding': 'gzip' } : {}), 'Content-Type': pathname.endsWith('.js') ? 'application/javascript' : pathname.endsWith('.css') ? 'text/css' : pathname.endsWith('.json') ? 'application/json' : 'text/html', 'Cache-Control': 'no-store' });
   res.end(bytes);
 });
 
@@ -334,6 +368,99 @@ async function presentationChecks(browser, origin, width) {
     equal(errors, [], 'no browser errors');
     return { width, checks, assertions: 'passed', leading_prop: 'rec_yd', score: .4, phone: width === 390 ? 'Chromium width emulation, not physical iPhone/Safari' : null };
   } finally { await context.close(); week = previous; }
+}
+
+async function archiveAndDecoderChecks(browser, origin) {
+  const savedFixture = fixture, savedVariant = variant;
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nfl-fictional-report-archives-'));
+  const git = (...args) => cp.execFileSync('git', ['-C', directory, ...args], { encoding: 'utf8', stdio: ['ignore','pipe','pipe'] }).trim();
+  git('init','-q'); git('config','user.name','Fictional browser test'); git('config','user.email','fixture@example.invalid');
+  const generations = [];
+  for (const label of ['A','B','C','D']) {
+    const value = gzipPublication(plainFixture, label);
+    const manifestBytes = encode({ schema_version: 'selection-hosting-generation-v1', report_id: value.pointer.report_id, pointer: value.pointer,
+      transport_fixture: 'FICTIONAL_COMMITTED_ARCHIVE_NOT_ORIGINAL_FOOTBALL_EVIDENCE' });
+    const manifest = { path: sha(manifestBytes) + '/manifest.json', sha256: sha(manifestBytes), decoded_bytes: manifestBytes.length };
+    value.assets.set('/data/selection-grading/' + manifest.path, manifestBytes);
+    for (const [name, bytes] of value.assets) {
+      const file = path.join(directory, 'output', name.slice(1)); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, bytes);
+    }
+    git('add','output'); git('commit','-qm','Fictional committed generation ' + label);
+    generations.push({ ...value, manifest, git_ref: git('rev-parse','HEAD') });
+  }
+  const delivered = { ...generations[3], assets: new Map([...generations[2].assets, ...generations[3].assets]) };
+  const working = { schema_version: 'selection-hosting-working-set-v1', latest: generations[3].manifest, previous: generations[2].manifest, registry: [], archive_index: [] };
+  const grouped = new Map();
+  for (const old of generations.slice(0,2)) {
+    const key = sha(testCanonical(old.pointer)), prefix = key[0];
+    if (!grouped.has(prefix)) grouped.set(prefix, {});
+    grouped.get(prefix)[key] = { git_ref: old.git_ref, manifest: old.manifest };
+  }
+  for (const [prefix,reports] of grouped) {
+    const bytes = encode({ schema_version: 'selection-hosting-archive-v1', repository: 'NickNicky19/nicks-expert-nfl-picks', prefix, reports });
+    const descriptor = { path: sha(bytes) + '/archive.json', sha256: sha(bytes), decoded_bytes: bytes.length };
+    delivered.assets.set('/data/selection-grading/' + descriptor.path, bytes); working.archive_index.push({ prefix, asset: descriptor });
+  }
+  working.delivery_sha256 = sha(testCanonical(working));
+  delivered.assets.set('/data/selection-grading/hosting.json', encode(working));
+  let cors = 'allowed', corrupt = false; const archiveRequests = [];
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await context.route('**/*', route => {
+    const url = route.request().url();
+    if (url.startsWith(origin + '/')) return route.continue();
+    const match = url.match(/^https:\/\/raw\.githubusercontent\.com\/NickNicky19\/nicks-expert-nfl-picks\/([0-9a-f]{40})\/output\/(data\/selection-grading\/[0-9a-f]{64}\/(?:manifest|summary|outcomes|rows-[0-9]{4})\.json)$/);
+    if (match) {
+      archiveRequests.push({ ref: match[1], path: match[2], cors, corrupt });
+      let bytes;
+      try { bytes = cp.execFileSync('git', ['-C', directory, 'show', match[1] + ':output/' + match[2]], { stdio: ['ignore','pipe','pipe'] }); }
+      catch (_) { return route.fulfill({ status: 404, headers: { 'Access-Control-Allow-Origin': origin }, body: '' }); }
+      if (corrupt && /rows-/.test(match[2])) { bytes = Buffer.from(bytes); bytes[0] ^= 1; }
+      return route.fulfill({ status: 200, headers: { 'Content-Type': 'application/octet-stream', 'Access-Control-Allow-Origin': cors === 'allowed' ? origin : 'https://invalid.example' }, body: bytes });
+    }
+    return route.fulfill({ status: 200, contentType: 'application/json', body: url.includes('api.sleeper.app/stats') ? '[]' : '{"events":[]}' });
+  });
+  try {
+    fixture = generations[0]; variant = 'valid'; const page = await context.newPage();
+    await page.goto(origin + '/#/record'); await page.waitForSelector('[data-performance-primary]'); await page.waitForFunction(() => !S.grading.partLoading);
+    const saved = [{ pid: 'fixture-5', key: 'rec', dir: 'over', line: 5.5, season: 2026, week: 6, at: 1 }];
+    await page.evaluate(picks => { S.mine=picks; store('mine',picks); }, saved);
+    const storage = await page.evaluate(() => localStorage.getItem('nflprops.mine'));
+    for (const next of generations.slice(1)) fixture = next; // Operating site advances B/C/D while page stays on A.
+    fixture = delivered;
+    // An uncached old-generation exact-context summary must use the same pinned archive, too.
+    await page.selectOption('[data-grading-filter=line_source_scope]', 'dk');
+    await page.waitForFunction(() => !S.grading.partLoading);
+    assert.ok(archiveRequests.some(item => /summary.json$/.test(item.path)));
+    await page.selectOption('[data-grading-filter=line_source_scope]', 'all');
+    await page.waitForFunction(() => !S.grading.partLoading);
+    await page.locator('[data-grading-group]').first().click(); await page.waitForSelector('[data-grading-row]');
+    while (await page.locator('[data-grading-more]').count()) { await page.locator('[data-grading-more]').click(); await page.waitForFunction(() => !S.gradingGroup.loading); }
+    assert.equal(await page.evaluate(() => S.grading.pointer.report_id), generations[0].pointer.report_id);
+    assert.deepEqual(await page.locator('[data-grading-row]').evaluateAll(nodes => nodes.map(node => node.dataset.gradingRow)), generations[0].rows.map(row => row.decision_sha256));
+    assert.ok(archiveRequests.some(item => /rows-/.test(item.path)));
+    assert.ok(archiveRequests.every(item => item.ref === generations[0].git_ref));
+    assert.equal(await page.evaluate(() => localStorage.getItem('nflprops.mine')), storage);
+    for (const failure of ['cors','corrupt']) {
+      cors = failure === 'cors' ? 'wrong' : 'allowed'; corrupt = failure === 'corrupt';
+      await page.evaluate(() => { S.grading.chunks.clear(); S.gradingGroup=null; });
+      await page.locator('[data-grading-group]').first().click(); await page.waitForSelector('[data-grading-details] [role="alert"]');
+      assert.equal(await page.locator('[data-grading-row]').count(), 0);
+      assert.equal(await page.evaluate(() => S.grading.pointer.report_id), generations[0].pointer.report_id);
+      assert.equal(await page.evaluate(() => localStorage.getItem('nflprops.mine')), storage);
+    }
+    cors='allowed';corrupt=false; await page.reload();await page.waitForSelector('[data-performance-primary]');
+    assert.equal(await page.evaluate(() => S.grading.pointer.report_id), generations[3].pointer.report_id);
+    assert.equal(await page.evaluate(() => localStorage.getItem('nflprops.mine')), storage);
+    await page.evaluate(async () => { window.originalReportDecoder=DecompressionStream; window.DecompressionStream=undefined; await loadGrading(); S.tab='record';render(); });
+    assert.equal(await page.evaluate(() => S.grading),null);
+    assert.match(await page.locator('#selection-grading').innerText(), /decoder unavailable/);
+    assert.equal(await page.evaluate(() => localStorage.getItem('nflprops.mine')), storage);
+    await page.evaluate(async () => { window.DecompressionStream=window.originalReportDecoder;await loadGrading();render(); });
+    await page.waitForSelector('[data-performance-primary]');
+    assert.ok(archiveRequests.length < 20, 'archive lookup has bounded attempts');
+    return { fictional_git_refs: generations.map(v=>v.git_ref), older_report_ref: generations[0].git_ref,
+      archive_requests: archiveRequests, decoder_unavailable_preserves_mypicks: true, all_checks:'passed', public_archive_uploaded:false };
+  } finally { fixture=savedFixture;variant=savedVariant;await context.close(); /* Preserve committed fictional archive for evidence. */ }
 }
 
 (async () => {
@@ -468,6 +595,13 @@ async function presentationChecks(browser, origin, width) {
           assert.equal(await page.locator('[data-performance-headline]').count(), 0, 'no substitute totals on failed selected assets');
           if (failure !== 'missing-summary-part') assert.equal(await page.evaluate(() => S.finalOutcomes.size), 0, 'required outcome failure remains unknown');
         }
+        variant = 'outer-http-gzip'; await page.reload(); await page.waitForSelector('[data-performance-primary]');
+        assert.equal(await page.evaluate(() => S.grading.pointer.schema_version), 'selection-publication-pointer-v3', 'HTTP outer coding removes only transport layer');
+        variant = 'wrong-http-coding'; await page.reload(); await page.waitForFunction(() => !ticking);
+        assert.equal(await page.evaluate(() => S.grading), null, 'HTTP-decoded application representation cannot satisfy encoded identity');
+        assert.match(await page.locator('#selection-grading').innerText(), /unavailable|size|checksum/i);
+        variant = 'plain-partitioned'; await page.reload(); await page.waitForSelector('[data-performance-primary]');
+        assert.equal(await page.evaluate(() => S.grading.pointer.schema_version), 'selection-publication-pointer-v2', 'retained plain partition reader');
         variant = 'legacy'; await page.reload(); await page.waitForSelector('[data-performance-primary]');
         assert.equal(await page.evaluate(() => S.grading.partitioned), false, 'explicit retained legacy reader');
         variant = 'valid'; await page.reload(); await page.waitForSelector('[data-performance-primary]');
@@ -507,11 +641,11 @@ async function presentationChecks(browser, origin, width) {
         });
         assert.equal(await page.evaluate(() => S.grading?.partitioned), true, 'old generation failure cannot clear new publication');
         assert.equal(await page.evaluate(() => S.gradingError), null);
-        for (const kind of ['scope-valid', 'scope-mixed-board', 'scope-mixed-report', 'scope-malformed']) {
+        for (const kind of ['scope-valid', 'scope-packaged', 'scope-packaged-mixed-capture', 'scope-mixed-board', 'scope-mixed-report', 'scope-malformed']) {
           variant = kind; await page.reload(); await page.waitForSelector('[data-performance-primary]');
-          assert.equal(await page.evaluate(() => S.verificationScope !== null), kind === 'scope-valid', kind + ' generation binding');
+          assert.equal(await page.evaluate(() => S.verificationScope !== null), ['scope-valid','scope-packaged'].includes(kind), kind + ' generation binding');
           const label = await page.locator('[data-verification-scope]').innerText();
-          assert.match(label, kind === 'scope-valid' ? /Partial-week original-model-input reproduction only/ : /unavailable or legacy/);
+          assert.match(label, ['scope-valid','scope-packaged'].includes(kind) ? /Partial-week original-model-input reproduction only/ : /unavailable or legacy/);
         }
       }
       await context.close();
@@ -520,7 +654,8 @@ async function presentationChecks(browser, origin, width) {
         presentation.push(await presentationChecks(browser, origin, width));
       }
     }
-    const result = { fixture: arg('--root') ? 'AUTHORIZED_SAVED_DATA_ISOLATED_ROOT' : 'FICTIONAL_ONLY', public_deployment_test: false,
+    const hosting = !arg('--root') ? await archiveAndDecoderChecks(browser, origin) : null;
+    const result = { hosting, fixture: arg('--root') ? 'AUTHORIZED_SAVED_DATA_ISOLATED_ROOT' : 'FICTIONAL_ONLY', public_deployment_test: false,
       external_network_requests: 0, app_sha256: sha(fs.readFileSync(path.join(staticRoot, 'app.js'))),
       html_sha256: sha(fs.readFileSync(path.join(staticRoot, 'index.html'))), measurements, presentation, requests: [...new Set(requests)], assertions: 'passed' };
     if (evidence) fs.writeFileSync(path.join(evidence, 'grading-browser-results.json'), JSON.stringify(result, null, 2) + '\n');

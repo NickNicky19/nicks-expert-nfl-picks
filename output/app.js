@@ -138,6 +138,7 @@ function gameStatus(g) {
 // Public grading assets have a small, versioned contract. Only content-addressed
 // local paths are read; provider bodies and private report manifests are absent.
 const GRADING_BASE = "data/selection-grading/";
+const gradingArchiveSources = new WeakMap();
 const HASH64 = /^[a-f0-9]{64}$/;
 const GRADING_RESULTS = ["win", "loss", "push", "dnp", "pending", "unresolved", "no_action", "not_due", "excluded"];
 function finalIdentity(p, category) {
@@ -156,26 +157,113 @@ async function gradingHash(bytes) {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(v => v.toString(16).padStart(2, "0")).join("");
 }
 function publicAssetPath(pointer, descriptor, type, partition = false) {
+  if (pointer.schema_version === "selection-publication-pointer-v3") {
+    const compressed = partition || type === "rows";
+    const fields = ["path", "sha256", "decoded_bytes", ...(compressed ? ["encoding", "encoded_sha256", "encoded_bytes"] : []),
+      ...(type === "rows" ? ["count"] : partition && type === "summary" ? ["context_id", "period", "table_count"] : partition ? ["season", "week", "count"] : [])];
+    const limit = (type === "rows" ? 2 : partition ? 12 : 1) * 1024 * 1024;
+    if (!descriptor || JSON.stringify(Object.keys(descriptor).sort()) !== JSON.stringify(fields.sort())
+        || !Number.isInteger(descriptor.decoded_bytes) || descriptor.decoded_bytes < 1 || descriptor.decoded_bytes > limit
+        || compressed && (descriptor.encoding !== "gzip" || !HASH64.test(descriptor.encoded_sha256)
+          || !Number.isInteger(descriptor.encoded_bytes) || descriptor.encoded_bytes < 1 || descriptor.encoded_bytes > limit)) throw new Error("Invalid encoded grading descriptor/size");
+  }
   const filename = type === "rows" ? "rows-[0-9]{4,}.json" : `${type}.json`;
-  const namespace = partition && pointer.schema_version === "selection-publication-pointer-v2" ? descriptor?.sha256 : pointer.report_id;
+  const namespace = partition && ["selection-publication-pointer-v2", "selection-publication-pointer-v3"].includes(pointer.schema_version) ? (pointer.schema_version === "selection-publication-pointer-v3" ? descriptor?.encoded_sha256 : descriptor?.sha256) : pointer.report_id;
   const pattern = new RegExp(`^${namespace}/${filename.replaceAll(".", "\\.")}$`);
   if (!descriptor || !HASH64.test(namespace) || !pattern.test(descriptor.path) || !HASH64.test(descriptor.sha256)) throw new Error("Invalid grading asset binding");
   return GRADING_BASE + descriptor.path;
 }
+async function gradingStreamBytes(stream, limit, exact = null) {
+  if (!stream || typeof stream.getReader !== "function") throw new Error("Streaming report reader unavailable");
+  const reader = stream.getReader(), chunks = []; let total = 0;
+  try {
+    while (true) {
+      const item = await reader.read();
+      if (item.done) break;
+      total += item.value.byteLength;
+      if (total > limit || exact !== null && total > exact) throw new Error("Report stream exceeds declared size limit");
+      chunks.push(item.value);
+    }
+  } catch (err) {
+    try { await reader.cancel(); } catch (_) { /* Preserve the integrity error. */ }
+    throw err;
+  } finally { reader.releaseLock(); }
+  if (exact !== null && total !== exact) throw new Error("Report stream size mismatch");
+  const bytes = new Uint8Array(total); let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
+}
+async function checkedHostingJson(url, descriptor = null) {
+  const limit = 1024 * 1024;
+  if (descriptor && (!HASH64.test(descriptor.sha256) || !Number.isInteger(descriptor.decoded_bytes)
+      || descriptor.decoded_bytes < 1 || descriptor.decoded_bytes > limit)) throw new Error("Invalid hosting descriptor");
+  const response = await fetch(url, { cache: descriptor ? "default" : "no-store" });
+  if (!response.ok) throw new Error("Retained report metadata unavailable");
+  const bytes = await gradingStreamBytes(response.body, limit, descriptor?.decoded_bytes ?? null);
+  if (descriptor && await gradingHash(bytes) !== descriptor.sha256) throw new Error("Retained report metadata checksum mismatch");
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+}
+async function resolveGradingArchive(pointer) {
+  if (gradingArchiveSources.has(pointer)) return gradingArchiveSources.get(pointer);
+  const promise = (async () => {
+    const working = await checkedHostingJson(GRADING_BASE + "hosting.json");
+    const core = { ...working }; delete core.delivery_sha256;
+    if (working.schema_version !== "selection-hosting-working-set-v1" || !HASH64.test(working.delivery_sha256)
+        || await gradingHash(new TextEncoder().encode(gradingCanonical(core))) !== working.delivery_sha256
+        || !Array.isArray(working.archive_index) || working.archive_index.length > 16) throw new Error("Unsupported retained report locator");
+    const publicationId = await gradingHash(new TextEncoder().encode(gradingCanonical(pointer)));
+    const shards = working.archive_index.filter(item => item.prefix === publicationId[0]);
+    if (shards.length !== 1) throw new Error("Exact retained report unavailable; refresh to load a coherent current report");
+    const descriptor = shards[0].asset;
+    if (!descriptor || descriptor.path !== descriptor.sha256 + "/archive.json") throw new Error("Invalid retained report index path");
+    const shard = await checkedHostingJson(GRADING_BASE + descriptor.path, descriptor);
+    if (shard.schema_version !== "selection-hosting-archive-v1" || shard.prefix !== publicationId[0]
+        || shard.repository !== "NickNicky19/nicks-expert-nfl-picks" || !shard.reports || typeof shard.reports !== "object") throw new Error("Invalid retained report repository/index");
+    const record = shard.reports[publicationId];
+    if (!record || !/^[0-9a-f]{40}$/.test(record.git_ref) || !record.manifest
+        || record.manifest.path !== record.manifest.sha256 + "/manifest.json") throw new Error("Missing immutable retained report locator");
+    const base = "https://raw.githubusercontent.com/NickNicky19/nicks-expert-nfl-picks/" + record.git_ref + "/output/" + GRADING_BASE;
+    const manifest = await checkedHostingJson(base + record.manifest.path, record.manifest);
+    if (manifest.schema_version !== "selection-hosting-generation-v1" || manifest.report_id !== pointer.report_id
+        || gradingCanonical(manifest.pointer) !== gradingCanonical(pointer)) throw new Error("Retained report does not match the saved generation");
+    return base;
+  })();
+  gradingArchiveSources.set(pointer, promise); // One bounded attempt, including failures.
+  return promise;
+}
+async function fetchGradingAsset(pointer, path) {
+  let response;
+  try { response = await fetch(path, { cache: "default" }); } catch (_) { response = null; }
+  if (response?.ok) return response;
+  if (response && ![404, 410].includes(response.status)) throw new Error("Report source unavailable; archive retrieval was not selected");
+  const base = await resolveGradingArchive(pointer);
+  const archived = await fetch(base + path.slice(GRADING_BASE.length), { cache: "default" });
+  if (!archived.ok) throw new Error("Exact retained report asset unavailable");
+  return archived;
+}
 async function checkedGradingAsset(pointer, descriptor, type, partition = false) {
   const path = publicAssetPath(pointer, descriptor, type, partition);
-  const modern = pointer.schema_version === "selection-publication-pointer-v2";
+  const modern = ["selection-publication-pointer-v2", "selection-publication-pointer-v3"].includes(pointer.schema_version);
+  const compressed = pointer.schema_version === "selection-publication-pointer-v3" && (partition || type === "rows");
   const limit = (type === "rows" ? 2 : modern && !partition ? 1 : 12) * 1024 * 1024;
-  if (modern && type !== "rows" && (!Number.isInteger(descriptor.decoded_bytes) || descriptor.decoded_bytes < 1 || descriptor.decoded_bytes > limit)) throw new Error("Invalid grading asset size");
-  const response = await fetch(path, { cache: modern ? "default" : "no-store" });
-  if (!response.ok) throw new Error(`Grading ${type} unavailable`);
-  const bytes = await response.arrayBuffer();
-  if (bytes.byteLength > limit || modern && type !== "rows" && bytes.byteLength !== descriptor.decoded_bytes) throw new Error("Grading asset exceeds size limit or declared size");
-  if (await gradingHash(bytes) !== descriptor.sha256) throw new Error("Grading asset checksum mismatch");
-  const data = JSON.parse(new TextDecoder().decode(bytes));
+  const hasSize = modern && (type !== "rows" || compressed);
+  if (hasSize && (!Number.isInteger(descriptor.decoded_bytes) || descriptor.decoded_bytes < 1 || descriptor.decoded_bytes > limit)) throw new Error("Invalid grading asset size");
+  if (compressed && (descriptor.encoding !== "gzip" || !HASH64.test(descriptor.encoded_sha256)
+      || !Number.isInteger(descriptor.encoded_bytes) || descriptor.encoded_bytes < 1 || descriptor.encoded_bytes > limit)) throw new Error("Invalid encoded grading asset contract");
+  if (!compressed && ["encoding", "encoded_sha256", "encoded_bytes"].some(key => Object.hasOwn(descriptor, key))) throw new Error("Encoded asset outside its supported version");
+  if (compressed && (typeof DecompressionStream !== "function" || typeof Blob !== "function")) throw new Error("Gzip report decoder unavailable in this browser");
+  const response = await fetchGradingAsset(pointer, path);
+  const stored = await gradingStreamBytes(response.body, limit, compressed ? descriptor.encoded_bytes : hasSize ? descriptor.decoded_bytes : null);
+  if (await gradingHash(stored) !== (compressed ? descriptor.encoded_sha256 : descriptor.sha256)) throw new Error("Grading encoded asset checksum mismatch");
+  // Fetch removes HTTP coding first. Verify the delivered application bytes;
+  // never branch on Content-Encoding or silently accept an already-decoded body.
+  const bytes = compressed ? await gradingStreamBytes(new Blob([stored]).stream().pipeThrough(new DecompressionStream("gzip")), limit, descriptor.decoded_bytes) : stored;
+  if (await gradingHash(bytes) !== descriptor.sha256) throw new Error("Grading decoded asset checksum mismatch");
+  const data = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   if (data.report_id !== pointer.report_id) throw new Error("Grading report identity mismatch");
   return data;
 }
+
 function validateGradingTables(pointer, tables, version) {
     if (!Array.isArray(tables)) throw new Error("Missing grading tables");
     const tableIds = new Set();
@@ -224,7 +312,7 @@ function validateFinalOutcomes(pointer, rows) {
     return result;
 }
 async function validateGradingIndexes(pointer, summary, outcomes) {
-  if (summary.schema_version !== "selection-public-report-v3" || summary.report_schema_version !== "selection-report-v3"
+  if (summary.schema_version !== (pointer.schema_version === "selection-publication-pointer-v3" ? "selection-public-report-v4" : "selection-public-report-v3") || summary.report_schema_version !== "selection-report-v3"
       || summary.row_count !== pointer.row_count || !summary.contexts || typeof summary.contexts !== "object" || Array.isArray(summary.contexts)
       || !Array.isArray(summary.summary_partitions) || Object.hasOwn(summary.summary || {}, "tables")
       || outcomes.schema_version !== "selection-final-outcome-index-v1" || !Array.isArray(outcomes.periods)
@@ -297,10 +385,10 @@ async function loadGrading() {
   try {
     const response = await fetch(GRADING_BASE + "latest.json", { cache: "no-store" });
     if (!response.ok) throw new Error("Grading pointer unavailable");
-    const raw = await response.arrayBuffer();
-    if (raw.byteLength > 1024 * 1024) throw new Error("Grading pointer exceeds size limit");
+    const raw = await gradingStreamBytes(response.body, 1024 * 1024);
     const pointer = JSON.parse(new TextDecoder().decode(raw));
-    const partitioned = pointer.schema_version === "selection-publication-pointer-v2";
+    const partitioned = ["selection-publication-pointer-v2", "selection-publication-pointer-v3"].includes(pointer.schema_version);
+    if (pointer.schema_version === "selection-publication-pointer-v3" && JSON.stringify(Object.keys(pointer).sort()) !== JSON.stringify(["schema_version", "report_id", "generated_at", "row_count", "summary", "rows", "outcomes"].sort())) throw new Error("Unknown encoded report pointer fields");
     if ((!partitioned && pointer.schema_version !== "selection-publication-pointer-v1") || !HASH64.test(pointer.report_id)
         || !Number.isFinite(Date.parse(pointer.generated_at)) || !Array.isArray(pointer.rows)
         || pointer.rows.length > 4000) throw new Error("Unsupported grading publication");
@@ -828,9 +916,14 @@ async function load() {
   try {
     const [savedScope, savedGeneration, savedHealth] = await Promise.all(["verification-scope", "release-identity", "health"].map(name => boundJSON(`data/${name}.json?t=${Date.now()}`)));
     const scope = savedScope.value, generation = savedGeneration.value, health = savedHealth.value;
-    if (generation.schema_version === "website-generation-v1" && health.generation_sha256 === generation.generation_sha256
+    if (["website-generation-v1", "website-packaging-generation-v1"].includes(generation.schema_version) && health.generation_sha256 === generation.generation_sha256
         && health.board_sha256 === generation.board_sha256 && scope.output_sha256 === generation.board_sha256
         && health.source_sha === generation.source_sha && HASH64.test(generation.generation_sha256)
+        && (generation.schema_version !== "website-packaging-generation-v1" || (
+          /^[0-9a-f]{40}$/.test(generation.capture_source_sha) && HASH64.test(generation.capture_generation_sha256)
+          && generation.capture_source_sha === health.capture_source_sha
+          && generation.capture_generation_sha256 === health.capture_generation_sha256
+          && Number.isFinite(Date.parse(generation.packaged_at)) && generation.packaged_at === health.packaged_at))
         && generation.bindings?.["data/week.json"] === board.hash
         && generation.bindings?.["data/verification-scope.json"] === savedScope.hash
         && ["partial-week-public-scope-v1", "strict-full-board-public-scope-v1"].includes(scope.schema_version)
@@ -852,7 +945,8 @@ async function load() {
   for (const g of S.data.games) S.games[g.id] = { ...g, ...(S.games[g.id] || {}) };
   await loadGrading();
   if (verifiedGeneration && S.grading?.pointer.report_id === verifiedGeneration.generation.selection_report_id
-      && S.grading?.summary.source_sha === verifiedGeneration.generation.source_sha) S.verificationScope = verifiedGeneration.scope;
+      && S.grading?.summary.source_sha === (verifiedGeneration.generation.schema_version === "website-packaging-generation-v1"
+        ? verifiedGeneration.generation.capture_source_sha : verifiedGeneration.generation.source_sha)) S.verificationScope = verifiedGeneration.scope;
   const built = new Date(S.data.generated_at);
   updateSub();
 }
@@ -2908,7 +3002,7 @@ function selectionPerformanceHtml(baseTables) {
   const unclassified=r=>Math.max(0,(r.combined?.rows||0)-(r.over?.rows||0)-(r.under?.rows||0));
   return `<section data-performance-primary><h3>Recorded selection performance</h3><p class="note" data-performance-context>${esc(context)}</p>
     <div class="card" data-performance-headline>${cell(total,"overall")}</div>
-    <p class="note">Choose any W–L result to inspect its exact supporting rows. No decided sample means unavailable. Combined includes no-side coverage; it is not an independent sample of Over and Under. ${["selection-public-report-v2", "selection-public-report-v3"].includes(S.grading.summary.schema_version) ? "Our selections by line source use matched joint decision groups. Source-specific day breakdowns are unavailable; choose All line sources for those views." : "Legacy aggregates do not separate timing policies or offer source jointly; only All line sources is available."}</p>
+    <p class="note">Choose any W–L result to inspect its exact supporting rows. No decided sample means unavailable. Combined includes no-side coverage; it is not an independent sample of Over and Under. ${["selection-public-report-v2", "selection-public-report-v3", "selection-public-report-v4"].includes(S.grading.summary.schema_version) ? "Our selections by line source use matched joint decision groups. Source-specific day breakdowns are unavailable; choose All line sources for those views." : "Legacy aggregates do not separate timing policies or offer source jointly; only All line sources is available."}</p>
     <table class="tbl performance-desktop"><thead><tr><th class="l">Category</th><th>Over W–L / hit rate / decided N</th><th>Under W–L / hit rate / decided N</th><th>Combined</th></tr></thead><tbody>${rows.map(r=>`<tr data-category-performance="${r.key}"><th class="l">${esc(r.label)}</th><td>${cell(r.over,"over")}</td><td>${cell(r.under,"under")}</td><td>${cell(r.combined,"combined")}<small>${unclassified(r)} no-side coverage rows</small></td></tr>`).join("")}</tbody></table>
     <div class="performance-phone">${rows.map(r=>`<article class="card" data-category-performance="${r.key}"><h4>${esc(r.label)}</h4><div class="performance-side"><b>Over</b><div>${cell(r.over,"over")}</div></div><div class="performance-side"><b>Under</b><div>${cell(r.under,"under")}</div></div><div class="performance-side"><b>Combined</b><div>${cell(r.combined,"combined")}<small>${unclassified(r)} no-side coverage rows</small></div></div></article>`).join("")}</div></section>`;
 }

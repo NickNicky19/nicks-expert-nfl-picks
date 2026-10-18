@@ -18,9 +18,10 @@ from evidence import read, write
 from offers import capture_offers
 import point_challenger
 from release_mode import read_mode, read_phase2
-from reliability import IntegrityError, atomic_json, capture, digest, engine_hashes, load_json, stamp, utc
+from reliability import canonical, IntegrityError, atomic_json, capture, digest, engine_hashes, load_json, stamp, utc
 from scorecard import build_scorecard, identity, latest_outcomes
 from scoring import CATEGORIES
+import selection_publication as publication
 from selection_publication import all_ten_outcome_identities, publish_selection_report
 from shadow import evaluate, make_shadow
 from verify import require_offline
@@ -466,9 +467,350 @@ def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, ini
         health["source_sha"] = source_sha
         atomic_json(root / "output/data/release-identity.json", dict(generation, generation_sha256=generation_id))
         atomic_json(root / "output/data/health.json", health)
+        finalize_hosting(root, now)
     else:
         write(root, "replay_reports", {"season": data["season"], "week": data["week"], "mode": "replay", "report": report})
     return report, health
+
+
+
+# Public delivery metadata is separate from immutable original model evidence.
+HOSTING_VERSION = "selection-hosting-working-set-v1"
+MANIFEST_VERSION = "selection-hosting-generation-v1"
+STAGING_BUDGET = 900_000_000  # Conservative published-file budget below Pages 1 GB.
+PUBLIC_REPOSITORY = "NickNicky19/nicks-expert-nfl-picks"
+HOST_SNAPSHOTS = ("app.js", "index.html", "data/week.json", "data/meta.json", "data/verification-scope.json",
+                  "data/forecast-scorecard.json", "data/selection-grading/latest.json",
+                  "data/health.json", "data/release-identity.json")
+
+
+def _public_blob(base, name, raw, limit=publication.INDEX_LIMIT):
+    if not 0 < len(raw) <= limit:
+        raise IntegrityError("Hosting metadata/snapshot exceeds supported limit")
+    sha = hashlib.sha256(raw).hexdigest()
+    path = Path(base) / sha / name
+    publication._no_symlinks(path, Path(base))
+    from selection_report import _create_file
+    _create_file(path, raw)
+    return {"path": sha + "/" + name, "sha256": sha, "decoded_bytes": len(raw)}
+
+
+def _public_read(base, descriptor, name, limit=publication.INDEX_LIMIT):
+    if (not isinstance(descriptor, dict) or set(descriptor) != {"path", "sha256", "decoded_bytes"}
+            or not publication.HEX.fullmatch(descriptor.get("sha256") or "")
+            or descriptor.get("path") != descriptor["sha256"] + "/" + name):
+        raise IntegrityError("Invalid immutable hosting descriptor")
+    path = Path(base) / descriptor["path"]
+    publication._no_symlinks(path, Path(base))
+    return publication._read_asset_bytes(path, descriptor, limit)
+
+
+def _validated_publication(base, pointer, checked):
+    # Fresh, operation-local set only: never a durable success flag. The source
+    # and fresh Pages destination have different keys and are both fully read.
+    key = ("publication", str(Path(base).resolve()), digest(pointer))
+    if key not in checked:
+        publication.validate_publication(base, pointer)
+        checked[key] = True
+
+
+def _manifest(base, descriptor, *, root=None, _checked=None):
+    _checked = {} if _checked is None else _checked
+    key = ("manifest", str(Path(base).resolve()), digest(descriptor), str(Path(root).resolve()) if root is not None else None)
+    if key in _checked:
+        return _checked[key]
+    manifest = publication._json_bytes(_public_read(base, descriptor, "manifest.json"))
+    if (set(manifest) != {"schema_version", "report_id", "pointer", "generation_sha256", "capture_generation_sha256",
+                         "source_sha", "capture_source_sha", "packaged_at", "snapshots", "verification_receipt"}
+            or manifest["schema_version"] != MANIFEST_VERSION
+            or manifest["report_id"] != manifest["pointer"].get("report_id")
+            or set(manifest["snapshots"]) != set(HOST_SNAPSHOTS)):
+        raise IntegrityError("Malformed complete hosting generation")
+    for field in ("generation_sha256", "capture_generation_sha256"):
+        publication._hash(manifest[field])
+    for field in ("source_sha", "capture_source_sha"):
+        if not publication.SOURCE_HEX.fullmatch(manifest[field]):
+            raise IntegrityError("Invalid hosting source identity")
+    utc(manifest["packaged_at"])
+    snapshots = {name: _public_read(base, item, "snapshot-" + name.replace("/", "_"), publication.SUMMARY_LIMIT)
+                 for name, item in manifest["snapshots"].items()}
+    if publication._json_bytes(snapshots["data/selection-grading/latest.json"]) != manifest["pointer"]:
+        raise IntegrityError("Hosting pointer snapshot differs")
+    _validated_publication(base, manifest["pointer"], _checked)
+    if root is not None:
+        proof = partial_week._saved(root, manifest["verification_receipt"], "verification/hosting-generation-proof")
+        if (proof.get("schema_version") != "hosting-generation-proof-v1"
+                or proof["board_sha256"] != publication._json_bytes(snapshots["data/release-identity.json"])["board_sha256"]
+                or proof["capture_source_sha"] != manifest["capture_source_sha"]):
+            raise IntegrityError("Retained generation proof binding mismatch")
+        generation = _validate_generation(root, snapshots, legacy_proof=proof["proof"], _checked=_checked)
+        if (generation["generation_sha256"] != manifest["generation_sha256"]
+                or generation.get("capture_generation_sha256", generation["generation_sha256"]) != manifest["capture_generation_sha256"]
+                or generation["source_sha"] != manifest["source_sha"]
+                or generation.get("capture_source_sha", generation["source_sha"]) != manifest["capture_source_sha"]
+                or generation.get("packaged_at", manifest["packaged_at"]) != manifest["packaged_at"]):
+            raise IntegrityError("Hosting manifest/capture generation mismatch")
+    _checked[key] = (manifest, snapshots)
+    return manifest, snapshots
+
+
+def _registry(base, working, *, _checked=None):
+    _checked = {} if _checked is None else _checked
+    if (set(working) != {"schema_version", "latest", "previous", "registry", "archive_index", "delivery_sha256"}
+            or working["schema_version"] != HOSTING_VERSION or not isinstance(working["registry"], list)
+            or len(working["registry"]) > 16):
+        raise IntegrityError("Invalid hosting working set")
+    if working["delivery_sha256"] is None:
+        if working["archive_index"] != []:
+            raise IntegrityError("Unbound source-form archive metadata")
+    else:
+        if (working["delivery_sha256"] != digest({key: value for key, value in working.items() if key != "delivery_sha256"})
+                or not isinstance(working["archive_index"], list) or len(working["archive_index"]) > 16):
+            raise IntegrityError("Invalid Pages delivery identity")
+        prefixes = set()
+        for item in working["archive_index"]:
+            if (set(item) != {"prefix", "asset"} or not re.fullmatch("[0-9a-f]", item["prefix"])
+                    or item["prefix"] in prefixes):
+                raise IntegrityError("Invalid archive shard prefix")
+            prefixes.add(item["prefix"])
+            shard = publication._json_bytes(_public_read(base, item["asset"], "archive.json"))
+            if (set(shard) != {"schema_version", "prefix", "repository", "reports"}
+                    or shard["schema_version"] != "selection-hosting-archive-v1"
+                    or shard["prefix"] != item["prefix"] or shard["repository"] != PUBLIC_REPOSITORY
+                    or not isinstance(shard["reports"], dict)):
+                raise IntegrityError("Malformed Pages archive index")
+            for key, value in shard["reports"].items():
+                if (not publication.HEX.fullmatch(key) or not key.startswith(item["prefix"])
+                        or set(value) != {"git_ref", "manifest"} or not re.fullmatch("[0-9a-f]{40}", value["git_ref"])
+                        or set(value["manifest"]) != {"path", "sha256", "decoded_bytes"}
+                        or value["manifest"]["path"] != value["manifest"]["sha256"] + "/manifest.json"
+                        or not publication.HEX.fullmatch(value["manifest"]["sha256"])
+                        or type(value["manifest"]["decoded_bytes"]) is not int
+                        or not 0 < value["manifest"]["decoded_bytes"] <= publication.INDEX_LIMIT):
+                    raise IntegrityError("Malformed immutable archive locator")
+    result, prefixes = {}, set()
+    for item in working["registry"]:
+        if set(item) != {"prefix", "asset"} or not re.fullmatch("[0-9a-f]", item["prefix"]) or item["prefix"] in prefixes:
+            raise IntegrityError("Duplicate/invalid hosting registry shard")
+        prefixes.add(item["prefix"])
+        shard = publication._json_bytes(_public_read(base, item["asset"], "registry.json"))
+        if (set(shard) != {"schema_version", "prefix", "reports"} or shard["schema_version"] != "selection-hosting-registry-v1"
+                or shard["prefix"] != item["prefix"] or not isinstance(shard["reports"], dict)):
+            raise IntegrityError("Malformed hosting registry")
+        for rid, descriptor in shard["reports"].items():
+            if not publication.HEX.fullmatch(rid) or not rid.startswith(item["prefix"]) or rid in result:
+                raise IntegrityError("Invalid/duplicate registered report")
+            if (set(descriptor) != {"path", "sha256", "decoded_bytes"}
+                    or not publication.HEX.fullmatch(descriptor.get("sha256") or "")
+                    or descriptor.get("path") != descriptor["sha256"] + "/manifest.json"
+                    or type(descriptor.get("decoded_bytes")) is not int
+                    or not 0 < descriptor["decoded_bytes"] <= publication.INDEX_LIMIT):
+                raise IntegrityError("Invalid registered manifest locator")
+            result[rid] = descriptor
+    latest, _ = _manifest(base, working["latest"], _checked=_checked)
+    previous = _manifest(base, working["previous"], _checked=_checked)[0] if working["previous"] is not None else None
+    if result.get(digest(latest["pointer"])) != working["latest"] or (previous and result.get(digest(previous["pointer"])) != working["previous"]):
+        raise IntegrityError("Working set absent from registered generations")
+    if previous and previous["pointer"] == latest["pointer"]:
+        raise IntegrityError("Retry rotated the previous generation")
+    if working["delivery_sha256"] is not None:
+        archived = {}
+        for item in working["archive_index"]:
+            archived.update(publication._json_bytes(_public_read(base, item["asset"], "archive.json"))["reports"])
+        selected = {digest(latest["pointer"])} | ({digest(previous["pointer"])} if previous else set())
+        if set(archived) != set(result) - selected or any(value["manifest"] != result[key] for key, value in archived.items()):
+            raise IntegrityError("Incomplete or mismatched immutable archive coverage")
+    return result
+
+
+def finalize_hosting(root, at=None):
+    """Seal only an actually validated complete generation; no source collection."""
+    root = Path(root); base = root / "output/data/selection-grading"
+    checked = {}
+    generation = _validate_generation(root, _checked=checked)
+    pointer = load_json(base / "latest.json")
+    previous_working = load_json(base / "hosting.json") if (base / "hosting.json").exists() else None
+    records = _registry(base, previous_working, _checked=checked) if previous_working else {}
+    if previous_working:
+        old, _ = _manifest(base, previous_working["latest"], root=root, _checked=checked)
+        if old["pointer"] == pointer and old["generation_sha256"] == generation["generation_sha256"]:
+            return previous_working
+    at = utc(at or datetime.now(timezone.utc))
+    snapshots = {name: _public_blob(base, "snapshot-" + name.replace("/", "_"),
+                      (root / "output" / name).read_bytes(), publication.SUMMARY_LIMIT) for name in HOST_SNAPSHOTS}
+    proof_receipt = write(root, "verification/hosting-generation-proof", {
+        "schema_version": "hosting-generation-proof-v1", "season": load_json(root / "output/data/meta.json")["season"],
+        "week": load_json(root / "output/data/meta.json")["week"], "board_sha256": generation["board_sha256"],
+        "capture_source_sha": generation.get("capture_source_sha", generation["source_sha"]),
+        "proof": load_json(root / "output/data/matchup-proof.json")})
+    manifest = {"schema_version": MANIFEST_VERSION, "report_id": pointer["report_id"], "pointer": pointer,
+                "verification_receipt": proof_receipt.relative_to(root).as_posix(),
+                "generation_sha256": generation["generation_sha256"],
+                "capture_generation_sha256": generation.get("capture_generation_sha256", generation["generation_sha256"]),
+                "source_sha": generation["source_sha"], "capture_source_sha": generation.get("capture_source_sha", generation["source_sha"]),
+                "packaged_at": generation.get("packaged_at", stamp(at)), "snapshots": snapshots}
+    descriptor = _public_blob(base, "manifest.json", canonical(manifest) + b"\n")
+    _manifest(base, descriptor, root=root, _checked=checked)
+    publication_id = digest(pointer)
+    if publication_id in records and records[publication_id] != descriptor:
+        raise IntegrityError("Immutable publication manifest conflict")
+    records[publication_id] = descriptor
+    shards = []
+    for prefix in "0123456789abcdef":
+        members = {key: value for key, value in sorted(records.items()) if key.startswith(prefix)}
+        if members:
+            item = _public_blob(base, "registry.json", canonical({"schema_version": "selection-hosting-registry-v1", "prefix": prefix, "reports": members}) + b"\n")
+            shards.append({"prefix": prefix, "asset": item})
+    working = {"schema_version": HOSTING_VERSION, "latest": descriptor,
+               "previous": previous_working["latest"] if previous_working else None,
+               "registry": shards, "archive_index": [], "delivery_sha256": None}
+    _registry(base, working, _checked=checked)
+    atomic_json(base / "hosting.json", working)
+    return working
+
+
+def _publication_files(base, pointer, *, _checked=None):
+    _checked = {} if _checked is None else _checked
+    _validated_publication(base, pointer, _checked)
+    paths = {pointer["summary"]["path"], pointer["outcomes"]["path"]} | {row["path"] for row in pointer["rows"]}
+    if pointer["schema_version"] in (publication.PARTITION_POINTER_VERSION, publication.GZIP_POINTER_VERSION):
+        summary = load_json(Path(base) / pointer["summary"]["path"])
+        outcomes = load_json(Path(base) / pointer["outcomes"]["path"])
+        paths |= {item["path"] for item in summary["summary_partitions"]}
+        paths |= {item["path"] for item in outcomes["periods"]}
+    return paths
+
+
+def _manifest_files(base, descriptor, *, root=None, _checked=None):
+    _checked = {} if _checked is None else _checked
+    manifest, _ = _manifest(base, descriptor, root=root, _checked=_checked)
+    return {descriptor["path"]} | {item["path"] for item in manifest["snapshots"].values()} | _publication_files(base, manifest["pointer"], _checked=_checked)
+
+
+def _git_archive(root, records, excluded, *, verify_public=True, _checked=None):
+    """Never use a source-only/future commit as a generated-asset locator."""
+    if not excluded:
+        return {}
+    root = Path(root)
+    try:
+        ref = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", ref):
+            raise IntegrityError("Missing exact archival Git pin")
+        tree = subprocess.check_output(["git", "-C", str(root), "rev-parse", ref + "^{tree}"], text=True).strip()
+        remote = subprocess.check_output(["git", "-C", str(root), "remote", "get-url", "origin"], text=True).strip()
+        if verify_public:
+            if remote not in ("https://github.com/" + PUBLIC_REPOSITORY, "https://github.com/" + PUBLIC_REPOSITORY + ".git"):
+                raise IntegrityError("Unexpected public archive repository")
+            _public_archive_commit(ref, tree)
+        base = root / "output/data/selection-grading"
+        retained_tree = subprocess.check_output(["git", "-C", str(root), "ls-tree", "-r", ref, "--", "data"], text=True)
+        blobs = {line.split("\t", 1)[1]: line.split()[2] for line in retained_tree.splitlines()}
+        for lane in ("forward", "history", "verification", "shadow", "offers", "outcomes"):
+            for path in (root / "data" / lane).rglob("*"):
+                if path.is_file():
+                    raw = path.read_bytes(); name = path.relative_to(root).as_posix()
+                    blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+                    if blobs.get(name) != blob:
+                        raise IntegrityError("Required retained original is absent from the archival commit")
+        result = {}
+        for rid in sorted(excluded):
+            descriptor = records[rid]
+            for relative in _manifest_files(base, descriptor, root=root, _checked=_checked):
+                path = base / relative
+                original = subprocess.check_output(["git", "-C", str(root), "show", ref + ":output/data/selection-grading/" + relative], stderr=subprocess.PIPE)
+                if original != path.read_bytes():
+                    raise IntegrityError("Archive commit lacks the exact complete report asset")
+            result[rid] = {"git_ref": ref, "manifest": descriptor}
+        return result
+    except subprocess.CalledProcessError as exc:
+        raise IntegrityError("Required report archive is uncommitted or unavailable") from exc
+
+
+def _public_archive_commit(ref, tree):
+    import requests
+    response = requests.get("https://api.github.com/repos/" + PUBLIC_REPOSITORY + "/git/commits/" + ref, timeout=30)
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("sha") != ref or payload.get("tree", {}).get("sha") != tree:
+        raise IntegrityError("Public archival commit/tree mismatch")
+
+
+def _repackage_generation(root, *, source_root=ROOT):
+    """Package a SAVED qualified bundle. Never invoke builder/provider/candidate."""
+    root, source_root = Path(root).resolve(), Path(source_root).resolve()
+    source_sha = subprocess.check_output(["git", "-C", str(source_root), "rev-parse", "HEAD"], text=True).strip()
+    # Packaging source must truthfully identify committed bytes, including this code.
+    for name in ("tools/phase2_capture.py", "tools/selection_publication.py", "output/app.js", "output/index.html"):
+        saved = subprocess.check_output(["git", "-C", str(source_root), "show", source_sha + ":" + name], stderr=subprocess.PIPE)
+        if saved != (source_root / name).read_bytes():
+            raise IntegrityError("Packaging code is not the identified committed source")
+    original = validate_generation(root)
+    if original.get("schema_version") == "website-packaging-generation-v1" and original["source_sha"] == source_sha:
+        return original
+    if original.get("schema_version") != "website-generation-v1":
+        raise IntegrityError("Repackage only an original captured generation or its unchanged retry")
+    # An already identical encoded app/report needs no manufactured generation.
+    # Validation time is not a new capture or packaging source identity.
+    saved_pointer = load_json(root / "output/data/selection-grading/latest.json")
+    if (saved_pointer.get("schema_version") == publication.GZIP_POINTER_VERSION
+            and all((root / "output" / name).read_bytes() == (source_root / "output" / name).read_bytes()
+                    for name in ("app.js", "index.html"))):
+        if not (root / "output/data/selection-grading/hosting.json").exists():
+            finalize_hosting(root, datetime.now(timezone.utc))
+        return validate_generation(root)
+    at = datetime.now(timezone.utc)
+    # Migration seals the already complete original before changing any alias.
+    # It is the previous complete generation, not a failed-attempt placeholder.
+    if not (root / "output/data/selection-grading/hosting.json").exists():
+        finalize_hosting(root, at)
+    health = load_json(root / "output/data/health.json")
+    pointer = load_json(root / "output/data/selection-grading/latest.json")
+    origin = {"schema_version": "hosting-capture-original-v1", "season": load_json(root / "output/data/meta.json")["season"],
+              "week": load_json(root / "output/data/meta.json")["week"], "generation": original, "health": health,
+              "pointer": pointer, "proof": load_json(root / "output/data/matchup-proof.json"), "source_assets": {name: (root / "output" / name).read_text() for name in ("app.js", "index.html")}}
+    receipt = write(root, "verification/hosting-capture-originals", origin)
+    # Validate original source app/shell independently, not against newly copied app.
+    for name, raw in origin["source_assets"].items():
+        saved = subprocess.check_output(["git", "-C", str(source_root), "show", original["source_sha"] + ":output/" + name], stderr=subprocess.PIPE)
+        if saved != raw.encode():
+            raise IntegrityError("Original capture source app/shell mismatch")
+    base = root / "output/data/selection-grading"
+    new_pointer = publication.repack_publication(base, pointer)
+    for name in ("app.js", "index.html"):
+        shutil.copyfile(source_root / "output" / name, root / "output" / name)
+    atomic_json(base / "latest.json", new_pointer)
+    bindings = {name: hashlib.sha256((root / "output" / name).read_bytes()).hexdigest() for name in original["bindings"]}
+    generation = {"schema_version": "website-packaging-generation-v1", "source_sha": source_sha,
+                  "capture_source_sha": original["source_sha"], "capture_generation_sha256": original["generation_sha256"],
+                  "capture_original_receipt": receipt.relative_to(root).as_posix(), "packaged_at": stamp(at),
+                  "board_sha256": original["board_sha256"], "baseline_payload_sha256": original["baseline_payload_sha256"],
+                  "selection_report_id": new_pointer["report_id"], "bindings": bindings}
+    gid = digest(generation)
+    health = copy.deepcopy(health)
+    health.update(generation_sha256=gid, source_sha=source_sha, capture_source_sha=original["source_sha"],
+                  capture_generation_sha256=original["generation_sha256"], packaged_at=stamp(at))
+    health["phase2"]["selection_report_sha256"] = new_pointer["report_id"]
+    atomic_json(root / "output/data/release-identity.json", dict(generation, generation_sha256=gid))
+    atomic_json(root / "output/data/health.json", health)
+    _validate_generation(root)
+    finalize_hosting(root, at)
+    return validate_generation(root)
+
+
+def repackage_generation(root, *, source_root=ROOT):
+    root, source_root = Path(root).resolve(), Path(source_root).resolve()
+    if root == source_root:
+        raise IntegrityError("Saved packaging requires a separate local copy")
+    with tempfile.TemporaryDirectory(prefix="nfl-saved-packaging-") as temporary:
+        stage = Path(temporary) / "generation"
+        for name in ("pull", "tools", "config", "data", "output"):
+            if (root / name).exists():
+                if any(path.is_symlink() for path in (root / name).rglob("*")):
+                    raise IntegrityError("Symlink saved-package source")
+                shutil.copytree(root / name, stage / name, ignore=shutil.ignore_patterns("__pycache__"))
+        result = _repackage_generation(stage, source_root=source_root)
+        _promote(stage, root, packaging=True)
+        return result
 
 
 def _completed_partial_native(stage, path, spec):
@@ -537,13 +879,14 @@ def _copy_evidence(stage, root, *, failed_generation=False):
                         handle.write(path.read_bytes()); handle.flush(); os.fsync(handle.fileno())
 
 
-def _promote(stage, root):
+def _promote(stage, root, *, packaging=False):
     """Validate first, then publish. Restore overwritten outputs on I/O failure."""
     _copy_evidence(stage, root)
     journal = {}
     try:
-        for directory in ("data/cache", "output/data"):
-            paths = sorted((stage / directory).rglob("*"), key=lambda p: (p.name == "latest.json", str(p)))
+        directories = (("output/app.js", "output/index.html") if packaging else ()) + ("data/cache", "output/data")
+        for directory in directories:
+            paths = [stage / directory] if (stage / directory).is_file() else sorted((stage / directory).rglob("*"), key=lambda p: (p.name in ("latest.json", "hosting.json"), str(p)))
             for path in paths:
                 if not path.is_file():
                     continue
@@ -564,7 +907,7 @@ def _promote(stage, root):
         for target, old in reversed(list(journal.items())):
             if old is not None:
                 target.write_bytes(old)
-            elif "selection-grading" not in target.parts or target.name == "latest.json":
+            elif "selection-grading" not in target.parts or target.name in ("latest.json", "hosting.json"):
                 # Restore prior absence of mutable files; immutable originals
                 # and unreachable new report assets remain preserved.
                 target.unlink(missing_ok=True)
@@ -610,6 +953,12 @@ def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
                     raise IntegrityError("Symlink generation source is unsupported")
                 shutil.copytree(source, stage / name, ignore=shutil.ignore_patterns("__pycache__"))
         try:
+            # One-time migration of a fully validated existing publication.
+            # A malformed existing generation fails here; it is not silently
+            # replaced or promoted as previous-successful evidence.
+            if ((stage / "output/data/release-identity.json").exists()
+                    and not (stage / "output/data/selection-grading/hosting.json").exists()):
+                finalize_hosting(stage, datetime.now(timezone.utc))
             if needs_initial:
                 partial_week.register_plan(stage, config["partial_week"], datetime.now(timezone.utc),
                                            source_sha=source_sha, initial_board=initial)
@@ -646,12 +995,18 @@ def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
             raise
 
 
-def validate_generation(root):
+def _validate_generation(root, snapshots=None, *, legacy_proof=None, _checked=None):
+    _checked = {} if _checked is None else _checked
     root = Path(root)
-    generation = load_json(root / "output/data/release-identity.json")
+    def raw(name):
+        return snapshots[name] if snapshots is not None else (root / "output" / name).read_bytes()
+    def output(name):
+        return publication._json_bytes(raw(name))
+    generation = output("data/release-identity.json")
     core = {key: value for key, value in generation.items() if key != "generation_sha256"}
-    health = load_json(root / "output/data/health.json")
-    if (generation.get("schema_version") != "website-generation-v1" or digest(core) != generation["generation_sha256"]
+    health = output("data/health.json")
+    packaging = generation.get("schema_version") == "website-packaging-generation-v1"
+    if (generation.get("schema_version") not in ("website-generation-v1", "website-packaging-generation-v1") or digest(core) != generation["generation_sha256"]
             or health.get("generation_sha256") != generation["generation_sha256"]
             or health.get("board_sha256") != generation["board_sha256"] or health.get("source_sha") != generation["source_sha"]):
         raise IntegrityError("Health/publication generation mismatch")
@@ -664,18 +1019,17 @@ def validate_generation(root):
                         "data/forecast-scorecard.json", "data/selection-grading/latest.json"):
             raise IntegrityError("Unrecognized generation binding")
         path = root / "output" / name
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        actual = hashlib.sha256(raw(name)).hexdigest()
         if actual != expected:
             raise IntegrityError("Publication generation content mismatch")
-    board = load_json(root / "output/data/week.json")
+    board = output("data/week.json")
     if generation["board_sha256"] != digest(board):
         raise IntegrityError("Generation board checksum mismatch")
     baseline = read_native_baseline(root / health["receipt"], root)
     if digest(baseline) != generation["baseline_payload_sha256"] or baseline["input_sha256"] != digest(board):
         raise IntegrityError("Generation/native baseline mismatch")
-    from selection_publication import validate_publication
-    pointer = load_json(root / "output/data/selection-grading/latest.json")
-    validate_publication(root / "output/data/selection-grading", pointer)
+    pointer = output("data/selection-grading/latest.json")
+    _validated_publication(root / "output/data/selection-grading", pointer, _checked)
     if pointer["report_id"] != generation["selection_report_id"]:
         raise IntegrityError("Generation/report identity mismatch")
     completion = health["phase2"].get("partial_completion_receipt")
@@ -683,52 +1037,152 @@ def validate_generation(root):
         completed, scope, native = partial_week.read_bundle(root, completion, load_json(root / "config/phase2.json")["partial_week"], read_native_baseline)
         if scope["output_sha256"] != digest(board) or digest(native) != digest(baseline):
             raise IntegrityError("Generation scope/native binding mismatch")
-        if load_json(root / "output/data/verification-scope.json") != partial_week.public_scope(scope, completed):
+        if output("data/verification-scope.json") != partial_week.public_scope(scope, completed):
             raise IntegrityError("Public scope differs from retained source validation")
         if health["phase2"].get("strict_full_board_verified") is not False:
             raise IntegrityError("Partial generation overclaims strict verification")
     else:
-        require_offline(root, board, load_json(root / "output/data/matchup-proof.json"), "live", health["checked_at"])
+        require_offline(root, board, legacy_proof if legacy_proof is not None else load_json(root / "output/data/matchup-proof.json"), "live", health["checked_at"])
         if health["phase2"].get("strict_full_board_verified") is not True:
             raise IntegrityError("Strict generation lacks source validation")
     rich = partial_week._saved(root, health["phase2"]["rich_scorecard_receipt"], "verification/report-originals")
-    public = load_json(root / "output/data/forecast-scorecard.json")
+    public = output("data/forecast-scorecard.json")
     if (rich.get("schema_version") != "rich-scorecard-evidence-v1" or rich["report_sha256"] != digest(rich["report"])
-            or rich["board_sha256"] != digest(board) or rich["source_sha"] != generation["source_sha"]
-            or public != public_scorecard(rich["report"], board, generation["source_sha"])):
+            or rich["board_sha256"] != digest(board) or rich["source_sha"] != generation.get("capture_source_sha", generation["source_sha"])
+            or public != public_scorecard(rich["report"], board, generation.get("capture_source_sha", generation["source_sha"]))):
         raise IntegrityError("Public scorecard differs from its retained rich report")
+    if packaging:
+        origin = partial_week._saved(root, generation["capture_original_receipt"], "verification/hosting-capture-originals")
+        if (origin.get("schema_version") != "hosting-capture-original-v1"
+                or origin["generation"]["schema_version"] != "website-generation-v1"
+                or origin["generation"]["generation_sha256"] != generation["capture_generation_sha256"]
+                or origin["generation"]["source_sha"] != generation["capture_source_sha"]
+                or utc(generation["packaged_at"]) < utc(origin["health"]["checked_at"])
+                or health.get("packaged_at") != generation["packaged_at"]
+                or health.get("capture_source_sha") != generation["capture_source_sha"]
+                or health.get("capture_generation_sha256") != generation["capture_generation_sha256"]):
+            raise IntegrityError("Invalid original capture/packaging binding")
+        original_snapshots = {name: raw(name) for name in HOST_SNAPSHOTS}
+        original_snapshots.update({"data/release-identity.json": canonical(origin["generation"]),
+                                  "data/health.json": canonical(origin["health"]),
+                                  "data/selection-grading/latest.json": canonical(origin["pointer"])})
+        original_snapshots.update({name: value.encode() for name, value in origin["source_assets"].items()})
+        _validate_generation(root, original_snapshots, legacy_proof=origin["proof"], _checked=_checked)
+        old_summary, old_rows, old_outcomes = publication.publication_contents(root / "output/data/selection-grading", origin["pointer"])
+        new_summary, new_rows, new_outcomes = publication.publication_contents(root / "output/data/selection-grading", pointer)
+        old_summary.pop("report_id", None); new_summary.pop("report_id", None)
+        if (old_summary, old_rows, old_outcomes) != (new_summary, new_rows, new_outcomes):
+            raise IntegrityError("Packaging changed captured public semantics")
+    return generation
+
+
+def _same_generation_snapshot(name, actual, captured):
+    if name != "data/health.json":
+        return actual == captured
+    current, saved = publication._json_bytes(actual), publication._json_bytes(captured)
+    # Existing hourly workflow appends these advisory step outcomes AFTER the
+    # qualified capture. They neither change required health nor rotate a report.
+    for field in ("legacy_verifier", "historical_comparison"):
+        if current.get(field) != saved.get(field) and current.get(field) not in {"success", "failure", "cancelled", "skipped"}:
+            return False
+        current.pop(field, None); saved.pop(field, None)
+    return current == saved
+
+
+def validate_generation(root, *, _checked=None):
+    _checked = {} if _checked is None else _checked
+    generation = _validate_generation(root, _checked=_checked)
+    base = Path(root) / "output/data/selection-grading"
+    if (base / "hosting.json").exists():
+        working = load_json(base / "hosting.json")
+        _registry(base, working, _checked=_checked)
+        current, snapshots = _manifest(base, working["latest"], root=Path(root), _checked=_checked)
+        if current["generation_sha256"] != generation["generation_sha256"]:
+            raise IntegrityError("Hosting/current generation mismatch")
+        if any(not _same_generation_snapshot(name, (Path(root) / "output" / name).read_bytes(), value) for name, value in snapshots.items()):
+            raise IntegrityError("Hosting/current snapshot differs from root alias")
+        if working["previous"] is not None:
+            _manifest(base, working["previous"], root=Path(root), _checked=_checked)
     return generation
 
 
 def stage_pages(root, destination):
-    """Bounded output staging; GitHub originals remain unmodified and public."""
+    """Fresh bounded Pages projection. Never delete GitHub originals/old assets."""
     root, destination = Path(root).resolve(), Path(destination).resolve()
+    _checked = {}
     if destination.exists() or destination.is_relative_to(root / "output"):
         raise IntegrityError("Pages staging requires a fresh external destination")
     output = root / "output"
     if any(path.is_symlink() for path in output.rglob("*")):
         raise IntegrityError("Refusing symlink Pages asset")
     if read_phase2(root):
-        validate_generation(root)
+        validate_generation(root, _checked=_checked)
+    base = output / "data/selection-grading"
+    working = load_json(base / "hosting.json") if (base / "hosting.json").exists() else None
+    retained, archives = None, {}
+    if working is not None:
+        records = _registry(base, working, _checked=_checked)
+        retained, selected = set(), set()
+        for descriptor in (working["latest"], working["previous"]):
+            if descriptor is not None:
+                manifest, _ = _manifest(base, descriptor, root=root, _checked=_checked)
+                selected.add(digest(manifest["pointer"]))
+                retained |= _manifest_files(base, descriptor, root=root, _checked=_checked)
+        retained |= {item["asset"]["path"] for item in working["registry"]}
+        # At actual deployment this HEAD is the already-pushed generated-data
+        # commit. Source-only or uncommitted files fail; no future pin is invented.
+        archives = _git_archive(root, records, set(records) - selected, _checked=_checked)
     excluded = {"data/game-status.json", "data/matchup-proof.json", "data/matchup-diagnostics.json"}
+    public_data = {"data/week.json", "data/meta.json", "data/future.json", "data/teams.json", "data/track_record.json",
+                   "data/dk_backtest.json", "data/forecast-scorecard.json", "data/offer-capture.json", "data/health.json",
+                   "data/release-identity.json", "data/verification-scope.json"}
+    staged_bytes = 0
     for path in output.rglob("*"):
         if not path.is_file() or path.relative_to(output).as_posix() in excluded:
             continue
-        relative = path.relative_to(output)
-        # Output is an explicit static/public contract, not a scratch wildcard.
-        name = relative.as_posix()
-        public_data = {"data/week.json", "data/meta.json", "data/future.json", "data/teams.json", "data/track_record.json",
-                       "data/dk_backtest.json", "data/forecast-scorecard.json", "data/offer-capture.json", "data/health.json",
-                       "data/release-identity.json", "data/verification-scope.json"}
+        relative = path.relative_to(output); name = relative.as_posix()
+        report_asset = re.fullmatch(r"data/selection-grading/(?:latest\.json|hosting\.json|[0-9a-f]{64}/(?:summary|outcomes|rows-[0-9]{4}|manifest|registry|archive)\.json|[0-9a-f]{64}/snapshot-(?:app\.js|index\.html|data_(?:week|meta|verification-scope|forecast-scorecard|health|release-identity)\.json|data_selection-grading_latest\.json))", name)
         allowed = (name in {"app.js", "index.html", "style.css", "reliability-ui.js", "recovery.html"}
-                   or name in public_data or re.fullmatch(r"data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json", name)
-                   or re.fullmatch(r"data/selection-grading/(?:latest\.json|[0-9a-f]{64}/(?:summary|outcomes|rows-[0-9]{4})\.json)", name))
+                   or name in public_data or re.fullmatch(r"data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json", name) or report_asset)
         if (not allowed or any(part.startswith(".") for part in relative.parts)
                 or path.suffix not in (".js", ".css", ".html", ".json", ".png", ".svg", ".ico", ".txt")):
             raise IntegrityError("Unclassified Pages asset")
+        if working is not None and name.startswith("data/selection-grading/"):
+            report_name = path.relative_to(base).as_posix()
+            if report_name == "hosting.json" or report_name != "latest.json" and report_name not in retained:
+                continue
+        # Reject an oversized allowed-path file before copying/allocating it.
+        if staged_bytes + path.stat().st_size > STAGING_BUDGET:
+            raise IntegrityError("Complete Pages stage exceeds conservative 900000000-byte budget")
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
+        staged_bytes += target.stat().st_size
+    if working is not None:
+        delivery = copy.deepcopy(working); delivery["archive_index"] = []
+        delivery_base = destination / "data/selection-grading"
+        for prefix in "0123456789abcdef":
+            members = {rid: item for rid, item in archives.items() if rid.startswith(prefix)}
+            if members:
+                item = _public_blob(delivery_base, "archive.json", canonical({"schema_version": "selection-hosting-archive-v1",
+                                     "prefix": prefix, "repository": PUBLIC_REPOSITORY, "reports": members}) + b"\n")
+                delivery["archive_index"].append({"prefix": prefix, "asset": item})
+        delivery["delivery_sha256"] = digest({key: value for key, value in delivery.items() if key != "delivery_sha256"})
+        if len(canonical(delivery) + b"\n") > publication.INDEX_LIMIT:
+            raise IntegrityError("Pages hosting pointer exceeds supported limit")
+        atomic_json(delivery_base / "hosting.json", delivery)
+        _registry(delivery_base, delivery, _checked=_checked)
+        for descriptor in (delivery["latest"], delivery["previous"]):
+            if descriptor:
+                _manifest(delivery_base, descriptor, _checked=_checked)
+    total = sum(path.stat().st_size for path in destination.rglob("*") if path.is_file())
+    if total > STAGING_BUDGET:
+        raise IntegrityError("Complete Pages stage exceeds conservative 900000000-byte budget")
+    # GitHub Pages reads the new public stage, including atomic-json metadata.
+    # Do not inherit a private local umask or alter any original source/evidence.
+    destination.chmod(0o755)
+    for path in destination.rglob("*"):
+        path.chmod(0o755 if path.is_dir() else 0o644)
     return destination
 
 
@@ -739,9 +1193,15 @@ def main():
     parser.add_argument("--build-and-capture", action="store_true")
     parser.add_argument("--stage-pages", type=Path)
     parser.add_argument("--validate-generation", action="store_true")
+    parser.add_argument("--package-saved-root", type=Path, help="Packaging-only external copy; no provider or capture calls")
     args = parser.parse_args()
     if args.mode == "live" and args.replay_at:
         parser.error("Live capture cannot use a supplied clock")
+    if args.package_saved_root:
+        if args.mode != "live" or args.build_and_capture or args.replay_at:
+            parser.error("Saved packaging does not collect or accept replay clocks")
+        print(repackage_generation(args.package_saved_root)["generation_sha256"])
+        return
     if args.stage_pages:
         print(stage_pages(ROOT, args.stage_pages))
         return

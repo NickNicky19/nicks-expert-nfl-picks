@@ -226,10 +226,10 @@ const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8')
   const extract = name => source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`))[0];
   let bytes, requests = 0;
   const context = { HASH64: /^[a-f0-9]{64}$/, GRADING_BASE: 'data/selection-grading/', GRADING_RESULTS: ['win','loss','push','dnp','pending','unresolved','no_action','not_due','excluded'],
-    TextEncoder, TextDecoder, crypto: crypto.webcrypto, Map, Set,
-    fetch: async () => { requests++; return { ok: true, arrayBuffer: async () => Uint8Array.from(bytes).buffer }; } };
+    TextEncoder, TextDecoder, Blob, DecompressionStream, ReadableStream, crypto: crypto.webcrypto, Map, Set, gradingArchiveSources: new WeakMap(),
+    fetch: async () => { requests++; return new Response(bytes); } };
   vm.createContext(context);
-  vm.runInContext(['gradingHash','publicAssetPath','checkedGradingAsset','validateFinalOutcomes','loadOutcomePeriod'].map(extract).join('\n') + '\nthis.ui={publicAssetPath,checkedGradingAsset,validateFinalOutcomes,loadOutcomePeriod};', context);
+  vm.runInContext(['gradingHash','gradingStreamBytes','checkedHostingJson','resolveGradingArchive','fetchGradingAsset','publicAssetPath','checkedGradingAsset','validateFinalOutcomes','loadOutcomePeriod'].map(extract).join('\n') + '\nthis.ui={publicAssetPath,checkedGradingAsset,validateFinalOutcomes,loadOutcomePeriod};', context);
   const ui = context.ui, pointer = { schema_version: 'selection-publication-pointer-v2', report_id: 'a'.repeat(64), generated_at: '2026-10-18T18:00:00Z' };
   const payload = { schema_version: 'selection-final-outcome-period-v1', report_id: pointer.report_id, season: 2026, week: 6, outcomes: [] };
   bytes = Buffer.from(JSON.stringify(payload));
@@ -253,4 +253,58 @@ const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8')
   bytes = Buffer.from('wrong bytes');
   await assert.rejects(ui.checkedGradingAsset(pointer, descriptor, 'outcomes', true), /size|checksum/);
   console.log('Partitioned outcome/asset contracts: 10 focused checks passed.');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+
+
+// Actual encoded reader: independent wire fixtures and bounded stream controls.
+(async () => {
+  const crypto = require('node:crypto'), zlib = require('node:zlib');
+  const extract = name => source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`))[0];
+  const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+  const pointer = { schema_version: 'selection-publication-pointer-v3', report_id: 'c'.repeat(64) };
+  const raw = Buffer.from(JSON.stringify({ schema_version: 'selection-final-outcome-period-v1', report_id: pointer.report_id, season: 2026, week: 6, outcomes: [] }));
+  const encoded = zlib.gzipSync(raw, { mtime: 0 });
+  const descriptor = { encoding: 'gzip', encoded_sha256: hash(encoded), encoded_bytes: encoded.length, sha256: hash(raw), decoded_bytes: raw.length, season: 2026, week: 6, count: 0, path: hash(encoded) + '/outcomes.json' };
+  let delivered = encoded, headers = {}, fetches = 0, cancelled = 0, streamed = false, networkStatus = 200;
+  const context = { HASH64: /^[a-f0-9]{64}$/, GRADING_BASE: 'data/selection-grading/', TextEncoder, TextDecoder, Blob, DecompressionStream, ReadableStream,
+    crypto: crypto.webcrypto, Map, Set, gradingArchiveSources: new WeakMap(),
+    gradingCanonical: value => JSON.stringify(value),
+    fetch: async () => {
+      fetches++;
+      const body = streamed ? new ReadableStream({ pull(controller) { controller.enqueue(new Uint8Array(1024)); }, cancel() { cancelled++; } }) : delivered;
+      return new Response(body, { status: networkStatus, headers });
+    } };
+  vm.createContext(context);
+  vm.runInContext(['gradingHash','gradingStreamBytes','checkedHostingJson','resolveGradingArchive','fetchGradingAsset','publicAssetPath','checkedGradingAsset'].map(extract).join('\n') + '\nthis.ui={checkedGradingAsset,publicAssetPath};', context);
+  const ui = context.ui;
+  assert.equal((await ui.checkedGradingAsset(pointer, descriptor, 'outcomes', true)).week, 6);
+  headers = { 'Content-Encoding': 'gzip' }; // Delivered body contract, independent of HTTP header.
+  assert.equal((await ui.checkedGradingAsset(pointer, descriptor, 'outcomes', true)).week, 6);
+  const before = fetches;
+  for (const change of [{ encoding: 'br' }, { encoded_bytes: 12 * 1024 * 1024 + 1 }, { decoded_bytes: 12 * 1024 * 1024 + 1 }, { private_extension: true }]) {
+    await assert.rejects(ui.checkedGradingAsset(pointer, { ...descriptor, ...change }, 'outcomes', true));
+  }
+  assert.equal(fetches, before, 'unsupported/oversized descriptors rejected before network');
+  for (const change of [{ encoded_sha256: '0'.repeat(64), path: '0'.repeat(64) + '/outcomes.json' }, { sha256: '0'.repeat(64) }, { encoded_bytes: encoded.length - 1 }, { decoded_bytes: raw.length - 1 }]) {
+    await assert.rejects(ui.checkedGradingAsset(pointer, { ...descriptor, ...change }, 'outcomes', true));
+  }
+  delivered = encoded.subarray(0, encoded.length - 4);
+  let changed = { ...descriptor, encoded_sha256: hash(delivered), encoded_bytes: delivered.length, path: hash(delivered) + '/outcomes.json' };
+  await assert.rejects(ui.checkedGradingAsset(pointer, changed, 'outcomes', true));
+  delivered = Buffer.from(encoded); delivered[delivered.length - 5] ^= 255;
+  changed = { ...descriptor, encoded_sha256: hash(delivered), path: hash(delivered) + '/outcomes.json' };
+  await assert.rejects(ui.checkedGradingAsset(pointer, changed, 'outcomes', true));
+  delivered = zlib.gzipSync(Buffer.alloc(13 * 1024 * 1024, 65));
+  changed = { ...descriptor, encoded_sha256: hash(delivered), encoded_bytes: delivered.length, path: hash(delivered) + '/outcomes.json', decoded_bytes: 16 };
+  await assert.rejects(ui.checkedGradingAsset(pointer, changed, 'outcomes', true), /limit/);
+  streamed = true;
+  await assert.rejects(ui.checkedGradingAsset(pointer, { ...descriptor, encoded_bytes: 32 }, 'outcomes', true), /limit/);
+  assert.equal(cancelled, 1, 'reader cancelled before unbounded encoded buffering');
+  streamed = false; delivered = encoded; context.DecompressionStream = undefined;
+  await assert.rejects(ui.checkedGradingAsset(pointer, descriptor, 'outcomes', true), /decoder unavailable/);
+  context.DecompressionStream = DecompressionStream;
+  networkStatus = 503; const old = fetches;
+  await assert.rejects(ui.checkedGradingAsset(pointer, descriptor, 'outcomes', true), /source unavailable/);
+  assert.equal(fetches, old + 1, 'server failure does not select archive fallback');
+  console.log('Encoded report streams: 19 focused integrity/limit/decoder checks passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
