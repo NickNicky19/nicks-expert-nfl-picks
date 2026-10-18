@@ -18,7 +18,11 @@ from scorecard import identity
 from selection_report import (PATTERNS, RESULTS, _create_file, _tally, build_decisions, run_report, summarize, weekday)
 
 ROOT = Path(__file__).resolve().parents[1]
-PUBLIC_VERSION = "selection-public-report-v1"
+PUBLIC_VERSION = "selection-public-report-v2"
+REPORT_CONTRACTS = {"selection-report-v2": "selection-public-report-v1",
+                    "selection-report-v3": PUBLIC_VERSION}
+SUMMARY_LIMIT = 12 * 1024 * 1024
+ROW_LIMIT = 2 * 1024 * 1024
 POINTER_VERSION = "selection-publication-pointer-v1"
 ROWS_VERSION = "selection-public-rows-v1"
 OUTCOMES_VERSION = "selection-final-outcomes-v1"
@@ -59,6 +63,7 @@ provenance_class model_version engine_sha256 view checkpoint period dimension va
 rows selected hit_rate unique_players unique_games unique_weeks selected_unique_players selected_unique_games
 decided_unique_players decided_unique_games decided_unique_weeks decided
 """.split()) | frozenset(RESULTS)
+TABLE_FIELDS_V2 = TABLE_FIELDS | {"policy_version", "policy_sha256", "line_source_scope"}
 COVERAGE_FIELDS = frozenset("""
 valid_snapshot_instants unique_observed_opportunities receipt_exclusions unobserved_checkpoint_opportunities
 schedule_conflicts universe_scope original_archive_count weeks_with_decided_selections
@@ -214,8 +219,16 @@ def _coverage(coverage):
 
 
 def _projection(report, *, source_sha, input_digest):
-    if report.get("schema_version") != "selection-report-v2":
+    contract = report.get("schema_version")
+    if contract not in REPORT_CONTRACTS:
         raise IntegrityError("Unsupported source selection report")
+    fields = TABLE_FIELDS_V2 if contract == "selection-report-v3" else TABLE_FIELDS
+    if contract == "selection-report-v3":
+        for row in report["rows"]:
+            if (row.get("line_from") not in (None, "dk", "sleeper", "ours", "unknown")
+                    or not isinstance(row.get("policy_version"), str) or not row["policy_version"].strip()
+                    or not HEX.fullmatch(row.get("policy_sha256") or "")):
+                raise IntegrityError("Unsupported public-v2 source or policy identity")
     # Physical locality only; recommendation membership and ranking stay recorded.
     rows = sorted((_row(row) for row in report["rows"]), key=lambda row: (
         row["provenance_class"], row["model_version"], row.get("engine_sha256") or "",
@@ -228,13 +241,13 @@ def _projection(report, *, source_sha, input_digest):
     positions = {row["decision_sha256"]: index for index, row in enumerate(rows)}
     tables = []
     by_id = {row["decision_sha256"]: row for row in rows}
-    expected_tables = {table["summary_id"]: table for table in summarize(report["rows"])["tables"]}
+    expected_tables = {table["summary_id"]: table for table in summarize(report["rows"], contract=contract)["tables"]}
     if len(expected_tables) != len(report["summary"]["tables"]):
         raise IntegrityError("Source report summary groups do not reconcile")
     for original in report["summary"]["tables"]:
         if expected_tables.get(original.get("summary_id")) != original:
             raise IntegrityError("Source report group identity/membership does not reconcile")
-        table = _project(original, TABLE_FIELDS)
+        table = _project(original, fields)
         _hash(table.get("summary_id"))
         refs = table.get("row_ids", [])
         if len(refs) != len(set(refs)) or any(ref not in positions for ref in refs):
@@ -252,7 +265,7 @@ def _projection(report, *, source_sha, input_digest):
                       key=lambda row: identity(row))
     if len({identity(row) for row in outcomes}) != len(outcomes):
         raise IntegrityError("Duplicate public outcome identity")
-    summary = {"schema_version": PUBLIC_VERSION, "report_schema_version": report["schema_version"],
+    summary = {"schema_version": REPORT_CONTRACTS[contract], "report_schema_version": contract,
                "row_count": len(rows), "source_sha": source_sha,
                "input_binding": "NOT_YET_GIT_COMMITTED", "input_content_sha256": input_digest,
                "summary": {"tables": tables,
@@ -294,6 +307,9 @@ def validate_publication(base, pointer):
         if path.is_symlink() or not path.resolve().is_relative_to(base.resolve()):
             raise IntegrityError("Public asset escaped its root")
         raw = path.read_bytes()
+        limit = ROW_LIMIT if name.startswith("rows-") else SUMMARY_LIMIT
+        if len(raw) > limit:
+            raise IntegrityError("Public asset exceeds the supported reader size limit")
         if hashlib.sha256(raw).hexdigest() != descriptor["sha256"]:
             raise IntegrityError("Public asset byte checksum mismatch")
         return load_json(path)
@@ -304,10 +320,13 @@ def validate_publication(base, pointer):
                                "primary_raw_vs_adjusted", "uncertainty", "limitations"}
     if set(summary) != expected_summary_fields:
         raise IntegrityError("Unknown public summary fields")
-    if summary.get("schema_version") != PUBLIC_VERSION or summary.get("report_id") != report_id:
+    contract = summary.get("report_schema_version")
+    if (contract not in REPORT_CONTRACTS or summary.get("schema_version") != REPORT_CONTRACTS[contract]
+            or summary.get("report_id") != report_id):
         raise IntegrityError("Malformed public summary identity")
-    if summary.get("report_schema_version") != "selection-report-v2" or summary.get("input_binding") != "NOT_YET_GIT_COMMITTED":
+    if summary.get("input_binding") != "NOT_YET_GIT_COMMITTED":
         raise IntegrityError("Unsupported public source/binding contract")
+    fields = TABLE_FIELDS_V2 if contract == "selection-report-v3" else TABLE_FIELDS
     if SOURCE_HEX.fullmatch(summary.get("source_sha", "")) is None:
         raise IntegrityError("Malformed public source commit")
     _hash(summary.get("input_content_sha256"))
@@ -340,11 +359,17 @@ def validate_publication(base, pointer):
     if len(rows) != pointer["row_count"] or len(rows) != summary["row_count"]:
         raise IntegrityError("Public row count does not reconcile")
     by_id = {row["decision_sha256"]: row for row in rows}
-    expected_tables = {table["summary_id"]: table for table in summarize(rows)["tables"]}
+    expected_tables = {table["summary_id"]: table for table in summarize(rows, contract=contract)["tables"]}
     if len(expected_tables) != len(summary["summary"]["tables"]):
         raise IntegrityError("Public summary groups do not reconcile")
     for table in summary["summary"]["tables"]:
-        if set(table) - (TABLE_FIELDS - {"row_ids"}) - {"row_chunks", "coverage_reason_counts", "row_positions", "row_ids_sha256"}:
+        if contract == "selection-report-v3" and (
+                not isinstance(table.get("policy_version"), str) or not table["policy_version"].strip()
+                or not HEX.fullmatch(table.get("policy_sha256") or "")
+                or table.get("line_source_scope") not in ("all", "dk", "sleeper", "ours", "unknown")
+                or table["line_source_scope"] != "all" and table["dimension"] not in ("overall", "category", "category_side")):
+            raise IntegrityError("Unsupported public-v2 summary context")
+        if set(table) - (fields - {"row_ids"}) - {"row_chunks", "coverage_reason_counts", "row_positions", "row_ids_sha256"}:
             raise IntegrityError("Nonpublic field in summary")
         positions = table["row_positions"]
         if any(type(position) is not int or not 0 <= position < len(rows) for position in positions):
@@ -589,6 +614,8 @@ def publish_selection_report(root, observed_at=None, *, source_sha=None):
 
         def save(name, payload):
             raw = canonical(payload) + b"\n"
+            if len(raw) > (ROW_LIMIT if name.startswith("rows-") else SUMMARY_LIMIT):
+                raise IntegrityError("Public asset exceeds the supported reader size limit")
             _create_file(directory / name, raw)
             return {"path": public_id + "/" + name, "sha256": hashlib.sha256(raw).hexdigest()}
 

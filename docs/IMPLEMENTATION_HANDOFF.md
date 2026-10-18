@@ -1,5 +1,202 @@
 # Phase 2 reporting and implementation handoff
 
+## Approved partial-week operational cutover (source implementation)
+
+This checkpoint implements NFL-WEB-PARTIAL-OPS-PROPOSAL-20261018-131818Z,
+PR #1 comment 6250738186 (canonical proposal SHA-256
+7fee0d61faca32ce9f361e543fb27140c40500595ae51cd714c738c945a9cfb2).
+It changes no forecasting engine, ranking policy or registered experiment.
+Source implementation, independent source acceptance, an inspected actual-data
+package, disclosure approval and production release remain separate states.
+No genuine operational package or deployment is established by fictional tests.
+
+The explicit `verification_mode` is either `strict-full-board-v1` or
+`partial-week-input-reproduction-v1`. A strict error NEVER selects partial mode.
+`tools/verify.py` is unchanged; its old Week 6 missing-original-proof failure
+remains visible. Partial verification never establishes full-board verification
+or complete-week research qualification. It establishes only reproduction from
+retained original model inputs/factors, not independent raw-provider projection
+authentication, quote freshness, executable prices, predictive accuracy, ROI
+or platform settlement.
+
+The approved immutable plan is embedded intact in config/phase2.json with its
+canonical digest d1d2b076a9be544b16d29d333f895ab2336892a6d9c16539c6671eb5cfd19024.
+It binds 2026 Week 6, the complete original board at
+885e165e41b9cc0c34b68c1cf57888443505cd7e, all fourteen game/team/kickoff
+identities and the original saved schedule/status observation. Its preparation
+and effective-not-before clock is 2026-10-18T13:50:07.746131Z; its expiry remains
+2026-10-21T00:00:00Z. These are plan clocks, not actual registration or execution.
+Only SEA–DEN/401872995 and HOU–JAX/401872996 have approved legacy exemptions,
+with the exact contract fingerprints in that plan. Current fresh status must
+confirm those games have started without schedule/team changes. Missing or
+invalid nonexempt proof cannot enlarge this list. An expired same-week plan
+fails closed; another season/week selects the strict route without exemptions.
+
+Actual registration is a separate create-only receipt containing its real
+clock, source commit, validator-file digest, exact plan, owner authorization,
+complete initial board and original schedule/status references. The approved
+plan's original PROPOSED metadata is never rewritten. On first preparation the
+initial board is retrieved from its exact Git commit (or its intact retained
+receipt); the saved schedule source must already be retained in
+data/verification/partial-schedule-baselines as a `partial-schedule-baseline-v1`
+envelope with season, week and the intact original `status` object. Its digest,
+clock, response/request, full population and teams/kickoffs must match the plan.
+A current status or source digest alone cannot replace this required original.
+These seed bytes belong to the separately reviewed local artifact and later
+actual-content approval; source approval does not upload them.
+
+### Source, clocks, retry and recovery
+
+`partial_week` is a network-free validator. The existing capture entrypoint
+obtains one closing response through the existing ESPN scoreboard path and
+retains its actual clock/request/full decoded response. It must be no more
+than sixty seconds old at completion. All original v2 envelopes, engine,
+positions/history, complete boards, origin mappings, game/player/team/opponent,
+saved lines/sides and Top memberships are checked. Active-game failures fail
+the generation, never a trimmed-and-rehashed board.
+
+Native filename identity remains input/engine/mode, unchanged. New observations
+require generation, input sealing, validation and persisted native/scope evidence
+before kickoff. The final cutoff is sampled after expensive revalidation and
+native/scope fsync/readback, and checked again after completion persistence.
+Crossing a kickoff or status expiry rejects the generation; a persisted failed
+completion is explicitly rejected on saved consumption. An orphan native file
+cannot be completed later to manufacture a missed pregame observation.
+
+Completed bundles retain first clocks and bytes on retry and revalidate their
+sources, rows and current pointer; they are not new forecasts. Frozen games
+require matching original contracts plus a source-revalidated completed original
+bundle. Later injury/snap/projection metadata may evolve, but historical Top
+eligibility is checked against its original selection-time metadata, not the
+new injury status. Legacy selections retain their exact approved fingerprint
+and structural checks, while their original selection eligibility stays
+explicitly unverified. Outcomes and supported corrections continue to evolve.
+Unproven new late players or changed frozen contracts fail explicitly rather
+than silently acquiring a game-level verification claim.
+
+The updater stages the existing recorded builder and capture/report work in one
+isolated generation root. ROOT/OUT/CACHE/ARCHIVE/WEEKS and the ESPN athlete-cache
+path are rebound together; the unchanged engine files are not edited. Required
+evidence transfers create-only. Output promotion validates the complete binding
+and restores old mutable files or prior absence on failure. Unreachable new
+immutable assets and every retained original remain preserved. An abrupt crash
+before durable evidence transfer is a recording gap, not permission to backdate
+or reconstruct it. Restart verifies retained originals; saved PASS flags do not
+qualify an incomplete bundle.
+
+### Durable GitHub versus Pages contract
+
+The selected durable destination is this EXISTING PUBLIC GitHub repository,
+subject to separate approval of the actual generated contents. Its existing
+staging lanes remain output/data, data/cache, data/forward, data/history,
+data/verification, data/shadow, data/offers and data/outcomes. Required original
+model inputs, exact plans/registrations, initial board/status, native/scope/
+completion receipts, frozen origins, failed probes and rich reports are immutable
+under the existing verification/evidence lanes. Clean exact-commit checkout and
+source revalidation is the readback procedure. No private hosted store or ACL is
+claimed; if required originals cannot be approved for this public store, a named
+existing private destination and runner read/write access become a specific
+owner dependency.
+
+The optional 177-response transcript, mixed-sport full response and unrelated
+diagnostic/news bodies remain local. They are not new mandatory inputs for this
+narrow claim, and are not copied into a new encoding/destination. The retained
+NFL offer observation is a scoped derivative bound to its original source
+digest, not independent full-response authentication.
+
+Pages receives a bounded staging copy of the existing output tree. It excludes
+data/game-status.json, data/matchup-proof.json and data/matchup-diagnostics.json;
+the GitHub originals are neither redacted nor made private by this exclusion.
+The full rich scorecard is retained under verification/report-originals.
+data/forecast-scorecard.json is `forecast-scorecard-public-summary-v1`: only the
+registered rec/rush_att/pass_yd metrics, count coverage, identities and explicit
+limitations. Rich rows/provenance, shadow and candidate records are not passed
+through. Public-v2 selection assets keep the safe row field whitelist and lazy
+250-row chunks. All retained old asset directories remain intact.
+
+The explicit Pages inventory is the existing app/index/style/reliability/recovery
+assets; week/meta/future/teams/track_record, archive/weeks, dk_backtest, public
+scorecard/offer summary/health, selection-grading assets/latest, and the new
+whitelisted verification-scope/release-identity sidecars. Unknown paths,
+symlinks or scratch files fail staging. Health, source/app/shell, board/meta,
+native receipt, scope and report bind one `website-generation-v1` identity.
+The public scope exposes game identities/classifications and the narrow claim,
+not internal manifests or raw bodies. Device My Picks never become model evidence.
+
+### Versioned selection presentation
+
+Local `selection-report-v3` maps only to `selection-public-report-v2`. The explicit
+legacy local-v2/public-v1 path remains supported; pointer, row and outcome schemas
+remain v1. No historical assets/receipts are migrated. New bytes receive new
+content identities. Legacy summaries are labeled policy-unseparated, not given
+newly inferred joint counts.
+
+Headlines and desktop category table/mobile category cards use exactly the same
+period/provenance/model/engine/policy-version-and-hash/cohort/checkpoint/source
+context. Over, Under and Combined remain separate, with exact W-L and W/(W+L),
+decided N, pending, push, confirmed DNP, unresolved and coverage. Zero decided is
+Unavailable. No-side and NO_ACTION rows are coverage, not losses. Combined is its
+actual saved aggregate. All-source groups retain all existing day/timing views;
+exact-source groups contain only overall/category/category-side. Unsupported
+source/day joints are unavailable, never reconstructed from marginals.
+
+Actual first-recorded Top is distinct from Top at the all-lean decision; only
+the latter and its recorded non-Top complement partition all-lean selections.
+Chicago selection weekday, kickoff weekday and actual age/lead-time views remain
+separate. Category order is stable. “Our selections by line source” does not
+claim sportsbook accuracy. The separate historical season-average benchmark vs
+DraftKings exposes only its saved rounded above/below rates and exact sample N,
+never inferred exact W-L or financial claims. The registered three-target
+numerical comparison retains its own eligibility independently of these filters.
+All-twelve numeric/PPR/TD evaluation remains local and opt-in.
+
+The unchanged reader bounds remain 12 MiB decoded summary/outcomes and 2 MiB per
+row chunk, with at most four chunk fetches per interaction. Producers enforce
+those bounds before advancing latest. Oversize or invalid later generations
+preserve the working pointer. Measurements must distinguish gzip transfer,
+decoded bytes, parse/validation, useful rendering, first rows and complete
+optional drill-down; loopback Chromium/phone emulation is not public cellular
+or physical iPhone/Safari evidence.
+
+### Execution, review and release boundary
+
+Stage 1 uses the ordinary authenticated manual lease for exactly thirteen
+approved tools/tests/docs/app paths, with operational and display commits kept
+separate. Only after normal result/release/full readback may the same actor use
+the owner-approved NEW protected-source exception for config/phase2.json and
+.github/workflows/hourly.yml, bound to the actual Stage 1 source/released state.
+The unchanged controller does NOT validate that protected operation. No gate,
+policy or readiness field is edited and no prior lease/exception is reused.
+
+New experimental recording stays inactive through this cutover and rollover;
+existing candidate evidence, formula/registration and Weeks 7–14 remain intact.
+CLI-01 remains a limitation of frozen standalone candidate commands; the
+supported native baseline reader remains the updater interface.
+
+After final source review, one separately preauthorized local real-data attempt
+may use the exact accepted code, still-valid plan and actual clocks/status. A
+plan/contract/expiry issue stops that attempt; no exemption growth, polling or
+backdating. All actual generated bytes remain local for artifact and GitHub/Pages
+content review. Only then may one combined release approval cover current main
+integration, approved persistence/updater activation, Pages, actual public Props/
+Record/cache/My Picks/desktop/phone/loading checks and rollback. A source suite
+or local certificate is not that release artifact.
+
+Rollback restores only this checkpoint's fifteen source paths with forward
+history, retaining all historical/new evidence and production data. Eventual
+production rollback uses a current backup containing the successful PR #2 lean
+presentation, restores the proper configuration through the same serialized
+updater and verifies restored public identities and subsequent updates. Do not
+reset history or merely redeploy old Pages over still-faulty source.
+
+Parlay Builder remains later, unstarted work after this release: paper-first
+2–6 legs (fewer/NO_ACTION allowed), exact saved contracts/membership/revisions,
+one supported venue/product, privacy by default, separate leg/ticket states and
+verified settlement/economics only. No gap-score probabilities, invented odds,
+correlation-as-independence, forced tickets or wagering. PrizePicks, venue
+expansion, injury/workload modeling and other optional features remain deferred.
+The canonical roadmap remains in docs/EVALUATION_PROTOCOL.md.
+
 PR #1 is the shared technical record. The existing hourly ChatGPT audit remains
 the sole scheduler. The repository installs **no** second scheduler, webhook,
 Codex API client or automatic dispatcher. Automatic implementation stays false

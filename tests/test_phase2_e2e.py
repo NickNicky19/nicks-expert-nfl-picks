@@ -22,7 +22,7 @@ import build_recorded
 import verify
 from evidence import read, write
 from phase2_capture import probability_report, run_capture
-from reliability import ENGINE_PATHS, atomic_json, digest, load_json, stamp
+from reliability import ENGINE_PATHS, IntegrityError, atomic_json, digest, load_json, stamp
 from scorecard import build_scorecard
 import phase2_capture
 import point_challenger
@@ -46,9 +46,17 @@ class ReplayClock(datetime):
 def prepare(root, source_unavailable=False, *, mode="replay", at=NOW, kickoff_hours=1, all_ten=False, week=5):
     for path in ENGINE_PATHS:
         target = root / path; target.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(ROOT / path, target)
+    (root / "output").mkdir(exist_ok=True)
+    for name in ("app.js", "index.html"):
+        shutil.copyfile(ROOT / "output" / name, root / "output" / name)
     (root / "config").mkdir(exist_ok=True)
     for path in ("phase2.json", "release-mode.json", "sleeper-rules-provenance.json", "timing-policy.json"):
         shutil.copyfile(ROOT / "config" / path, root / "config" / path)
+    # Legacy positive controls explicitly exercise the retained strict/candidate
+    # interface; production cutover activation is tested separately below.
+    atomic_json(root / "config/phase2.json", {"capture_enabled": True,
+                "production_model": "original_sleeper_matchup_baseline", "challenger_production_enabled": False,
+                "verification_mode": "strict-full-board-v1", "experimental_recording_enabled": True})
     data, _, policy = setup()
     data["week"] = week
     data["generated_at"] = stamp(at)
@@ -1276,7 +1284,13 @@ class CandidateRecordingPipelineTests(unittest.TestCase):
             for forbidden in ("outcome_observations", "selected_outcome_provenance", "cache_path", "source_observations"):
                 self.assertNotIn('"' + forbidden + '"', json.dumps(public))
             self.assertNotIn("/workspace/", json.dumps(public))
-            self.assertEqual(load_json(root / "output/data/forecast-scorecard.json")["point_candidate"], public)
+            # v1 aggregate publication deliberately excludes research records;
+            # the complete earlier comparison remains durable evidence.
+            aggregate = load_json(root / "output/data/forecast-scorecard.json")
+            self.assertEqual(aggregate["schema_version"], "forecast-scorecard-public-summary-v1")
+            self.assertNotIn("point_candidate", aggregate)
+            rich = read(root / health["phase2"]["rich_scorecard_receipt"])
+            self.assertEqual(rich["report"]["point_candidate"], public)
 
 
     def test_supported_void_remains_visible_in_public_aggregate_counts(self):
@@ -1293,6 +1307,230 @@ class CandidateRecordingPipelineTests(unittest.TestCase):
             self.assertEqual(public["outcome_status"], report["outcome_status"])
             self.assertEqual(public["weekly"][0]["outcome_status"], {"void": 1})
             self.assertEqual(public["categories"]["rec"]["candidate"]["n"], 0)
+
+
+class PartialOperationalPipelineTests(unittest.TestCase):
+    def configure(self, root):
+        from test_partial_week import fixture
+        data, proof, spec, registration = fixture(root)
+        for name in ("release-mode.json", "timing-policy.json", "sleeper-rules-provenance.json"):
+            target = root / "config" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / "config" / name, target)
+        _, _, policy = setup()
+        atomic_json(root / "config/evaluation-policy.json", policy)
+        spec["initial_board_receipt"] = read(root / registration)["initial_board_receipt"]
+        config = {"capture_enabled": True, "production_model": "original_sleeper_matchup_baseline",
+                  "challenger_production_enabled": False, "experimental_recording_enabled": False,
+                  "verification_mode": phase2_capture.partial_week.VERSION, "partial_week": spec}
+        atomic_json(root / "config/phase2.json", config)
+        for name in ("app.js", "index.html", "style.css", "reliability-ui.js", "recovery.html"):
+            shutil.copyfile(ROOT / "output" / name, root / "output" / name)
+        (root / "data/cache").mkdir(exist_ok=True)
+        atomic_json(root / "data/cache/stats_2026_06.json", {})
+        return data, proof, spec, registration
+
+    def run_partial(self, root, at=NOW):
+        from test_partial_week import status
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return at
+        data = load_json(root / "output/data/week.json")
+        with patch.object(phase2_capture, "datetime", Clock), \
+                patch.object(phase2_capture, "_closing_status", return_value=status(data, at)), \
+                patch.object(phase2_capture, "run_point_candidate", side_effect=AssertionError("Recording is inactive")), \
+                patch.object(phase2_capture, "make_shadow", side_effect=AssertionError("Shadow recording is inactive")):
+            return run_capture(root)
+
+    def test_complete_partial_updater_and_retry_are_coherent_and_experiments_inactive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, proof, spec, _ = self.configure(root)
+            board = (root / "output/data/week.json").read_bytes()
+            report, first = self.run_partial(root)
+            generation = phase2_capture.validate_generation(root)
+            self.assertEqual(generation["board_sha256"], digest(data))
+            self.assertEqual((root / "output/data/week.json").read_bytes(), board)
+            self.assertEqual(first["phase2"]["verification_mode"], "partial")
+            self.assertFalse(first["phase2"]["strict_full_board_verified"])
+            self.assertEqual(first["phase2"]["point_candidate"]["status"], "INACTIVE_OWNER_ACTIVATION_REQUIRED")
+            self.assertIsNone(first["phase2"]["shadow_receipt"])
+            originals = {path.relative_to(root): path.read_bytes() for path in (root / "data").rglob("*.json.gz")}
+            _, again = self.run_partial(root, NOW + timedelta(seconds=5))
+            self.assertFalse(again["capture_created"])
+            for name, raw in originals.items():
+                self.assertEqual((root / name).read_bytes(), raw)
+            summary = validate_publication(root / "output/data/selection-grading",
+                                           load_json(root / "output/data/selection-grading/latest.json"))
+            self.assertEqual((summary["schema_version"], summary["report_schema_version"]),
+                             ("selection-public-report-v2", "selection-report-v3"))
+            aggregate = load_json(root / "output/data/forecast-scorecard.json")
+            rich = read(root / again["phase2"]["rich_scorecard_receipt"])
+            self.assertEqual(aggregate["report_sha256"], digest(rich["report"]))
+            self.assertEqual(set(aggregate["categories"]), {"rec", "rush_att", "pass_yd"})
+            self.assertNotIn("rows", aggregate)
+
+    def test_failed_active_generation_retains_last_publication_and_failed_originals(self):
+        from test_partial_week import save_build
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, _, _, _ = self.configure(root)
+            self.run_partial(root)
+            original_health = (root / "output/data/health.json").read_bytes()
+            pointer = (root / "output/data/selection-grading/latest.json").read_bytes()
+            # A genuine new recorded board with an invalid active contract.
+            at = NOW + timedelta(seconds=5)
+            data["generated_at"] = stamp(at)
+            data["players"][0]["props"][0]["mf"] = 1.3
+            save_build(root, data, at)
+            with self.assertRaises(IntegrityError):
+                self.run_partial(root, at)
+            self.assertEqual((root / "output/data/health.json").read_bytes(), original_health)
+            self.assertEqual((root / "output/data/selection-grading/latest.json").read_bytes(), pointer)
+            self.assertTrue(list((root / "data/verification/partial-failures").rglob("*.json.gz")))
+
+    def test_actual_staging_then_clean_git_checkout_revalidates_required_originals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "writer"
+            root.mkdir()
+            _, _, spec, _ = self.configure(root)
+            _, health = self.run_partial(root)
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+            git("init", "-q"); git("config", "user.name", "Fictional test"); git("config", "user.email", "fixture@example.invalid")
+            git("add", "pull", "config", "output/app.js", "output/index.html", "output/style.css", "output/reliability-ui.js", "output/recovery.html")
+            workflow = (ROOT / ".github/workflows/hourly.yml").read_text()
+            start = workflow.index("          git add output/data data/cache\n")
+            end = workflow.index("          if ! git diff --cached --quiet;", start)
+            subprocess.run(["bash", "-eu", "-c", textwrap.dedent(workflow[start:end])], cwd=root, check=True)
+            git("commit", "-qm", "Fictional durable generation")
+            checkout = Path(directory) / "clean"
+            git("clone", "--quiet", "--no-hardlinks", str(root), str(checkout))
+            shutil.rmtree(root)
+            phase2_capture.validate_generation(checkout)
+            completion = health["phase2"]["partial_completion_receipt"]
+            phase2_capture.partial_week.read_bundle(checkout, completion, spec, phase2_capture.read_native_baseline)
+
+    def test_pages_copy_excludes_backend_originals_and_rejects_unclassified_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            root.mkdir()
+            self.configure(root)
+            self.run_partial(root)
+            originals = {name: (root / "output/data" / name).read_bytes() for name in ("matchup-proof.json", "game-status.json")}
+            destination = Path(directory) / "pages"
+            phase2_capture.stage_pages(root, destination)
+            for name, raw in originals.items():
+                self.assertFalse((destination / "data" / name).exists())
+                self.assertEqual((root / "output/data" / name).read_bytes(), raw)
+            self.assertTrue((destination / "data/verification-scope.json").exists())
+            atomic_json(root / "output/data/private-transcript.json", {"not": "a public contract"})
+            with self.assertRaises(IntegrityError):
+                phase2_capture.stage_pages(root, Path(directory) / "rejected")
+
+    def test_legacy_and_new_public_contracts_use_unchanged_rows_with_explicit_validation(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as analysis:
+            root = Path(directory)
+            self.configure(root)
+            self.run_partial(root)
+            new, _ = run_report([root], Path(analysis) / "new", now=NOW, expected_hashes=engine_hashes(root))
+            old, _ = run_report([root], Path(analysis) / "old", now=NOW, expected_hashes=engine_hashes(root),
+                                report_version="selection-report-v2")
+            self.assertEqual(new["rows"], old["rows"])
+            self.assertEqual(new["primary_raw_vs_adjusted"], old["primary_raw_vs_adjusted"])
+            for report, version in ((old, "selection-public-report-v1"), (new, "selection-public-report-v2")):
+                projected = selection_publication._projection(report, source_sha="a" * 40, input_digest="b" * 64)
+                self.assertEqual(projected[0]["schema_version"], version)
+            bad = dict(new, schema_version="selection-report-unknown")
+            with self.assertRaises(IntegrityError):
+                selection_publication._projection(bad, source_sha="a" * 40, input_digest="b" * 64)
+
+    def test_summary_size_failure_preserves_latest_and_immutable_assets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.configure(root)
+            self.run_partial(root)
+            pointer = root / "output/data/selection-grading/latest.json"
+            original = pointer.read_bytes()
+            with patch.object(selection_publication, "SUMMARY_LIMIT", 128), self.assertRaises(IntegrityError):
+                publish_selection_report(root, NOW + timedelta(seconds=1), source_sha="a" * 40)
+            self.assertEqual(pointer.read_bytes(), original)
+            current = load_json(pointer)
+            summary = root / "output/data/selection-grading" / current["summary"]["path"]
+            raw = summary.read_bytes()
+            # Exercise the actual 12 MiB reader bound, independently of JSON or hash checks.
+            summary.write_bytes(raw + b" " * selection_publication.SUMMARY_LIMIT)
+            changed = copy.deepcopy(current)
+            changed["summary"]["sha256"] = hashlib.sha256(summary.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(IntegrityError, "size limit"):
+                validate_publication(root / "output/data/selection-grading", changed)
+            summary.write_bytes(raw)
+            validate_publication(root / "output/data/selection-grading", current)
+
+    def test_unknown_source_or_policy_cannot_publish_an_unreadable_new_summary(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as analysis:
+            root = Path(directory)
+            self.configure(root)
+            self.run_partial(root)
+            report, _ = run_report([root], Path(analysis), now=NOW, expected_hashes=engine_hashes(root))
+            for field, value in (("line_from", "unrecognized_source"), ("policy_sha256", None), ("policy_version", "")):
+                altered = copy.deepcopy(report)
+                altered["rows"][0][field] = value
+                altered["summary"] = summarize(altered["rows"])
+                with self.subTest(field=field), self.assertRaises(IntegrityError):
+                    selection_publication._projection(altered, source_sha="a" * 40, input_digest="b" * 64)
+
+    def test_week_rollover_remains_strict_and_new_experimental_recording_stays_off(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, _, spec, _ = self.configure(root)
+            prepare(root, mode="live", at=NOW, week=7)
+            config = load_json(root / "config/phase2.json")
+            config.update(verification_mode=phase2_capture.partial_week.VERSION, partial_week=spec, experimental_recording_enabled=False)
+            atomic_json(root / "config/phase2.json", config)
+            class Clock(datetime):
+                @classmethod
+                def now(cls, tz=None): return NOW
+            with patch.object(phase2_capture, "datetime", Clock), \
+                    patch.object(phase2_capture, "_closing_status", side_effect=AssertionError("Rollover must select strict")), \
+                    patch.object(phase2_capture, "run_point_candidate", side_effect=AssertionError("Inactive")):
+                _, health = run_capture(root)
+            self.assertTrue(health["phase2"]["strict_full_board_verified"])
+            self.assertEqual(health["phase2"]["point_candidate"]["status"], "INACTIVE_OWNER_ACTIVATION_REQUIRED")
+            self.assertIsNone(health["phase2"]["shadow_receipt"])
+
+    def test_connected_builder_registers_before_forecasts_and_rebinds_every_output_cache(self):
+        from test_partial_week import status
+        import partial_week
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, _, _, _ = self.configure(root)
+            shutil.rmtree(root / "data/verification/partial-registrations")
+            old_paths = {key: getattr(build, key) for key in ("ROOT", "OUT", "CACHE", "ARCHIVE", "WEEKS")}
+            old_athletes = build.books.ATHLETES
+            def recorded(stage, mode):
+                self.assertEqual(mode, "live")
+                self.assertTrue(list((stage / "data/verification/partial-registrations").rglob("*.json.gz")))
+                self.assertEqual(build.ROOT, stage)
+                self.assertEqual(build.OUT, stage / "output/data")
+                self.assertEqual(build.ARCHIVE, stage / "output/data/archive")
+                self.assertEqual(build.WEEKS, stage / "output/data/weeks")
+                self.assertEqual(build.books.ATHLETES, stage / "data/cache/espn_athletes.json")
+                self.assertEqual(build.sources.nfl_state()["week"], 6)
+                atomic_json(build.books.ATHLETES, {"fictional": "stage-only lookup"})
+            class Clock(datetime):
+                @classmethod
+                def now(cls, tz=None): return NOW
+            with patch.object(phase2_capture, "datetime", Clock), \
+                    patch.object(build.sources, "nfl_state", return_value={"season": "2026", "week": 6, "season_type": "regular"}) as selector, \
+                    patch.object(build_recorded, "record_build", side_effect=recorded), \
+                    patch.object(phase2_capture, "_closing_status", return_value=status(data, NOW)):
+                run_capture(root, build_first=True)
+                self.assertEqual(selector.call_count, 1)
+            self.assertEqual({key: getattr(build, key) for key in old_paths}, old_paths)
+            self.assertEqual(build.books.ATHLETES, old_athletes)
+            self.assertEqual(load_json(root / "data/cache/espn_athletes.json"), {"fictional": "stage-only lookup"})
 
 
 if __name__ == "__main__":

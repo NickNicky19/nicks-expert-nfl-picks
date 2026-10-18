@@ -623,7 +623,7 @@ class SelectedOutcomeLabelIntegrationTests(unittest.TestCase):
             report, directory = run_report([root], output, now=KICKOFF + timedelta(days=1),
                                           expected_hashes=ENGINE, policy=timing_policy())
         persisted = json.loads((directory / "rows.json").read_text())
-        self.assertEqual(report["schema_version"], "selection-report-v2")
+        self.assertEqual(report["schema_version"], "selection-report-v3")
         self.assertEqual(find(persisted, checkpoint="history")["outcome_provenance"], "saved_cache_descriptive_regrade")
         self.assertEqual(old.read_bytes(), before)
         self.assertNotEqual(directory, old.parent)
@@ -794,6 +794,70 @@ class AllCategoryReportIntegration(unittest.TestCase):
         write(root, "outcomes", typed)
         conflict, _ = self.report(root, output, hashes, original, at=KICKOFF + timedelta(days=1, minutes=4))
         self.assertEqual(conflict["descriptive_all_categories"]["categories"]["fpts"]["outcome_status"], {"unresolved": 1})
+
+
+class VersionedSummaryTests(unittest.TestCase):
+    def rows(self):
+        decisions, _ = build_decisions(core_snapshots(), timing_policy(), KICKOFF, ENGINE)
+        rows = grade_decisions(decisions, {})
+        selected = next(row for row in rows if row["action"] == "SELECT")
+        alternatives = []
+        for index, (source, policy_hash, provenance, week) in enumerate((
+                ("dk", "a" * 64, selected["provenance_class"], 7),
+                ("sleeper", "a" * 64, selected["provenance_class"], 7),
+                ("dk", "b" * 64, selected["provenance_class"], 7),
+                ("dk", "a" * 64, "inherited_or_unclocked_archive", 6))):
+            row = dict(selected, line_from=source, policy_sha256=policy_hash,
+                       provenance_class=provenance, week=week, result="win" if index % 2 else "loss")
+            row["decision_sha256"] = digest({"fictional_original": selected["decision_sha256"], "variant": index})
+            alternatives.append(row)
+        return alternatives
+
+    def test_joint_policy_source_period_and_provenance_are_real_member_sets(self):
+        rows = self.rows()
+        summary = summarize(rows)
+        by_id = {row["decision_sha256"]: row for row in rows}
+        for table in summary["tables"]:
+            members = [by_id[key] for key in table["row_ids"]]
+            for key in ("provenance_class", "model_version", "engine_sha256", "policy_version", "policy_sha256", "checkpoint"):
+                self.assertEqual({row[key] for row in members}, {table[key]})
+            if table["line_source_scope"] != "all":
+                self.assertEqual({row["line_from"] for row in members}, {table["line_source_scope"]})
+                self.assertIn(table["dimension"], ("overall", "category", "category_side"))
+            self.assertEqual(table["rows"], len(members))
+            self.assertEqual(table["win"] + table["loss"], table["decided"])
+            self.assertEqual(table["hit_rate"], table["win"] / table["decided"] if table["decided"] else None)
+        # Equal policy names with distinct identities cannot mix in a headline.
+        whole = [table for table in summary["tables"] if table["period"] == "cumulative"
+                 and table["dimension"] == "overall" and table["line_source_scope"] == "all"
+                 and table["view"] == rows[0]["cohort"]]
+        self.assertEqual(sum(table["rows"] for table in whole), len(rows))
+        self.assertEqual(len(whole), 3)
+
+    def test_legacy_summary_has_original_fields_ids_and_no_inferred_joint_context(self):
+        rows = self.rows()
+        legacy = summarize(rows, contract="selection-report-v2")
+        for table in legacy["tables"]:
+            self.assertFalse({"policy_version", "policy_sha256", "line_source_scope"} & table.keys())
+            self.assertEqual(table["summary_id"], digest({key: value for key, value in table.items()
+                                                       if key not in ("row_ids", "summary_id")}))
+        with self.assertRaises(IntegrityError):
+            summarize(rows, contract="selection-report-unknown")
+
+    def test_no_side_coverage_is_not_an_under_loss_and_partition_stays_disjoint(self):
+        rows = self.rows()[:2]
+        no_action = dict(rows[0], action="NO_ACTION", side=None, result="no_action",
+                         reason="missing_real_offer", decision_sha256=digest("fictional-no-action"))
+        rows.append(no_action)
+        tables = summarize(rows)["tables"]
+        aggregate = next(table for table in tables if table["dimension"] == "overall" and table["period"] == "cumulative"
+                         and table["line_source_scope"] == "all" and table["view"] == rows[0]["cohort"])
+        self.assertEqual((aggregate["win"], aggregate["loss"], aggregate["no_action"], aggregate["decided"]), (1, 1, 1, 2))
+        self.assertEqual(aggregate["hit_rate"], .5)
+        sides = [table for table in tables if table["dimension"] == "category_side" and table["period"] == "cumulative"
+                 and table["line_source_scope"] == "all" and table["view"] == rows[0]["cohort"]]
+        self.assertEqual(sum(table["no_action"] for table in sides), 1)
+        self.assertTrue(summarize(rows)["disjoint_selected_partitions_reconciled"])
 
 
 if __name__ == "__main__":

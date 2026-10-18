@@ -24,7 +24,8 @@ from scorecard import (identity, latest_outcomes, paired_forecasts, score, snaps
 import grade
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "selection-report-v2"
+VERSION = "selection-report-v3"
+LEGACY_VERSION = "selection-report-v2"
 CHICAGO = ZoneInfo("America/Chicago")
 RESULTS = ("win", "loss", "push", "dnp", "pending", "unresolved", "excluded", "no_action", "not_due")
 PATTERNS = ("data/forward/**/*.json.gz", "data/outcomes/**/*.json.gz",
@@ -443,7 +444,15 @@ def _tally(rows):
             "row_ids": [r["decision_sha256"] for r in rows]}
 
 
-def summarize(rows):
+def summarize(rows, *, contract=VERSION):
+    if contract not in (VERSION, LEGACY_VERSION):
+        raise IntegrityError("Unsupported selection-summary contract")
+    context = ("provenance_class", "model_version", "engine_sha256")
+    if contract == VERSION:
+        context += ("policy_version", "policy_sha256")
+    context += ("view", "checkpoint")
+    if contract == VERSION:
+        context += ("line_source_scope",)
     groups = defaultdict(list)
     dimensions = ("category", "side", "venue", "selection_weekday", "kickoff_weekday", "lead_time_bucket",
                   "checkpoint", "selection_clock_basis", "category_side")
@@ -452,16 +461,22 @@ def summarize(rows):
         if row["cohort"] == "all_qualifying_leans" and row["action"] == "SELECT":
             views.append("top_at_all_lean_decision" if row["top_at_decision"] else "non_top_at_all_lean_decision")
         for view in views:
-            base = (row["provenance_class"], row["model_version"], row["engine_sha256"], view, row["checkpoint"])
             for period in ("cumulative", f"{row['season']}-w{row['week']:02d}"):
-                groups[(base, period, "overall", "all")].append(row)
-                for dimension in dimensions:
-                    value = (row["line_from"] if dimension == "venue" else
-                             f"{row['category']}:{row['side']}" if dimension == "category_side" else row.get(dimension))
-                    groups[(base, period, dimension, value)].append(row)
+                # The exact-source tables are joint decision populations, never
+                # reconstructed from marginal category or venue counts.
+                scopes = ("all",) if contract == LEGACY_VERSION else ("all", row.get("line_from") or "unknown")
+                for source in scopes:
+                    values = dict(row, view=view, line_source_scope=source)
+                    base = tuple(values.get(key) for key in context)
+                    groups[(base, period, "overall", "all")].append(row)
+                    scoped_dimensions = dimensions if source == "all" else ("category", "category_side")
+                    for dimension in scoped_dimensions:
+                        value = (row["line_from"] if dimension == "venue" else
+                                 f"{row['category']}:{row['side']}" if dimension == "category_side" else row.get(dimension))
+                        groups[(base, period, dimension, value)].append(row)
     tables = []
     for (base, period, dimension, value), members in sorted(groups.items(), key=lambda item: repr(item[0])):
-        table = dict(zip(("provenance_class", "model_version", "engine_sha256", "view", "checkpoint"), base))
+        table = dict(zip(context, base))
         table.update(period=period, dimension=dimension, value=value, **_tally(members))
         table["summary_id"] = digest({k: v for k, v in table.items() if k != "row_ids"})
         assert sum(table[k] for k in RESULTS) == table["rows"]
@@ -757,7 +772,9 @@ def render_html(report, group=None):
 
 
 def run_report(input_roots, output_root, *, now=None, expected_hashes=None, policy=None, input_pins=None,
-               include_descriptive=False, original_board_paths=()):
+               include_descriptive=False, original_board_paths=(), report_version=VERSION):
+    if report_version not in (VERSION, LEGACY_VERSION):
+        raise IntegrityError("Unsupported selection-report contract")
     now = utc(now or datetime.now(timezone.utc))
     roots = sorted({Path(root).resolve() for root in input_roots})
     output = Path(output_root).resolve()
@@ -801,7 +818,7 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
     outcomes = latest_outcomes(saved + derived)
     decisions, conflicts = _frozen_decisions(output, decisions, now)
     rows = grade_decisions(decisions, outcomes)
-    summary = summarize(rows)
+    summary = summarize(rows, contract=report_version)
     sources = []
     for payload in {digest(p): p for p in inputs["offers"]}.values():
         sources.append({"receipt_sha256": digest(payload), "schema_version": payload.get("schema_version"),
@@ -826,7 +843,7 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
                                                                    if r["week_confirmed_complete"]}))
     code = {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in
             (Path(__file__), ROOT / "tools/scorecard.py", ROOT / "pull/grade.py")}
-    report = {"schema_version": VERSION, "rows": rows, "summary": summary, "coverage": coverage,
+    report = {"schema_version": report_version, "rows": rows, "summary": summary, "coverage": coverage,
               "final_outcomes": final_outcome_records(outcomes),
               "outcome_observation_index": {digest(observation): observation for outcome in outcomes.values()
                                             for observation in outcome.get("outcome_observations", [])},
