@@ -157,7 +157,7 @@ async function gradingHash(bytes) {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(v => v.toString(16).padStart(2, "0")).join("");
 }
 function publicAssetPath(pointer, descriptor, type, partition = false) {
-  if (pointer.schema_version === "selection-publication-pointer-v3") {
+  if (["selection-publication-pointer-v3", "selection-publication-pointer-v4"].includes(pointer.schema_version)) {
     const compressed = partition || type === "rows";
     const fields = ["path", "sha256", "decoded_bytes", ...(compressed ? ["encoding", "encoded_sha256", "encoded_bytes"] : []),
       ...(type === "rows" ? ["count"] : partition && type === "summary" ? ["context_id", "period", "table_count"] : partition ? ["season", "week", "count"] : [])];
@@ -167,8 +167,11 @@ function publicAssetPath(pointer, descriptor, type, partition = false) {
         || compressed && (descriptor.encoding !== "gzip" || !HASH64.test(descriptor.encoded_sha256)
           || !Number.isInteger(descriptor.encoded_bytes) || descriptor.encoded_bytes < 1 || descriptor.encoded_bytes > limit)) throw new Error("Invalid encoded grading descriptor/size");
   }
-  const filename = type === "rows" ? "rows-[0-9]{4,}.json" : `${type}.json`;
-  const namespace = partition && ["selection-publication-pointer-v2", "selection-publication-pointer-v3"].includes(pointer.schema_version) ? (pointer.schema_version === "selection-publication-pointer-v3" ? descriptor?.encoded_sha256 : descriptor?.sha256) : pointer.report_id;
+  const shared = pointer.schema_version === "selection-publication-pointer-v4";
+  const filename = type === "rows" ? (shared ? "rows.json" : "rows-[0-9]{4,}.json") : `${type}.json`;
+  const namespace = shared && (partition || type === "rows") ? descriptor?.encoded_sha256
+    : partition && ["selection-publication-pointer-v2", "selection-publication-pointer-v3"].includes(pointer.schema_version)
+      ? (pointer.schema_version === "selection-publication-pointer-v3" ? descriptor?.encoded_sha256 : descriptor?.sha256) : pointer.report_id;
   const pattern = new RegExp(`^${namespace}/${filename.replaceAll(".", "\\.")}$`);
   if (!descriptor || !HASH64.test(namespace) || !pattern.test(descriptor.path) || !HASH64.test(descriptor.sha256)) throw new Error("Invalid grading asset binding");
   return GRADING_BASE + descriptor.path;
@@ -243,8 +246,8 @@ async function fetchGradingAsset(pointer, path) {
 }
 async function checkedGradingAsset(pointer, descriptor, type, partition = false) {
   const path = publicAssetPath(pointer, descriptor, type, partition);
-  const modern = ["selection-publication-pointer-v2", "selection-publication-pointer-v3"].includes(pointer.schema_version);
-  const compressed = pointer.schema_version === "selection-publication-pointer-v3" && (partition || type === "rows");
+  const modern = ["selection-publication-pointer-v2", "selection-publication-pointer-v3", "selection-publication-pointer-v4"].includes(pointer.schema_version);
+  const compressed = ["selection-publication-pointer-v3", "selection-publication-pointer-v4"].includes(pointer.schema_version) && (partition || type === "rows");
   const limit = (type === "rows" ? 2 : modern && !partition ? 1 : 12) * 1024 * 1024;
   const hasSize = modern && (type !== "rows" || compressed);
   if (hasSize && (!Number.isInteger(descriptor.decoded_bytes) || descriptor.decoded_bytes < 1 || descriptor.decoded_bytes > limit)) throw new Error("Invalid grading asset size");
@@ -260,6 +263,19 @@ async function checkedGradingAsset(pointer, descriptor, type, partition = false)
   const bytes = compressed ? await gradingStreamBytes(new Blob([stored]).stream().pipeThrough(new DecompressionStream("gzip")), limit, descriptor.decoded_bytes) : stored;
   if (await gradingHash(bytes) !== descriptor.sha256) throw new Error("Grading decoded asset checksum mismatch");
   const data = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  if (pointer.schema_version === "selection-publication-pointer-v4" && (partition || type === "rows")) {
+    const fields = type === "rows" ? ["schema_version", "rows"] : type === "summary"
+      ? ["schema_version", "context_id", "period", "tables"] : ["schema_version", "season", "week", "outcomes"];
+    const schema = type === "rows" ? "selection-public-rows-v2" : type === "summary"
+      ? "selection-public-summary-partition-v2" : "selection-final-outcome-period-v2";
+    if (data.schema_version !== schema || JSON.stringify(Object.keys(data).sort()) !== JSON.stringify(fields.sort())
+        || type === "summary" && (data.context_id !== descriptor.context_id || data.period !== descriptor.period)
+        || type === "outcomes" && (data.season !== descriptor.season || data.week !== descriptor.week)) throw new Error("Shared grading payload type/context mismatch");
+    // Only the exact hash-validated graph supplies this in-memory envelope.
+    // Stored shared bodies never acquire a fabricated original report ID.
+    return { ...data, report_id: pointer.report_id, schema_version: type === "rows" ? "selection-public-rows-v1"
+      : type === "summary" ? "selection-public-summary-partition-v1" : "selection-final-outcome-period-v1" };
+  }
   if (data.report_id !== pointer.report_id) throw new Error("Grading report identity mismatch");
   return data;
 }
@@ -312,10 +328,10 @@ function validateFinalOutcomes(pointer, rows) {
     return result;
 }
 async function validateGradingIndexes(pointer, summary, outcomes) {
-  if (summary.schema_version !== (pointer.schema_version === "selection-publication-pointer-v3" ? "selection-public-report-v4" : "selection-public-report-v3") || summary.report_schema_version !== "selection-report-v3"
+  if (summary.schema_version !== (pointer.schema_version === "selection-publication-pointer-v4" ? "selection-public-report-v5" : pointer.schema_version === "selection-publication-pointer-v3" ? "selection-public-report-v4" : "selection-public-report-v3") || summary.report_schema_version !== "selection-report-v3"
       || summary.row_count !== pointer.row_count || !summary.contexts || typeof summary.contexts !== "object" || Array.isArray(summary.contexts)
       || !Array.isArray(summary.summary_partitions) || Object.hasOwn(summary.summary || {}, "tables")
-      || outcomes.schema_version !== "selection-final-outcome-index-v1" || !Array.isArray(outcomes.periods)
+      || outcomes.schema_version !== (pointer.schema_version === "selection-publication-pointer-v4" ? "selection-final-outcome-index-v2" : "selection-final-outcome-index-v1") || !Array.isArray(outcomes.periods)
       || !Number.isInteger(outcomes.outcome_count) || outcomes.outcome_count < 0) throw new Error("Unsupported grading indexes");
   const used = new Set(), pairs = new Set();
   for (const [id, context] of Object.entries(summary.contexts)) {
@@ -387,8 +403,8 @@ async function loadGrading() {
     if (!response.ok) throw new Error("Grading pointer unavailable");
     const raw = await gradingStreamBytes(response.body, 1024 * 1024);
     const pointer = JSON.parse(new TextDecoder().decode(raw));
-    const partitioned = ["selection-publication-pointer-v2", "selection-publication-pointer-v3"].includes(pointer.schema_version);
-    if (pointer.schema_version === "selection-publication-pointer-v3" && JSON.stringify(Object.keys(pointer).sort()) !== JSON.stringify(["schema_version", "report_id", "generated_at", "row_count", "summary", "rows", "outcomes"].sort())) throw new Error("Unknown encoded report pointer fields");
+    const partitioned = ["selection-publication-pointer-v2", "selection-publication-pointer-v3", "selection-publication-pointer-v4"].includes(pointer.schema_version);
+    if (["selection-publication-pointer-v3", "selection-publication-pointer-v4"].includes(pointer.schema_version) && JSON.stringify(Object.keys(pointer).sort()) !== JSON.stringify(["schema_version", "report_id", "generated_at", "row_count", "summary", "rows", "outcomes"].sort())) throw new Error("Unknown encoded report pointer fields");
     if ((!partitioned && pointer.schema_version !== "selection-publication-pointer-v1") || !HASH64.test(pointer.report_id)
         || !Number.isFinite(Date.parse(pointer.generated_at)) || !Array.isArray(pointer.rows)
         || pointer.rows.length > 4000) throw new Error("Unsupported grading publication");
@@ -916,10 +932,10 @@ async function load() {
   try {
     const [savedScope, savedGeneration, savedHealth] = await Promise.all(["verification-scope", "release-identity", "health"].map(name => boundJSON(`data/${name}.json?t=${Date.now()}`)));
     const scope = savedScope.value, generation = savedGeneration.value, health = savedHealth.value;
-    if (["website-generation-v1", "website-packaging-generation-v1"].includes(generation.schema_version) && health.generation_sha256 === generation.generation_sha256
+    if (["website-generation-v1", "website-packaging-generation-v1", "website-packaging-generation-v2"].includes(generation.schema_version) && health.generation_sha256 === generation.generation_sha256
         && health.board_sha256 === generation.board_sha256 && scope.output_sha256 === generation.board_sha256
         && health.source_sha === generation.source_sha && HASH64.test(generation.generation_sha256)
-        && (generation.schema_version !== "website-packaging-generation-v1" || (
+        && (!["website-packaging-generation-v1", "website-packaging-generation-v2"].includes(generation.schema_version) || (
           /^[0-9a-f]{40}$/.test(generation.capture_source_sha) && HASH64.test(generation.capture_generation_sha256)
           && generation.capture_source_sha === health.capture_source_sha
           && generation.capture_generation_sha256 === health.capture_generation_sha256
@@ -945,7 +961,7 @@ async function load() {
   for (const g of S.data.games) S.games[g.id] = { ...g, ...(S.games[g.id] || {}) };
   await loadGrading();
   if (verifiedGeneration && S.grading?.pointer.report_id === verifiedGeneration.generation.selection_report_id
-      && S.grading?.summary.source_sha === (verifiedGeneration.generation.schema_version === "website-packaging-generation-v1"
+      && S.grading?.summary.source_sha === (["website-packaging-generation-v1", "website-packaging-generation-v2"].includes(verifiedGeneration.generation.schema_version)
         ? verifiedGeneration.generation.capture_source_sha : verifiedGeneration.generation.source_sha)) S.verificationScope = verifiedGeneration.scope;
   const built = new Date(S.data.generated_at);
   updateSub();
@@ -3002,7 +3018,7 @@ function selectionPerformanceHtml(baseTables) {
   const unclassified=r=>Math.max(0,(r.combined?.rows||0)-(r.over?.rows||0)-(r.under?.rows||0));
   return `<section data-performance-primary><h3>Recorded selection performance</h3><p class="note" data-performance-context>${esc(context)}</p>
     <div class="card" data-performance-headline>${cell(total,"overall")}</div>
-    <p class="note">Choose any W–L result to inspect its exact supporting rows. No decided sample means unavailable. Combined includes no-side coverage; it is not an independent sample of Over and Under. ${["selection-public-report-v2", "selection-public-report-v3", "selection-public-report-v4"].includes(S.grading.summary.schema_version) ? "Our selections by line source use matched joint decision groups. Source-specific day breakdowns are unavailable; choose All line sources for those views." : "Legacy aggregates do not separate timing policies or offer source jointly; only All line sources is available."}</p>
+    <p class="note">Choose any W–L result to inspect its exact supporting rows. No decided sample means unavailable. Combined includes no-side coverage; it is not an independent sample of Over and Under. ${["selection-public-report-v2", "selection-public-report-v3", "selection-public-report-v4", "selection-public-report-v5"].includes(S.grading.summary.schema_version) ? "Our selections by line source use matched joint decision groups. Source-specific day breakdowns are unavailable; choose All line sources for those views." : "Legacy aggregates do not separate timing policies or offer source jointly; only All line sources is available."}</p>
     <table class="tbl performance-desktop"><thead><tr><th class="l">Category</th><th>Over W–L / hit rate / decided N</th><th>Under W–L / hit rate / decided N</th><th>Combined</th></tr></thead><tbody>${rows.map(r=>`<tr data-category-performance="${r.key}"><th class="l">${esc(r.label)}</th><td>${cell(r.over,"over")}</td><td>${cell(r.under,"under")}</td><td>${cell(r.combined,"combined")}<small>${unclassified(r)} no-side coverage rows</small></td></tr>`).join("")}</tbody></table>
     <div class="performance-phone">${rows.map(r=>`<article class="card" data-category-performance="${r.key}"><h4>${esc(r.label)}</h4><div class="performance-side"><b>Over</b><div>${cell(r.over,"over")}</div></div><div class="performance-side"><b>Under</b><div>${cell(r.under,"under")}</div></div><div class="performance-side"><b>Combined</b><div>${cell(r.combined,"combined")}<small>${unclassified(r)} no-side coverage rows</small></div></div></article>`).join("")}</div></section>`;
 }

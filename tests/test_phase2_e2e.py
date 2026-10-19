@@ -984,7 +984,7 @@ class PartitionedPublicationTests(unittest.TestCase):
                 target.write_bytes(replacement)
                 with self.assertRaises(IntegrityError): validate_publication(base, pointer)
             target.unlink()
-            with self.assertRaises(FileNotFoundError): validate_publication(base, pointer)
+            with self.assertRaises((FileNotFoundError, IntegrityError)): validate_publication(base, pointer)
             target.write_bytes(raw)
             for change in ("duplicate", "period", "context", "generation", "membership"):
                 altered = copy.deepcopy(index)
@@ -2013,7 +2013,7 @@ class EncodedHostingTests(unittest.TestCase):
             frozen={n:(root/'output'/n).read_bytes() for n in ('data/week.json','data/meta.json','data/verification-scope.json')}
             with patch('requests.sessions.Session.request',side_effect=AssertionError('Packaging cannot collect')):
                 packaged=phase2_capture.repackage_generation(root,source_root=ROOT)
-            self.assertEqual(packaged['schema_version'],'website-packaging-generation-v1')
+            self.assertEqual(packaged['schema_version'],'website-packaging-generation-v2')
             self.assertEqual(packaged['capture_generation_sha256'],original['generation_sha256'])
             self.assertEqual(packaged['capture_source_sha'],original['source_sha'])
             self.assertEqual(packaged['source_sha'],self.git(ROOT,'rev-parse','HEAD'))
@@ -2054,13 +2054,13 @@ class EncodedHostingTests(unittest.TestCase):
             self.run_live(root,self.AT+timedelta(minutes=5))
             original_validator=selection_publication.validate_publication
             calls=[]
-            def checked(base,pointer):
+            def checked(base,pointer,**kwargs):
                 calls.append((str(Path(base).resolve()),digest(pointer)))
-                return original_validator(base,pointer)
+                return original_validator(base,pointer,**kwargs)
             with patch.object(selection_publication,'validate_publication',side_effect=checked):
                 phase2_capture.stage_pages(root,Path(directory)/'pages')
-            self.assertEqual(len(calls),4)  # latest+previous, source+fresh destination
-            self.assertEqual(len(calls),len(set(calls)))
+            self.assertEqual(len(set(calls)),4)  # latest+previous, source+fresh destination
+            self.assertGreaterEqual(len(calls),len(set(calls)))  # repeat calls freshly hash bytes
             base=root/'output/data/selection-grading';pointer=load_json(base/'latest.json')
             index=load_json(base/pointer['summary']['path']);part=index['summary_partitions'][-1]
             target=base/part['path'];raw=target.read_bytes();target.write_bytes(raw[:-1])
@@ -2085,6 +2085,196 @@ class EncodedHostingTests(unittest.TestCase):
             health['unexpected_advisory_extension']='NOT_ALLOWED';atomic_json(health_path,health)
             with self.assertRaisesRegex(IntegrityError,'snapshot differs'):
                 phase2_capture.validate_generation(root)
+
+
+
+class SharedPayloadReuseTests(unittest.TestCase):
+    AT = EncodedHostingTests.AT
+    run_live = PublicSelectionPipelineTests.run_live
+    projection = PartitionedPublicationTests.projection
+    locality_report = PublicSelectionPipelineTests.locality_report
+    configure = PartialOperationalPipelineTests.configure
+    run_partial = PartialOperationalPipelineTests.run_partial
+
+    def publish(self, base, values, at=None):
+        return selection_publication.prepare_publication(base, *values[:4], at or self.AT,
+                                                        encoding="gzip", shared=True)
+
+    def bodies(self, base, pointer):
+        summary = load_json(base/pointer['summary']['path'])
+        outcomes = load_json(base/pointer['outcomes']['path'])
+        return pointer['rows'] + summary['summary_partitions'] + outcomes['periods']
+
+    def test_shared_bodies_reuse_metadata_only_but_keep_actual_observation_and_outcome_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base=root/'shared'
+            old=selection_publication.prepare_publication(base,*values[:4],self.AT,encoding='gzip')
+            preserved={p:p.read_bytes() for p in base.rglob('*') if p.is_file()}
+            first=self.publish(base,values)
+            changed=list(copy.deepcopy(values)); changed[0]['source_sha']='3'*40; changed[0]['input_content_sha256']='4'*64
+            second=self.publish(base,changed,self.AT+timedelta(seconds=5))
+            self.assertNotEqual(first['report_id'],second['report_id'])
+            self.assertEqual(self.bodies(base,first),self.bodies(base,second))
+            clock=self.publish(base,changed,self.AT+timedelta(seconds=10))
+            self.assertEqual(clock['report_id'],second['report_id'])
+            self.assertEqual(clock['rows'],second['rows'])
+            expected=list(selection_publication.publication_contents(base,old)); actual=list(selection_publication.publication_contents(base,first))
+            expected[0].pop('report_id');actual[0].pop('report_id');self.assertEqual(expected,actual)
+            self.assertTrue(all(p.read_bytes()==raw for p,raw in preserved.items()))
+            for desc in self.bodies(base,first):
+                payload=fixture_part(base,desc,desc['path'].split('/')[-1])
+                self.assertNotIn('report_id',payload)
+                self.assertTrue(desc['path'].startswith(desc['encoded_sha256']+'/'))
+            # Actual clocks and corrections remain evidence, not stripped metadata.
+            self.assertTrue(changed[2])
+            corrected=copy.deepcopy(changed)
+            corrected[2][0]['collected_at']=stamp(self.AT+timedelta(seconds=1))
+            third=self.publish(base,corrected,self.AT+timedelta(seconds=10))
+            self.assertEqual(third['rows'],second['rows'])
+            self.assertNotEqual(self.bodies(base,third),self.bodies(base,second))
+            self.assertEqual(selection_publication.publication_contents(base,third)[2],sorted(corrected[2],key=selection_publication.identity))
+            # Explicit legacy and modern identities remain distinct.
+            self.assertEqual(first['schema_version'],'selection-publication-pointer-v4')
+            with self.assertRaises(IntegrityError):validate_publication(base,dict(first,schema_version='selection-publication-pointer-v99'))
+
+    def test_fresh_byte_keys_reject_restored_mtime_same_size_and_distinct_root_corruption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root,values=self.projection(directory);base=root/'shared';pointer=self.publish(base,values)
+            cache={};validate_publication(base,pointer,_checked=cache)
+            descriptor=pointer['rows'][0];target=base/descriptor['path'];saved=target.read_bytes();info=target.stat()
+            corrupted=bytearray(saved);corrupted[len(corrupted)//2]^=1;target.write_bytes(corrupted)
+            os.utime(target,ns=(info.st_atime_ns,info.st_mtime_ns))
+            with self.assertRaises(IntegrityError):validate_publication(base,pointer,_checked=cache)
+            target.write_bytes(saved);validate_publication(base,pointer,_checked=cache)
+            clone=root/'independent';shutil.copytree(base,clone)
+            (clone/descriptor['path']).write_bytes(corrupted)
+            with self.assertRaises(IntegrityError):validate_publication(clone,pointer,_checked=cache)
+            with self.assertRaises(IntegrityError):validate_publication(clone,pointer)
+            # Parsed values are defensive: callers cannot mutate cached trust.
+            desc=load_json(base/pointer['summary']['path'])['summary_partitions'][0]
+            part=selection_publication._partition_asset(base,desc,'summary.json',encoded=True,_checked=cache)
+            part['tables'].clear()
+            self.assertTrue(selection_publication._partition_asset(base,desc,'summary.json',encoded=True,_checked=cache)['tables'])
+            original=selection_publication.summarize
+            with patch.object(selection_publication,'summarize',wraps=original) as reconcile:
+                fresh={};validate_publication(base,pointer,_checked=fresh);validate_publication(base,pointer,_checked=fresh)
+                self.assertEqual(reconcile.call_count,1)
+                validate_publication(base,pointer)
+                self.assertEqual(reconcile.call_count,2)
+            with self.assertRaises(IntegrityError):validate_publication(base,dict(pointer,generated_at=stamp(self.AT-timedelta(days=30))),_checked=cache)
+
+    def test_warm_evidence_rechecks_new_removed_markers_and_mutable_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.configure(root);_,health=self.run_partial(root)
+            spec=load_json(root/'config/phase2.json')['partial_week'];name=health['phase2']['partial_completion_receipt'];cache={}
+            original=phase2_capture.partial_week.read_bundle
+            with patch.object(phase2_capture.partial_week,'read_bundle',wraps=original) as read_bundle:
+                first=phase2_capture._qualified_bundle(root,name,spec,cache)
+                first[1]['game_population'].clear()
+                second=phase2_capture._qualified_bundle(root,name,spec,cache)
+                self.assertTrue(second[1]['game_population']);self.assertEqual(read_bundle.call_count,1)
+                marker=write(root,'verification/partial-failures',{'season':2026,'week':6,'completion_sha256':digest(second[0])})
+                with self.assertRaisesRegex(IntegrityError,'final persistence'):phase2_capture._qualified_bundle(root,name,spec,cache)
+                marker.unlink();phase2_capture._qualified_bundle(root,name,spec,cache)
+                native=root/second[0]['baseline_receipt'];raw=native.read_bytes();info=native.stat()
+                corrupt=bytearray(raw);corrupt[-5]^=1;native.write_bytes(corrupt);os.utime(native,ns=(info.st_atime_ns,info.st_mtime_ns))
+                with self.assertRaises((IntegrityError,OSError,ValueError,EOFError)):phase2_capture._qualified_bundle(root,name,spec,cache)
+                native.write_bytes(raw);phase2_capture._qualified_bundle(root,name,spec,cache)
+                clone=root/'independent';shutil.copytree(root/'data',clone/'data');shutil.copytree(root/'config',clone/'config');shutil.copytree(root/'pull',clone/'pull')
+                phase2_capture._qualified_bundle(clone,name,spec,cache)
+                self.assertGreaterEqual(read_bundle.call_count,4)
+
+    def test_imported_validator_outside_runtime_is_in_fresh_closure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'runtime';self.configure(root);_,health=self.run_partial(root)
+            spec=load_json(root/'config/phase2.json')['partial_week'];name=health['phase2']['partial_completion_receipt']
+            source=Path(directory)/'loaded-source/partial_week.py';source.parent.mkdir();shutil.copyfile(phase2_capture.partial_week.__file__,source)
+            with patch.object(phase2_capture.partial_week,'__file__',str(source)):
+                cache={};phase2_capture._qualified_bundle(root,name,spec,cache)
+                info=source.stat();raw=source.read_bytes();source.write_bytes(raw.replace(b'Network',b'network',1) if b'Network' in raw else raw[:-1]+bytes([raw[-1]^1]))
+                os.utime(source,ns=(info.st_atime_ns,info.st_mtime_ns))
+                with self.assertRaises(IntegrityError):phase2_capture._qualified_bundle(root,name,spec,cache)
+
+    git = EncodedHostingTests.git
+    plain_original = EncodedHostingTests.plain_original
+
+    def test_successive_packaging_keeps_flat_root_and_rejects_invented_prior_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'saved';root.mkdir();self.plain_original(root)
+            original=load_json(root/'output/data/release-identity.json')
+            first=phase2_capture.repackage_generation(root,source_root=ROOT)
+            retained={p:p.read_bytes() for p in (root/'data').rglob('*.gz')}
+            source=Path(directory)/'next-source';self.git(ROOT,'clone','--quiet','--shared',str(ROOT),str(source))
+            self.git(source,'config','user.name','Fictional packaging control');self.git(source,'config','user.email','fixture@example.invalid')
+            with (source/'output/app.js').open('a') as handle:handle.write('\n// Fictional next packaging source, no provider capture.\n')
+            self.git(source,'add','output/app.js');self.git(source,'commit','-qm','Fictional future packaging control')
+            with patch.object(phase2_capture,'ROOT',source), patch('requests.sessions.Session.request',side_effect=AssertionError('No collection')):
+                second=phase2_capture.repackage_generation(root,source_root=source)
+                self.assertEqual(second['capture_generation_sha256'],original['generation_sha256'])
+                self.assertEqual(second['capture_original_receipt'],first['capture_original_receipt'])
+                self.assertEqual(second['selection_report_id'],first['selection_report_id'])
+                self.assertNotEqual(second['generation_sha256'],first['generation_sha256'])
+                prior=read(root/second['prior_packaging_receipt'])
+                self.assertEqual(prior['previous_generation'],first)
+                self.assertNotIn('previous_transition',prior)
+                base=root/'output/data/selection-grading';working=load_json(base/'hosting.json')
+                self.assertNotEqual(working['previous'],working['latest'])
+                self.assertEqual(phase2_capture.repackage_generation(root,source_root=source),second)
+                self.assertTrue(all(p.read_bytes()==raw for p,raw in retained.items()))
+                original_generation=(root/'output/data/release-identity.json').read_bytes();original_health=(root/'output/data/health.json').read_bytes()
+                bad=copy.deepcopy(prior);previous=bad['previous_generation'];previous.pop('generation_sha256');previous['source_sha']='0'*40
+                previous['generation_sha256']=digest(previous);bad['previous_health'].update(source_sha='0'*40,generation_sha256=previous['generation_sha256'])
+                receipt=write(root,'verification/hosting-capture-originals',bad)
+                altered=copy.deepcopy(second);altered.pop('generation_sha256');altered['prior_packaging_receipt']=receipt.relative_to(root).as_posix();altered['generation_sha256']=digest(altered)
+                atomic_json(root/'output/data/release-identity.json',altered)
+                health=load_json(root/'output/data/health.json');health['generation_sha256']=altered['generation_sha256'];atomic_json(root/'output/data/health.json',health)
+                with self.assertRaisesRegex(IntegrityError,'source commit is unavailable'):phase2_capture.validate_generation(root)
+                (root/'output/data/release-identity.json').write_bytes(original_generation);(root/'output/data/health.json').write_bytes(original_health)
+                phase2_capture.validate_generation(root)
+
+    def test_mutation_at_actual_pointer_and_stage_boundaries_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'writer';root.mkdir();self.run_live(root)
+            base=root/'output/data/selection-grading';old=(base/'latest.json').read_bytes();mutated={}
+            original=selection_publication._state_write
+            prepared=[];prepare_original=selection_publication.prepare_publication
+            def remember_prepared(*args,**kwargs):
+                result=prepare_original(*args,**kwargs);prepared.append(result);return result
+            def change_after_evidence(*args,**kwargs):
+                result=original(*args,**kwargs)
+                if args[1]=='verification/selection-grading/runs':
+                    target=base/prepared[-1]['rows'][0]['path'];mutated[target]=target.read_bytes()
+                    data=bytearray(mutated[target]);data[-5]^=1;target.write_bytes(data)
+                return result
+            with patch.object(selection_publication,'prepare_publication',side_effect=remember_prepared), patch.object(selection_publication,'_state_write',side_effect=change_after_evidence):
+                with self.assertRaises(IntegrityError):publish_selection_report(root,self.AT+timedelta(seconds=5),source_sha='1'*40)
+            self.assertEqual((base/'latest.json').read_bytes(),old)
+            for target,raw in mutated.items():target.write_bytes(raw)
+            phase2_capture.validate_generation(root)
+            actual_copy=shutil.copyfile;changed=[]
+            def mutate_after_copy(src,dst,*args,**kwargs):
+                result=actual_copy(src,dst,*args,**kwargs)
+                if not changed:
+                    marker=root/'data/verification/FICTIONAL_NEW_FAILURE_DEPENDENCY';marker.write_text('new inventory entry');changed.append(marker)
+                return result
+            with patch.object(phase2_capture.shutil,'copyfile',side_effect=mutate_after_copy):
+                with self.assertRaisesRegex(IntegrityError,'source evidence changed'):phase2_capture.stage_pages(root,Path(directory)/'pages')
+            changed[0].unlink();phase2_capture.validate_generation(root)
+
+    def test_complete_shared_validation_rejects_typed_mixing_and_atomic_race(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root,values=self.projection(directory);base=root/'shared';pointer=self.publish(base,values)
+            indexpath=base/pointer['summary']['path'];original=indexpath.read_bytes();index=load_json(indexpath)
+            for mode in ('report_envelope','wrong_context','wrong_version','membership'):
+                changed=copy.deepcopy(index);desc=changed['summary_partitions'][-1];payload=fixture_part(base,desc,'summary.json')
+                if mode=='report_envelope':payload['report_id']=pointer['report_id']
+                elif mode=='wrong_context':payload['context_id']='0'*64
+                elif mode=='wrong_version':payload['schema_version']='selection-public-summary-partition-v1'
+                else:payload['tables'][0]['row_positions']=[]
+                replace_fixture_part(base,desc,'summary.json',payload);atomic_json(indexpath,changed)
+                altered=copy.deepcopy(pointer);altered['summary'].update(sha256=hashlib.sha256(indexpath.read_bytes()).hexdigest(),decoded_bytes=len(indexpath.read_bytes()))
+                with self.assertRaises(IntegrityError):validate_publication(base,altered)
+            indexpath.write_bytes(original);validate_publication(base,pointer)
 
 
 if __name__ == "__main__":

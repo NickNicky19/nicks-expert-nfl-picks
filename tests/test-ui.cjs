@@ -307,4 +307,25 @@ const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8')
   await assert.rejects(ui.checkedGradingAsset(pointer, descriptor, 'outcomes', true), /source unavailable/);
   assert.equal(fetches, old + 1, 'server failure does not select archive fallback');
   console.log('Encoded report streams: 19 focused integrity/limit/decoder checks passed.');
+  networkStatus = 200; headers = {};
+  const modern = { ...pointer, schema_version: 'selection-publication-pointer-v4' };
+  const shared = { schema_version: 'selection-final-outcome-period-v2', season: 2026, week: 6, outcomes: [] };
+  function install(body, filename = 'outcomes.json') {
+    const decoded = Buffer.from(JSON.stringify(body)); delivered = zlib.gzipSync(decoded, { mtime: 0 });
+    return { ...descriptor, path: hash(delivered) + '/' + filename, encoded_sha256: hash(delivered), encoded_bytes: delivered.length,
+      sha256: hash(decoded), decoded_bytes: decoded.length };
+  }
+  const sharedDesc = install(shared);
+  assert.equal((await ui.checkedGradingAsset(modern, sharedDesc, 'outcomes', true)).report_id, modern.report_id);
+  assert.equal((await ui.checkedGradingAsset({ ...modern, report_id: 'd'.repeat(64) }, sharedDesc, 'outcomes', true)).report_id, 'd'.repeat(64), 'one body can belong to separate exact graphs');
+  for (const invalid of [{ ...shared, report_id: modern.report_id }, { ...shared, schema_version: 'selection-final-outcome-period-v1' }, { ...shared, week: 5 }, { ...shared, private_extension: 'not-public' }]) {
+    const invalidDesc = install(invalid);
+    await assert.rejects(ui.checkedGradingAsset(modern, invalidDesc, 'outcomes', true), /type|context/);
+  }
+  const rowBody = { schema_version: 'selection-public-rows-v2', rows: [] }, rowDesc = install(rowBody, 'rows.json');
+  delete rowDesc.season; delete rowDesc.week;
+  assert.equal((await ui.checkedGradingAsset(modern, rowDesc, 'rows')).schema_version, 'selection-public-rows-v1');
+  await assert.rejects(ui.checkedGradingAsset(pointer, rowDesc, 'rows'), /path|binding/);
+  console.log('Shared payload typed readers: 8 version/envelope/context/reuse checks passed.');
+
 })().catch(error => { console.error(error); process.exitCode = 1; });

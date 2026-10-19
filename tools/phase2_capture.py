@@ -344,7 +344,8 @@ def public_scorecard(report, data, source_sha):
                              "Original full-board Week 6 proof remains incomplete."]}
 
 
-def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, initial_board=None):
+def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, initial_board=None, _checked=None):
+    _checked = {} if _checked is None else _checked
     root = Path(root).resolve()
     if mode not in ("live", "replay") or (mode == "live" and replay_at is not None):
         raise IntegrityError("Live capture cannot use a supplied clock")
@@ -434,7 +435,7 @@ def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, ini
             point_status["report_receipt"] = point_report_path.relative_to(root.resolve()).as_posix()
         health["phase2"]["point_candidate"] = point_status
         health["phase2"]["selection_outcome_identity_coverage"] = additional_coverage
-        publication = publish_selection_report(root, now, source_sha=source_sha)
+        publication = publish_selection_report(root, now, source_sha=source_sha, _checked=_checked)
         health["phase2"]["selection_report_sha256"] = publication["report_id"]
         health["phase2"]["selection_report_generated_at"] = publication["generated_at"]
         rich = write(root, "verification/report-originals", {"schema_version": "rich-scorecard-evidence-v1",
@@ -467,7 +468,7 @@ def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, ini
         health["source_sha"] = source_sha
         atomic_json(root / "output/data/release-identity.json", dict(generation, generation_sha256=generation_id))
         atomic_json(root / "output/data/health.json", health)
-        finalize_hosting(root, now)
+        finalize_hosting(root, now, _checked=_checked)
     else:
         write(root, "replay_reports", {"season": data["season"], "week": data["week"], "mode": "replay", "report": report})
     return report, health
@@ -505,20 +506,99 @@ def _public_read(base, descriptor, name, limit=publication.INDEX_LIMIT):
     return publication._read_asset_bytes(path, descriptor, limit)
 
 
+def _dependency_closure(root):
+    """Conservative fresh inventory: includes negative evidence and discovery.
+
+    Never use filesystem clocks or a saved flag as evidence identity. Streaming
+    hashing bounds memory even for originals larger than public-asset limits.
+    """
+    root = Path(root).resolve()
+    members = []
+    for lane in ("pull", "tools", "config", "data"):
+        base = root / lane
+        if not base.exists():
+            members.append((lane, None))
+            continue
+        for path in sorted(base.rglob("*")):
+            if "__pycache__" in path.parts or path.suffix == ".pyc":
+                continue
+            if path.is_symlink():
+                raise IntegrityError("Symlink validation dependency")
+            if path.is_file():
+                h = hashlib.sha256()
+                with path.open("rb") as handle:
+                    for block in iter(lambda: handle.read(65536), b""):
+                        h.update(block)
+                members.append((path.relative_to(root).as_posix(), h.hexdigest()))
+    for name in ("week.json", "meta.json", "matchup-proof.json", "verification-scope.json", "game-status.json"):
+        path = root / "output/data" / name
+        if path.is_symlink():
+            raise IntegrityError("Symlink board/proof dependency")
+        members.append(("output/data/" + name, hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None))
+    # Temporary runtime roots intentionally omit tools. The imported validator
+    # and wrapper may therefore execute from another checkout; inventory those
+    # actual source directories too, rather than trusting runtime HEAD or files.
+    source_dirs = {Path(__file__).resolve().parent, Path(partial_week.__file__).resolve().parent,
+                   Path(publication.__file__).resolve().parent, Path(require_offline.__code__.co_filename).resolve().parent,
+                   Path(__file__).resolve().parents[1] / "pull"}
+    for directory in sorted(source_dirs):
+        for path in sorted(directory.rglob("*")):
+            if "__pycache__" in path.parts or path.suffix == ".pyc":
+                continue
+            if path.is_symlink():
+                raise IntegrityError("Symlink imported-source dependency")
+            if path.is_file():
+                members.append(("imported:" + str(path), hashlib.sha256(path.read_bytes()).hexdigest()))
+    return digest(members)
+
+
+def _qualified_bundle(root, completion, spec, checked):
+    """Memoize only the identical bundle under a freshly read full closure."""
+    before = _dependency_closure(root)
+    key = ("qualified-bundle", str(Path(root).resolve()), completion, digest(spec), before)
+    now = datetime.now(timezone.utc)
+    if key in checked:
+        result = copy.deepcopy(checked[key])
+        if utc(result[0]["evidence_completed_at"]) > now or utc(result[2]["captured_at"]) > now:
+            raise IntegrityError("Cached bundle clock is in the future")
+    else:
+        result = partial_week.read_bundle(root, completion, spec, read_native_baseline, now=now)
+        if _dependency_closure(root) != before:
+            raise IntegrityError("Source evidence changed during bundle verification")
+        checked[key] = copy.deepcopy(result)
+    return result
+
+
 def _validated_publication(base, pointer, checked):
-    # Fresh, operation-local set only: never a durable success flag. The source
-    # and fresh Pages destination have different keys and are both fully read.
-    key = ("publication", str(Path(base).resolve()), digest(pointer))
-    if key not in checked:
-        publication.validate_publication(base, pointer)
-        checked[key] = True
+    # Actual bounded leaf bytes are rehashed on every access. Only typed decode
+    # and pure reconciliation work is shared, within this operation and base.
+    return publication.validate_publication(base, pointer, _checked=checked)
+
+
+def _source_assets(root, source_sha, assets, checked):
+    """Bind retained packaging bytes to retrievable exact source objects."""
+    if not publication.SOURCE_HEX.fullmatch(source_sha or "") or set(assets) != {"app.js", "index.html"}:
+        raise IntegrityError("Invalid retained packaging source")
+    for repository in dict.fromkeys((Path(root).resolve(), ROOT.resolve())):
+        try:
+            tree = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "--verify", source_sha + "^{tree}"], stderr=subprocess.PIPE, text=True).strip()
+        except subprocess.CalledProcessError:
+            continue
+        for name, raw in assets.items():
+            raw = raw.encode() if isinstance(raw, str) else raw
+            key = ("packaging-source", str(repository), source_sha, tree, name, hashlib.sha256(raw).hexdigest())
+            if key not in checked:
+                actual = subprocess.check_output(["git", "-C", str(repository), "show", source_sha + ":output/" + name], stderr=subprocess.PIPE)
+                if actual != raw:
+                    raise IntegrityError("Retained packaging app/shell differs from exact source")
+                checked[key] = True
+        return
+    raise IntegrityError("Retained packaging source commit is unavailable")
 
 
 def _manifest(base, descriptor, *, root=None, _checked=None):
     _checked = {} if _checked is None else _checked
     key = ("manifest", str(Path(base).resolve()), digest(descriptor), str(Path(root).resolve()) if root is not None else None)
-    if key in _checked:
-        return _checked[key]
     manifest = publication._json_bytes(_public_read(base, descriptor, "manifest.json"))
     if (set(manifest) != {"schema_version", "report_id", "pointer", "generation_sha256", "capture_generation_sha256",
                          "source_sha", "capture_source_sha", "packaged_at", "snapshots", "verification_receipt"}
@@ -623,10 +703,10 @@ def _registry(base, working, *, _checked=None):
     return result
 
 
-def finalize_hosting(root, at=None):
+def finalize_hosting(root, at=None, *, _checked=None):
     """Seal only an actually validated complete generation; no source collection."""
     root = Path(root); base = root / "output/data/selection-grading"
-    checked = {}
+    checked = {} if _checked is None else _checked
     generation = _validate_generation(root, _checked=checked)
     pointer = load_json(base / "latest.json")
     previous_working = load_json(base / "hosting.json") if (base / "hosting.json").exists() else None
@@ -665,6 +745,12 @@ def finalize_hosting(root, at=None):
                "previous": previous_working["latest"] if previous_working else None,
                "registry": shards, "archive_index": [], "delivery_sha256": None}
     _registry(base, working, _checked=checked)
+    # Immutable snapshots do not certify a newly changed source alias/evidence
+    # tree. Seal the current source again immediately before advancing hosting.
+    sealed = _validate_generation(root, _checked=checked)
+    if sealed != generation or any(not _same_generation_snapshot(name, (root / "output" / name).read_bytes(),
+                _public_read(base, snapshots[name], "snapshot-" + name.replace("/", "_"), publication.SUMMARY_LIMIT)) for name in HOST_SNAPSHOTS):
+        raise IntegrityError("Source generation changed before hosting advancement")
     atomic_json(base / "hosting.json", working)
     return working
 
@@ -673,7 +759,7 @@ def _publication_files(base, pointer, *, _checked=None):
     _checked = {} if _checked is None else _checked
     _validated_publication(base, pointer, _checked)
     paths = {pointer["summary"]["path"], pointer["outcomes"]["path"]} | {row["path"] for row in pointer["rows"]}
-    if pointer["schema_version"] in (publication.PARTITION_POINTER_VERSION, publication.GZIP_POINTER_VERSION):
+    if pointer["schema_version"] in (publication.PARTITION_POINTER_VERSION, publication.GZIP_POINTER_VERSION, publication.SHARED_POINTER_VERSION):
         summary = load_json(Path(base) / pointer["summary"]["path"])
         outcomes = load_json(Path(base) / pointer["outcomes"]["path"])
         paths |= {item["path"] for item in summary["summary_partitions"]}
@@ -692,6 +778,7 @@ def _git_archive(root, records, excluded, *, verify_public=True, _checked=None):
     if not excluded:
         return {}
     root = Path(root)
+    _checked = {} if _checked is None else _checked
     try:
         ref = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
         if not re.fullmatch(r"[0-9a-f]{40}", ref):
@@ -701,7 +788,10 @@ def _git_archive(root, records, excluded, *, verify_public=True, _checked=None):
         if verify_public:
             if remote not in ("https://github.com/" + PUBLIC_REPOSITORY, "https://github.com/" + PUBLIC_REPOSITORY + ".git"):
                 raise IntegrityError("Unexpected public archive repository")
-            _public_archive_commit(ref, tree)
+            public_key = ("public-commit", ref, tree)
+            if public_key not in _checked:
+                _public_archive_commit(ref, tree)
+                _checked[public_key] = True
         base = root / "output/data/selection-grading"
         retained_tree = subprocess.check_output(["git", "-C", str(root), "ls-tree", "-r", ref, "--", "data"], text=True)
         blobs = {line.split("\t", 1)[1]: line.split()[2] for line in retained_tree.splitlines()}
@@ -712,15 +802,53 @@ def _git_archive(root, records, excluded, *, verify_public=True, _checked=None):
                     blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
                     if blobs.get(name) != blob:
                         raise IntegrityError("Required retained original is absent from the archival commit")
-        result = {}
+        result, required = {}, set()
         for rid in sorted(excluded):
             descriptor = records[rid]
-            for relative in _manifest_files(base, descriptor, root=root, _checked=_checked):
-                path = base / relative
-                original = subprocess.check_output(["git", "-C", str(root), "show", ref + ":output/data/selection-grading/" + relative], stderr=subprocess.PIPE)
-                if original != path.read_bytes():
-                    raise IntegrityError("Archive commit lacks the exact complete report asset")
+            required.update(_manifest_files(base, descriptor, root=root, _checked=_checked))
             result[rid] = {"git_ref": ref, "manifest": descriptor}
+        listing = subprocess.check_output(["git", "-C", str(root), "ls-tree", "-r", ref, "--", "output/data/selection-grading"], text=True)
+        objects = {}
+        for line in listing.splitlines():
+            meta, name = line.split("\t", 1)
+            mode, kind, blob = meta.split()
+            if mode == "100644" and kind == "blob":
+                objects[name] = blob
+        pending = {}
+        for relative in sorted(required):
+            path = base / relative
+            publication._no_symlinks(path, base)
+            raw = path.read_bytes()
+            blob = objects.get("output/data/selection-grading/" + relative)
+            if blob != hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest():
+                raise IntegrityError("Archive commit lacks the exact complete report asset")
+            key = ("git-blob", str(root.resolve()), ref, tree, blob, hashlib.sha256(raw).hexdigest())
+            if key not in _checked:
+                if blob in pending and pending[blob][0] != raw:
+                    raise IntegrityError("Conflicting archive content for one Git object")
+                pending.setdefault(blob, (raw, []))[1].append(key)
+        if pending:
+            # One exact-object read per unique blob, not one git process per
+            # archived graph edge. Hash Git's actual returned bytes as well.
+            process = subprocess.Popen(["git", "-C", str(root), "cat-file", "--batch"],
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            try:
+                for blob, (expected, keys) in pending.items():
+                    process.stdin.write((blob + "\n").encode()); process.stdin.flush()
+                    fields = process.stdout.readline().decode().strip().split()
+                    if fields != [blob, "blob", str(len(expected))]:
+                        raise IntegrityError("Unexpected archival Git object type or size")
+                    actual = process.stdout.read(len(expected))
+                    if process.stdout.read(1) != b"\n" or actual != expected:
+                        raise IntegrityError("Archive Git object differs from retained bytes")
+                    if hashlib.sha1(b"blob " + str(len(actual)).encode() + b"\0" + actual).hexdigest() != blob:
+                        raise IntegrityError("Archive Git object identity differs")
+                    for key in keys:
+                        _checked[key] = True
+            finally:
+                process.stdin.close(); process.stdout.close()
+                if process.wait() != 0:
+                    raise IntegrityError("Archive Git batch failed")
         return result
     except subprocess.CalledProcessError as exc:
         raise IntegrityError("Required report archive is uncommitted or unavailable") from exc
@@ -735,8 +863,9 @@ def _public_archive_commit(ref, tree):
         raise IntegrityError("Public archival commit/tree mismatch")
 
 
-def _repackage_generation(root, *, source_root=ROOT):
+def _repackage_generation(root, *, source_root=ROOT, _checked=None):
     """Package a SAVED qualified bundle. Never invoke builder/provider/candidate."""
+    _checked = {} if _checked is None else _checked
     root, source_root = Path(root).resolve(), Path(source_root).resolve()
     source_sha = subprocess.check_output(["git", "-C", str(source_root), "rev-parse", "HEAD"], text=True).strip()
     # Packaging source must truthfully identify committed bytes, including this code.
@@ -744,60 +873,76 @@ def _repackage_generation(root, *, source_root=ROOT):
         saved = subprocess.check_output(["git", "-C", str(source_root), "show", source_sha + ":" + name], stderr=subprocess.PIPE)
         if saved != (source_root / name).read_bytes():
             raise IntegrityError("Packaging code is not the identified committed source")
-    original = validate_generation(root)
-    if original.get("schema_version") == "website-packaging-generation-v1" and original["source_sha"] == source_sha:
+    original = validate_generation(root, _checked=_checked)
+    if original.get("schema_version") in ("website-packaging-generation-v1", "website-packaging-generation-v2") and original["source_sha"] == source_sha and load_json(root / "output/data/selection-grading/latest.json")["schema_version"] == publication.SHARED_POINTER_VERSION:
         return original
-    if original.get("schema_version") != "website-generation-v1":
-        raise IntegrityError("Repackage only an original captured generation or its unchanged retry")
+    if original.get("schema_version") not in ("website-generation-v1", "website-packaging-generation-v1", "website-packaging-generation-v2"):
+        raise IntegrityError("Unsupported saved packaging source generation")
     # An already identical encoded app/report needs no manufactured generation.
     # Validation time is not a new capture or packaging source identity.
     saved_pointer = load_json(root / "output/data/selection-grading/latest.json")
-    if (saved_pointer.get("schema_version") == publication.GZIP_POINTER_VERSION
+    if (saved_pointer.get("schema_version") == publication.SHARED_POINTER_VERSION
             and all((root / "output" / name).read_bytes() == (source_root / "output" / name).read_bytes()
                     for name in ("app.js", "index.html"))):
         if not (root / "output/data/selection-grading/hosting.json").exists():
-            finalize_hosting(root, datetime.now(timezone.utc))
-        return validate_generation(root)
+            finalize_hosting(root, datetime.now(timezone.utc), _checked=_checked)
+        return validate_generation(root, _checked=_checked)
     at = datetime.now(timezone.utc)
     # Migration seals the already complete original before changing any alias.
     # It is the previous complete generation, not a failed-attempt placeholder.
     if not (root / "output/data/selection-grading/hosting.json").exists():
-        finalize_hosting(root, at)
+        finalize_hosting(root, at, _checked=_checked)
     health = load_json(root / "output/data/health.json")
     pointer = load_json(root / "output/data/selection-grading/latest.json")
-    origin = {"schema_version": "hosting-capture-original-v1", "season": load_json(root / "output/data/meta.json")["season"],
-              "week": load_json(root / "output/data/meta.json")["week"], "generation": original, "health": health,
-              "pointer": pointer, "proof": load_json(root / "output/data/matchup-proof.json"), "source_assets": {name: (root / "output" / name).read_text() for name in ("app.js", "index.html")}}
-    receipt = write(root, "verification/hosting-capture-originals", origin)
-    # Validate original source app/shell independently, not against newly copied app.
-    for name, raw in origin["source_assets"].items():
-        saved = subprocess.check_output(["git", "-C", str(source_root), "show", original["source_sha"] + ":output/" + name], stderr=subprocess.PIPE)
-        if saved != raw.encode():
-            raise IntegrityError("Original capture source app/shell mismatch")
+    if original["schema_version"] == "website-generation-v1":
+        origin = {"schema_version": "hosting-capture-original-v1", "season": load_json(root / "output/data/meta.json")["season"],
+                  "week": load_json(root / "output/data/meta.json")["week"], "generation": original, "health": health,
+                  "pointer": pointer, "proof": load_json(root / "output/data/matchup-proof.json"),
+                  "source_assets": {name: (root / "output" / name).read_text() for name in ("app.js", "index.html")}}
+        receipt = write(root, "verification/hosting-capture-originals", origin)
+    else:
+        receipt = root / original["capture_original_receipt"]
+        origin = partial_week._saved(root, original["capture_original_receipt"], "verification/hosting-capture-originals")
+    captured = origin["generation"]
+    if origin.get("schema_version") != "hosting-capture-original-v1" or captured["schema_version"] != "website-generation-v1":
+        raise IntegrityError("Missing flat root capture origin")
+    previous_assets = {name: (root / "output" / name).read_text() for name in ("app.js", "index.html")}
+    for source, assets in ((captured["source_sha"], origin["source_assets"]), (original["source_sha"], previous_assets)):
+        for name, raw in assets.items():
+            saved = subprocess.check_output(["git", "-C", str(source_root), "show", source + ":output/" + name], stderr=subprocess.PIPE)
+            if saved != raw.encode():
+                raise IntegrityError("Saved source app/shell mismatch")
+    transition = write(root, "verification/hosting-capture-originals", {
+        "schema_version": "hosting-packaging-transition-v1", "season": origin["season"], "week": origin["week"],
+        "root_capture_original_receipt": receipt.relative_to(root).as_posix(),
+        "previous_generation": original, "previous_health": health, "previous_pointer": pointer,
+        "previous_source_assets": previous_assets})
     base = root / "output/data/selection-grading"
-    new_pointer = publication.repack_publication(base, pointer)
+    new_pointer = publication.repack_publication(base, pointer, packaged_at=at, _checked=_checked)
     for name in ("app.js", "index.html"):
         shutil.copyfile(source_root / "output" / name, root / "output" / name)
     atomic_json(base / "latest.json", new_pointer)
     bindings = {name: hashlib.sha256((root / "output" / name).read_bytes()).hexdigest() for name in original["bindings"]}
-    generation = {"schema_version": "website-packaging-generation-v1", "source_sha": source_sha,
-                  "capture_source_sha": original["source_sha"], "capture_generation_sha256": original["generation_sha256"],
-                  "capture_original_receipt": receipt.relative_to(root).as_posix(), "packaged_at": stamp(at),
+    generation = {"schema_version": "website-packaging-generation-v2", "source_sha": source_sha,
+                  "capture_source_sha": captured["source_sha"], "capture_generation_sha256": captured["generation_sha256"],
+                  "capture_original_receipt": receipt.relative_to(root).as_posix(),
+                  "prior_packaging_receipt": transition.relative_to(root).as_posix(), "packaged_at": stamp(at),
                   "board_sha256": original["board_sha256"], "baseline_payload_sha256": original["baseline_payload_sha256"],
                   "selection_report_id": new_pointer["report_id"], "bindings": bindings}
     gid = digest(generation)
     health = copy.deepcopy(health)
-    health.update(generation_sha256=gid, source_sha=source_sha, capture_source_sha=original["source_sha"],
-                  capture_generation_sha256=original["generation_sha256"], packaged_at=stamp(at))
+    health.update(generation_sha256=gid, source_sha=source_sha, capture_source_sha=captured["source_sha"],
+                  capture_generation_sha256=captured["generation_sha256"], packaged_at=stamp(at))
     health["phase2"]["selection_report_sha256"] = new_pointer["report_id"]
     atomic_json(root / "output/data/release-identity.json", dict(generation, generation_sha256=gid))
     atomic_json(root / "output/data/health.json", health)
-    _validate_generation(root)
-    finalize_hosting(root, at)
-    return validate_generation(root)
+    _validate_generation(root, _checked=_checked)
+    finalize_hosting(root, at, _checked=_checked)
+    return validate_generation(root, _checked=_checked)
 
 
 def repackage_generation(root, *, source_root=ROOT):
+    _checked = {}
     root, source_root = Path(root).resolve(), Path(source_root).resolve()
     if root == source_root:
         raise IntegrityError("Saved packaging requires a separate local copy")
@@ -808,8 +953,8 @@ def repackage_generation(root, *, source_root=ROOT):
                 if any(path.is_symlink() for path in (root / name).rglob("*")):
                     raise IntegrityError("Symlink saved-package source")
                 shutil.copytree(root / name, stage / name, ignore=shutil.ignore_patterns("__pycache__"))
-        result = _repackage_generation(stage, source_root=source_root)
-        _promote(stage, root, packaging=True)
+        result = _repackage_generation(stage, source_root=source_root, _checked=_checked)
+        _promote(stage, root, packaging=True, _checked=_checked)
         return result
 
 
@@ -879,9 +1024,13 @@ def _copy_evidence(stage, root, *, failed_generation=False):
                         handle.write(path.read_bytes()); handle.flush(); os.fsync(handle.fileno())
 
 
-def _promote(stage, root, *, packaging=False):
+def _promote(stage, root, *, packaging=False, _checked=None):
     """Validate first, then publish. Restore overwritten outputs on I/O failure."""
+    _checked = {} if _checked is None else _checked
+    evidence_before = _dependency_closure(stage)
     _copy_evidence(stage, root)
+    if _dependency_closure(stage) != evidence_before:
+        raise IntegrityError("Staged evidence changed during promotion")
     journal = {}
     try:
         directories = (("output/app.js", "output/index.html") if packaging else ()) + ("data/cache", "output/data")
@@ -902,7 +1051,7 @@ def _promote(stage, root, *, packaging=False):
                     os.replace(temp, target)
                 finally:
                     temp.unlink(missing_ok=True)
-        validate_generation(root)
+        validate_generation(root, _checked=_checked)
     except BaseException:
         for target, old in reversed(list(journal.items())):
             if old is not None:
@@ -915,6 +1064,7 @@ def _promote(stage, root, *, packaging=False):
 
 
 def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
+    _checked = {}
     root = Path(root).resolve()
     if mode != "live":
         if build_first:
@@ -958,7 +1108,7 @@ def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
             # replaced or promoted as previous-successful evidence.
             if ((stage / "output/data/release-identity.json").exists()
                     and not (stage / "output/data/selection-grading/hosting.json").exists()):
-                finalize_hosting(stage, datetime.now(timezone.utc))
+                finalize_hosting(stage, datetime.now(timezone.utc), _checked=_checked)
             if needs_initial:
                 partial_week.register_plan(stage, config["partial_week"], datetime.now(timezone.utc),
                                            source_sha=source_sha, initial_board=initial)
@@ -980,9 +1130,9 @@ def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
                         setattr(build, key, value)
                     build.books.ATHLETES = athlete_cache
                     build.sources.nfl_state = state_reader
-            result = _run_capture(stage, mode, source_sha=source_sha, initial_board=initial)
-            validate_generation(stage)
-            _promote(stage, root)
+            result = _run_capture(stage, mode, source_sha=source_sha, initial_board=initial, _checked=_checked)
+            validate_generation(stage, _checked=_checked)
+            _promote(stage, root, _checked=_checked)
             return result
         except BaseException as err:
             _copy_evidence(stage, root, failed_generation=True)
@@ -995,7 +1145,7 @@ def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
             raise
 
 
-def _validate_generation(root, snapshots=None, *, legacy_proof=None, _checked=None):
+def _validate_generation(root, snapshots=None, *, legacy_proof=None, _checked=None, _verify_prior=True):
     _checked = {} if _checked is None else _checked
     root = Path(root)
     def raw(name):
@@ -1005,8 +1155,8 @@ def _validate_generation(root, snapshots=None, *, legacy_proof=None, _checked=No
     generation = output("data/release-identity.json")
     core = {key: value for key, value in generation.items() if key != "generation_sha256"}
     health = output("data/health.json")
-    packaging = generation.get("schema_version") == "website-packaging-generation-v1"
-    if (generation.get("schema_version") not in ("website-generation-v1", "website-packaging-generation-v1") or digest(core) != generation["generation_sha256"]
+    packaging = generation.get("schema_version") in ("website-packaging-generation-v1", "website-packaging-generation-v2")
+    if (generation.get("schema_version") not in ("website-generation-v1", "website-packaging-generation-v1", "website-packaging-generation-v2") or digest(core) != generation["generation_sha256"]
             or health.get("generation_sha256") != generation["generation_sha256"]
             or health.get("board_sha256") != generation["board_sha256"] or health.get("source_sha") != generation["source_sha"]):
         raise IntegrityError("Health/publication generation mismatch")
@@ -1034,7 +1184,7 @@ def _validate_generation(root, snapshots=None, *, legacy_proof=None, _checked=No
         raise IntegrityError("Generation/report identity mismatch")
     completion = health["phase2"].get("partial_completion_receipt")
     if completion:
-        completed, scope, native = partial_week.read_bundle(root, completion, load_json(root / "config/phase2.json")["partial_week"], read_native_baseline)
+        completed, scope, native = _qualified_bundle(root, completion, load_json(root / "config/phase2.json")["partial_week"], _checked)
         if scope["output_sha256"] != digest(board) or digest(native) != digest(baseline):
             raise IntegrityError("Generation scope/native binding mismatch")
         if output("data/verification-scope.json") != partial_week.public_scope(scope, completed):
@@ -1068,11 +1218,42 @@ def _validate_generation(root, snapshots=None, *, legacy_proof=None, _checked=No
                                   "data/selection-grading/latest.json": canonical(origin["pointer"])})
         original_snapshots.update({name: value.encode() for name, value in origin["source_assets"].items()})
         _validate_generation(root, original_snapshots, legacy_proof=origin["proof"], _checked=_checked)
-        old_summary, old_rows, old_outcomes = publication.publication_contents(root / "output/data/selection-grading", origin["pointer"])
-        new_summary, new_rows, new_outcomes = publication.publication_contents(root / "output/data/selection-grading", pointer)
+        old_summary, old_rows, old_outcomes = publication.publication_contents(root / "output/data/selection-grading", origin["pointer"], _checked=_checked)
+        new_summary, new_rows, new_outcomes = publication.publication_contents(root / "output/data/selection-grading", pointer, _checked=_checked)
         old_summary.pop("report_id", None); new_summary.pop("report_id", None)
         if (old_summary, old_rows, old_outcomes) != (new_summary, new_rows, new_outcomes):
             raise IntegrityError("Packaging changed captured public semantics")
+        if generation["schema_version"] == "website-packaging-generation-v2":
+            _source_assets(root, generation["source_sha"], {name: raw(name) for name in ("app.js", "index.html")}, _checked)
+            _source_assets(root, origin["generation"]["source_sha"], origin["source_assets"], _checked)
+            prior = partial_week._saved(root, generation["prior_packaging_receipt"], "verification/hosting-capture-originals")
+            if (set(prior) != {"schema_version", "season", "week", "root_capture_original_receipt", "previous_generation", "previous_health", "previous_pointer", "previous_source_assets"}
+                    or prior["schema_version"] != "hosting-packaging-transition-v1"
+                    or prior["root_capture_original_receipt"] != generation["capture_original_receipt"]
+                    or (prior["season"], prior["week"]) != (origin["season"], origin["week"])
+                    or set(prior["previous_source_assets"]) != {"app.js", "index.html"}):
+                raise IntegrityError("Invalid flat packaging transition")
+            previous = prior["previous_generation"]
+            _source_assets(root, previous["source_sha"], prior["previous_source_assets"], _checked)
+            if (previous["generation_sha256"] == generation["generation_sha256"]
+                    or previous["board_sha256"] != generation["board_sha256"]
+                    or previous["baseline_payload_sha256"] != generation["baseline_payload_sha256"]
+                    or utc(previous.get("packaged_at", prior["previous_health"]["checked_at"])) > utc(generation["packaged_at"])):
+                raise IntegrityError("Packaging transition changed capture or reversed clocks")
+            if previous["schema_version"] != "website-generation-v1" and (
+                    previous.get("capture_original_receipt") != generation["capture_original_receipt"]
+                    or previous.get("capture_source_sha") != generation["capture_source_sha"]
+                    or previous.get("capture_generation_sha256") != generation["capture_generation_sha256"]):
+                raise IntegrityError("Packaging transition lost root capture")
+            if _verify_prior:
+                previous_snapshots = dict(original_snapshots)
+                previous_snapshots.update({"data/release-identity.json": canonical(previous),
+                                           "data/health.json": canonical(prior["previous_health"]),
+                                           "data/selection-grading/latest.json": canonical(prior["previous_pointer"])})
+                previous_snapshots.update({name: value.encode() for name, value in prior["previous_source_assets"].items()})
+                # Root capture is independently reproduced for each packaging
+                # generation; immediate provenance is bounded, not nested replay.
+                _validate_generation(root, previous_snapshots, legacy_proof=origin["proof"], _checked=_checked, _verify_prior=False)
     return generation
 
 
@@ -1110,6 +1291,7 @@ def stage_pages(root, destination):
     """Fresh bounded Pages projection. Never delete GitHub originals/old assets."""
     root, destination = Path(root).resolve(), Path(destination).resolve()
     _checked = {}
+    evidence_before = _dependency_closure(root)
     if destination.exists() or destination.is_relative_to(root / "output"):
         raise IntegrityError("Pages staging requires a fresh external destination")
     output = root / "output"
@@ -1117,6 +1299,7 @@ def stage_pages(root, destination):
         raise IntegrityError("Refusing symlink Pages asset")
     if read_phase2(root):
         validate_generation(root, _checked=_checked)
+    initial_generation = (root / "output/data/release-identity.json").read_bytes() if read_phase2(root) else None
     base = output / "data/selection-grading"
     working = load_json(base / "hosting.json") if (base / "hosting.json").exists() else None
     retained, archives = None, {}
@@ -1141,7 +1324,7 @@ def stage_pages(root, destination):
         if not path.is_file() or path.relative_to(output).as_posix() in excluded:
             continue
         relative = path.relative_to(output); name = relative.as_posix()
-        report_asset = re.fullmatch(r"data/selection-grading/(?:latest\.json|hosting\.json|[0-9a-f]{64}/(?:summary|outcomes|rows-[0-9]{4}|manifest|registry|archive)\.json|[0-9a-f]{64}/snapshot-(?:app\.js|index\.html|data_(?:week|meta|verification-scope|forecast-scorecard|health|release-identity)\.json|data_selection-grading_latest\.json))", name)
+        report_asset = re.fullmatch(r"data/selection-grading/(?:latest\.json|hosting\.json|[0-9a-f]{64}/(?:summary|outcomes|rows|rows-[0-9]{4}|manifest|registry|archive)\.json|[0-9a-f]{64}/snapshot-(?:app\.js|index\.html|data_(?:week|meta|verification-scope|forecast-scorecard|health|release-identity)\.json|data_selection-grading_latest\.json))", name)
         allowed = (name in {"app.js", "index.html", "style.css", "reliability-ui.js", "recovery.html"}
                    or name in public_data or re.fullmatch(r"data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json", name) or report_asset)
         if (not allowed or any(part.startswith(".") for part in relative.parts)
@@ -1175,6 +1358,17 @@ def stage_pages(root, destination):
         for descriptor in (delivery["latest"], delivery["previous"]):
             if descriptor:
                 _manifest(delivery_base, descriptor, _checked=_checked)
+    if working is not None:
+        latest, snapshots = _manifest(delivery_base, delivery["latest"], _checked=_checked)
+        for name in HOST_SNAPSHOTS:
+            if not _same_generation_snapshot(name, (destination / name).read_bytes(), snapshots[name]):
+                raise IntegrityError("Staged alias changed from its complete generation")
+    if _dependency_closure(root) != evidence_before:
+        raise IntegrityError("Retained source evidence changed during Pages staging")
+    if read_phase2(root):
+        validate_generation(root, _checked=_checked)
+        if (root / "output/data/release-identity.json").read_bytes() != initial_generation:
+            raise IntegrityError("Source generation changed during Pages staging")
     total = sum(path.stat().st_size for path in destination.rglob("*") if path.is_file())
     if total > STAGING_BUDGET:
         raise IntegrityError("Complete Pages stage exceeds conservative 900000000-byte budget")
