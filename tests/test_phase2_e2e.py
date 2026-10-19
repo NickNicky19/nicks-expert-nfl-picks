@@ -2277,5 +2277,192 @@ class SharedPayloadReuseTests(unittest.TestCase):
             indexpath.write_bytes(original);validate_publication(base,pointer)
 
 
+class PreparedPublicationTests(unittest.TestCase):
+    AT = PartitionedPublicationTests.AT
+    projection = PartitionedPublicationTests.projection
+    locality_report = PublicSelectionPipelineTests.locality_report
+    run_live = PublicSelectionPipelineTests.run_live
+
+    @staticmethod
+    def memo(checked):
+        return checked[("publisher-context",)][1][("prepared-publications",)]
+
+    def layouts(self, base, values):
+        for options in ({"partitioned": False}, {}, {"encoding": "gzip"}, {"encoding": "gzip", "shared": True}):
+            yield selection_publication.prepare_publication(base, *values[:4], self.AT, **options)
+
+    def test_all_readers_prepare_once_return_isolated_exact_values_and_hash_plain_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "prepared"
+            for pointer in self.layouts(base, values):
+                checked = {}
+                original = selection_publication._validate_legacy_publication
+                with patch.object(selection_publication, "_validate_legacy_publication", wraps=original) as complete:
+                    first = selection_publication.publication_contents(base, pointer, _checked=checked)
+                    expected = copy.deepcopy(first)
+                    first[0]["summary"]["tables"].clear(); first[1][0]["name"] = "mutated caller"
+                    first[2].clear()
+                    self.assertEqual(selection_publication.publication_contents(base, pointer, _checked=checked), expected)
+                    self.assertEqual(validate_publication(base, pointer, _checked=checked), expected[0])
+                    self.assertEqual(complete.call_count, 1)
+                    self.assertEqual(self.memo(checked).hits, 2)
+                    target = base / pointer["rows"][-1]["path"]
+                    raw = target.read_bytes(); info = target.stat()
+                    corrupt = bytearray(raw); corrupt[len(corrupt)//2] ^= 1
+                    target.write_bytes(corrupt); os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+                    with self.assertRaises(IntegrityError): validate_publication(base, pointer, _checked=checked)
+                    target.write_bytes(raw)
+                    self.assertEqual(selection_publication.publication_contents(base, pointer, _checked=checked), expected)
+                    target.unlink()
+                    with self.assertRaises((IntegrityError, OSError)): validate_publication(base, pointer, _checked=checked)
+                    target.write_bytes(raw)
+                self.assertEqual(selection_publication.publication_contents(base, pointer), expected)
+                self.assertEqual(expected[1], values[1])
+                self.assertEqual(expected[2], sorted(values[2], key=selection_publication.identity))
+
+    def test_every_nondefault_dependency_and_exact_envelope_is_fresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "prepared"
+            pointer = selection_publication.prepare_publication(base, *values[:4], self.AT, encoding="gzip", shared=True)
+            checked = {}; validate_publication(base, pointer, _checked=checked)
+            index = load_json(base / pointer["summary"]["path"])
+            final = load_json(base / pointer["outcomes"]["path"])
+            descriptors = [pointer["summary"], pointer["outcomes"], *index["summary_partitions"], *final["periods"]]
+            self.assertGreater(len(index["summary_partitions"]), 1)
+            for desc in descriptors:
+                target = base / desc["path"]; raw = target.read_bytes(); info = target.stat()
+                corrupt = bytearray(raw); corrupt[len(corrupt)//2] ^= 1
+                target.write_bytes(corrupt); os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+                with self.assertRaises((IntegrityError, ValueError)): validate_publication(base, pointer, _checked=checked)
+                target.write_bytes(raw)
+            # Self-consistently rehashed descriptor/leaf changes still require the
+            # unchanged full privacy, identity and membership algorithms.
+            for mode in ("private", "membership", "period", "context", "version", "new_dependency"):
+                changed = copy.deepcopy(index); desc = changed["summary_partitions"][-1]
+                payload = fixture_part(base, desc, "summary.json")
+                if mode == "private": payload["tables"][0]["credential"] = "fictional-not-a-secret"
+                elif mode == "membership": payload["tables"][0]["row_positions"] = []
+                elif mode == "period": payload["period"] = "2026-w18"
+                elif mode == "context": payload["context_id"] = "0" * 64
+                elif mode == "version": payload["schema_version"] = "unknown"
+                else: changed["summary_partitions"].append(copy.deepcopy(desc))
+                if mode != "new_dependency": replace_fixture_part(base, desc, "summary.json", payload)
+                raw = selection_publication.canonical(changed) + b"\n"
+                path = base / pointer["summary"]["path"]; old = path.read_bytes(); path.write_bytes(raw)
+                altered = copy.deepcopy(pointer); altered["summary"].update(sha256=hashlib.sha256(raw).hexdigest(), decoded_bytes=len(raw))
+                with self.assertRaises(IntegrityError): validate_publication(base, altered, _checked=checked)
+                path.write_bytes(old)
+            for altered in (dict(pointer, generated_at=stamp(self.AT-timedelta(days=30))),
+                            dict(pointer, schema_version="selection-publication-pointer-v999")):
+                with self.assertRaises(IntegrityError): validate_publication(base, altered, _checked=checked)
+            # A changed source header is a different graph, not an old PASS.
+            changed = copy.deepcopy(index); changed["source_sha"] = "not-a-commit"
+            path = base / pointer["summary"]["path"]; old = path.read_bytes(); atomic_json(path, changed)
+            altered = copy.deepcopy(pointer); altered["summary"].update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), decoded_bytes=path.stat().st_size)
+            with self.assertRaises(IntegrityError): validate_publication(base, altered, _checked=checked)
+            path.write_bytes(old)
+            validate_publication(base, pointer, _checked=checked)
+
+    def test_roots_helpers_limits_and_processes_never_borrow_trust(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "prepared"
+            pointer = selection_publication.prepare_publication(base, *values[:4], self.AT, encoding="gzip", shared=True)
+            checked = {}; validate_publication(base, pointer, _checked=checked)
+            clone = root / "copied"; shutil.copytree(base, clone)
+            original = selection_publication._validate_legacy_publication
+            with patch.object(selection_publication, "_validate_legacy_publication", wraps=original) as complete:
+                validate_publication(base, pointer, _checked=checked)
+                validate_publication(clone, pointer, _checked=checked)
+                self.assertEqual(complete.call_count, 2)
+            for helper in ("summarize", "_json_bytes", "_row"):
+                with patch.object(selection_publication, helper, side_effect=IntegrityError("changed helper")) as changed:
+                    with self.assertRaises(IntegrityError): validate_publication(base, pointer, _checked=checked)
+                    self.assertTrue(changed.called)
+                validate_publication(base, pointer, _checked=checked)
+            # Non-function callable wrappers have identities too; replacing one
+            # must invalidate both prepared and lower-level cached work.
+            reader = selection_publication._fresh_stored_bytes
+            with patch.object(selection_publication, "_fresh_stored_bytes", wraps=reader):
+                validate_publication(base, pointer, _checked=checked)
+            with patch.object(selection_publication, "_fresh_stored_bytes", side_effect=IntegrityError("changed reader")) as replaced:
+                with self.assertRaisesRegex(IntegrityError, "changed reader"):
+                    validate_publication(base, pointer, _checked=checked)
+                self.assertTrue(replaced.called)
+            # A helper can change DURING the fresh lookup, after its initial
+            # identity was read. Even a warm hit must recheck that boundary.
+            armed = [False]; original_read = selection_publication._fresh_stored_bytes
+            original_row = selection_publication._row
+            def change_helper_during_read(*args, **kwargs):
+                result = original_read(*args, **kwargs)
+                if armed[0]:
+                    selection_publication._row = lambda row: (_ for _ in ()).throw(IntegrityError("new row helper"))
+                    armed[0] = False
+                return result
+            try:
+                with patch.object(selection_publication, "_fresh_stored_bytes", side_effect=change_helper_during_read):
+                    validate_publication(base, pointer, _checked=checked)
+                    armed[0] = True
+                    with self.assertRaisesRegex(IntegrityError, "helper changed"):
+                        validate_publication(base, pointer, _checked=checked)
+            finally:
+                selection_publication._row = original_row
+            with patch.object(selection_publication, "ROW_LIMIT", 1), self.assertRaises(IntegrityError):
+                validate_publication(base, pointer, _checked=checked)
+            link = root / "symlink"; link.symlink_to(base, target_is_directory=True)
+            with self.assertRaises(IntegrityError): validate_publication(link, pointer, _checked=checked)
+            target = clone / pointer["rows"][0]["path"]; raw = target.read_bytes()
+            target.write_bytes(b"x" * len(raw))
+            with self.assertRaises(IntegrityError): validate_publication(clone, pointer, _checked=checked)
+            atomic_json(root / "pointer.json", pointer)
+            command = [sys.executable, "-c", "import sys;from pathlib import Path;sys.path[:0]=[sys.argv[1],sys.argv[2]];from selection_publication import validate_publication;from reliability import load_json;validate_publication(Path(sys.argv[3]),load_json(Path(sys.argv[4])))", str(ROOT/"tools"), str(ROOT/"pull"), str(clone), str(root/"pointer.json")]
+            self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+
+    def test_exact_lru_byte_accounting_eviction_and_oversized_skip(self):
+        memo = selection_publication._PreparedPublications()
+        self.assertEqual(selection_publication.PREPARED_LIMIT, 384 * 1024 * 1024)
+        self.assertEqual(selection_publication.PREPARED_ENTRIES, 8)
+        for number in range(9): memo.put(number, (b"1", b"2", b"3"))
+        self.assertEqual(list(memo.entries), list(range(1, 9)))
+        self.assertEqual(memo.serialized_bytes, 24)
+        memo = selection_publication._PreparedPublications()
+        with patch.object(selection_publication, "PREPARED_ENTRIES", 2), patch.object(selection_publication, "PREPARED_LIMIT", 12):
+            memo.put("a", (b"123", b"45", b"6")); memo.put("b", (b"12", b"34", b"56"))
+            self.assertEqual(memo.serialized_bytes, 12)
+            self.assertIsNotNone(memo.get("a")); memo.put("c", (b"12", b"34", b"56"))
+            self.assertEqual(list(memo.entries), ["a", "c"]); self.assertIsNone(memo.get("b"))
+            memo.put("c", (b"1", b"2", b"3")); self.assertEqual(memo.serialized_bytes, 9)
+            memo.put("too-big", (b"x" * 13, b"", b""))
+            self.assertFalse(memo.entries); self.assertEqual(memo.serialized_bytes, 0)
+            self.assertLessEqual(memo.peak_serialized_bytes, 12)
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "prepared"
+            pointer = selection_publication.prepare_publication(base, *values[:4], self.AT)
+            checked = {}; expected = validate_publication(base, pointer)
+            with patch.object(selection_publication, "PREPARED_LIMIT", 1):
+                self.assertEqual(validate_publication(base, pointer, _checked=checked), expected)
+                self.assertEqual(self.memo(checked).serialized_bytes, 0)
+                self.assertEqual(validate_publication(base, pointer, _checked=checked), expected)
+
+    def test_first_validation_race_cannot_seed_prepared_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "prepared"
+            pointer = selection_publication.prepare_publication(base, *values[:4], self.AT)
+            checked = {}; original = selection_publication._validate_legacy_publication
+            target = base / pointer["rows"][0]["path"]; raw = target.read_bytes()
+            def mutate_after_complete(*args, **kwargs):
+                result = original(*args, **kwargs); target.write_bytes(b"x" * len(raw)); return result
+            with patch.object(selection_publication, "_validate_legacy_publication", side_effect=mutate_after_complete):
+                with self.assertRaises(IntegrityError): validate_publication(base, pointer, _checked=checked)
+                self.assertFalse(self.memo(checked).entries)
+            target.write_bytes(raw)
+            self.assertEqual(selection_publication.publication_contents(base, pointer, _checked=checked)[1], values[1])
+            # Optional helper closure unavailable: no old lower-cache success is
+            # borrowed, and unchanged complete validation remains supported.
+            with patch.object(selection_publication, "_publication_helpers", return_value=None), patch.object(selection_publication, "_validate_legacy_publication", wraps=original) as complete:
+                validate_publication(base, pointer, _checked=checked)
+                validate_publication(base, pointer, _checked=checked)
+                self.assertEqual(complete.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,13 +4,15 @@ The existing updater invokes this only after its required capture checks. It is
 not a deployment command. Rich private reports stay in a disposable external
 directory; only an explicit field contract and safe frozen decisions survive.
 """
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, OrderedDict
 from datetime import datetime, timezone
 import hashlib
 import copy
 import gzip
 import io
 import json
+import sys
+import types
 import zlib
 from pathlib import Path
 import re
@@ -98,6 +100,82 @@ METRIC_FIELDS = frozenset(("n", "mae", "rmse", "mean_error"))
 HASH_LIST_FIELDS = frozenset(("observation_receipt_refs", "archive_receipt_refs", "outcome_observations",
                               "outcome_active_observations"))
 TEXT_LIST_FIELDS = frozenset(("archive_saved_at_clocks", "outcome_identity_reasons"))
+
+# Optional operation-local memo, independent of every public reader/file limit.
+PREPARED_LIMIT = 384 * 1024 * 1024
+PREPARED_ENTRIES = 8
+
+
+class _PreparedPublications:
+    """Private immutable values only; no qualification survives the operation."""
+    def __init__(self):
+        self.entries = OrderedDict()
+        self.serialized_bytes = self.peak_serialized_bytes = 0
+        self.hits = self.misses = self.evictions = 0
+
+    def get(self, key):
+        value = self.entries.get(key)
+        if value is None:
+            self.misses += 1
+        else:
+            self.hits += 1
+            self.entries.move_to_end(key)
+        return value
+
+    def put(self, key, value):
+        size = sum(map(len, value))
+        if key in self.entries:
+            self.serialized_bytes -= sum(map(len, self.entries.pop(key)))
+        while self.entries and (len(self.entries) >= PREPARED_ENTRIES
+                                or self.serialized_bytes + size > PREPARED_LIMIT):
+            _, previous = self.entries.popitem(last=False)
+            self.serialized_bytes -= sum(map(len, previous))
+            self.evictions += 1
+        if size <= PREPARED_LIMIT and PREPARED_ENTRIES > 0:
+            self.entries[key] = value
+            self.serialized_bytes += size
+            self.peak_serialized_bytes = max(self.peak_serialized_bytes, self.serialized_bytes)
+
+
+def _publication_helpers():
+    """Fresh installed bytes AND live callable/contract identities, not HEAD/mtime.
+
+    A changed helper also gets a fresh lower decode/semantic memo. Public graph
+    reuse must not accidentally borrow an older helper's parsed or semantic PASS.
+    """
+    parts = []
+    for name in (__name__, "selection_report", "scorecard", "reliability", "evidence"):
+        module = sys.modules.get(name)
+        try:
+            path = Path(module.__file__).resolve()
+            checksum = hashlib.sha256()
+            with path.open("rb") as handle:
+                while block := handle.read(65536):
+                    checksum.update(block)
+        except (AttributeError, TypeError, OSError):
+            # Optional reuse is unavailable; the complete validator still runs
+            # with a fresh local memo. Outer source qualification is unchanged.
+            return None
+        parts.append((name, str(path), checksum.hexdigest()))
+        for key, value in sorted(vars(module).items()):
+            if isinstance(value, types.FunctionType):
+                # Code objects are immutable. Their identity also catches a live
+                # __code__ replacement; marshal's interned-string flags are not
+                # stable as CPython executes code and must not be a cache key.
+                parts.append((name, key, id(value), id(value.__code__),
+                              repr(value.__defaults__), repr(value.__kwdefaults__)))
+            elif callable(value):
+                parts.append((name, key, id(value)))
+            elif key.isupper() and isinstance(value, (str, int, tuple, list, set, frozenset, dict, re.Pattern)):
+                parts.append((name, key, repr(value)))
+    # Imported callables may be replaced by a test/instrumentation wrapper. Their
+    # identities are relevant too; do not inspect unstable bound __call__ objects.
+    for name in ("_safe_value", "_row", "_outcome", "_record_identity", "_record_fields",
+                 "_json_bytes", "_pairs", "canonical", "digest", "identity", "summarize", "_tally",
+                 "utc", "load_json", "_validate_legacy_publication", "_read_partitions"):
+        value = globals()[name]
+        parts.append((name, id(value)))
+    return digest(parts)
 
 
 def _safe_value(value):
@@ -311,7 +389,7 @@ def _projection(report, *, source_sha, input_digest):
     return summary, rows, outcomes, chunks, public_id
 
 
-def _validate_legacy_publication(base, pointer, *, _partitioned=None, _row_reader=None, _layout=None, _checked=None):
+def _validate_legacy_publication(base, pointer, *, _partitioned=None, _row_reader=None, _layout=None, _checked=None, _prepared=None):
     """Read the exact written assets before advancing a mutable latest pointer."""
     base = Path(base)
     if set(pointer) != {"schema_version", "report_id", "generated_at", "row_count", "summary", "rows", "outcomes"}:
@@ -455,6 +533,8 @@ def _validate_legacy_publication(base, pointer, *, _partitioned=None, _row_reade
     if digest(content) != report_id:
         raise IntegrityError("Public content identity mismatch")
     _safe_value(summary)
+    if _prepared is not None:
+        _prepared.extend((summary, rows, sorted(final["outcomes"], key=identity)))
     return summary
 
 
@@ -583,7 +663,7 @@ def _partition_asset(base, descriptor, filename, *, index=False, report_id=None,
     return copy.deepcopy(_checked[key])
 
 
-def _read_partitions(base, pointer, *, _checked=None):
+def _read_partitions(base, pointer, *, _checked=None, _prepared=None):
     """Reconstruct every part before the existing complete semantic validation."""
     shared = pointer.get("schema_version") == SHARED_POINTER_VERSION
     encoded = shared or pointer.get("schema_version") == GZIP_POINTER_VERSION
@@ -688,15 +768,150 @@ def _read_partitions(base, pointer, *, _checked=None):
                 return dict(part, schema_version=ROWS_VERSION, report_id=report_id)
             return part
     return _validate_legacy_publication(base, virtual, _partitioned=(normalized, final),
-                                       _row_reader=row_reader, _layout=SHARED_LAYOUT_VERSION if shared else GZIP_LAYOUT_VERSION if encoded else None, _checked=_checked)
+                                       _row_reader=row_reader, _layout=SHARED_LAYOUT_VERSION if shared else GZIP_LAYOUT_VERSION if encoded else None, _checked=_checked, _prepared=_prepared)
+
+
+def _publication_graph(base, pointer):
+    """Fresh bounded actual-byte closure, including ALL non-default/plain assets.
+
+    Unchanged exact bytes inherit their previous complete structural/semantic
+    check; this pass never establishes one. Indexes are read again to discover
+    the complete declared graph. Historical supplied pointers are intentional:
+    the outer generation validator, not this reader, qualifies the mutable alias.
+    """
+    base = Path(base)
+    if base.is_symlink():
+        raise IntegrityError("Symlinked publication root")
+    version = pointer.get("schema_version")
+    if version not in (POINTER_VERSION, PARTITION_POINTER_VERSION, GZIP_POINTER_VERSION, SHARED_POINTER_VERSION):
+        raise IntegrityError("Unknown public pointer version")
+    if set(pointer) != {"schema_version", "report_id", "generated_at", "row_count", "summary", "rows", "outcomes"}:
+        raise IntegrityError("Unknown public pointer fields")
+    if (len(canonical(pointer) + b"\n") > INDEX_LIMIT or type(pointer["row_count"]) is not int
+            or not 0 <= pointer["row_count"] <= CHUNK_SIZE * 4000 or not isinstance(pointer["rows"], list)
+            or len(pointer["rows"]) != (pointer["row_count"] + CHUNK_SIZE - 1) // CHUNK_SIZE):
+        raise IntegrityError("Public graph exceeds supported bounds")
+    _hash(pointer["report_id"]); utc(pointer["generated_at"])
+    report_id = pointer["report_id"]
+    shared = version == SHARED_POINTER_VERSION
+    encoded = shared or version == GZIP_POINTER_VERSION
+    graph = []
+
+    def asset(descriptor, name, *, index=False, row=False, plain=False):
+        if not isinstance(descriptor, dict):
+            raise IntegrityError("Malformed public asset descriptor")
+        fields = {"path", "sha256"}
+        if plain:
+            fields |= {"count"} if row else set()
+        elif index:
+            fields |= {"decoded_bytes"}
+        elif row:
+            fields |= {"decoded_bytes", "count"} | ENCODED_FIELDS
+        elif name == "summary.json":
+            fields |= {"decoded_bytes", "context_id", "period", "table_count"} | (ENCODED_FIELDS if encoded else set())
+        else:
+            fields |= {"decoded_bytes", "season", "week", "count"} | (ENCODED_FIELDS if encoded else set())
+        if set(descriptor) != fields:
+            raise IntegrityError("Unknown public graph descriptor fields")
+        _hash(descriptor["sha256"])
+        compressed = encoded and not (index or plain)
+        if compressed:
+            _hash(descriptor.get("encoded_sha256"))
+            if descriptor.get("encoding") != "gzip":
+                raise IntegrityError("Unsupported public graph encoding")
+        namespace = report_id if index or plain or row and not shared else descriptor["encoded_sha256"] if compressed else descriptor["sha256"]
+        if descriptor.get("path") != namespace + "/" + name:
+            raise IntegrityError("Unsafe public graph path")
+        path = base / descriptor["path"]
+        _no_symlinks(path, base)
+        if not path.resolve().is_relative_to(base.resolve()) or not path.is_file():
+            raise IntegrityError("Invalid public graph asset type/root")
+        limit = ROW_LIMIT if row else INDEX_LIMIT if index else SUMMARY_LIMIT
+        if plain:
+            # Legacy row descriptors have NO byte size. Read to the real cap;
+            # stat, mtime and filename identity cannot substitute for this hash.
+            checksum, size = hashlib.sha256(), 0
+            with path.open("rb") as handle:
+                while True:
+                    block = handle.read(min(65536, limit - size + 1))
+                    if not block:
+                        break
+                    size += len(block)
+                    if size > limit:
+                        raise IntegrityError("Public graph asset exceeds size limit")
+                    checksum.update(block)
+            actual = checksum.hexdigest()
+            if actual != descriptor["sha256"]:
+                raise IntegrityError("Public graph actual byte checksum mismatch")
+        else:
+            if type(descriptor.get("decoded_bytes")) is not int or not 0 < descriptor["decoded_bytes"] <= limit:
+                raise IntegrityError("Public graph exceeds decoded size limit")
+            actual = _fresh_stored_bytes(path, descriptor, limit, encoded=compressed)
+        graph.append((name, descriptor, actual))
+        if index:
+            # Small bounded index; fresh parse discovers all contexts/periods.
+            return _json_bytes(_read_asset_bytes(path, descriptor, limit))
+
+    for number, descriptor in enumerate(pointer["rows"]):
+        asset(descriptor, "rows.json" if shared else f"rows-{number:04d}.json", row=True, plain=not encoded)
+    if version == POINTER_VERSION:
+        asset(pointer["summary"], "summary.json", plain=True)
+        asset(pointer["outcomes"], "outcomes.json", plain=True)
+    else:
+        index = asset(pointer["summary"], "summary.json", index=True)
+        final = asset(pointer["outcomes"], "outcomes.json", index=True)
+        # Exact index schemas, context and semantic constraints are still checked
+        # by the complete validator on every first/changed graph.
+        for field, value in (("summary_partitions", index), ("periods", final)):
+            if not isinstance(value, dict) or not isinstance(value.get(field), list):
+                raise IntegrityError("Malformed public graph index")
+        for descriptor in index["summary_partitions"]:
+            asset(descriptor, "summary.json")
+        for descriptor in final["periods"]:
+            asset(descriptor, "outcomes.json")
+    return digest({"pointer": pointer, "assets": graph})
+
+
+def _complete_publication(base, pointer, checked):
+    values = []
+    if pointer.get("schema_version") in (PARTITION_POINTER_VERSION, GZIP_POINTER_VERSION, SHARED_POINTER_VERSION):
+        _read_partitions(Path(base), pointer, _checked=checked, _prepared=values)
+    else:
+        _validate_legacy_publication(base, pointer, _checked=checked, _prepared=values)
+    return values
+
+
+def _prepared_publication(base, pointer, _checked):
+    """Complete validation first; fresh graph equality is necessary for reuse."""
+    _checked = {} if _checked is None else _checked
+    helper = _publication_helpers()
+    if helper is None:
+        return tuple(canonical(value) for value in _complete_publication(base, pointer, {}))
+    context = _checked.get(("publisher-context",))
+    if context is None or context[0] != helper:
+        context = (helper, {})
+        _checked[("publisher-context",)] = context
+    local = context[1]
+    memo = local.setdefault(("prepared-publications",), _PreparedPublications())
+    before = _publication_graph(base, pointer)
+    if _publication_helpers() != helper:
+        raise IntegrityError("Public helper changed during fresh graph check")
+    key = (str(Path(base).resolve()), helper, before)
+    prepared = memo.get(key)
+    if prepared is not None:
+        return prepared
+    values = _complete_publication(base, pointer, local)
+    # Never seed a success assembled across changing leaves or helper code.
+    if _publication_graph(base, pointer) != before or _publication_helpers() != helper:
+        raise IntegrityError("Public graph/helper changed during complete validation")
+    prepared = tuple(canonical(value) for value in values)
+    memo.put(key, prepared)
+    return prepared
 
 
 def validate_publication(base, pointer, *, _checked=None):
     """Version dispatch is explicit; unsupported data never falls back."""
-    _checked = {} if _checked is None else _checked
-    if pointer.get("schema_version") in (PARTITION_POINTER_VERSION, GZIP_POINTER_VERSION, SHARED_POINTER_VERSION):
-        return _read_partitions(Path(base), pointer, _checked=_checked)
-    return _validate_legacy_publication(base, pointer, _checked=_checked)
+    return _json_bytes(_prepared_publication(base, pointer, _checked)[0])
 
 
 def prepare_publication(base, summary, rows, outcomes, chunks, generated_at, *, partitioned=True, encoding=None, shared=False, _checked=None):
@@ -795,26 +1010,7 @@ def prepare_publication(base, summary, rows, outcomes, chunks, generated_at, *, 
 
 def publication_contents(base, pointer, *, _checked=None):
     """Validated complete public values; never a partially loaded browser page."""
-    base = Path(base)
-    _checked = {} if _checked is None else _checked
-    summary = validate_publication(base, pointer, _checked=_checked)
-    shared = pointer["schema_version"] == SHARED_POINTER_VERSION
-    encoded = shared or pointer["schema_version"] == GZIP_POINTER_VERSION
-    rows = []
-    for number, descriptor in enumerate(pointer["rows"]):
-        if encoded:
-            part = _partition_asset(base, descriptor, "rows.json" if shared else f"rows-{number:04d}.json", report_id=pointer["report_id"], encoded=True, row=True, shared=shared, _checked=_checked)
-        else:
-            part = load_json(base / descriptor["path"])
-        rows.extend(part["rows"])
-    if pointer["schema_version"] in (PARTITION_POINTER_VERSION, GZIP_POINTER_VERSION, SHARED_POINTER_VERSION):
-        index = _partition_asset(base, pointer["outcomes"], "outcomes.json", index=True, report_id=pointer["report_id"], _checked=_checked)
-        outcomes = []
-        for descriptor in index["periods"]:
-            outcomes.extend(_partition_asset(base, descriptor, "outcomes.json", encoded=encoded, _checked=_checked)["outcomes"])
-    else:
-        outcomes = load_json(base / pointer["outcomes"]["path"])["outcomes"]
-    return summary, rows, sorted(outcomes, key=identity)
+    return tuple(_json_bytes(value) for value in _prepared_publication(base, pointer, _checked))
 
 
 def repack_publication(base, pointer, *, packaged_at=None, _checked=None):
