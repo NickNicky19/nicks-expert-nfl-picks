@@ -35,11 +35,97 @@ STAT_KEYS = sorted(set(PPR) | set(K_SCORING) | set(DEF_SCORING)
                       "pts_allow", "yds_allow", "tm_off_snp", "fgm_50p"})
 
 
-def ppr_points(stats):
+PRESENCE_VERSION = "nfl-data-presence-v2"
+LEGACY_SPARSE_ASSUMPTION = "legacy-played-sparse-stat-assumption-v1"
+ACTUAL_COUNTS = (set(PPR) - {"pass_yd", "rush_yd", "rec_yd"}) | {
+    "pass_cmp", "pass_att", "rush_att", "rec_tgt", "gp", "off_snp", "tm_off_snp", "idp_fum_rec"}
+
+
+def retained_value(value):
+    """JSON-safe representation of invalid nonfinite model-input components.
+
+    A tagged invalid component remains invalid; it is never a numeric/null zero.
+    Ordinary finite values, explicit nulls and invalid strings/bools stay exact.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return {"invalid_numeric_encoding": "nfl-nonfinite-v1",
+                "value": "nan" if math.isnan(value) else "+infinity" if value > 0 else "-infinity"}
+    return value
+
+
+def component(stats, key, *, projection=False):
+    """Value and evidence state; inferred sparse zero is never reported zero.
+
+    Unversioned saved stats retain the explicitly labeled legacy sparse adapter
+    assumption. A modern sparse row must retain its actual attributed source
+    row and context. A metadata label, HTTP success or participation alone is
+    insufficient. Projection absence is never covered by this assumption.
+    """
+    if not isinstance(stats, dict):
+        return {"value": None, "state": "unsupported_absence"}
+    metadata = stats.get("_presence")
+    projection = projection or isinstance(metadata, dict) and metadata.get("kind") == "projection"
+    if key in stats:
+        value = stats[key]
+        if isinstance(metadata, dict) and key in metadata.get("invalid_fields", []):
+            return {"value": None, "state": "invalid_value"}
+        if value is None:
+            return {"value": None, "state": "explicit_unknown"}
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return {"value": None, "state": "invalid_value"}
+        if not projection and ((key in ACTUAL_COUNTS and value < 0)
+                               or key in ACTUAL_COUNTS | {"pass_yd", "rush_yd", "rec_yd"} and int(value) != value):
+            return {"value": None, "state": "invalid_value"}
+        return {"value": value, "state": "reported_zero" if value == 0 else "reported_value"}
+    if projection:
+        return {"value": None, "state": "unsupported_absence"}
+    if metadata is None and "_presence" not in stats:
+        return {"value": 0, "state": "inferred_sparse_zero_legacy_assumption"}
+    if not isinstance(metadata, dict) or metadata.get("version") != PRESENCE_VERSION:
+        return {"value": None, "state": "unsupported_absence"}
+    source, context = metadata.get("original_row"), metadata.get("source_context")
+    supported = (metadata.get("sparse_contract") == LEGACY_SPARSE_ASSUMPTION
+                 and isinstance(source, dict) and isinstance(source.get("stats"), dict)
+                 and all(isinstance(source.get(k), str) and source[k] for k in ("player_id", "team", "opponent"))
+                 and isinstance(context, dict) and context.get("adapter") == "sleeper-week-stats-v1"
+                 and type(context.get("season")) is int and type(context.get("week")) is int
+                 and 1 <= context["week"] <= 18)
+    if supported:
+        original = source["stats"]
+        # Reconcile every retained modeled value to the original row, rather
+        # than accepting a caller's completeness label.
+        supported = set(stats) - {"_presence"} == set(original) and all(stats[k] == original[k] for k in original)
+        supported = supported and key not in original and any(
+            type(original.get(k)) in (int, float) and math.isfinite(original[k]) and original[k] > 0 and int(original[k]) == original[k]
+            for k in ("gp", "off_snp"))
+    return {"value": 0 if supported else None,
+            "state": "inferred_sparse_zero_legacy_assumption" if supported else "unsupported_absence"}
+
+
+def _sum_components(stats, weights, *, projection=False):
+    values = [component(stats, key, projection=projection)["value"] for key in weights]
+    return None if any(value is None for value in values) else sum(
+        weight * value for weight, value in zip(weights.values(), values))
+
+
+def _legacy_ppr_points(stats):
     total = sum(w * (stats.get(k) or 0) for k, w in PPR.items())
     if stats.get("idp_fum_rec"):
         # Sleeper scores a fumble-return TD as defense (not PPR) when the recovery is credited as a defensive one
         total -= PPR["fum_rec_td"] * (stats.get("fum_rec_td") or 0)
+    return round(total, 2)
+
+
+def ppr_points(stats, *, projection=False):
+    total = _sum_components(stats, PPR, projection=projection)
+    defensive = component(stats, "idp_fum_rec", projection=projection)["value"]
+    if total is None or defensive is None:
+        return None
+    if defensive:
+        value = component(stats, "fum_rec_td", projection=projection)["value"]
+        if value is None:
+            return None
+        total -= PPR["fum_rec_td"] * value
     return round(total, 2)
 
 
@@ -67,22 +153,24 @@ def defense_points(stats):
 def fantasy_points(stats, pos, season=None, half=False):
     """Fantasy points: Sleeper's standard PPR (or half PPR) for skill players, ESPN's standard scoring for K and DEF."""
     if pos == "K":
-        return round(ppr_points(stats) + kicker_points(stats), 2)
+        return round(_legacy_ppr_points(stats) + kicker_points(stats), 2)
     if pos == "DEF":
         return round(defense_points(stats), 2)
-    return round(ppr_points(stats) - (0.5 * (stats.get("rec") or 0) if half else 0), 2)
+    points = ppr_points(stats)
+    receptions = component(stats, "rec")["value"] if half else 0
+    return None if points is None or receptions is None else round(points - 0.5 * receptions, 2)
 
 
-def stat_value(key, stats):
+def stat_value(key, stats, *, projection=False):
     """The value of one prop category from a stat line (Sleeper field names)."""
     s = stats
     if key == "rush_rec_yd":
-        return (s.get("rush_yd") or 0) + (s.get("rec_yd") or 0)
+        return _sum_components(s, {"rush_yd": 1, "rec_yd": 1}, projection=projection)
     if key == "anytime_td":
-        return (s.get("rush_td") or 0) + (s.get("rec_td") or 0)
+        return _sum_components(s, {"rush_td": 1, "rec_td": 1}, projection=projection)
     if key == "fpts":
-        return ppr_points(s)
-    return s.get(key) or 0
+        return ppr_points(s, projection=projection)
+    return component(s, key, projection=projection)["value"]
 
 
 # label; lean: how far our projection must be from the line to call a lean; scale: a typical spread, used to compare

@@ -12,7 +12,7 @@ from collections import Counter
 import gamemodel
 import scoring
 
-GRADING_VERSION = "statistical-v2"
+GRADING_VERSION = "statistical-presence-v3"
 RESULTS = ("hit", "miss", "push", "dnp", "unresolved")
 
 
@@ -37,10 +37,17 @@ def participation(entry):
     if not isinstance(entry, dict):
         return "unresolved"
     stats = entry.get("stats") or {}
+    if not isinstance(stats, dict):
+        return "unresolved"
     for key in ("gp", "off_snp"):
         if stats.get(key) is not None:
-            if _number(stats[key]) < 0:
-                raise ValueError("Negative participation count")
+            try:
+                if _number(stats[key]) < 0 or "_presence" in stats and int(stats[key]) != stats[key]:
+                    raise ValueError("Negative participation count")
+            except ValueError:
+                if "_presence" in stats:
+                    return "unresolved"
+                raise
     is_played = played(entry)
     is_dnp = entry.get("participation_status") == "dnp" and bool(entry.get("participation_source"))
     if is_played and is_dnp:
@@ -106,7 +113,10 @@ def _prop_result(prop, direction, entry):
         return None, status
     # The original compact stat format omits observed zero values. Preserve that
     # convention only for rows with confirmed participation; never for missing rows.
-    value = round(scoring.stat_value(prop["key"], entry["stats"]), 2)
+    raw = scoring.stat_value(prop["key"], entry["stats"])
+    if raw is None:
+        return None, "unresolved"
+    value = round(raw, 2)
     return value, result(direction, value, prop.get("line"))
 
 
@@ -154,7 +164,7 @@ def grade_week(archive, stats, final_games):
             continue
         points = scoring.ppr_points(entry["stats"])
         fpts = next((x for x in p["props"] if x["key"] == "fpts" and x.get("adj") is not None and x.get("source") == "model"), None)
-        if p.get("proj_ppr") is not None and fpts:
+        if points is not None and p.get("proj_ppr") is not None and fpts:
             raw = _number(p["proj_ppr"])
             adj = _number(fpts["adj"])
             ppr_errors.append(abs(raw - points))
