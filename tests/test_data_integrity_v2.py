@@ -620,5 +620,518 @@ class CorrectedOperationalTests(unittest.TestCase):
         self.assertTrue(snapshot)
 
 
+# Small connected fictional regression; no campaign, real inputs or network.
+FROZEN_FRONTIER_SUPPORT = r'''
+import contextlib,copy,hashlib,json,shutil,socket,subprocess,sys
+from datetime import datetime,timedelta,timezone
+from pathlib import Path
+from unittest.mock import patch
+START=datetime(2026,11,1,tzinfo=timezone.utc)
+DIMENSIONS=dict(games=2,per_team=4)
+def sha(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+def bind(code):
+    sys.path[:0] = [str(code / "tools"), str(code / "pull")]
+    import build, build_recorded, reliability, evidence, partial_week, phase2_capture
+    import selection_publication, scorecard, source_evidence
+    return dict(build=build, recorded=build_recorded, rel=reliability, ev=evidence,
+        partial=partial_week, capture=phase2_capture, publication=selection_publication,
+        score=scorecard, source=source_evidence)
+
+class Provider:
+    """Strict, deterministic fake HTTP responses, with no real teams or people."""
+    def __init__(self, modules, dimensions, at=START, week=6):
+        self.m, self.d, self.at, self.week = modules, dimensions, at, week
+        self.calls = 0
+        self.revision = 0
+        self.roster = {}
+        roles = ["QB", "QB", *(["RB"] * 5), *(["WR"] * 7), *(["TE"] * 4), "K", "DEF"]
+        for team in range(dimensions["games"] * 2):
+            for j in range(dimensions["per_team"]):
+                pid = f"fictional-{team:02}-{j:02}"
+                self.roster[pid] = dict(full_name=f"Fictional {team:02} Player {j:02}",
+                    team=f"F{team:02}", position=roles[j], active=True, depth_chart_order=1,
+                    espn_id=str(900000 + team * 100 + j), injury_status=None)
+
+    def kick(self, season, week, game):
+        return START + timedelta(days=(season - 2026) * 365 + (week - 6) * 7,
+                                 hours=30 if game < (9 if self.d["games"] == 14 else 1) else 54)
+
+    def stats(self, pid, season, week, projection=False):
+        p = self.roster[pid]
+        n = int(sha(f"{pid}/{season}/{week}".encode())[:8], 16)
+        b = self.m["build"]
+        s = dict.fromkeys(b.scoring.STAT_KEYS, 0)
+        s.update(gp=1, off_snp=52 + n % 9, tm_off_snp=70, pass_att=25 + n % 15,
+            pass_cmp=16 + n % 9, pass_yd=180 + n % 150, pass_td=n % 4,
+            pass_int=n % 2, rush_att=4 + n % 12, rush_yd=8 + n % 90,
+            rush_td=n % 2, rec=2 + n % 8, rec_yd=10 + n % 100,
+            rec_td=n % 2, fum_lost=n % 2)
+        if p["position"] != "QB":
+            for k in ("pass_att", "pass_cmp", "pass_yd", "pass_td", "pass_int"):
+                s[k] = 0
+        if self.revision and pid == "fictional-00-02" and week == 6:
+            s["rec"] = 3
+        elif pid == "fictional-00-02" and week == 6:
+            s["rec"] = 7
+        if projection:
+            for k in ("pass_yd", "rush_yd", "rec_yd", "rec", "rush_td", "rec_td", "pass_td"):
+                s[k] += ((n % 93) + 1) / 100
+        s["pts_ppr"] = (b.scoring.ppr_points(s, projection=projection)
+                         if hasattr(b.scoring, "PRESENCE_VERSION") else b.scoring.ppr_points(s))
+        s["pts_half_ppr"] = s["pts_ppr"] - .5 * s["rec"]
+        return s
+
+    def scoreboard(self, season, week):
+        events = []
+        for g in range(self.d["games"]):
+            kick = self.kick(season, week, g)
+            state = "post" if self.at >= kick else "pre"
+            status = dict(state=state, completed=state == "post", name="STATUS_FINAL" if state == "post" else "STATUS_SCHEDULED",
+                          shortDetail="Final" if state == "post" else "Scheduled")
+            sides = [dict(homeAway=side, score="24", team=dict(id=str(t + 1), abbreviation=f"F{t:02}"))
+                     for side, t in (("home", 2 * g), ("away", 2 * g + 1))]
+            comp = dict(id=f"99{season}{week:02}{g:02}", status=dict(type=status), competitors=sides)
+            events.append(dict(id=comp["id"], date=kick.isoformat(), status=dict(type=status), competitions=[comp]))
+        return dict(events=events, season=dict(year=season, type=2), week=dict(number=week))
+
+    def get(self, url, params=None, **unused):
+        self.calls += 1
+        b = self.m["build"]
+        if url.endswith("/v1/state/nfl"):
+            return dict(season="2026", week=self.week, season_type="regular")
+        if url.endswith("/v1/players/nfl"):
+            return copy.deepcopy(self.roster)
+        if "/stats/nfl/" in url or "/projections/nfl/" in url:
+            season, week = map(int, url.split("/")[-2:])
+            return [dict(player_id=pid, team=p["team"], opponent=f"F{int(p['team'][1:]) ^ 1:02}",
+                game_id=f"99{season}{week:02}{int(p['team'][1:]) // 2:02}",
+                player=dict(position=p["position"]), stats=self.stats(pid, season, week, "/projections/" in url))
+                for pid, p in self.roster.items()]
+        if url.endswith("/scoreboard"):
+            return self.scoreboard(int(params["dates"]), int(params["week"]))
+        if url.endswith("/propBets"):
+            gid = url.split("/events/")[1].split("/")[0]
+            game = int(gid[-2:])
+            keys = list(b.books.MARKETS)
+            items = []
+            for pid, p in self.roster.items():
+                if int(p["team"][1:]) // 2 != game:
+                    continue
+                for name in keys:
+                    key = b.books.MARKETS[name]
+                    value = b.scoring.stat_value(key, self.stats(pid, 2026, self.week, True))
+                    if value is not None:
+                        line = max(.5, round(value * (0.67 if int(p["espn_id"]) % 2 else 1.35)) + .5)
+                        items.append(dict(type=dict(name=name), athlete={"$ref": "/athletes/" + p["espn_id"]},
+                            open=dict(target=dict(value=line)), current=dict(target=dict(value=line))))
+            return dict(items=items)
+        if url == b.books.SLEEPER_LINES:
+            return [dict(options=[dict(sport="nfl", subject_type="player", subject_id=pid,
+                    subject_position=p["position"], wager_type="receptions", line_type="normal",
+                    game_status="pre_game", outcome=side, outcome_value=4.5, payout_multiplier="1.8")
+                    for side in ("over", "under")]) for pid, p in self.roster.items()
+                    if p["position"] in ("WR", "TE") and int(p["espn_id"]) % 3 == 0]
+        if url.endswith("/odds"):
+            return dict(items=[dict(provider=dict(id="100"), spread=-3.5, overUnder=47.5)])
+        if url.endswith("/injuries"):
+            return dict(injuries=[])
+        if url.endswith("/teams"):
+            return dict(sports=[dict(leagues=[dict(teams=[dict(team=dict(id=str(i + 1)))
+                for i in range(self.d["games"] * 2)])])])
+        if url.endswith("/depthcharts"):
+            t = int(url.split("/")[-2]) - 1
+            return dict(team=dict(abbreviation=f"F{t:02}", displayName=f"Fictional Team {t}"), depthchart=[])
+        raise RuntimeError("Undeclared external input: " + url.split("?")[0])
+
+@contextlib.contextmanager
+def external(modules, provider, root):
+    """Only HTTP, fixture filesystem destinations and fictional source clocks."""
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return provider.at
+    def denied(*args, **kwargs):
+        raise RuntimeError("Network denied by fictional diagnostic")
+    import requests
+    b = modules["build"]
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(requests.sessions.Session, "request", denied))
+        stack.enter_context(patch.object(socket.socket, "connect", denied))
+        stack.enter_context(patch.object(socket.socket, "connect_ex", denied))
+        stack.enter_context(patch.object(b.sources, "get_json", provider.get))
+        for module in (modules[k] for k in ("build", "recorded", "capture", "score")):
+            if hasattr(module, "datetime"):
+                stack.enter_context(patch.object(module, "datetime", Clock))
+        stack.enter_context(patch.object(b, "now_utc", lambda: provider.at))
+        for name, value in dict(ROOT=root, OUT=root / "output/data", CACHE=root / "data/cache",
+                                ARCHIVE=root / "output/data/archive", WEEKS=root / "output/data/weeks").items():
+            stack.enter_context(patch.object(b, name, value))
+        stack.enter_context(patch.object(b.books, "ATHLETES", root / "data/cache/espn_athletes.json"))
+        yield
+
+def plan(modules, root, board, at, modern):
+    rel, ev, partial = modules["rel"], modules["ev"], modules["partial"]
+    if modern:
+        import data_integrity_v2 as di
+        api, version, validator = di, di.PLAN, di.VALIDATOR
+    else:
+        api, version, validator = partial, partial.PLAN_VERSION, partial.VERSION
+    # The caller provides the exact complete schedule/status, including all games.
+    status = modules["source"].record_scoreboard(modules["_provider"].scoreboard(2026, 6),
+        dict(dates=2026, week=6, seasontype=2), at)
+    ev.write(root, "verification/partial-schedule-baselines", dict(schema_version="partial-schedule-baseline-v1",
+        season=2026, week=6, status=status))
+    p = dict(schema_version=version, plan_id="FICTIONAL_DIAGNOSTIC_" + ("V2" if modern else "V1"),
+        model="sleeper-matchup-data-integrity-v2" if modern else "original_sleeper_matchup_baseline",
+        season=2026, week=6, plan_prepared_at=rel.stamp(at), effective_not_before=rel.stamp(at),
+        expires_at=rel.stamp(at + timedelta(days=3)), validator_contract=validator,
+        engine_files=api.engine_files(root) if modern else rel.engine_hashes(root),
+        initial_complete_board_sha256=rel.digest(board),
+        games=[{k:g[k] for k in ("id", "home", "away", "kickoff")} for g in board["games"]],
+        legacy_exemptions=[], completion_status_max_age_seconds=60,
+        full_board_verified=False, complete_week_qualified=False, experimental_recording_enabled=False,
+        schedule_status_payload_sha256=rel.digest(status), schedule_status_observed_at=status["collected_at"])
+    spec = dict(plan=p, plan_sha256=rel.digest(p), validator_sha256=api.code_sha256(),
+                owner_authorization="FICTIONAL_ONLY_NOT_A_REAL_ACTIVATION")
+    original = ev.write(root, "verification/partial-plan-boards", dict(schema_version="partial-plan-board-v1",
+        season=2026, week=6, board=board))
+    spec["initial_board_receipt"] = original.relative_to(root).as_posix()
+    rel.atomic_json(root / "config/phase2.json", dict(capture_enabled=True,
+        experimental_recording_enabled=False, challenger_production_enabled=False,
+        production_model=p["model"], verification_mode=validator, partial_week=spec))
+    return spec
+
+def copy_source(code, root):
+    for lane in ("pull", "tools", "config"):
+        shutil.copytree(code / lane, root / lane, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    (root / "output").mkdir(exist_ok=True)
+    for p in ((code / "output").iterdir() if (code / "output").is_dir() else []):
+        if p.is_file():
+            shutil.copyfile(p, root / "output" / p.name)
+'''
+
+
+FROZEN_FRONTIER_SEED = r'''
+code,root,phase=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
+m=bind(code)
+provider=Provider(m,DIMENSIONS)
+m['_provider']=provider
+if phase=='legacy':
+    for week in (4,5,6):
+        provider.week=week
+        provider.at=START+timedelta(days=(week-6)*7)
+        with external(m,provider,root):
+            m['recorded'].record_build(root)
+    board=m['rel'].load_json(root/'output/data/week.json')
+    spec=plan(m,root,board,START,False)
+    with external(m,provider,root):
+        registration,_=m['partial'].register_plan(root,spec,START,
+            source_sha='bf3ec09129e918b73641a65af5f05ecd5559139a',initial_board=board)
+        closing=m['source'].record_scoreboard(provider.scoreboard(2026,6),
+            dict(dates=2026,week=6,seasontype=2),START)
+        clocks=iter([START,START,START,START+timedelta(seconds=2),START+timedelta(seconds=2)])
+        _,_,completion,scope=m['partial'].record_bundle(root,board,
+            m['rel'].load_json(root/'output/data/matchup-proof.json'),closing,spec,
+            registration.relative_to(root).as_posix(),m['capture'].read_native_baseline,
+            clock=lambda:next(clocks))
+    m['rel'].atomic_json(root/'frontier-state.json',dict(legacy_spec=spec,
+        original_completion=completion.relative_to(root).as_posix(),updates=[]))
+else:
+    provider.at=START+timedelta(hours=53)
+    board=m['rel'].load_json(root/'output/data/week.json')
+    spec=plan(m,root,board,provider.at,True)
+    def git(*args):
+        return subprocess.check_output(['git','-C',str(root),*args],stderr=subprocess.PIPE).decode().strip()
+    def commit():
+        git('add','data','output/data','frontier-state.json')
+        git('-c','user.name=FictionalRegression','-c','user.email=fictional@example.invalid',
+            '-c','core.hooksPath=/dev/null','commit','-qm','Wholly fictional regression evidence')
+    def public_tree(ref,tree):
+        if git('rev-parse',ref+'^{tree}')!=tree:
+            raise RuntimeError('Fictional archive tree mismatch')
+    state=m['rel'].load_json(root/'frontier-state.json')
+    with external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=public_tree):
+        for step in range(4):
+            provider.at=START+timedelta(hours=53,seconds=step*5)
+            provider.revision=int(step>=1)
+            m['capture'].run_capture(root,build_first=True)
+            generation=m['capture'].validate_generation(root)
+            health=m['rel'].load_json(root/'output/data/health.json')
+            state['updates'].append(dict(at=provider.at.isoformat(),generation=generation,
+                completion=health['phase2']['partial_completion_receipt']))
+            m['rel'].atomic_json(root/'frontier-state.json',state)
+            commit()
+            if step==0:
+                clean=root.parent/'first-clean-checkout'
+                shutil.copytree(root,clean)
+                if m['capture'].validate_generation(clean)!=generation:
+                    raise RuntimeError('Clean first-generation replay changed')
+                state['first_clean_replay']='PASS'
+        # Actual staging/archive validation and saved report consumer.
+        m['capture'].stage_pages(root,root.parent/'pages')
+        pointer=m['rel'].load_json(root/'output/data/selection-grading/latest.json')
+        m['publication'].publication_contents(root/'output/data/selection-grading',pointer)
+'''
+
+
+class FrozenCompletionDiscoveryTests(unittest.TestCase):
+    """Small isolated ordering controls supplement the real connected regression."""
+    def test_discovery_uses_completion_time_then_name_and_never_retries_a_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            lane=root/'data/verification/partial-completions/2026/w06'
+            lane.mkdir(parents=True)
+            for name in ('z','a','future'):
+                (lane/(name+'.json.gz')).touch()
+            records={}
+            for name,offset in (('z',0),('a',1),('future',9)):
+                key='data/verification/partial-completions/2026/w06/'+name+'.json.gz'
+                records[key]={'scope_receipt':name,'schema_version':'partial-completion-data-integrity-v2',
+                              'evidence_completed_at':reliability.stamp(DI_NOW+timedelta(seconds=offset))}
+                records[name]={'verified_at':reliability.stamp(DI_NOW),'proof':{'game_origins':{'g':'input'}},
+                    'game_population':[{'game_id':'g','forecast_contract_sha256':'contract',
+                                       'classification':'frozen_original_inputs_verified'}]}
+            import partial_week
+            with patch.object(partial_week,'_saved',side_effect=lambda r,n,l:copy.deepcopy(records[n])), \
+                    patch.object(corrected,'_saved_spec',return_value={}), \
+                    patch.object(corrected,'read_bundle') as reader:
+                name=corrected._frozen(root,'g','input','contract',DI_NOW+timedelta(seconds=2),set())
+                self.assertTrue(name.endswith('/z.json.gz'))
+                records['data/verification/partial-completions/2026/w06/a.json.gz']['evidence_completed_at']=reliability.stamp(DI_NOW)
+                self.assertTrue(corrected._frozen(root,'g','input','contract',DI_NOW,set()).endswith('/a.json.gz'))
+                reader.reset_mock()
+                reader.side_effect=reliability.IntegrityError('selected witness revoked')
+                with self.assertRaisesRegex(reliability.IntegrityError,'revoked'):
+                    corrected._frozen(root,'g','input','contract',DI_NOW,set())
+                self.assertEqual(reader.call_count,1)
+                with self.assertRaisesRegex(reliability.IntegrityError,'eligible'):
+                    corrected._frozen(root,'g','input','contract',DI_NOW-timedelta(seconds=1),set())
+
+
+def frontier_process(*args,**kwargs):
+    result=subprocess.run(*args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,**kwargs)
+    if result.returncode:
+        raise AssertionError(result.stderr.decode(errors='replace')[-6000:])
+    return result
+
+
+class FrozenCompletionConnectedTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temp.cleanup)
+        cls.base=Path(cls.temp.name)/'fixture'
+        cls.base.mkdir()
+        ns={}
+        exec(FROZEN_FRONTIER_SUPPORT,ns)
+        legacy_env=dict(os.environ)
+        legacy_env.pop('GITHUB_SHA',None)  # Retained source export, not the current CI checkout.
+        with corrected.legacy_source() as old:
+            ns['copy_source'](old,cls.base)
+            frontier_process([sys.executable,'-c',FROZEN_FRONTIER_SUPPORT+FROZEN_FRONTIER_SEED,
+                              str(old),str(cls.base),'legacy'],env=legacy_env)
+        ns['copy_source'](ROOT,cls.base)
+        subprocess.run(['git','init','-q',str(cls.base)],check=True)
+        # Reuse exact existing local source objects, not any saved validation trust.
+        objects=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','--path-format=absolute','--git-path','objects'],text=True).strip()
+        (cls.base/'.git/objects/info/alternates').write_text(objects+'\n')
+        source=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
+        subprocess.run(['git','-C',str(cls.base),'update-ref','refs/fixture/source',source],check=True)
+        subprocess.run(['git','-C',str(cls.base),'remote','add','origin',
+                        'https://github.com/NickNicky19/nicks-expert-nfl-picks'],check=True)
+        subprocess.run(['git','-C',str(cls.base),'add','.'],check=True)
+        subprocess.run(['git','-C',str(cls.base),'-c','user.name=FictionalRegression',
+                        '-c','user.email=fictional@example.invalid','-c','core.hooksPath=/dev/null',
+                        'commit','-qm','Wholly fictional initial regression evidence'],check=True)
+        # Pin the actual committed code being executed, never an older source label.
+        modern_env=dict(os.environ,GITHUB_SHA=source)
+        frontier_process([sys.executable,'-c',FROZEN_FRONTIER_SUPPORT+FROZEN_FRONTIER_SEED,
+                          str(cls.base),str(cls.base),'modern'],env=modern_env)
+        cls.state=reliability.load_json(cls.base/'frontier-state.json')
+        destination=os.environ.get('NFL_FROZEN_REGRESSION_EVIDENCE')
+        if destination:
+            shutil.copytree(cls.base,Path(destination))
+
+    def setUp(self):
+        self.temp_case=tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_case.cleanup)
+        self.root=Path(self.temp_case.name)/'copy'
+        shutil.copytree(self.base,self.root)
+        self.spec=reliability.load_json(self.root/'config/phase2.json')['partial_week']
+        self.t1=reliability.utc(self.state['updates'][0]['at'])
+        self.first=self.state['updates'][0]['completion']
+        self.origin=self.state['original_completion']
+
+    def replay(self,name=None,at=None):
+        return corrected.read_bundle(self.root,name or self.first,self.spec,now=at or self.t1+timedelta(seconds=30))
+
+    def alternative(self):
+        # Fictional valid alternative, appended later but preceding the pinned cutoff.
+        value=read(self.root/self.origin)
+        value['evidence_completed_at']=reliability.stamp(reliability.utc(value['evidence_completed_at'])-timedelta(seconds=1))
+        return write(self.root,'verification/partial-completions',value).relative_to(self.root).as_posix()
+
+    def changed_scope(self,change):
+        value=read(self.root/self.first)
+        scope=read(self.root/value['scope_receipt'])
+        change(scope)
+        value['scope_receipt']=write(self.root,'verification/partial-scopes',scope).relative_to(self.root).as_posix()
+        value['scope_payload_sha256']=reliability.digest(scope)
+        return write(self.root,'verification/partial-completions',value).relative_to(self.root).as_posix()
+
+    def test_four_real_updates_saved_consumption_clean_copy_and_first_recording(self):
+        self.assertEqual(self.state['first_clean_replay'],'PASS')
+        before={p.relative_to(self.root):p.read_bytes() for p in (self.root/'data').rglob('*.json.gz')}
+        for item in self.state['updates']:
+            result=self.replay(item['completion'])
+            frozen=next(p for p in result[1]['game_population'] if p['classification']=='frozen_original_inputs_verified')
+            self.assertEqual(frozen['completed_origin_receipt'],self.origin)
+        self.assertEqual(before,{p.relative_to(self.root):p.read_bytes() for p in (self.root/'data').rglob('*.json.gz')})
+        final_at=reliability.utc(self.state['updates'][-1]['at'])
+        class Clock(datetime):
+            @classmethod
+            def now(cls,tz=None): return final_at
+        with patch.object(phase2_capture,'datetime',Clock):
+            phase2_capture.validate_generation(self.root)
+        # Independent process, no operation-local cache from construction/replay.
+        script="""import sys,json
+from pathlib import Path
+sys.path[:0]=[sys.argv[1]+'/tools',sys.argv[1]+'/pull']
+import data_integrity_v2 as d,reliability as r
+root=Path(sys.argv[2]);spec=r.load_json(root/'config/phase2.json')['partial_week']
+d.read_bundle(root,sys.argv[3],spec,now=r.utc(sys.argv[4]))
+"""
+        subprocess.run([sys.executable,'-c',script,str(ROOT),str(self.root),self.first,
+                        reliability.stamp(self.t1+timedelta(seconds=30))],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        original=read(self.root/self.origin)
+        corrected.legacy_bundle(self.root,self.origin,self.state['legacy_spec'],now=self.t1)
+        import partial_week
+        retry=self.state['updates'][-1]
+        retry_at=reliability.utc(retry['at'])
+        native=read(self.root/read(self.root/retry['completion'])['baseline_receipt'])
+        scope=self.replay(retry['completion'])[1]
+        inputs=read(self.root/scope['proof']['latest_inputs'])
+        raw=(self.root/read(self.root/retry['completion'])['baseline_receipt']).read_bytes()
+        path,health,completion,_=corrected.record_bundle(self.root,inputs['week_data'],scope['proof'],
+            scope['completion_status'],self.spec,scope['registration_receipt'],clock=lambda:retry_at+timedelta(seconds=1))
+        self.assertFalse(health['capture_created'])
+        self.assertEqual(completion.relative_to(self.root).as_posix(),retry['completion'])
+        self.assertEqual(path.read_bytes(),raw)
+        self.assertEqual(reliability.utc(native['captured_at']),retry_at)
+        self.assertEqual(read(self.root/self.origin),original)
+
+    def test_saved_pin_survives_new_earlier_alternative_and_changed_file_order(self):
+        before=self.replay()[1]
+        alternative=self.alternative()
+        corrected.legacy_bundle(self.root,alternative,self.state['legacy_spec'],now=self.t1)
+        self.assertEqual(self.replay()[1],before)
+        frozen=next(p for p in before['game_population'] if p['classification']=='frozen_original_inputs_verified')
+        import partial_week
+        with patch.object(partial_week,'_saved',wraps=partial_week._saved) as reads:
+            pinned=corrected._frozen(self.root,frozen['game_id'],frozen['origin'],frozen['forecast_contract_sha256'],self.t1,set(),receipt=self.origin)
+            self.assertEqual(pinned,self.origin)
+            self.assertEqual([call.args[1] for call in reads.call_args_list if call.args[2]=='verification/partial-completions'],[self.origin])
+        found=corrected._frozen(self.root,frozen['game_id'],frozen['origin'],frozen['forecast_contract_sha256'],self.t1,set())
+        self.assertEqual(found,alternative)
+        self.assertEqual(self.replay()[1],before)
+
+    def test_future_bundle_and_future_only_discovery_are_rejected(self):
+        later=self.state['updates'][1]['completion']
+        with self.assertRaisesRegex(reliability.IntegrityError,'clock'):
+            self.replay(later,self.t1)
+        scope=self.replay()[1]
+        frozen=next(p for p in scope['game_population'] if p['classification']=='frozen_original_inputs_verified')
+        with self.assertRaisesRegex(reliability.IntegrityError,'eligible'):
+            corrected._frozen(self.root,frozen['game_id'],frozen['origin'],frozen['forecast_contract_sha256'],
+                              reliability.utc(read(self.root/self.origin)['evidence_completed_at'])-timedelta(seconds=1),set())
+        changed=self.changed_scope(lambda s:next(p for p in s['game_population']
+            if p['classification']=='frozen_original_inputs_verified').update(completed_origin_receipt=later))
+        with self.assertRaises(reliability.IntegrityError):self.replay(changed)
+
+    def test_missing_and_corrupt_pin_fail_despite_valid_alternative(self):
+        self.alternative()
+        target=self.root/self.origin
+        raw=target.read_bytes()
+        target.unlink()
+        with self.assertRaises(Exception):self.replay()
+        target.write_bytes(raw[:-1]+bytes([raw[-1]^1]))
+        with self.assertRaises(Exception):self.replay()
+        target.write_bytes(raw)
+        self.replay()
+
+    def test_wrong_game_contract_missing_and_self_cyclic_bindings_fail(self):
+        self.alternative()
+        for changes in (dict(origin='data/verification/wrong.json.gz'),
+                        dict(forecast_contract_sha256='0'*64),dict(game_id='wrong-game'),
+                        dict(completed_origin_receipt=None)):
+            def change(s):
+                next(p for p in s['game_population'] if p['classification']=='frozen_original_inputs_verified').update(changes)
+            with self.subTest(changes=changes):
+                with self.assertRaises(Exception):self.replay(self.changed_scope(change))
+        scope=self.replay()[1]
+        frozen=next(p for p in scope['game_population'] if p['classification']=='frozen_original_inputs_verified')
+        with self.assertRaisesRegex(reliability.IntegrityError,'Cyclic'):
+            corrected._frozen(self.root,frozen['game_id'],frozen['origin'],frozen['forecast_contract_sha256'],
+                              self.t1,{self.origin},receipt=self.origin)
+        # A self-rehashed saved scope cannot regain discovery through an empty map.
+        with self.assertRaisesRegex(reliability.IntegrityError,'recorded completion'):
+            inputs=read(self.root/scope['proof']['latest_inputs'])
+            corrected.verify_scope(self.root,inputs['week_data'],scope['proof'],scope['completion_status'],self.spec,
+                                   scope['registration_receipt'],scope['verified_at'],_frozen_bindings={})
+
+    def test_revoked_pin_and_old_helper_receipt_cannot_borrow_new_trust(self):
+        self.alternative()
+        original=read(self.root/self.origin)
+        write(self.root,'verification/partial-failures',dict(schema_version='partial-completion-failure-v1',
+            season=2026,week=6,completion_sha256=reliability.digest(original),
+            failed_at=reliability.stamp(self.t1),reason='FICTIONAL_REVOKED_PIN'))
+        with self.assertRaises(reliability.IntegrityError):self.replay()
+        completion=read(self.root/self.first)
+        completion['validator_sha256']='386b3fb72120315efa33b554a4832deaa54145a9d3a28556260eac9ba4033b3f'
+        name=write(self.root,'verification/partial-completions',completion).relative_to(self.root).as_posix()
+        with self.assertRaisesRegex(reliability.IntegrityError,'Unsupported corrected completion'):
+            self.replay(name)
+
+    def test_rehashed_completion_period_must_match_scope_and_plan(self):
+        for field,value in (('season',2027),('week',7)):
+            completion=read(self.root/self.first)
+            completion[field]=value
+            name=write(self.root,'verification/partial-completions',completion).relative_to(self.root).as_posix()
+            with self.subTest(field=field),self.assertRaisesRegex(reliability.IntegrityError,'period mismatch'):
+                self.replay(name)
+
+    def test_wrong_pinned_game_origin_contract_and_version_fail_without_substitution(self):
+        self.alternative()
+        original=read(self.root/self.origin)
+        for change in ('game','origin','contract','version'):
+            child=copy.deepcopy(original)
+            scope=read(self.root/child['scope_receipt'])
+            gid=scope['game_population'][0]['game_id']
+            row=next(p for p in scope['game_population'] if p['game_id']==gid)
+            if change=='game': row['game_id']='wrong-game'
+            elif change=='origin': scope['proof']['game_origins'][gid]='data/verification/wrong.json.gz'
+            elif change=='contract': row['forecast_contract_sha256']='0'*64
+            else: child['schema_version']='unsupported-completion'
+            child['scope_receipt']=write(self.root,'verification/partial-scopes',scope).relative_to(self.root).as_posix()
+            child['scope_payload_sha256']=reliability.digest(scope)
+            name=write(self.root,'verification/partial-completions',child).relative_to(self.root).as_posix()
+            def pin(parent):
+                next(p for p in parent['game_population'] if p['classification']=='frozen_original_inputs_verified').update(completed_origin_receipt=name)
+            with self.subTest(change=change),self.assertRaises(Exception):
+                self.replay(self.changed_scope(pin))
+
+    def test_self_referential_bundle_and_cyclic_origin_are_explicit_failures(self):
+        with self.assertRaisesRegex(reliability.IntegrityError,'Cyclic'):
+            corrected.read_bundle(self.root,self.first,self.spec,now=self.t1,_seen={self.first})
+        scope=self.replay()[1]
+        frozen=next(p for p in scope['game_population'] if p['classification']=='frozen_original_inputs_verified')
+        with self.assertRaisesRegex(reliability.IntegrityError,'Cyclic'):
+            corrected._frozen(self.root,frozen['game_id'],frozen['origin'],frozen['forecast_contract_sha256'],
+                              self.t1,{self.origin},receipt=self.origin)
+
+
 if __name__ == "__main__":
     unittest.main()

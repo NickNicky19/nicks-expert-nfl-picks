@@ -495,30 +495,49 @@ def _saved_spec(root, scope):
             "owner_authorization": saved["owner_authorization"]}
 
 
-def _frozen(root, gid, origin, contract, now, seen):
+def _frozen(root, gid, origin, contract, now, seen, *, receipt=None):
+    """Discover the earliest eligible witness, or validate one exact saved edge.
+
+    Filename order is only a tie breaker. Saved reconstruction never discovers
+    an alternative, including when the pinned witness is invalid or unavailable.
+    """
     import partial_week as original
-    for path in sorted((Path(root) / "data/verification/partial-completions").rglob("*.json.gz")):
-        name = path.relative_to(root).as_posix()
-        if name in seen:
-            continue
+    def candidate(name):
         completion = original._saved(root, name, "verification/partial-completions")
         scope = original._saved(root, completion["scope_receipt"], "verification/partial-scopes")
         if scope.get("proof", {}).get("game_origins", {}).get(gid) != origin:
-            continue
+            return None
         population = [row for row in scope.get("game_population", []) if row.get("game_id") == gid]
-        if not population or population[0].get("forecast_contract_sha256") != contract:
-            continue
+        if len(population) != 1 or population[0].get("forecast_contract_sha256") != contract:
+            return None
         if population[0].get("classification") not in ("new_pregame_original_inputs_verified", "frozen_original_inputs_verified"):
-            continue
-        saved_spec = _saved_spec(root, scope)
-        if completion.get("schema_version") == "partial-completion-data-integrity-v2":
-            read_bundle(root, name, saved_spec, now=now, _seen=seen)
-        elif completion.get("schema_version") == original.COMPLETION_VERSION:
-            legacy_bundle(root, name, saved_spec, now=now)
-        else:
+            return None
+        if completion.get("schema_version") not in ("partial-completion-data-integrity-v2", original.COMPLETION_VERSION):
             raise IntegrityError("Unsupported frozen completion version")
-        return name
-    raise IntegrityError("Frozen game lacks its exact completed original bundle")
+        completed_at = utc(completion["evidence_completed_at"])
+        if utc(scope["verified_at"]) > completed_at:
+            raise IntegrityError("Invalid frozen evidence completion clock")
+        if completed_at > utc(now):
+            return None
+        return completed_at, name, completion, scope
+
+    if receipt is not None:
+        selected = candidate(receipt)
+    else:
+        eligible = [item for path in (Path(root) / "data/verification/partial-completions").rglob("*.json.gz")
+                    if (item := candidate(path.relative_to(root).as_posix())) is not None]
+        selected = min(eligible, key=lambda item: item[:2]) if eligible else None
+    if selected is None:
+        raise IntegrityError("Frozen game lacks its exact eligible completed original bundle")
+    _, name, completion, scope = selected
+    if name in seen:
+        raise IntegrityError("Cyclic corrected frozen evidence")
+    saved_spec = _saved_spec(root, scope)
+    if completion["schema_version"] == "partial-completion-data-integrity-v2":
+        read_bundle(root, name, saved_spec, now=now, _seen=seen)
+    else:
+        legacy_bundle(root, name, saved_spec, now=now)
+    return name
 
 
 def _reproduce_game(root, data, game, inputs):
@@ -584,7 +603,7 @@ def _reproduce_game(root, data, game, inputs):
     return checked
 
 
-def verify_scope(root, data, proof, closing_status, spec, registration_name, at, *, _seen=None):
+def verify_scope(root, data, proof, closing_status, spec, registration_name, at, *, _seen=None, _frozen_bindings=None):
     import partial_week as original
     import verify
     from source_evidence import verified_status
@@ -640,7 +659,12 @@ def verify_scope(root, data, proof, closing_status, spec, registration_name, at,
             else:
                 raise IntegrityError("Unsupported original schema in corrected scope")
             if started or origin != proof["latest_inputs"]:
-                completion = _frozen(root, gid, origin, fingerprint, at, set(_seen or ()))
+                pinned = None
+                if _frozen_bindings is not None:
+                    pinned = _frozen_bindings.get(gid)
+                    if not isinstance(pinned, str) or not pinned:
+                        raise IntegrityError("Saved frozen game lacks its exact recorded completion")
+                completion = _frozen(root, gid, origin, fingerprint, at, set(_seen or ()), receipt=pinned)
                 classification = "frozen_original_inputs_verified"
                 original_players.update({(gid, p["id"]): p for p in inputs["week_data"]["players"] if p["game_id"] == gid})
             else:
@@ -696,13 +720,20 @@ def read_bundle(root, name, spec, *, now, _seen=None):
             or completion.get("plan_sha256") != spec["plan_sha256"]):
         raise IntegrityError("Unsupported corrected completion/plan/validator")
     scope = original._saved(root, completion["scope_receipt"], "verification/partial-scopes")
+    period = (spec["plan"]["season"], spec["plan"]["week"])
+    if ((completion["season"], completion["week"]) != period
+            or (scope["season"], scope["week"]) != period):
+        raise IntegrityError("Corrected completion/scope/plan period mismatch")
     at = utc(completion["evidence_completed_at"])
     if not utc(scope["verified_at"]) <= at <= utc(now):
         raise IntegrityError("Invalid corrected evidence completion clock")
     inputs = recorded_inputs(root, scope["proof"]["latest_inputs"], scope["season"], scope["week"], mode="live", observed_at=at)
     data = inputs["week_data"]
+    import verify
+    population = verify._indexed(scope["game_population"], "game_id", "corrected saved scope")
+    bindings = {gid: row.get("completed_origin_receipt") for gid, row in population.items()}
     expected = verify_scope(root, data, scope["proof"], scope["completion_status"], spec,
-                            scope["registration_receipt"], scope["verified_at"], _seen=seen)
+                            scope["registration_receipt"], scope["verified_at"], _seen=seen, _frozen_bindings=bindings)
     if scope != expected:
         raise IntegrityError("Corrected scope differs from reproduced evidence")
     native = phase2_capture.read_native_baseline(Path(root) / completion["baseline_receipt"], root, now=now)
