@@ -18,14 +18,16 @@ from evidence import write
 from offers import SOURCE, TARGETS
 from reliability import IntegrityError, atomic_json, digest, engine_hashes, load_json, stamp, utc
 from source_evidence import HASH_FORMAT, record_scoreboard
+import data_integrity_v2 as corrected
 
 
-def record_build(root=ROOT, run=None, *, mode="live"):
+def record_build(root=ROOT, run=None, *, mode="live", model="original_sleeper_matchup_baseline"):
     if mode not in ("live", "replay"):
         raise IntegrityError("Recorded build mode must be live or replay")
     root = Path(root)
     started = datetime.now(timezone.utc)
-    hashes = engine_hashes(root)
+    hashes = engine_hashes(root, version=model)
+    modern = model == corrected.MODEL
     previous_path = root / "output/data/week.json"
     previous = load_json(previous_path) if previous_path.exists() else {}
     pointer_path = root / "output/data/matchup-proof.json"
@@ -36,6 +38,7 @@ def record_build(root=ROOT, run=None, *, mode="live"):
     observation = {"status": "unavailable", "collected_at": stamp(datetime.now(timezone.utc)),
                    "markets": None, "error": "existing_feed_request_not_observed"}
     projection_metadata = {}
+    projection_input_components = {}
     projection_url = None
     game_status = {}
     source_requests = []
@@ -53,8 +56,9 @@ def record_build(root=ROOT, run=None, *, mode="live"):
         if (url.endswith("/v1/players/nfl") or "/stats/nfl/" in url
                 or "/projections/nfl/" in url):
             source_requests.append({"url": url, "params": copy.deepcopy(params),
-                                    "collected_at": stamp(collected), "response_sha256": digest(response),
-                                    "response_hash_format": HASH_FORMAT})
+                                    "collected_at": stamp(collected),
+                                    "response_sha256": corrected.model_input_hash(response) if modern else digest(response),
+                                    "response_hash_format": corrected.MODEL_INPUT_HASH if modern else HASH_FORMAT})
         if url == SOURCE:
             # Retain exact rows in the permitted NFL/three-statistic scope. The
             # digest fingerprints the full response without storing other sports.
@@ -75,6 +79,13 @@ def record_build(root=ROOT, run=None, *, mode="live"):
                 if row.get("player_id"):
                     projection_metadata[str(row["player_id"])] = {k: row.get(k) for k in
                         ("game_id", "season", "week", "team", "opponent", "date", "updated_at", "last_modified")}
+                    if modern:
+                        projection_input_components[str(row["player_id"])] = {
+                            "stats": {key: build.scoring.retained_value(copy.deepcopy(value)) for key, value in (row.get("stats") or {}).items()
+                                      if key in build.scoring.STAT_KEYS},
+                            "collected_at": stamp(collected),
+                            "source": url, "source_response_sha256": corrected.model_input_hash(response),
+                            "claim": "RETAINED_MODEL_INPUT_COMPONENTS_NOT_INDEPENDENT_PROVIDER_AUTHENTICATION"}
         if url == build.sources.ESPN + "/scoreboard" and isinstance(response, dict) and isinstance(params, dict):
             key = f"{params.get('dates')}_{int(params.get('week', 0)):02d}"
             game_status.setdefault(key, record_scoreboard(response, params, collected, mode=mode, source=url))
@@ -106,6 +117,11 @@ def record_build(root=ROOT, run=None, *, mode="live"):
                "inputs_observed_at": recorded["inputs_observed_at"], "week_data": data,
                "offer_observation": observation, "projection_metadata": projection_metadata,
                "game_status": game_status, "source_requests": source_requests}
+    if modern:
+        payload.update(schema_version=corrected.INPUTS, model=corrected.MODEL,
+                       presence_contract=corrected.PRESENCE,
+                       code_commit=corrected.recording_source(),
+                       projection_input_components=projection_input_components)
     path = write(root, "verification", payload)
     name = path.relative_to(root).as_posix()
     prior_valid = (pointer.get("output_sha256") == digest(previous) and
@@ -115,7 +131,7 @@ def record_build(root=ROOT, run=None, *, mode="live"):
         frozen = (game["state"] != "pre" or utc(game["kickoff"]) <= utc(data["generated_at"])
                   or utc(game["kickoff"]) <= completed)
         origins[game["id"]] = pointer.get("game_origins", {}).get(game["id"]) if frozen and prior_valid else (None if frozen else name)
-    atomic_json(pointer_path, {"schema_version": "matchup-proof-v1", "output_sha256": digest(data),
+    atomic_json(pointer_path, {"schema_version": corrected.PROOF if modern else "matchup-proof-v1", "output_sha256": digest(data),
                               "latest_inputs": name, "game_origins": origins})
     atomic_json(root / "output/data/game-status.json", {"schema_version": "ESPN-game-status-v1", "weeks": game_status})
     print(f"Recorded {len(recorded['positions'])} matchup positions: {name}")
@@ -125,8 +141,10 @@ def record_build(root=ROOT, run=None, *, mode="live"):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--refresh-all", action="store_true")
+    parser.add_argument("--model", choices=("original_sleeper_matchup_baseline", corrected.MODEL),
+                        default="original_sleeper_matchup_baseline")
     args = parser.parse_args()
-    record_build(run=lambda: build.run(refresh_all=args.refresh_all))
+    record_build(run=lambda: build.run(refresh_all=args.refresh_all), model=args.model)
 
 
 if __name__ == "__main__":

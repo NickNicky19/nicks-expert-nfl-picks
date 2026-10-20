@@ -16,9 +16,20 @@ def read_phase2(root):
         return False
     value = json.loads(path.read_text())
     if (not isinstance(value, dict) or type(value.get("capture_enabled")) is not bool or
-            value.get("production_model") != "original_sleeper_matchup_baseline" or
             value.get("challenger_production_enabled") is not False):
         raise ValueError("Invalid Phase 2 mode or attempted production-model switch")
+    model = value.get("production_model")
+    if model == "original_sleeper_matchup_baseline":
+        if value.get("verification_mode") == "partial-week-data-integrity-v2":
+            raise ValueError("Original model cannot use the corrected verification contract")
+        # Preserve the existing original-model interface without loading new code.
+        return value["capture_enabled"]
+    if (model != "sleeper-matchup-data-integrity-v2"
+            or value.get("verification_mode") != "partial-week-data-integrity-v2"
+            or value.get("experimental_recording_enabled") is not False):
+        raise ValueError("Invalid Phase 2 mode or attempted production-model switch")
+    # Recognition is not qualification. The capture entrypoint still validates
+    # actual closed source, fixed plan, original inputs and final completion.
     return value["capture_enabled"]
 
 

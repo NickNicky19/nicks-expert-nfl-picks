@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "pull")]
+import data_integrity_v2 as corrected
 
 import point_challenger as challenger
 from evidence import read
@@ -24,7 +25,7 @@ START = CAPTURE + timedelta(minutes=1)
 FINISH = START + timedelta(seconds=1)
 KICKOFF = datetime(2026, 10, 23, 0, 15, tzinfo=timezone.utc)
 FINAL = KICKOFF + timedelta(hours=5)
-ENGINE = engine_hashes(ROOT)
+ENGINE = corrected.legacy_engine_hashes(ROOT)
 COMMIT = "a" * 40
 
 
@@ -101,6 +102,8 @@ class FixedPointTests(unittest.TestCase):
 
 class CandidateContractTests(unittest.TestCase):
     def setUp(self):
+        retained = self.enterContext(corrected.legacy_source(ROOT))
+        self.enterContext(patch.object(challenger, "ROOT", retained))
         self.baseline = baseline()
         self.registry = registration()
 
@@ -321,6 +324,8 @@ class CandidateContractTests(unittest.TestCase):
 
 class CandidateEvaluationTests(unittest.TestCase):
     def setUp(self):
+        retained = self.enterContext(corrected.legacy_source(ROOT))
+        self.enterContext(patch.object(challenger, "ROOT", retained))
         self.baseline = baseline()
         self.registry = registration()
         self.record = candidate(self.baseline, self.registry)

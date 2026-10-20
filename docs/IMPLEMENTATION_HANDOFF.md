@@ -1,5 +1,162 @@
 # Phase 2 reporting and implementation handoff
 
+## Shared payload compatibility and local runtime limit
+
+The shared contracts are `selection-publication-pointer-v4`,
+`selection-public-report-v5`, `selection-final-outcome-index-v2`,
+`selection-public-rows-v2`, `selection-public-summary-partition-v2` and
+`selection-final-outcome-period-v2`. Reusable row, summary and outcome bodies
+omit only the per-generation report-ID envelope. Generation metadata remains
+in the indexes and manifests. Forecasts, original clocks, outcomes, memberships,
+semantic summary IDs, global positions and 250-row slicing stay unchanged.
+
+Bodies use deterministic application gzip and separate encoded/decoded hashes
+and bounds. Application gzip is distinct from HTTP Content-Encoding. Explicit
+plain/gzip legacy readers remain supported; invalid modern assets never trigger
+a permissive fallback. Complete graph validation precedes pointer advancement.
+
+Reuse is limited to one operation. Actual bounded bytes, descriptors and relevant
+dependencies are freshly checked before cached decoding or reconciliation can be
+used. Defensive copies prevent mutable aliases, source/destination roots remain
+separate, and a later operation does not trust a previous success flag.
+
+Saved packaging uses `website-packaging-generation-v2` and a flat transition
+receipt. Original capture evidence and clocks remain distinct from later
+packaging. Recovery must support pointer-v4, gzip and packaging-v2, preserve
+retained evidence and the deployed presentation, and be checked through later
+updater runs. Reverting to an incompatible reader is not functioning recovery.
+A limited fallback is not implemented or activated by this documentation.
+
+The saved real-size local control measured 1,117.148 seconds of recurring
+dataflow. Adding the separately measured 473.088 seconds of retained checks gives
+1,590.236 seconds, exceeding both the unchanged 1,200-second job timeout and
+960-second safety budget. This combined local runtime control fails; the dataflow
+alone also exceeds the safety budget. Mocked sources, local contention and
+separately measured checks limit the comparison, and hosted setup, provider/API
+and Pages latency remain unmeasured. Smaller synthetic successes and passing
+correctness checks do not establish hosted or routine season-long operation.
+
+No production cutover, deployment or experimental recording is activated by
+these source changes. All-category numerical evaluation remains local/opt-in;
+artifact, disclosure and combined release/recovery decisions remain separate.
+
+### Prepared publication correction (2026-10-19)
+
+The publisher now retains an operation-local prepared result only after complete
+publication validation. Every lookup freshly hashes the bounded complete graph,
+including non-default partitions and legacy plain row chunks. Source/helper or
+contract changes invalidate lower decode and semantic reuse too. Public readers
+receive isolated decoded values from private immutable serialized results.
+The optional LRU retains at most eight results and 384 MiB of serialized values;
+that bound is additional memo accounting, not a total process-memory cap.
+Outer source, original-input, native, scope, completion, generation, health,
+clock, archive/Git, destination and atomic-advancement checks remain unchanged.
+
+The fixed serial unprofiled B1/C1/C2/B2 comparison used frozen input 643f99be,
+fresh control/candidate checkouts and identical saved responses, clocks, retained
+data history and timing boundaries. Control 551d605 dataflow took 1,159.937 and 1,192.730
+seconds; candidate 18fd286 took 400.632 and 416.573 seconds. The candidate passed
+544 Python tests and retained syntax/UI/About checks; the hourly-required subset
+separately cost 253.536537 seconds, giving measured local sums of 654.168 and
+670.110 seconds. Compile and whitespace checks separately added 0.036364 seconds;
+they are not steps in the unchanged hourly workflow.
+Adding the separately measured C2 utilities and blocked advisory prefixes to
+both samples gives lower-envelope estimates of 655.158 and 671.100 seconds;
+these are sums of separate measurements, not complete job timings. The matched
+control suite was not remeasured, so no check-suite speed comparison is claimed.
+These fixed initial retained-history local components fit the 960-second
+planning target; they do not bound the cost of a growing retained archive. The complete
+connected/hosted budget remains UNKNOWN, and the 1,200-second timeout is unchanged.
+Full online-advisory continuation, hosted setup/dependencies, live providers,
+remote Git, artifact transfer and deployment remain unmeasured. Local Git,
+Pages staging and uploader tar creation are already included in dataflow.
+The historical failed 1,590.236-second control above remains preserved.
+
+Matched Python-process peak RSS rose from approximately 1.91 to 2.43 GiB.
+Maximum observed retained serialized bytes in any one memo were 398,233,666,
+below its 384 MiB per-memo bound; that bound does not cap aggregate process
+memory. Existing 3/6/18-week synthetic storage fixtures returned literally
+identical complete values under both sources when each read the same actual
+assets in each format. Cold 3/6-week single-reader whole-process checks were
+1.1–4.5 seconds slower with the candidate; their serial order and OS caches were
+not controlled paired performance evidence. The 18-week full-reader process
+reached approximately 7.97 GiB peak RSS, including returned copies and full-value
+hashing, while its oversized prepared result remained unretained. This observed
+peak is not a minimum RAM requirement or full-season hosted-capacity proof.
+
+The paired reports preserved forecast contracts, outcomes, exact logical
+memberships and registered comparisons. Three receipt-bound decision identities
+differ truthfully with the actual source fixture commits. Separate full-preimage
+reconstruction by the implementation analysis proved that precise delta without
+rewriting receipts or clocks; this is not independent actual-source acceptance.
+
+Local Chromium checks completed 117 presentation checks, 24 loads and 54 complete
+groups with no recorded missing assets or page errors. Retained-v3/shared-v4
+initial loads respectively used 626,395/626,481 response-body bytes cold with
+17 local-site requests, and 320,104/320,312 bytes returning with 10 requests.
+These are server response bodies excluding headers, not complete wire totals;
+mocked external requests are separate. This frontend format comparison used
+identical final app bytes and does not measure the backend correction. Loopback
+phone emulation does not establish physical iPhone/Safari, public cellular or
+deployment acceptance.
+
+One separate saved-genuine-capture packaging probe using candidate code and real
+packaging time took 135.096 seconds, followed by 50.745 seconds of generation
+validation. It preserved original capture lineage and complete public semantics
+without provider collection. The independent review of the original 29166
+archive remains complete and was not reopened. The derived local packaging copy
+is not an approved production artifact or a new independent actual-source review.
+
+All twenty real-sized mocked updater steps passed complete saved-data replay,
+including exact memberships and the four intended fictional outcome corrections.
+Six-component dataflow averaged 515.969201 seconds and reached 677.596708 seconds;
+adding the once-measured hourly checks gives a maximum local subtotal of
+931.133245 seconds. The remaining 28.866755 seconds to the 960-second planning
+target do not certify unmeasured hosted work. The final isolated fixture runtime
+was a41756bd, tree 2527f16c; it is not a public development or deployment identity.
+The twenty five-second mock steps span 100 fictional source seconds, not six
+hours, cadence or hosted operation. Sequence peak RSS and a real-sized exact
+whole-updater retry remain unmeasured.
+
+The twenty steps added 13,093,318 evidence-lane bytes, including derived evidence,
+and 324,528,918 report/generation asset bytes. Adjusted packed-history increments
+totaled 300,416,000 bytes, excluding 984,064 packed setup bytes (distinct from
+985,907 bytes of Git-directory setup). Working-file bytes grew from 119,510,354
+to 457,135,059; Git-directory bytes from 73,490,872 to 375,564,221. Final complete
+Pages staging was 48,711,382 bytes and uploader-command tar 49,571,840 bytes.
+These are local stored sizes, not network transfers or season-long capacity.
+Sixteen new-clock updates retained unchanged outcome values but added observation
+and provenance evidence; they were not metadata-only rotations. This CPU
+correction preserves the earlier shared format and claims no new storage saving.
+
+A scratch-only broken publisher was rejected, intervening fictional evidence
+retained, and a normal forward restore to compatible candidate code completed.
+Actual restored source 8f7e2de4 then passed two mocked updates and complete saved
+replays, preserving 3,819 prior immutable files and the intervening evidence.
+Their dataflows were 704.258455 and 707.089166 seconds; adding the separately
+measured hourly checks gives 957.794992 and 960.625703 seconds. The second exceeds
+the 960-second planning target by 0.625703 seconds before hosted overhead; this
+FAIL is retained without another timing sample or changed limits. Functional
+format-compatible recovery passed; routine operating-budget recovery did not
+qualify. Returning to source 551d605 remains format-compatible but restores its
+known slow path, and the older 269a817 reader explicitly rejects shared-v4.
+
+The recovery wrapper's kernel-reported largest descendant-process RSS was
+6,724,208 KiB (approximately 6.41 GiB), across its helper/workers/Git descendants.
+It is not their sum, concurrent total, cgroup peak or an attributed worker peak;
+separate root retention work is excluded. The wrapper's 2,443.050-second wall
+time includes acceptance work and a root review pause, not one updater job.
+Different retained histories make this a separate observation from the initial
+matched RSS comparison. No hosted or season-long memory/operating PASS is claimed.
+
+These measurements identify publisher/test code 18fd286. The actual published-
+source commit, PR test-merge checkout identities and their actual check results
+are recorded separately in this checkpoint's CODEX_RESULT. A later documentation
+commit has its own source identity even when publisher/test bytes are equivalent;
+the older local check result is not a final published-source or CI verdict.
+These local measurements certify no production cutover, artifact/content
+disclosure, hosted acceptance or release/deployment.
+
 ## Approved partial-week operational cutover (source implementation)
 
 This checkpoint implements NFL-WEB-PARTIAL-OPS-PROPOSAL-20261018-131818Z,
@@ -760,3 +917,97 @@ Browser scope labels match a packaging generation's explicit capture source,
 while checking the new packaging source/time against health separately. They
 do not relabel the retained selection report as newly captured by packaging.
 A wrong capture-source binding suppresses the verification claim.
+
+
+## 2026-10-20 presence/identity correction — source checkpoint
+
+The approved previous documentation delta is preserved verbatim above. Its
+standalone resulting document has SHA-256
+`3b560f3e5308c18836b5410151a7145de33bf41ab9f72062717b6a6df9edc790`.
+This appendix creates a new document identity; it does not relabel that file.
+The original proposal is preserved unchanged; owner-reviewed amendments add
+`tools/release_mode.py` and reserve `matchup-inputs-v3` for new semantics.
+The amended implementation scope is 27 paths: 22 ordinary and five protected.
+
+### Closed version dispatch
+
+| Role | Original retained contract | Presence-aware correction |
+| --- | --- | --- |
+| Model | original_sleeper_matchup_baseline | sleeper-matchup-data-integrity-v2 |
+| Inputs | matchup-inputs-v2 | matchup-inputs-v3 |
+| Proof | matchup-proof-v1 | matchup-proof-v2 |
+| Native | baseline-capture-v1 | baseline-capture-v2 |
+| Numeric outcomes | forecast-outcomes-v1 | forecast-outcomes-v2 |
+| Local extended outcomes | descriptive-statistic-outcomes-v1 | descriptive-statistic-outcomes-v2 |
+| Derived comparator | earlier immutable scorecards | forecast-scorecard-v2 |
+| Private scoped validator | original partial-week contract | partial-week-data-integrity-v2 |
+| Private fixed plan | original approved plan | partial-week-data-integrity-plan-v2; separate approval required |
+
+The new helper closes its source manifest over actual implementation bytes.
+Unknown source/schema combinations fail; the original seven-blob map, scoring
+identity, strict/partial validators, candidate module, registration and policies
+are unchanged. Full Git history supplies the actual original implementation
+and dependencies in a separate source/process namespace. Current code is not
+allowed to impersonate an original engine by using an old label. Existing public
+selection/pointer/gzip formats remain unchanged, including the bounded prepared
+publisher and fresh complete dependency checks. Public scoped labels use the
+existing narrow public projection; private receipts retain new version identities.
+
+Reported zero, supported inferred sparse zero, explicit unknown, invalid value
+and unsupported absence remain distinct. Actual source rows retain modeled
+null/zero/value fields and their attributed presence context. The sparse-zero
+convention remains a labeled legacy adapter assumption, not independent provider
+completeness authentication. A label, HTTP success or participation alone is not
+proof of omission semantics. A modern attributed played row must match its saved
+original modeled fields and valid participation. Original lossy caches stay
+unchanged and cannot reveal whether an old omitted value was originally null.
+
+Projection components remain separately retained before rounding. Unknown direct
+provider PPR does not remove known sibling forecasts. Component-derived offensive
+PPR, combined yards and rushing-or-receiving TD expectations require complete
+components; a known direct provider total does not fill missing components.
+Fractional projections, signed yardage and valid negative/fractional PPR are
+preserved. Invalid actual count components cannot cancel into a plausible total.
+Invalid optional components and contradictory joins quarantine the affected
+comparison rather than erase valid siblings, manufacture DNP or count a loss.
+Nonfinite invalid components use a JSON-safe typed representation and a distinct
+model-input hash contract; they do not masquerade as null or valid zero.
+
+Primary, all-category and recorded-selection consumers independently check
+season/week/game/player/category/team and supported kickoff bindings. A true
+schedule change is distinct from an identity error. Existing supported corrections
+and conflicting frontiers retain their original receipts. Any new interpretation
+gets its own derived identity and explanation. Conditional reproductions are not
+proof that a lossy historical cache actually underwent a null-to-zero incident.
+
+Existing original-version observations can be read/evaluated using their retained
+source. A genuinely new original-version observation must execute the original
+implementation. Corrected observations use the new source and cannot enter the
+original registered primary or rec-half experiment. Operating that candidate is
+a fourth separate decision. Its formula, registration and Weeks 7–14 do not move.
+Both experimental recorders remain inactive; no new builder/collector is activated.
+The direct shadow join remains `KNOWN_UNGUARDED_JOIN / NOT_CERTIFIED`, with only
+supported original inputs and no qualified public accuracy, complete-week or
+promotion claim. Offer parsing, provisional-live display and broader coherence
+research remain deferred beyond connected PPR/TD completeness presentation.
+
+The release selector recognizes only the explicit corrected model/validator pair
+with inactive experiments; this is not artifact qualification. Legacy enabled/
+disabled behavior, recovery modes and CLI outputs remain supported. Unknown
+models, invalid booleans, incompatible validators and challenger enablement fail.
+Configuration, activation plans and all current operating settings stay unchanged.
+
+The original review archive and its scoped independent review remain completed
+for their exact bytes. Production frozen selections and separate genuine local
+observations remain distinct. No proof is attached to a different contract.
+The old strict Week 6 missing-proof failure remains expected. Source correctness
+is separate from operating, artifact, disclosure and deployment approval.
+
+The earlier 960.625703-second local planning result remains a FAIL against the
+unchanged 960-second target; the job timeout remains 1,200 seconds. Changed source
+does not inherit that runtime or memory result. No hosted campaign, new provider
+request, real-data package, production merge, deployment or experimental activation
+is performed by this source checkpoint. The future final-source operating campaign,
+production-rooted artifact/content review and combined release/public/cache/My Picks/
+compatible-recovery decision remain separate. PR #2 and its owner-reported limited
+phone/My Picks confirmation remain preserved. Physical Safari was not retested.

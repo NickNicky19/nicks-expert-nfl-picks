@@ -12,6 +12,7 @@ sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "pull")]
 from reliability import digest, make_payload, stamp
 from scorecard import build_scorecard, cluster_interval, latest_outcomes, paired_forecasts, score, snapshot_outcomes
 from evidence import read
+import data_integrity_v2 as corrected
 from test_reliability import fixture, NOW
 from test_source_evidence import fictional_status
 
@@ -1092,14 +1093,14 @@ def descriptive_fixture():
     data, _ = fixture()
     player = data["players"][0]
     player.update(opp="BBB", proj={"rec": 4.8, "rec_yd": 10, "rush_td": .1, "rec_td": .56}, proj_ppr=10.1)
-    raw = scoring.ppr_points(player["proj"])
+    raw = corrected.legacy_scoring().ppr_points(player["proj"])
     player["props"].extend([
         {"key": "fpts", "proj": raw, "adj": 9.5, "line": 9.5, "line_from": "ours", "lean": None},
         {"key": "anytime_td", "proj": .66, "adj": None, "line": .5, "line_from": "ours", "lean": None,
          "td_chance": .483},
     ])
     data["scoring"] = dict(scoring.PPR)
-    hashes = engine_hashes(ROOT)
+    hashes = corrected.legacy_engine_hashes(ROOT)
     payload = make_payload(data, NOW, hashes, "live")
     return data, payload, hashes
 

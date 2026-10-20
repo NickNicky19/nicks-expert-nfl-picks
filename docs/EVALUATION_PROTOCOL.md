@@ -774,3 +774,35 @@ The original Week 6 missing-matchup-proof failure remains visible. Valid
 individual descriptive results do not establish qualified whole-week evidence,
 independent original-capture review, improved forecasting, financial results,
 production activation, public release or deployment.
+
+### Presence-aware correction and frozen experiment
+
+The `sleeper-matchup-data-integrity-v2` model identifies a data-semantics
+correction, not fitted weights. Its recorded input schema is `matchup-inputs-v3`;
+`matchup-inputs-v2` remains the existing original-model schema. Original
+`baseline-capture-v1` receipts, scoring identity, strict/partial validators,
+registration and Weeks 7–14 are unchanged. Corrected native v2 observations
+cannot enter that registered primary or rec-half candidate comparison.
+
+Reported zero, signed yards, explicit unknown, invalid component and supported
+sparse absence are distinct. The retained sparse-zero convention is a labeled
+legacy adapter assumption, not independent authentication of provider omission
+semantics. Attributed modern actual rows retain their original modeled fields;
+participation or a metadata label alone does not establish completeness.
+Projection absence never implies zero. Combined yards, offensive PPR and the
+rushing-or-receiving TD event require every relevant component. Provider PPR
+totals do not authenticate component completeness.
+
+Cross-record identity is checked separately at primary, local all-category and
+recorded-selection joins. Supported source corrections remain separately saved;
+identity contradictions and missing required components are unresolved rather
+than losses, DNP or model abstention. Old lossy caches cannot prove whether an
+original absent field was null or zero. Supported reinterpretations receive new
+derived identities; original receipts/reports stay immutable.
+
+All-category evaluation remains local/opt-in and uses one explicit model cohort.
+The direct shadow diagnostic remains `KNOWN_UNGUARDED_JOIN / NOT_CERTIFIED`;
+it cannot supply qualified public accuracy, promotion or complete-week claims.
+Both experimental recorders remain inactive. Reading existing original evidence,
+producing a new original observation, producing a corrected observation and
+operating the registered candidate are separate capabilities and permissions.

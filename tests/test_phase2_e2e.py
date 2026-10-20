@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "pull")]
+import data_integrity_v2 as corrected
 import build
 import build_recorded
 import verify
@@ -62,7 +63,7 @@ class ReplayClock(datetime):
 
 def prepare(root, source_unavailable=False, *, mode="replay", at=NOW, kickoff_hours=1, all_ten=False, week=5):
     for path in ENGINE_PATHS:
-        target = root / path; target.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(ROOT / path, target)
+        target = root / path; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(corrected._legacy_blob(path, ROOT))
     (root / "output").mkdir(exist_ok=True)
     for name in ("app.js", "index.html"):
         shutil.copyfile(ROOT / "output" / name, root / "output" / name)
@@ -1046,6 +1047,10 @@ class CandidateRecordingPipelineTests(unittest.TestCase):
     KICKOFF = datetime(2026, 10, 23, 0, 15, tzinfo=timezone.utc)
     REGISTRATION_SHA256 = "0ffd81a0d2708418d1d1b072cf9ce7750f42c554f04c2456f2a5206be199e0c6"
 
+    def setUp(self):
+        retained = self.enterContext(corrected.legacy_source(ROOT))
+        self.enterContext(patch.object(point_challenger, "ROOT", retained))
+
     def registration(self, root):
         path = root / "tools/rec_half_registration_v1.json"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1057,7 +1062,7 @@ class CandidateRecordingPipelineTests(unittest.TestCase):
         for name in (*ENGINE_PATHS, "config/evaluation-policy.json"):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / name, target)
+            target.write_bytes(corrected._legacy_blob(name, ROOT)) if name in ENGINE_PATHS else shutil.copyfile(ROOT / name, target)
         at = at or self.AT
         data, _ = reliability_fixture()
         data.update(week=week, generated_at=stamp(at - timedelta(minutes=1)))
@@ -1069,7 +1074,7 @@ class CandidateRecordingPipelineTests(unittest.TestCase):
             prop.update(lean=None, line=None, line_from="ours")
             data["picks"] = {"over": [], "under": []}
         meta = {key: data[key] for key in ("season", "week", "generated_at")}
-        path, health = capture_baseline(data, meta, root, at, engine_hashes(ROOT), mode="live")
+        path, health = capture_baseline(data, meta, root, at, corrected.legacy_engine_hashes(ROOT), mode="live")
         return path, health, data
 
     def run_hook(self, root, path, *, created=True, at=None, completed=None):
@@ -1121,7 +1126,7 @@ class CandidateRecordingPipelineTests(unittest.TestCase):
             self.assertNotEqual(path.name, digest(payload) + ".json.gz")
             with self.assertRaisesRegex(ValueError, "Receipt filename digest mismatch"):
                 point_challenger._receipt(path)  # Frozen standalone CLI limitation stays visible.
-            self.assertEqual(phase2_capture.read_native_baseline(path, root, expected_hashes=engine_hashes(ROOT),
+            self.assertEqual(phase2_capture.read_native_baseline(path, root, expected_hashes=corrected.legacy_engine_hashes(ROOT),
                                                                now=self.AT), payload)
             report, status = self.run_hook(root, path, created=health["capture_created"])
             self.assertEqual(status["status"], "RECORDED")
@@ -1184,7 +1189,7 @@ class CandidateRecordingPipelineTests(unittest.TestCase):
             self.assertEqual(second["point_candidate"]["coverage"]["repeated_capture_rows"], 1)
             self.assertFalse(latest["phase2"]["point_candidate"]["continuous_recording_operational"])
             self.assertFalse(second["point_candidate"]["predictive_improvement_established"])
-            self.assertEqual(engine_hashes(root), engine_hashes(ROOT))
+            self.assertEqual(engine_hashes(root), corrected.legacy_engine_hashes(ROOT))
 
     def test_saved_outcome_and_correction_re_evaluate_without_new_candidate(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1249,11 +1254,11 @@ class CandidateRecordingPipelineTests(unittest.TestCase):
             generic = path.with_name(digest(payload) + ".json.gz")
             immutable_write(generic, payload)
             with self.assertRaises(ValueError):
-                phase2_capture.read_native_baseline(generic, root, expected_hashes=engine_hashes(ROOT), now=self.AT)
+                phase2_capture.read_native_baseline(generic, root, expected_hashes=corrected.legacy_engine_hashes(ROOT), now=self.AT)
             replay_path = root / "data/replay/2026/w07" / path.name
             replay_path.parent.mkdir(parents=True); shutil.copyfile(path, replay_path)
             with self.assertRaises(ValueError):
-                phase2_capture.read_native_baseline(replay_path, root, expected_hashes=engine_hashes(ROOT), now=self.AT)
+                phase2_capture.read_native_baseline(replay_path, root, expected_hashes=corrected.legacy_engine_hashes(ROOT), now=self.AT)
 
     def test_native_envelope_and_missing_file_fail_without_candidate(self):
         for broken in (False, True):
@@ -1641,8 +1646,9 @@ class PartialOperationalPipelineTests(unittest.TestCase):
             shutil.rmtree(root / "data/verification/partial-registrations")
             old_paths = {key: getattr(build, key) for key in ("ROOT", "OUT", "CACHE", "ARCHIVE", "WEEKS")}
             old_athletes = build.books.ATHLETES
-            def recorded(stage, mode):
+            def recorded(stage, mode, *, model):
                 self.assertEqual(mode, "live")
+                self.assertEqual(model, "original_sleeper_matchup_baseline")
                 self.assertTrue(list((stage / "data/verification/partial-registrations").rglob("*.json.gz")))
                 self.assertEqual(build.ROOT, stage)
                 self.assertEqual(build.OUT, stage / "output/data")
@@ -1912,7 +1918,7 @@ class EncodedHostingTests(unittest.TestCase):
                 phase2_capture.stage_pages(cold, Path(directory)/"cold-pages")
             for relative in ("output/data/selection-grading/hosting.json", "output/data/release-identity.json", "output/data/health.json"):
                 self.assertEqual((cold/relative).read_bytes(), (root/relative).read_bytes())
-            self.assertEqual(engine_hashes(root), engine_hashes(ROOT))
+            self.assertEqual(engine_hashes(root), corrected.legacy_engine_hashes(ROOT))
 
     def test_missing_or_corrupt_retained_archive_and_nonpublic_commit_fail_staging(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2167,8 +2173,8 @@ class SharedPayloadReuseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);self.configure(root);_,health=self.run_partial(root)
             spec=load_json(root/'config/phase2.json')['partial_week'];name=health['phase2']['partial_completion_receipt'];cache={}
-            original=phase2_capture.partial_week.read_bundle
-            with patch.object(phase2_capture.partial_week,'read_bundle',wraps=original) as read_bundle:
+            original=corrected.legacy_bundle
+            with patch.object(corrected,'legacy_bundle',wraps=original) as read_bundle:
                 first=phase2_capture._qualified_bundle(root,name,spec,cache)
                 first[1]['game_population'].clear()
                 second=phase2_capture._qualified_bundle(root,name,spec,cache)
@@ -2188,8 +2194,8 @@ class SharedPayloadReuseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)/'runtime';self.configure(root);_,health=self.run_partial(root)
             spec=load_json(root/'config/phase2.json')['partial_week'];name=health['phase2']['partial_completion_receipt']
-            source=Path(directory)/'loaded-source/partial_week.py';source.parent.mkdir();shutil.copyfile(phase2_capture.partial_week.__file__,source)
-            with patch.object(phase2_capture.partial_week,'__file__',str(source)):
+            source=Path(directory)/'loaded-source/data_integrity_v2.py';source.parent.mkdir();shutil.copyfile(corrected.__file__,source)
+            with patch.object(corrected,'__file__',str(source)):
                 cache={};phase2_capture._qualified_bundle(root,name,spec,cache)
                 info=source.stat();raw=source.read_bytes();source.write_bytes(raw.replace(b'Network',b'network',1) if b'Network' in raw else raw[:-1]+bytes([raw[-1]^1]))
                 os.utime(source,ns=(info.st_atime_ns,info.st_mtime_ns))

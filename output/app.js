@@ -109,10 +109,42 @@ function normName(name) {
 
 // Same as ppr_points() in pull/scoring.py (Sleeper's standard PPR)
 function ppr(s) {
+  if (!offensiveComponentsKnown(s, [...Object.keys(S.data.scoring), "idp_fum_rec"])) return null;
   let total = 0;
   for (const [k, w] of Object.entries(S.data.scoring)) total += w * (s[k] || 0);
   if (s.idp_fum_rec) total -= S.data.scoring.fum_rec_td * (s.fum_rec_td || 0);
   return Math.round(total * 100) / 100;
+}
+
+function offensiveComponentsKnown(s, keys) {
+  if (!s || typeof s !== "object") return false;
+  const metadata = s._presence;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(s, key)) {
+      if (typeof s[key] !== "number" || !Number.isFinite(s[key])) return false;
+      if (metadata?.kind === "actual" && (["pass_yd", "rush_yd", "rec_yd"].includes(key)
+          ? !Number.isSafeInteger(s[key]) : !Number.isSafeInteger(s[key]) || s[key] < 0)) return false;
+      continue;
+    }
+    if (metadata == null && !Object.prototype.hasOwnProperty.call(s, "_presence")) continue; // Retained legacy adapter assumption.
+    const original = metadata?.original_row, context = metadata?.source_context;
+    if (!metadata || metadata.version !== "nfl-data-presence-v2" || metadata.kind === "projection"
+        || metadata.sparse_contract !== "legacy-played-sparse-stat-assumption-v1"
+        || !original || !original.stats || !context || context.adapter !== "sleeper-week-stats-v1"
+        || !Number.isInteger(context.season) || !Number.isInteger(context.week) || context.week < 1 || context.week > 18
+        || !["player_id", "team", "opponent"].every(field => typeof original[field] === "string" && original[field])
+        || Object.prototype.hasOwnProperty.call(original.stats, key)
+        || !["gp", "off_snp"].some(field => typeof original.stats[field] === "number"
+          && Number.isSafeInteger(original.stats[field]) && original.stats[field] > 0)
+        || !Object.keys(s).filter(field => field !== "_presence" && field in original.stats)
+          .every(field => s[field] === original.stats[field])) return false;
+  }
+  return true;
+}
+
+function tdChanceText(prop) {
+  return typeof prop?.td_chance === "number" && Number.isFinite(prop.td_chance)
+    && prop.td_chance >= 0 && prop.td_chance <= 1 ? `${Math.round(100 * prop.td_chance)}%` : "Unavailable";
 }
 
 function statValue(key, s) {
@@ -477,7 +509,10 @@ function fantasyPts(s, pos) {
     const fifty = k.fgm_50p || 0;
     if (k.fgm_60p == null) k.fgm_60p = k.fgm_50_59 != null ? fifty - k.fgm_50_59 : 0;
     if (k.fgm_50_59 == null) k.fgm_50_59 = Math.max(0, fifty - k.fgm_60p);
-    return Math.round((ppr(s) + table(S.data.scoring_k, k)) * 100) / 100;
+    // K scoring remains the retained separate product, outside offensive PPR.
+    let points = table(S.data.scoring);
+    if (s.idp_fum_rec) points -= S.data.scoring.fum_rec_td * (s.fum_rec_td || 0);
+    return Math.round((points + table(S.data.scoring_k, k)) * 100) / 100;
   }
   if (pos === "DEF") {
     return Math.round((table(S.data.scoring_def) + tier(s.pts_allow || 0, S.data.def_tiers.pts) + tier(s.yds_allow || 0, S.data.def_tiers.yds)) * 100) / 100;
@@ -492,8 +527,12 @@ function currentLeague() {
 // QB/RB/WR/TE points in the chosen scoring
 function skillPts(s, pos) {
   const lg = currentLeague();
-  if (lg) return scoreWith(lg.settings, s, pos);
+  if (lg) {
+    const required = Object.keys(lg.settings).filter(key => lg.settings[key] && key in S.data.scoring);
+    return offensiveComponentsKnown(s, required) ? scoreWith(lg.settings, s, pos) : null;
+  }
   let t = ppr(s);
+  if (t === null) return null;
   if (S.sc.mode === "espn") t -= s.pass_int || 0;          // ESPN takes 2 per interception, Sleeper 1
   if (S.sc.half) t -= 0.5 * (s.rec || 0);
   return Math.round(t * 100) / 100;
@@ -557,8 +596,9 @@ function pv(p, prop) {
   const byWeek = Object.fromEntries((p.log || []).map((x) => [x.w, x]));
   const values = prop.values.map((x) => { const g = byWeek[x.w]; const v = g ? logPts(p, g) : null; return { ...x, v: v ?? x.v }; });
   const proj = projPts(p);
-  const adj = proj != null ? Math.round(proj * (prop.mf ?? 1) * 100) / 100 : prop.adj;
-  const line = adj != null ? Math.floor(adj) + 0.5 : prop.line;
+  const incomplete = p.proj && Object.prototype.hasOwnProperty.call(p.proj, "_presence") && proj == null;
+  const adj = proj != null ? Math.round(proj * (prop.mf ?? 1) * 100) / 100 : incomplete ? null : prop.adj;
+  const line = adj != null ? Math.floor(adj) + 0.5 : incomplete ? null : prop.line;
   return { ...prop, values, proj, adj, line, over: values.filter((x) => x.v > line).length };
 }
 
@@ -1249,7 +1289,7 @@ function propChip(p, raw) {
   const line = S.lines[`${p.id}|${prop.key}`] ?? prop.line;
   const st = propStatus(p, prop.key, line, prop.lean);
   const arrow = prop.key === "anytime_td"
-    ? `<span class="muted"> ${Math.round(100 * (prop.td_chance || 0))}%</span>`
+    ? `<span class="muted"> ${tdChanceText(prop)}</span>`
     : prop.lean ? `<span class="arrow">${prop.lean === "over" ? "▲" : "▼"}</span>` : "";
   const cls = [prop.lean ? `lean-${prop.lean}` : "", st && prop.lean && (st.res === "hit" || st.res === "miss") ? st.res : ""].join(" ");
   const lineText = prop.key === "anytime_td" ? "" : `<b>${line}</b><span class="src ${prop.line_from || "ours"}">${LINE_TAG[prop.line_from] || "est"}</span>`;
@@ -1278,7 +1318,7 @@ function catCard(p, raw) {
     lean = d > cat.lean ? "over" : d < -cat.lean ? "under" : null;
   }
   const leanPill = prop.key === "anytime_td"
-    ? `<span class="lean ${prop.lean ? "over" : "none"}">${Math.round(100 * (prop.td_chance || 0))}% TD chance</span>`
+    ? `<span class="lean ${prop.lean ? "over" : "none"}">${tdChanceText(prop)} TD chance</span>`
     : from === "ours"
       ? `<span class="lean none" title="Leans are only called against real sportsbook lines">No book line</span>`
       : `<span class="lean ${lean || "none"}">${lean ? `Lean ${lean}` : "No lean"}</span>`;
@@ -4691,7 +4731,7 @@ function renderCompare() {
   const keys = [...new Set([...a.props, ...b.props].map((x) => x.key))].filter((k) => k !== "fpts");
   const propRow = (k) => {
     const xa = a.props.find((x) => x.key === k), xb = b.props.find((x) => x.key === k);
-    const cell = (x) => !x ? "-" : k === "anytime_td" ? `${Math.round(100 * (x.td_chance || 0))}% TD chance`
+    const cell = (x) => !x ? "-" : k === "anytime_td" ? `${tdChanceText(x)} TD chance`
       : `${x.line} <span class="src ${x.line_from || "ours"}">${LINE_TAG[x.line_from] || "est"}</span> · proj ${fmtStat(k, x.adj)}${x.lean ? ` <span class="arrow ${x.lean}">${x.lean === "over" ? "▲" : "▼"}</span>` : ""}<div class="muted">over in ${x.over} of ${x.n}</div>`;
     return `<tr><td>${cell(xa)}</td><th>${S.data.categories[k].label}</th><td>${cell(xb)}</td></tr>`;
   };

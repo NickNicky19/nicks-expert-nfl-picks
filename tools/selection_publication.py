@@ -22,6 +22,7 @@ import tempfile
 from evidence import read, write
 from reliability import _pairs, ENGINE_PATHS, IntegrityError, canonical, digest, engine_hashes, load_json, stamp, utc
 from scorecard import identity
+import data_integrity_v2 as corrected
 from selection_report import (PATTERNS, RESULTS, _create_file, _tally, build_decisions, run_report, summarize, weekday)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -144,7 +145,7 @@ def _publication_helpers():
     reuse must not accidentally borrow an older helper's parsed or semantic PASS.
     """
     parts = []
-    for name in (__name__, "selection_report", "scorecard", "reliability", "evidence"):
+    for name in (__name__, "selection_report", "scorecard", "reliability", "evidence", "data_integrity_v2", "grade", "scoring"):
         module = sys.modules.get(name)
         try:
             path = Path(module.__file__).resolve()
@@ -1036,7 +1037,7 @@ def all_ten_outcome_identities(root, observed_at, *, coverage=None):
     root = Path(root)
     policy = load_json(root / "config/timing-policy.json")
     receipts = [read(path) for path in sorted((root / "data/forward").rglob("*.json.gz"))]
-    decisions, _ = build_decisions(receipts, policy, observed_at, engine_hashes(root))
+    decisions, _ = build_decisions(receipts, policy, observed_at, corrected.legacy_engine_hashes())
     groups, result, excluded = defaultdict(list), {}, Counter()
     for decision in decisions:
         groups[identity(decision)].append(decision)
@@ -1176,7 +1177,7 @@ def publish_selection_report(root, observed_at=None, *, source_sha=None, _checke
     root = Path(root).resolve()
     observed_at = utc(observed_at or datetime.now(timezone.utc))
     source_sha = _source_sha(root, source_sha)
-    policy, hashes = load_json(root / "config/timing-policy.json"), engine_hashes(root)
+    policy, hashes = load_json(root / "config/timing-policy.json"), corrected.legacy_engine_hashes()
     originals = {}
     with tempfile.TemporaryDirectory(prefix="nfl-selection-publication-") as temporary:
         stage, analysis = Path(temporary) / "saved-inputs", Path(temporary) / "private-analysis"

@@ -1,5 +1,35 @@
 const assert = require('node:assert/strict');
 
+// Presence correction: actual helpers preserve known zero, signed PPR and
+// unknown components. No forecast, saved-line or device-state mutation.
+{
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8');
+  const names = ['offensiveComponentsKnown', 'tdChanceText', 'ppr'];
+  const functions = names.map(name => {
+    const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
+    assert.ok(match, name + ' actual source'); return match[0];
+  }).join('\n');
+  const state = { data: { scoring: { rec: 1, rec_yd: .1, rush_yd: .1, fum_lost: -2, fum_rec_td: 6 } } };
+  const context = { S: state }; vm.createContext(context);
+  vm.runInContext(functions + '\nthis.api={tdChanceText,ppr,offensiveComponentsKnown};', context);
+  const api = context.api;
+  assert.equal(api.tdChanceText({ td_chance: null }), 'Unavailable');
+  assert.equal(api.tdChanceText({}), 'Unavailable');
+  assert.equal(api.tdChanceText({ td_chance: 0 }), '0%');
+  assert.equal(api.tdChanceText({ td_chance: .543 }), '54%');
+  assert.equal(api.ppr({ rec: null, rec_yd: 20, pts_ppr: 2 }), null);
+  assert.equal(api.ppr({ rec: 0 }), 0);
+  assert.equal(api.ppr({ rush_yd: -2, fum_lost: 1 }), -2.2);
+  assert.equal(api.ppr({ rec: false }), null);
+  assert.equal(api.ppr({ rec: 2, _presence: { version: 'nfl-data-presence-v2', kind: 'projection' } }), null);
+  assert.equal(api.ppr({ _presence: null }), null);
+  assert.equal((source.match(/tdChanceText\(/g) || []).length, 4, 'one helper and three render sites');
+  assert.equal(api.offensiveComponentsKnown({rec:.5,_presence:{kind:'actual'}},['rec']),false);
+  assert.equal(api.offensiveComponentsKnown({rush_yd:-2,_presence:{kind:'actual'}},['rush_yd']),true);
+  console.log('13 presence/TD/PPR helper assertions passed.');
+}
+
 // Accepted Phase 2 grading checks are separate from the retained production additions.
 {
 const fs = require('node:fs');

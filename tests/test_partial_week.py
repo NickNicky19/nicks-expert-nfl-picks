@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "pull")]
+import data_integrity_v2 as corrected
 import build
 import build_recorded
 import partial_week as partial
@@ -55,7 +56,7 @@ def fixture(root):
     for name in ENGINE_PATHS:
         target = root / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / name, target)
+        target.write_bytes(corrected._legacy_blob(name, ROOT))
     data, _, _ = setup()
     data.update(week=6, generated_at=stamp(NOW))
     data["games"][0].update(kickoff=stamp(NOW + timedelta(hours=2)), detail="Scheduled")

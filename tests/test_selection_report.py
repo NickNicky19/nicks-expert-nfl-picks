@@ -14,6 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "pull")]
+import data_integrity_v2 as corrected
 from reliability import IntegrityError, digest, immutable_write, stamp, utc, engine_hashes
 from evidence import read, write
 from selection_report import (build_decisions, grade_decisions, summarize, run_report,
@@ -369,7 +370,7 @@ class SelectionReportIntegration(unittest.TestCase):
         root, output = self.fixture()
         kickoff = datetime.now(timezone.utc) - timedelta(days=1)
         payload = receipt(kickoff - timedelta(hours=1), [row(kickoff=kickoff, top=True)])
-        payload.update(engine_files=engine_hashes(ROOT), engine_sha256=digest(engine_hashes(ROOT)))
+        payload.update(engine_files=corrected.legacy_engine_hashes(ROOT), engine_sha256=digest(corrected.legacy_engine_hashes(ROOT)))
         saved_forecast(root, payload)
         saved_sources(root, {"fixture-A": {"team": "AAA", "stats": {"gp": 1, "rec": 6}}}, kickoff=kickoff)
         completed = subprocess.run([sys.executable, str(ROOT / "tools/selection_report.py"),

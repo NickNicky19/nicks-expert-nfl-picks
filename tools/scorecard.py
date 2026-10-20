@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "pull"))
 import grade
 import scoring
 import week_population
+import data_integrity_v2 as corrected
 from evidence import read, write
 from reliability import IntegrityError, atomic_json, digest, engine_hashes, finite, load_json, stamp, utc
 from source_evidence import verified_status
@@ -29,18 +30,21 @@ SCORING_V1_SHA256 = "31672c10d526d591db8951157b0ecd669b4d02b412a75deec337618bff1
 EXTRA_CATEGORIES = frozenset(("fpts", "anytime_td"))
 
 
-def descriptive_contract():
+def descriptive_contract(*, presence_aware=False):
     """Retained scoring, not a new forecast or a permissive generic-stat reader."""
-    if hashlib.sha256(Path(scoring.__file__).read_bytes()).hexdigest() != SCORING_V1_SHA256:
-        raise IntegrityError("Retained descriptive scoring implementation unavailable")
+    if presence_aware:
+        return corrected.statistic_contract(descriptive=True)
+    retained = corrected.legacy_scoring()
     return {"version": "offensive-ppr-rush-rec-td-v1", "scoring_sha256": SCORING_V1_SHA256,
-            "ppr_weights": dict(scoring.PPR), "ppr_defensive_fumble_exclusion": "idp_fum_rec",
+            "ppr_weights": dict(retained.PPR), "ppr_defensive_fumble_exclusion": "idp_fum_rec",
             "td_event": "rush_td+rec_td>=1", "td_probability": "round(1-exp(-max(count,0)),3)"}
 
 
-def descriptive_statistic(category, stats):
+def descriptive_statistic(category, stats, *, presence_aware=False):
     if category not in EXTRA_CATEGORIES or not isinstance(stats, dict):
         raise IntegrityError("Unsupported descriptive source statistic")
+    if presence_aware:
+        return scoring.stat_value(category, stats)
     keys = set(scoring.PPR) | {"idp_fum_rec"} if category == "fpts" else {"rush_td", "rec_td"}
     missing = False
     for key in keys:
@@ -55,11 +59,13 @@ def descriptive_statistic(category, stats):
             raise IntegrityError("Invalid descriptive statistic component")
     if missing:
         return None
-    return scoring.ppr_points(stats) if category == "fpts" else stats.get("rush_td", 0) + stats.get("rec_td", 0)
+    return corrected.legacy_scoring().ppr_points(stats) if category == "fpts" else stats.get("rush_td", 0) + stats.get("rec_td", 0)
 
 
 def _validate_descriptive_outcome(payload, row=None):
-    if payload.get("schema_version") != DERIVED_STAT_SCHEMA or payload.get("statistic_contract") != descriptive_contract():
+    modern = payload.get("schema_version") == corrected.DESCRIPTIVE_OUTCOMES
+    if (payload.get("schema_version") not in (DERIVED_STAT_SCHEMA, corrected.DESCRIPTIVE_OUTCOMES)
+            or payload.get("statistic_contract") != descriptive_contract(presence_aware=modern)):
         raise IntegrityError("Unsupported descriptive outcome contract")
     if (not isinstance(payload.get("source"), str) or not payload["source"].strip()
             or not payload.get("cache_path") and "rows" in payload
@@ -117,11 +123,79 @@ def identity(row):
     return tuple(row[k] for k in ("season", "week", "game_id", "player_id", "category"))
 
 
+def cross_record_binding(forecast, outcome, *, key=None):
+    """Validate a consumer's join independently of either record's validity.
+
+    This does not select outcomes or qualify their sources. Identity errors take
+    priority over schedule changes. Neither original record is modified.
+    """
+    fields = ("season", "week", "game_id", "player_id", "category")
+    reasons = []
+
+    def checked(record, label):
+        if not isinstance(record, dict):
+            reasons.append(label + "_record_invalid")
+            return None
+        for name in ("season", "week"):
+            if type(record.get(name)) is not int:
+                reasons.append(label + "_" + name + "_invalid")
+        for name in ("game_id", "player_id", "category", "team"):
+            if not isinstance(record.get(name), str) or not record[name].strip():
+                reasons.append(label + "_" + name + "_missing")
+        return tuple(record.get(name) for name in fields)
+
+    expected = checked(forecast, "forecast")
+    if key is not None and key != expected:
+        reasons.append("forecast_map_key_mismatch")
+    if outcome is None:
+        return {"status": "identity_mismatch" if reasons else "missing", "reasons": sorted(set(reasons))}
+    actual = checked(outcome, "outcome")
+    if isinstance(forecast, dict) and isinstance(outcome, dict):
+        reasons.extend("forecast_outcome_" + name + "_mismatch" for name in fields + ("team",)
+                       if forecast.get(name) != outcome.get(name))
+        if forecast.get("opponent") is not None and outcome.get("opponent") is not None:
+            if forecast["opponent"] != outcome["opponent"]:
+                reasons.append("forecast_outcome_opponent_mismatch")
+    if key is not None and actual != key:
+        reasons.append("outcome_map_key_mismatch")
+    if reasons:
+        return {"status": "identity_mismatch", "reasons": sorted(set(reasons))}
+    clocks = {}
+    for label, record in (("forecast", forecast), ("outcome", outcome)):
+        try:
+            clocks[label] = utc(record.get("kickoff"))
+        except (TypeError, ValueError, OverflowError):
+            reasons.append(label + "_kickoff_missing_or_invalid")
+    if reasons:
+        return {"status": "identity_mismatch", "reasons": sorted(set(reasons))}
+    return {"status": "bound" if clocks["forecast"] == clocks["outcome"] else "schedule_changed",
+            "reasons": [] if clocks["forecast"] == clocks["outcome"] else ["forecast_outcome_kickoff_mismatch"]}
+
+
+def bind_outcome(forecast, outcome, *, key=None):
+    """Return an isolated derived binding; preserve original source evidence."""
+    binding = cross_record_binding(forecast, outcome, key=key)
+    if binding["status"] in ("bound", "missing"):
+        return dict(outcome or {"status": "pending", "actual": None, "reason": "no_saved_outcome"}), binding
+    derived = dict(outcome or {})
+    derived.update(status="unresolved", actual=None,
+                   reason="forecast_outcome_identity_mismatch" if binding["status"] == "identity_mismatch"
+                          else "forecast_outcome_schedule_changed",
+                   outcome_identity_status="quarantined",
+                   outcome_identity_reasons=binding["reasons"], week_confirmed_complete=False,
+                   week_completion_snapshot_sha256=[])
+    return derived, binding
+
+
 def paired_forecasts(receipts, policy, expected_hashes, allow_replay=False, *, row_eligible=None):
     chosen = {}
     exclusions = Counter()
     observations = 0
     for payload in sorted(receipts, key=lambda p: (utc(p["captured_at"]), digest(p))):
+        if payload.get("schema_version") == corrected.NATIVE:
+            corrected.native_contract(payload)
+            exclusions["corrected_model_outside_registered_experiment"] += len(payload["rows"])
+            continue
         if payload.get("schema_version") != "baseline-capture-v1" or payload.get("model") != policy["baseline"]:
             raise IntegrityError("Unexpected forecast schema/model")
         if payload.get("engine_files") != expected_hashes:
@@ -244,19 +318,27 @@ COUNT_STATS = frozenset(("pass_td", "pass_cmp", "pass_att", "pass_int", "rush_at
 PICKABLE_STATS = COUNT_STATS | frozenset(("pass_yd", "rush_yd", "rec_yd", "rush_rec_yd"))
 
 
-def source_statistic(category, stats):
+def source_statistic(category, stats, *, presence_aware=False):
     """Called only after participation is confirmed; absent sparse values are zero.
 
     The provider's combined yards contract uses components, never an aggregate
     plus those components. Explicit null is unknown, including either component.
     """
     keys = ("rush_yd", "rec_yd") if category == "rush_rec_yd" else (category,)
-    values = [stats.get(key, 0) for key in keys]
+    modern = presence_aware or "_presence" in stats
+    values = [scoring.component(stats, key)["value"] if modern else stats.get(key, 0) for key in keys]
     for key, value in zip(keys, values):
         if value is None:
             continue
-        finite(value, "source statistic", optional=False)
+        try:
+            finite(value, "source statistic", optional=False)
+        except IntegrityError:
+            if modern:
+                return None
+            raise
         if int(value) != value or key in COUNT_STATS and value < 0:
+            if modern:
+                return None
             raise IntegrityError("Invalid integer/count outcome")
     return None if any(value is None for value in values) else sum(values)
 
@@ -299,6 +381,21 @@ def _outcome_identity(payload, row, entry):
     elif len(clubs) < 2:
         missing.append("recorded_club_mapping_incomplete")
     if isinstance(entry, dict):
+        stats = entry.get("stats")
+        if isinstance(stats, dict) and "_presence" in stats:
+            metadata = stats["_presence"]
+            if (not isinstance(metadata, dict) or metadata.get("version") != corrected.PRESENCE
+                    or metadata.get("kind") != "actual"):
+                reasons.append("unsupported_statistics_presence_contract")
+            else:
+                original, context = metadata.get("original_row"), metadata.get("source_context")
+                if (not isinstance(original, dict) or not isinstance(context, dict)
+                        or original.get("player_id") != row["player_id"] or original.get("team") != row.get("team")
+                        or original.get("opponent") != entry.get("opp")
+                        or (context.get("season"), context.get("week")) != (row.get("season"), row.get("week"))
+                        or not isinstance(original.get("stats"), dict)
+                        or {k: v for k, v in stats.items() if k != "_presence"} != original["stats"]):
+                    reasons.append("statistics_presence_source_identity_mismatch")
         team, opponent = entry.get("team"), entry.get("opp")
         if team is not None and team != row.get("team"):
             reasons.append("statistics_team_mismatch")
@@ -324,7 +421,8 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
     if derived_context is not None and (not isinstance(derived_context, dict) or not derived_context):
         raise IntegrityError("Missing derived input identity")
     extended = statistic_contract is not None
-    if extended and (statistic_contract != descriptive_contract() or output_root is None or include_populations):
+    if extended and (statistic_contract not in (descriptive_contract(), descriptive_contract(presence_aware=True))
+                     or output_root is None or include_populations):
         raise IntegrityError("Extended statistics require the versioned isolated local contract")
     if output_root is not None:
         sink, source = Path(output_root).resolve(), root.resolve()
@@ -343,6 +441,15 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
         cache_path = root / f"data/cache/stats_{season}_{week:02d}.json"
         board = load_json(board_path) if board_path.exists() else {"games": []}
         cache = load_json(cache_path) if cache_path.exists() else {}
+        presence_aware = (extended and statistic_contract.get("version") == "offensive-ppr-rush-rec-td-presence-v2"
+                          or any(isinstance(entry, dict) and isinstance(entry.get("stats"), dict)
+                              and "_presence" in entry["stats"]
+                              for entry in cache.values())
+                          or any(row.get("model_version") == corrected.MODEL for row in rows))
+        outcome_schema = corrected.DESCRIPTIVE_OUTCOMES if extended and presence_aware else (
+            DERIVED_STAT_SCHEMA if extended else corrected.OUTCOMES if presence_aware else "forecast-outcomes-v1")
+        local_contract = descriptive_contract(presence_aware=presence_aware) if extended else (
+            corrected.statistic_contract() if presence_aware else None)
         games = {g["id"]: g for g in board["games"]}
         source_status = observed_status.get(f"{season}_{week:02d}")
         def confirmed_final(game):
@@ -366,8 +473,8 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
         outcomes = []
         for row in rows:
             if extended:
-                _validate_descriptive_outcome({"schema_version": DERIVED_STAT_SCHEMA,
-                    "statistic_contract": statistic_contract, "derived_context": derived_context,
+                _validate_descriptive_outcome({"schema_version": outcome_schema,
+                    "statistic_contract": local_contract, "derived_context": derived_context,
                     "source": "git_pinned_saved_cache_statistical_regrade", "season": season, "week": week}, row)
             elif row["category"] not in PICKABLE_STATS:
                 raise IntegrityError("Legacy outcome snapshot supports ten pickable statistics only")
@@ -385,7 +492,7 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
                 elif status == "played":
                     status, reason = "resolved", "played_sparse_stats"
                     reader = descriptive_statistic if extended else source_statistic
-                    value = reader(row["category"], entry.get("stats", {}))
+                    value = reader(row["category"], entry.get("stats", {}), presence_aware=presence_aware)
                     if binding["outcome_identity_status"] == "quarantined":
                         status, reason = "unresolved", "saved_player_game_identity_mismatch"
                     elif value is None:
@@ -404,7 +511,13 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
                              **binding})
             if extended:
                 outcomes[-1].update(position=row["position"], forecast_kickoff=row["kickoff"])
-        payload = {"schema_version": "forecast-outcomes-v1", "mode": mode, "season": season, "week": week,
+            if presence_aware and isinstance(entry, dict) and isinstance(entry.get("stats"), dict):
+                outcomes[-1]["statistic_presence"] = corrected.statistic_presence(row["category"], entry["stats"])
+                if actual is None and status == "unresolved" and reason == "explicit_null_stat":
+                    states = sorted({value["state"] for value in outcomes[-1]["statistic_presence"].values()
+                                     if value["value"] is None})
+                    outcomes[-1]["reason"] = "unknown_statistic_components:" + ",".join(states)
+        payload = {"schema_version": outcome_schema, "mode": mode, "season": season, "week": week,
                    "collected_at": stamp(observed_at), "source_timestamp": None,
                    "source": "existing_Sleeper_stats_cache_and_ESPN_final_game_snapshot",
                    "cache_path": cache_path.relative_to(root).as_posix(), "cache_sha256": digest(cache),
@@ -414,7 +527,9 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
                    "week_population_read_errors": population_errors, "rows": outcomes,
                    "settlement_scope": "STATISTICAL_ONLY_NOT_VENUE_SETTLEMENT"}
         if extended:
-            payload.update(schema_version=DERIVED_STAT_SCHEMA, statistic_contract=statistic_contract)
+            payload.update(statistic_contract=local_contract)
+        elif presence_aware:
+            payload.update(statistic_contract=local_contract)
         if derived_context is None:
             paths.append(write(root, "outcomes" if mode == "live" else "outcomes_replay", payload))
         else:
@@ -446,7 +561,10 @@ def _past_final(row, collected):
 def _outcome_record(payload, row, payload_sha, week_complete=False):
     """Keep only recorded provenance; no current-cache lookup or source-time guess."""
     collected = utc(payload["collected_at"])
-    extended = payload.get("schema_version") == DERIVED_STAT_SCHEMA
+    extended = payload.get("schema_version") in (DERIVED_STAT_SCHEMA, corrected.DESCRIPTIVE_OUTCOMES)
+    modern = payload.get("schema_version") in (corrected.OUTCOMES, corrected.DESCRIPTIVE_OUTCOMES)
+    if modern and payload.get("statistic_contract") != corrected.statistic_contract(descriptive=extended):
+        raise IntegrityError("Unsupported corrected outcome source contract")
     if extended:
         _validate_descriptive_outcome(payload, row)
     source = payload.get("source")
@@ -493,6 +611,30 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
     unsupported_legacy = not extended and row["category"] not in PICKABLE_STATS
     if unsupported_legacy:
         status = "unresolved"
+    if modern and status == "resolved" and (not isinstance(entry, dict) or not isinstance(entry.get("stats"), dict)):
+        binding = {"outcome_identity_status": "quarantined",
+                   "outcome_identity_reasons": sorted(set(binding["outcome_identity_reasons"] +
+                                                          ["missing_original_source_statistics"]))}
+        status = "unresolved"
+    if modern and isinstance(entry, dict) and isinstance(entry.get("stats"), dict):
+        expected_presence = corrected.statistic_presence(row["category"], entry["stats"])
+        if row.get("statistic_presence") != expected_presence:
+            binding = {"outcome_identity_status": "quarantined",
+                       "outcome_identity_reasons": sorted(set(binding["outcome_identity_reasons"] +
+                                                              ["statistic_presence_differs_from_source"]))}
+        if status == "resolved":
+            reader = descriptive_statistic if extended else source_statistic
+            try:
+                observed = reader(row["category"], entry["stats"], presence_aware=True)
+                consistent = observed is not None and grade.participation(entry) == "played" and observed == row.get("actual")
+            except (TypeError, ValueError):
+                consistent = False
+            if not consistent:
+                binding = {"outcome_identity_status": "quarantined",
+                           "outcome_identity_reasons": sorted(set(binding["outcome_identity_reasons"] +
+                                                                  ["unsupported_or_inconsistent_source_statistic"]))}
+        if binding["outcome_identity_status"] == "quarantined":
+            status = "unresolved"
     if status == "resolved":
         if not past_final:
             raise IntegrityError("Outcome lacks confirmed past final")
@@ -507,7 +649,7 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
             if grade.participation(entry) != "played":
                 raise IntegrityError("Resolved outcome has contradictory participation")
             reader = descriptive_statistic if extended else source_statistic
-            observed = reader(row["category"], entry.get("stats", {}))
+            observed = reader(row["category"], entry.get("stats", {}), presence_aware=modern)
             finite(observed, "saved source statistic", optional=False)
             if observed != actual:
                 raise IntegrityError("Resolved outcome differs from its saved source statistic")
@@ -515,6 +657,8 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
     terminal = status == "resolved" or (past_final and attributed and
                 (status == "void" or status == "dnp" and grade.participation(entry) == "dnp"))
     normalized = dict(row)
+    if modern and binding["outcome_identity_status"] == "quarantined":
+        normalized.update(status="unresolved", actual=None, reason="unsupported_or_mismatched_source_statistic")
     if unsupported_legacy:
         normalized.update(status="unresolved", actual=None, reason="unsupported_legacy_statistic_contract")
     if not terminal:
@@ -544,7 +688,7 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
                   "week_completion_verified": week_complete}
     provenance.update(binding)
     if extended:
-        provenance.update(outcome_schema=DERIVED_STAT_SCHEMA, statistic_contract=payload["statistic_contract"])
+        provenance.update(outcome_schema=payload["schema_version"], statistic_contract=payload["statistic_contract"])
     if derived is not None:
         provenance["derived_context"] = derived
     return {"row": normalized, "provenance": provenance, "collected": collected,
@@ -589,9 +733,9 @@ def latest_outcomes(snapshots, allow_replay=False):
     observations = defaultdict(list)
     seen = set()
     for payload in sorted(snapshots, key=lambda p: (utc(p["collected_at"]), digest(p))):
-        if payload.get("schema_version") not in ("forecast-outcomes-v1", DERIVED_STAT_SCHEMA):
+        if payload.get("schema_version") not in ("forecast-outcomes-v1", DERIVED_STAT_SCHEMA, corrected.OUTCOMES, corrected.DESCRIPTIVE_OUTCOMES):
             raise IntegrityError("Unexpected outcome schema")
-        if payload.get("schema_version") == DERIVED_STAT_SCHEMA:
+        if payload.get("schema_version") in (DERIVED_STAT_SCHEMA, corrected.DESCRIPTIVE_OUTCOMES):
             _validate_descriptive_outcome(payload)
         if payload.get("mode") != "live" and not (allow_replay and payload.get("mode") == "replay"):
             continue
@@ -677,6 +821,8 @@ def outcome_provenance(outcome):
     """
     if not outcome:
         return "missing"
+    if outcome.get("outcome_identity_status") == "quarantined":
+        return "identity_quarantined"
     if outcome.get("outcome_conflict") or outcome.get("outcome_selection") == "conflict":
         return "conflicting_outcome_evidence"
     selected = outcome.get("selected_outcome_provenance")
@@ -694,7 +840,7 @@ def outcome_provenance(outcome):
     return "unknown_unverified"
 
 
-def descriptive_forecasts(receipts, expected_hashes, observed_at):
+def descriptive_forecasts(receipts, expected_hashes, observed_at, *, model_version="original_sleeper_matchup_baseline"):
     """Same native receipt selection as paired_forecasts; no policy mutation."""
     first, references, excluded = {}, {}, Counter()
     unique = {digest(payload): payload for payload in receipts}
@@ -702,13 +848,20 @@ def descriptive_forecasts(receipts, expected_hashes, observed_at):
     valid = []
     categories = PICKABLE_STATS | EXTRA_CATEGORIES
     supported = []
+    modern = model_version == corrected.MODEL
+    if model_version not in ("original_sleeper_matchup_baseline", corrected.MODEL):
+        raise IntegrityError("Unsupported descriptive model selector")
+    if modern and expected_hashes != corrected.V2_SOURCE_SHA256:
+        raise IntegrityError("Corrected descriptive source must match the closed manifest")
     for sha, payload in unique.items():
-        if (payload.get("schema_version") != "baseline-capture-v1"
-                or payload.get("model") != "original_sleeper_matchup_baseline"
+        if (payload.get("schema_version") != (corrected.NATIVE if modern else "baseline-capture-v1")
+                or payload.get("model") != model_version
                 or payload.get("engine_files") != expected_hashes
                 or payload.get("engine_sha256") != digest(expected_hashes)):
             excluded["unsupported_forecast_contract_or_engine"] += 1
             continue
+        if modern:
+            corrected.native_contract(payload)
         supported.append((sha, payload))
     for sha, payload in sorted(supported, key=lambda item: (utc(item[1]["captured_at"]), item[0])):
         if payload.get("mode") != "live":
@@ -720,7 +873,7 @@ def descriptive_forecasts(receipts, expected_hashes, observed_at):
         if captured > utc(observed_at):
             excluded["future_receipt"] += 1
             continue
-        if expected_hashes.get("pull/scoring.py") != SCORING_V1_SHA256:
+        if not modern and expected_hashes.get("pull/scoring.py") != SCORING_V1_SHA256:
             raise IntegrityError("Unrecognized original descriptive scoring engine")
         valid.append(payload)
         references[sha] = payload
@@ -763,7 +916,20 @@ def descriptive_forecasts(receipts, expected_hashes, observed_at):
                 "baseline_input_sha256": payload["input_sha256"], "engine_sha256": payload["engine_sha256"],
                 "model_version": payload["model"],
                 "observation_row_sha256": digest(row)})
-    pairs, _ = paired_forecasts(valid, {"baseline": "original_sleeper_matchup_baseline",
+    if modern:
+        # The registered primary selector intentionally rejects this model.
+        # Preserve the same earliest eligible paired-observation rule locally.
+        pairs = {}
+        for payload in valid:
+            for row in payload["rows"]:
+                key = identity(row)
+                if (key in first and row["category"] != "anytime_td"
+                        and utc(payload["captured_at"]) < utc(row["kickoff"])
+                        and row.get("raw_projection") is not None and row.get("adjusted_projection") is not None):
+                    pairs.setdefault(key, {**row, "captured_at": payload["captured_at"],
+                        "forecast_generated_at": payload["forecast_generated_at"], "baseline_payload_sha256": digest(payload)})
+    else:
+        pairs, _ = paired_forecasts(valid, {"baseline": "original_sleeper_matchup_baseline",
                                         "targets": sorted(PICKABLE_STATS | {"fpts"})}, expected_hashes,
                                row_eligible=lambda row: row["category"] in
                                    scoring.POSITION_CATEGORIES.get(row.get("position"), ()))
@@ -849,7 +1015,9 @@ def bind_original_board(row, boards):
             for key in set(scoring.PPR) | {"idp_fum_rec"}:
                 if key in projection:
                     finite(projection[key], "original PPR projection component", optional=False)
-            if scoring.ppr_points(projection) != row["raw_projection"]:
+            value = (scoring.ppr_points(projection, projection=True) if row.get("model_version") == corrected.MODEL
+                     else corrected.legacy_scoring().ppr_points(projection))
+            if value != row["raw_projection"]:
                 raise IntegrityError("Original component PPR differs from receipt")
         if row["category"] == "anytime_td":
             projection = player.get("proj")
@@ -857,7 +1025,9 @@ def bind_original_board(row, boards):
                 raise IntegrityError("Original TD projection components missing")
             for key in ("rush_td", "rec_td"):
                 finite(projection.get(key, 0), "original TD projection component", optional=False)
-            if round(scoring.stat_value("anytime_td", projection), 2) != row["raw_projection"]:
+            value = (scoring.stat_value("anytime_td", projection, projection=True) if row.get("model_version") == corrected.MODEL
+                     else corrected.legacy_scoring().stat_value("anytime_td", projection))
+            if round(value, 2) != row["raw_projection"]:
                 raise IntegrityError("Original TD expectation differs from receipt")
         provider = player.get("proj_ppr") if row["category"] == "fpts" else None
         probability = prop.get("td_chance") if row["category"] == "anytime_td" else None
@@ -931,18 +1101,31 @@ def _td_metrics(rows):
             "calibration": bins}
 
 
-def evaluate_descriptive(first, pairs, numeric_outcomes, extra_outcomes, *, original_boards=()):
+def evaluate_descriptive(first, pairs, numeric_outcomes, extra_outcomes, *, original_boards=(),
+                         model_version="original_sleeper_matchup_baseline"):
     """Local additive metrics. Never promotes, pools units or edits an observation."""
+    if model_version not in ("original_sleeper_matchup_baseline", corrected.MODEL):
+        raise IntegrityError("Unsupported descriptive report model")
+    rows = list(first.values()) + list(pairs.values())
+    original_engine = (digest(corrected.legacy_engine_hashes())
+                       if model_version == "original_sleeper_matchup_baseline"
+                       and any(row.get("engine_sha256") is not None for row in rows) else None)
+    for row in rows:
+        if row.get("model_version", model_version) != model_version:
+            raise IntegrityError("Descriptive report cannot mix or relabel model cohorts")
+        if model_version == corrected.MODEL and row.get("engine_sha256") != digest(corrected.V2_SOURCE_SHA256):
+            raise IntegrityError("Corrected descriptive row lacks the closed engine identity")
+        if (model_version == "original_sleeper_matchup_baseline" and row.get("engine_sha256") is not None
+                and row["engine_sha256"] != original_engine):
+            raise IntegrityError("Original descriptive row has an incompatible engine identity")
     boards = original_board_index(original_boards)
-    def outcome_row(row):
+    def outcome_row(key, row):
         outcomes = extra_outcomes if row["category"] in EXTRA_CATEGORIES else numeric_outcomes
-        outcome = outcomes.get(identity(row), {})
+        outcome, binding = bind_outcome(row, outcomes.get(key), key=key)
         status = outcome.get("status", "pending")
         reason = outcome.get("reason", "no_saved_outcome")
-        if outcome.get("kickoff") and utc(outcome["kickoff"]) != utc(row["kickoff"]):
+        if binding["status"] == "schedule_changed":
             status = "excluded_schedule_changed"
-        elif outcome and (outcome.get("team") != row["team"] or not outcome.get("kickoff")):
-            status, reason = "unresolved", "outcome_team_or_saved_kickoff_mismatch"
         elif outcome.get("outcome_conflict"):
             status, reason = "unresolved", "conflicting_outcome_evidence"
         item = {**row, "evaluation_status": status,
@@ -974,8 +1157,8 @@ def evaluate_descriptive(first, pairs, numeric_outcomes, extra_outcomes, *, orig
                 delta = Decimal(str(item["adjusted_projection_absolute_error"])) - Decimal(str(item["raw_projection_absolute_error"]))
                 item.update(absolute_error_delta=float(delta), adjustment_effect="helps" if delta < 0 else "hurts" if delta > 0 else "ties")
         return item
-    population = [outcome_row(row) for _, row in sorted(first.items())]
-    paired = [outcome_row(row) for _, row in sorted(pairs.items())]
+    population = [outcome_row(key, row) for key, row in sorted(first.items())]
+    paired = [outcome_row(key, row) for key, row in sorted(pairs.items())]
     td_rows = []
     for row in population:
         if row["category"] != "anytime_td":
@@ -1018,7 +1201,10 @@ def evaluate_descriptive(first, pairs, numeric_outcomes, extra_outcomes, *, orig
             value["probability"] = _td_metrics(td_rows)
         categories[category] = value
     unpaired_rows = [r for r in population if identity(r) not in pairs and r["category"] != "anytime_td"]
-    return {"schema_version": DESCRIPTIVE_VERSION, "statistic_contract": descriptive_contract(),
+    if model_version not in ("original_sleeper_matchup_baseline", corrected.MODEL):
+        raise IntegrityError("Unsupported descriptive model selector")
+    return {"schema_version": DESCRIPTIVE_VERSION, "statistic_contract": descriptive_contract(presence_aware=model_version == corrected.MODEL),
+            "model_version": model_version,
             "scope": "DESCRIPTIVE_EXTENSION_NOT_REGISTERED_PRIMARY_EXPERIMENT",
             "observation_selection": "earliest_eligible_same_receipt_values_by_capture_time_then_payload_digest",
             "coverage": _sample_context(population), "outcome_status": dict(Counter(r["evaluation_status"] for r in population)),
@@ -1072,17 +1258,20 @@ def score(pairs, outcomes, coverage, policy):
     injuries = Counter()
     detail = []
     for key, row in sorted(pairs.items()):
-        outcome = outcomes.get(key, {"status": "pending", "actual": None})
+        outcome, binding = bind_outcome(row, outcomes.get(key), key=key)
         status = outcome["status"]
         if utc(row["kickoff"]) <= utc(policy["registered_at"]):
             status = "excluded_pre_registration_game"
-        elif outcome.get("kickoff") and utc(outcome["kickoff"]) != utc(row["kickoff"]):
+        elif binding["status"] == "schedule_changed":
             status = "excluded_schedule_changed"
         statuses[status] += 1
         hours = (utc(row["kickoff"]) - utc(row["captured_at"])).total_seconds() / 3600
         lead_times["under_24h" if hours < 24 else "24_to_72h" if hours <= 72 else "over_72h"] += 1
         injuries[row.get("injury_at_capture") or "no_designation_reported"] += 1
         item = {**row, "evaluation_status": status, "actual": outcome.get("actual"),
+                "outcome_reason": outcome.get("reason"),
+                "outcome_identity_status": outcome.get("outcome_identity_status"),
+                "outcome_identity_reasons": outcome.get("outcome_identity_reasons", []),
                 "outcome_snapshot_sha256": outcome.get("outcome_snapshot_sha256"),
                 "outcome_observations": outcome.get("outcome_observations", []),
                 "outcome_conflict": outcome.get("outcome_conflict", False),
@@ -1098,7 +1287,7 @@ def score(pairs, outcomes, coverage, policy):
         categories[key] = {"raw_sleeper": raw, "unchanged_clone": clone,
                            "paired_mae_delta_clone_minus_raw": clone["mae"] - raw["mae"] if rows else None,
                            "uncertainty": cluster_interval(rows, policy)}
-    return {"schema_version": "forecast-scorecard-v1", "policy_version": policy["version"], "policy_sha256": digest(policy),
+    return {"schema_version": "forecast-scorecard-v2", "policy_version": policy["version"], "policy_sha256": digest(policy),
             "evidence": "LOCAL_PREGAME_OBSERVATIONS_SOURCE_ASOF_NOT_VERIFIED", "coverage": coverage,
             "outcome_status": dict(statuses), "lead_time_coverage": dict(lead_times), "injury_coverage": dict(injuries),
             "categories": categories, "rows": detail, "production_model": policy["baseline"],
@@ -1146,7 +1335,10 @@ def build_scorecard(root=ROOT, observed_at=None, mode="live", allow_replay=False
     policy = load_json(root / "config/evaluation-policy.json")
     lane = "forward" if mode == "live" else "replay"
     receipts = [read(p) for p in sorted((root / "data" / lane).rglob("*.json.gz"))]
-    pairs, coverage = paired_forecasts(receipts, policy, engine_hashes(root), allow_replay=allow_replay)
+    current_model = all((root / name).is_file() and hashlib.sha256((root / name).read_bytes()).hexdigest() == value
+                        for name, value in corrected.V2_SOURCE_SHA256.items()) and bool(corrected.V2_SOURCE_SHA256)
+    hashes = corrected.legacy_engine_hashes() if current_model else engine_hashes(root)
+    pairs, coverage = paired_forecasts(receipts, policy, hashes, allow_replay=allow_replay)
     additional = (_additional_pairs(additional_outcome_pairs, pairs, receipts, now, allow_replay)
                   if additional_outcome_pairs is not None else {})
     paths = snapshot_outcomes(root, pairs, now, mode=mode)

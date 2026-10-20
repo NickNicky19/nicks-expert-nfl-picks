@@ -25,6 +25,7 @@ import selection_publication as publication
 from selection_publication import all_ten_outcome_identities, publish_selection_report
 from shadow import evaluate, make_shadow
 from verify import require_offline
+import data_integrity_v2 as corrected
 import partial_week
 from source_evidence import record_scoreboard
 
@@ -63,12 +64,19 @@ def read_native_baseline(path, root=ROOT, *, expected_hashes=None, now=None):
     It is not independent source authentication or proof of public publication.
     """
     now = utc(now or datetime.now(timezone.utc))
-    expected_hashes = engine_hashes(Path(root)) if expected_hashes is None else expected_hashes
     path, season, week = _point_location(root, path, "forward")
     payload = read(path)
+    modern = payload.get("schema_version") == corrected.NATIVE
+    if modern:
+        recognized = corrected.native_contract(payload)
+        if expected_hashes is not None and expected_hashes != recognized:
+            raise IntegrityError("Wrong explicitly requested corrected engine")
+        expected_hashes = recognized
+    elif expected_hashes is None:
+        expected_hashes = corrected.legacy_engine_hashes()
     try:
-        if (payload["schema_version"] != "baseline-capture-v1"
-                or payload["model"] != point_challenger.BASELINE_MODEL or payload["mode"] != "live"
+        if (payload["schema_version"] != (corrected.NATIVE if modern else "baseline-capture-v1")
+                or payload["model"] != (corrected.MODEL if modern else point_challenger.BASELINE_MODEL) or payload["mode"] != "live"
                 or payload["engine_files"] != expected_hashes
                 or payload["engine_sha256"] != digest(expected_hashes)
                 or not isinstance(payload["input_sha256"], str)
@@ -109,7 +117,7 @@ def _point_registration(root, now):
     registration = load_json(path)
     if digest(registration) != REC_HALF_REGISTRATION_SHA256:
         raise IntegrityError("Official fixed candidate registration digest mismatch")
-    point_challenger.validate_registration(registration, engine_hashes(Path(root)), now=now)
+    point_challenger.validate_registration(registration, corrected.legacy_engine_hashes(), now=now)
     return registration
 
 
@@ -139,16 +147,25 @@ def _point_candidate_report(root):
     registration = _point_registration(root, now)
     if registration is None:
         return None, None
-    hashes = engine_hashes(Path(root))
-    baselines = [read_native_baseline(path, root, expected_hashes=hashes, now=now)
-                 for path in sorted((Path(root) / "data/forward").rglob("*.json.gz"))]
+    hashes = corrected.legacy_engine_hashes()
+    baselines = []
+    for path in sorted((Path(root) / "data/forward").rglob("*.json.gz")):
+        native = read_native_baseline(path, root, now=now)
+        if native["schema_version"] == "baseline-capture-v1" and native["engine_files"] == hashes:
+            baselines.append(native)
     candidate_root = Path(root) / "data/verification/point-candidates"
     candidates = [_point_receipt(root, path, "verification/point-candidates")
                   for path in sorted(candidate_root.glob("[0-9][0-9][0-9][0-9]/w[0-9][0-9]/*.json.gz"))]
     outcomes = [_point_receipt(root, path, "outcomes")
                 for path in sorted((Path(root) / "data/outcomes").rglob("*.json.gz"))]
-    report = point_challenger.evaluate(candidates, baselines, outcomes, registration, now=now,
-                                      policy=load_json(Path(root) / "config/evaluation-policy.json"))
+    outcomes = [payload for payload in outcomes if payload.get("schema_version") == "forecast-outcomes-v1"]
+    policy = load_json(Path(root) / "config/evaluation-policy.json")
+    # The unchanged candidate module's default ROOT is part of its V1 contract.
+    # A corrected source never lends it a changed root under an original label.
+    if (Path(root) / "pull/build.py").is_file() and hashlib.sha256((Path(root) / "pull/build.py").read_bytes()).hexdigest() == corrected.V2_SOURCE_SHA256["pull/build.py"]:
+        report = corrected.legacy_candidate_evaluation(candidates, baselines, outcomes, registration, policy, now)
+    else:
+        report = point_challenger.evaluate(candidates, baselines, outcomes, registration, now=now, policy=policy)
     path = _write_point_receipt(root, "verification/point-candidate-reports", report)
     return report, path
 
@@ -274,7 +291,12 @@ def probability_report(root, policy, mode="live", include_registry=True):
     outcome_lane = "outcomes" if mode == "live" else "outcomes_replay"
     shadows = [read(p) for p in (root / "data" / shadow_lane).rglob("*.json.gz")]
     baselines = [read(p) for p in (root / "data" / forecast_lane).rglob("*.json.gz")]
-    outcomes = latest_outcomes([read(p) for p in (root / "data" / outcome_lane).rglob("*.json.gz")], mode == "replay")
+    legacy_hashes = corrected.legacy_engine_hashes()
+    baselines = [p for p in baselines if p.get("schema_version") == "baseline-capture-v1"
+                 and p.get("model") == point_challenger.BASELINE_MODEL and p.get("engine_files") == legacy_hashes
+                 and p.get("engine_sha256") == digest(legacy_hashes)]
+    outcomes = latest_outcomes([p for path in (root / "data" / outcome_lane).rglob("*.json.gz")
+                               if (p := read(path)).get("schema_version") == "forecast-outcomes-v1"], mode == "replay")
     report = evaluate(shadows, baselines, outcomes, policy, allow_replay=mode == "replay")
     if include_registry:
         report["retained_versions"] = {}
@@ -283,6 +305,9 @@ def probability_report(root, policy, mode="live", include_registry=True):
             if digest(old_policy) != digest(policy):
                 report["retained_versions"][old_policy["challenger"]["version"]] = evaluate(
                     shadows, baselines, outcomes, old_policy, allow_replay=mode == "replay")
+    for diagnostic in (report, *report.get("retained_versions", {}).values()):
+        diagnostic.update(qualification="KNOWN_UNGUARDED_JOIN / NOT_CERTIFIED", qualified_accuracy=False,
+                          completed_week_qualification=False, promotion_eligible=False)
     return report
 
 
@@ -344,6 +369,15 @@ def public_scorecard(report, data, source_sha):
                              "Original full-board Week 6 proof remains incomplete."]}
 
 
+def _verification_route(config, data, at):
+    if config.get("verification_mode") != corrected.VALIDATOR:
+        return partial_week.dispatch(config, data, at)
+    if config.get("production_model") != corrected.MODEL or config.get("experimental_recording_enabled") is not False:
+        raise IntegrityError("Corrected dispatch requires its explicit model and inactive recorders")
+    corrected.validate_plan(config.get("partial_week", {}), data, at)
+    return corrected.VALIDATOR
+
+
 def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, initial_board=None, _checked=None):
     _checked = {} if _checked is None else _checked
     root = Path(root).resolve()
@@ -357,9 +391,18 @@ def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, ini
     rules = load_json(root / "config/sleeper-rules-provenance.json")
     now = utc(replay_at) if replay_at else datetime.now(timezone.utc)
     config = load_json(root / "config/phase2.json")
-    route = partial_week.dispatch(config, data, now) if mode == "live" else "strict"
+    route = _verification_route(config, data, now) if mode == "live" else "strict"
     scope = completion_path = None
-    if route == "partial":
+    if route == corrected.VALIDATOR:
+        spec = config["partial_week"]
+        registration, _ = corrected.register_plan(root, spec, now, source_sha=source_sha, initial_board=initial_board)
+        closing = _closing_status(data)
+        baseline_path, health, completion_path, scope = corrected.record_bundle(
+            root, data, pointer, closing, spec, registration.relative_to(root).as_posix(),
+            clock=lambda: datetime.now(timezone.utc))
+        verification = {"inputs": corrected.recorded_inputs(root, pointer["latest_inputs"], data["season"], data["week"],
+                         mode="live", observed_at=datetime.now(timezone.utc)), "checked_factors": scope["checked_factors"]}
+    elif route == "partial":
         spec = config["partial_week"]
         registration, _ = partial_week.register_plan(root, spec, now, source_sha=source_sha,
                                                       initial_board=initial_board)
@@ -371,7 +414,7 @@ def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, ini
             root, pointer["latest_inputs"], data["season"], data["week"], engine_hashes(root),
             mode="live", observed_at=datetime.now(timezone.utc)), "checked_factors": scope["checked_factors"]}
     else:
-        verification = require_offline(root, data, pointer, mode, now)
+        verification = corrected.legacy_offline(root, data, pointer, mode, now)
     inputs = verification["inputs"]
     observation = dict(inputs["offer_observation"], mode=mode)
     if utc(observation["collected_at"]) > now:
@@ -382,7 +425,7 @@ def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, ini
     # Validation itself takes time. A live capture cannot backdate its clock to
     # the start of preflight, including when a game starts during that check.
     now = now if mode == "replay" else datetime.now(timezone.utc)
-    if route != "partial":
+    if route not in ("partial", corrected.VALIDATOR):
         baseline_path, health = capture(data, load_json(root / "output/data/meta.json"), root,
                                         now, engine_hashes(root), mode=mode)
     baseline = read(baseline_path)
@@ -406,7 +449,7 @@ def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, ini
                                               baseline_created=health["capture_created"],
                                               code_commit=os.environ.get("GITHUB_SHA"), evaluate_saved=False)
     shadow_path = None
-    if health["capture_created"] and (mode == "replay" or experimental):
+    if baseline.get("schema_version") == "baseline-capture-v1" and health["capture_created"] and (mode == "replay" or experimental):
         payload = make_shadow(baseline, inputs, policy, now, code_commit=os.environ.get("GITHUB_SHA"))
         completed = utc(replay_at) if replay_at else datetime.now(timezone.utc)
         # Never call a calculation completed after kickoff a prospective forecast.
@@ -426,7 +469,7 @@ def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, ini
                         "shadow_receipt": shadow_path.relative_to(root).as_posix() if shadow_path else None,
                         "shadow_retry": "new_forecast" if shadow_path else "existing_baseline_not_backdated",
                         "offer_receipt": offer_path.relative_to(root).as_posix(),
-                        "production_model": policy["baseline"], "offer_coverage": offer_payload["coverage"],
+                        "production_model": baseline["model"], "offer_coverage": offer_payload["coverage"],
                         "unique_forecast_opportunities": report["coverage"]["unique_opportunities"]}
     if mode == "live":
         point_report, point_report_path = _point_candidate_report(root)
@@ -446,7 +489,8 @@ def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, ini
         health["phase2"]["strict_full_board_verified"] = route == "strict"
         health["phase2"]["partial_completion_receipt"] = completion_path.relative_to(root).as_posix() if completion_path else None
         if scope is not None:
-            atomic_json(root / "output/data/verification-scope.json", partial_week.public_scope(scope, read(completion_path)))
+            scope_reader = corrected.public_scope if route == corrected.VALIDATOR else partial_week.public_scope
+            atomic_json(root / "output/data/verification-scope.json", scope_reader(scope, read(completion_path)))
         else:
             atomic_json(root / "output/data/verification-scope.json", {
                 "schema_version": "strict-full-board-public-scope-v1", "output_sha256": digest(data),
@@ -513,7 +557,8 @@ def _dependency_closure(root):
     hashing bounds memory even for originals larger than public-asset limits.
     """
     root = Path(root).resolve()
-    members = []
+    corrected.dispatcher_identity()
+    members = [("retained-approved-source-objects", digest(corrected.legacy_dependency_inventory()))]
     for lane in ("pull", "tools", "config", "data"):
         base = root / lane
         if not base.exists():
@@ -539,6 +584,7 @@ def _dependency_closure(root):
     # and wrapper may therefore execute from another checkout; inventory those
     # actual source directories too, rather than trusting runtime HEAD or files.
     source_dirs = {Path(__file__).resolve().parent, Path(partial_week.__file__).resolve().parent,
+                   Path(corrected.__file__).resolve().parent,
                    Path(publication.__file__).resolve().parent, Path(require_offline.__code__.co_filename).resolve().parent,
                    Path(__file__).resolve().parents[1] / "pull"}
     for directory in sorted(source_dirs):
@@ -562,7 +608,13 @@ def _qualified_bundle(root, completion, spec, checked):
         if utc(result[0]["evidence_completed_at"]) > now or utc(result[2]["captured_at"]) > now:
             raise IntegrityError("Cached bundle clock is in the future")
     else:
-        result = partial_week.read_bundle(root, completion, spec, read_native_baseline, now=now)
+        saved = partial_week._saved(root, completion, partial_week.COMPLETION_LANE)
+        if saved.get("schema_version") == "partial-completion-data-integrity-v2":
+            result = corrected.read_bundle(root, completion, spec, now=now)
+        elif saved.get("schema_version") == partial_week.COMPLETION_VERSION:
+            result = corrected.legacy_bundle(root, completion, spec, now=now)
+        else:
+            raise IntegrityError("Unsupported completed-bundle schema")
         if _dependency_closure(root) != before:
             raise IntegrityError("Source evidence changed during bundle verification")
         checked[key] = copy.deepcopy(result)
@@ -968,8 +1020,7 @@ def _completed_partial_native(stage, path, spec):
                 matches.append(candidate.relative_to(stage).as_posix())
         if len(matches) != 1:
             return False
-        partial_week.read_bundle(stage, matches[0], spec, read_native_baseline,
-                                 now=datetime.now(timezone.utc))
+        _qualified_bundle(stage, matches[0], spec, {})
         return True
     except (OSError, ValueError, KeyError, TypeError):
         # This rejects only native qualification. The original generation
@@ -994,7 +1045,7 @@ def _copy_evidence(stage, root, *, failed_generation=False):
                     plan = spec.get("plan", {})
                     relative = path.relative_to(stage / "data/forward")
                     partial_period = (str(plan.get("season")), f"w{plan.get('week', 0):02d}")
-                    if (config.get("verification_mode") == partial_week.VERSION
+                    if (config.get("verification_mode") in (partial_week.VERSION, corrected.VALIDATOR)
                             and relative.parts[:2] == partial_period
                             and not _completed_partial_native(stage, path, spec)):
                         # Preserve exact NEW failed bytes outside the canonical
@@ -1083,15 +1134,20 @@ def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
     plan = config.get("partial_week", {}).get("plan", {})
     selected_state = None
     selected_period = (current["season"], current["week"])
-    if build_first and config.get("verification_mode") == partial_week.VERSION:
+    if build_first and config.get("verification_mode") in (partial_week.VERSION, corrected.VALIDATOR):
         import build
         # Observe the builder's own selector once, before registration/build.
         # The unchanged builder consumes this exact response; no forced week.
         selected_state = build.sources.nfl_state()
         week = int(selected_state["week"]) if selected_state.get("season_type") == "regular" else 1
         selected_period = (int(selected_state["season"]), max(1, min(week, build.REGULAR_SEASON_WEEKS)))
-        partial_week.dispatch(config, {"season": selected_period[0], "week": selected_period[1]}, datetime.now(timezone.utc))
-    needs_initial = (config.get("verification_mode") == partial_week.VERSION
+        if config.get("verification_mode") == corrected.VALIDATOR:
+            if selected_period != (plan.get("season"), plan.get("week")):
+                raise IntegrityError("Corrected rollover needs its own approved source/plan transition")
+            _verification_route(config, current, datetime.now(timezone.utc))
+        else:
+            partial_week.dispatch(config, {"season": selected_period[0], "week": selected_period[1]}, datetime.now(timezone.utc))
+    needs_initial = (config.get("verification_mode") in (partial_week.VERSION, corrected.VALIDATOR)
                      and selected_period == (plan.get("season"), plan.get("week")))
     initial = _initial_board(root, config["partial_week"]) if needs_initial else None
     with tempfile.TemporaryDirectory(prefix="phase2-coherent-generation-") as directory:
@@ -1110,8 +1166,8 @@ def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
                     and not (stage / "output/data/selection-grading/hosting.json").exists()):
                 finalize_hosting(stage, datetime.now(timezone.utc), _checked=_checked)
             if needs_initial:
-                partial_week.register_plan(stage, config["partial_week"], datetime.now(timezone.utc),
-                                           source_sha=source_sha, initial_board=initial)
+                registrar = corrected.register_plan if config.get("verification_mode") == corrected.VALIDATOR else partial_week.register_plan
+                registrar(stage, config["partial_week"], datetime.now(timezone.utc), source_sha=source_sha, initial_board=initial)
             if build_first:
                 import build_recorded
                 import build
@@ -1124,7 +1180,7 @@ def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
                     build.books.ATHLETES = build.CACHE / "espn_athletes.json"
                     if selected_state is not None:
                         build.sources.nfl_state = lambda: copy.deepcopy(selected_state)
-                    build_recorded.record_build(stage, mode="live")
+                    build_recorded.record_build(stage, mode="live", model=config.get("production_model", point_challenger.BASELINE_MODEL))
                 finally:
                     for key, value in saved.items():
                         setattr(build, key, value)
@@ -1187,12 +1243,13 @@ def _validate_generation(root, snapshots=None, *, legacy_proof=None, _checked=No
         completed, scope, native = _qualified_bundle(root, completion, load_json(root / "config/phase2.json")["partial_week"], _checked)
         if scope["output_sha256"] != digest(board) or digest(native) != digest(baseline):
             raise IntegrityError("Generation scope/native binding mismatch")
-        if output("data/verification-scope.json") != partial_week.public_scope(scope, completed):
+        public_scope = corrected.public_scope if scope.get("validator_contract") == corrected.VALIDATOR else partial_week.public_scope
+        if output("data/verification-scope.json") != public_scope(scope, completed):
             raise IntegrityError("Public scope differs from retained source validation")
         if health["phase2"].get("strict_full_board_verified") is not False:
             raise IntegrityError("Partial generation overclaims strict verification")
     else:
-        require_offline(root, board, legacy_proof if legacy_proof is not None else load_json(root / "output/data/matchup-proof.json"), "live", health["checked_at"])
+        corrected.legacy_offline(root, board, legacy_proof if legacy_proof is not None else load_json(root / "output/data/matchup-proof.json"), "live", health["checked_at"])
         if health["phase2"].get("strict_full_board_verified") is not True:
             raise IntegrityError("Strict generation lacks source validation")
     rich = partial_week._saved(root, health["phase2"]["rich_scorecard_receipt"], "verification/report-originals")

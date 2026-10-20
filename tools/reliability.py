@@ -77,7 +77,17 @@ def finite(value, label, optional=True):
         raise IntegrityError(f"{label} is not a finite number")
 
 
-def engine_hashes(root: Path) -> dict[str, str]:
+V2_HELPER_SHA256 = '386b3fb72120315efa33b554a4832deaa54145a9d3a28556260eac9ba4033b3f'
+
+
+def engine_hashes(root: Path, *, version="original_sleeper_matchup_baseline") -> dict[str, str]:
+    if version == "sleeper-matchup-data-integrity-v2":
+        import data_integrity_v2
+        if hashlib.sha256(Path(data_integrity_v2.__file__).read_bytes()).hexdigest() != V2_HELPER_SHA256:
+            raise IntegrityError("Corrected source dispatcher changed")
+        return data_integrity_v2.engine_files(root)
+    if version != "original_sleeper_matchup_baseline":
+        raise IntegrityError("Unknown explicit engine contract")
     # Missing source files are a hard error in real runs. Tests may pass explicit hashes.
     hashes = {}
     for name in ENGINE_PATHS:
@@ -181,7 +191,7 @@ def validate(data: dict, meta: dict, observed_at: datetime, max_age_minutes=MAX_
             "profitability": "NOT_ESTABLISHED"}
 
 
-def make_payload(data: dict, observed_at: datetime, hashes: dict, mode: str) -> dict:
+def make_payload(data: dict, observed_at: datetime, hashes: dict, mode: str, *, model="original_sleeper_matchup_baseline") -> dict:
     if mode not in ("live", "replay"):
         raise IntegrityError("mode must be live or replay")
     games = {g["id"]: g for g in data["games"]}
@@ -213,13 +223,20 @@ def make_payload(data: dict, observed_at: datetime, hashes: dict, mode: str) -> 
                 row["sleeper_observation"] = prop["sleeper"]
             rows.append(row)
     rows.sort(key=lambda r: (r["game_id"], r["player_id"], r["category"]))
-    return {"schema_version": SCHEMA_VERSION, "mode": mode,
+    result = {"schema_version": SCHEMA_VERSION, "mode": mode,
             "evidence_label": "LOCAL_PRE_GAME_CAPTURE_PUBLICATION_NOT_VERIFIED" if mode == "live" else "REPLAY_TEST_NOT_PROSPECTIVE",
             "captured_at": stamp(observed_at), "forecast_generated_at": data["generated_at"],
             "input_sha256": digest(data), "engine_sha256": digest(hashes), "engine_files": hashes,
             "code_commit": os.environ.get("GITHUB_SHA"),
             "model": "original_sleeper_matchup_baseline", "rows": rows,
             "excluded_started_or_late_games": sorted(skipped)}
+    if model != "original_sleeper_matchup_baseline":
+        import data_integrity_v2 as corrected
+        if model != corrected.MODEL or hashes != corrected.V2_SOURCE_SHA256 or not hashes:
+            raise IntegrityError("Unsupported corrected capture source")
+        result.update(schema_version=corrected.NATIVE, model=model, presence_contract=corrected.PRESENCE,
+                      code_commit=corrected.recording_source())
+    return result
 
 
 def immutable_write(path: Path, payload: dict) -> bool:
@@ -256,10 +273,11 @@ def immutable_write(path: Path, payload: dict) -> bool:
     return True
 
 
-def capture(data: dict, meta: dict, root: Path, observed_at: datetime, hashes: dict, mode="replay", max_age_minutes=MAX_BUILD_AGE_MINUTES):
+def capture(data: dict, meta: dict, root: Path, observed_at: datetime, hashes: dict, mode="replay", max_age_minutes=MAX_BUILD_AGE_MINUTES,
+            *, model="original_sleeper_matchup_baseline"):
     observed_at = utc(observed_at)
     health = validate(data, meta, observed_at, max_age_minutes)
-    payload = make_payload(data, observed_at, hashes, mode)
+    payload = make_payload(data, observed_at, hashes, mode, model=model)
     identity = digest({"data": digest(data), "engine": digest(hashes), "mode": mode})
     lane = "forward" if mode == "live" else "replay"
     path = root / "data" / lane / str(data["season"]) / f"w{data['week']:02d}" / (identity + ".json.gz")

@@ -375,6 +375,21 @@ async function presentationChecks(browser, origin, width) {
     equal(await page.evaluate(() => [S.f.sort, S.f.q, S.f.cat, S.open.size]), ['proj', '', '', 0], 'full browser reload preserves existing reset behavior');
     equal(await page.evaluate(() => S.mine), saved, 'full browser reload preserves device selections');
     equal(await page.evaluate(() => S.lines['fixture-3|rec_yd']), undefined, 'full browser reload retains existing temporary-line reset');
+    const presence = await page.evaluate(() => {
+      const unknown = {rec: null, rec_yd: 20}, negative = {rush_yd: -2, fum_lost: 1};
+      const partial = {rec: 2.5, _presence: {version:'nfl-data-presence-v2',kind:'projection'}};
+      const player = {...S.byId['fixture-3'], proj: partial};
+      const before = JSON.stringify(S.mine), settings = S.sc;
+      S.sc = {mode:'espn',half:false};
+      const adjusted = pv(player, player.props.find(p => p.key === 'fpts')).adj;
+      S.sc = settings;
+      return {tdMissing:tdChanceText({td_chance:null}),tdZero:tdChanceText({td_chance:0}),
+        pprMissing:ppr(unknown),pprNegative:ppr(negative),pprZero:ppr({rec:0}),
+        partialKnown:offensiveComponentsKnown(partial,['rec']),partialUnknown:offensiveComponentsKnown(partial,['rush_yd']),
+        adjusted,picksIntact:JSON.stringify(S.mine)===before};
+    });
+    equal(presence, {tdMissing:'Unavailable',tdZero:'0%',pprMissing:null,pprNegative:-2.2,pprZero:0,
+      partialKnown:true,partialUnknown:false,adjusted:null,picksIntact:true}, 'presence-aware PPR/TD and custom scoring preserve unknowns and saved picks');
     equal(errors, [], 'no browser errors');
     return { width, checks, assertions: 'passed', leading_prop: 'rec_yd', score: .4, phone: width === 390 ? 'Chromium width emulation, not physical iPhone/Safari' : null };
   } finally { await context.close(); week = previous; }

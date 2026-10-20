@@ -18,10 +18,11 @@ from zoneinfo import ZoneInfo
 
 from evidence import read, write
 from reliability import IntegrityError, canonical, digest, engine_hashes, finite, load_json, stamp, utc
-from scorecard import (identity, latest_outcomes, paired_forecasts, score, snapshot_outcomes,
+from scorecard import (identity, bind_outcome, latest_outcomes, paired_forecasts, score, snapshot_outcomes,
                        DERIVED_STAT_SCHEMA, EXTRA_CATEGORIES, descriptive_contract,
                        descriptive_forecasts, evaluate_descriptive, outcome_provenance)
 import grade
+import data_integrity_v2 as corrected
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "selection-report-v3"
@@ -57,11 +58,15 @@ def _snapshots(receipts, policy, as_of, expected_hashes):
             excluded["duplicate_receipt"] += 1
             continue
         seen.add(sha)
-        if (payload.get("schema_version") != "baseline-capture-v1"
+        modern = payload.get("schema_version") == corrected.NATIVE
+        if modern:
+            corrected.native_contract(payload)
+        if not modern and (payload.get("schema_version") != "baseline-capture-v1"
                 or payload.get("model") != policy["model"]):
             excluded["unsupported_forecast_contract"] += 1
             continue
-        if payload.get("engine_files") != expected_hashes or payload.get("engine_sha256") != digest(expected_hashes):
+        expected = corrected.V2_SOURCE_SHA256 if modern else expected_hashes
+        if payload.get("engine_files") != expected or payload.get("engine_sha256") != digest(expected):
             excluded["unrecognized_engine"] += 1
             continue
         if payload.get("mode") != "live":
@@ -119,7 +124,7 @@ def _snapshots(receipts, policy, as_of, expected_hashes):
     # a digest tie-break. Keep their union for coverage, quarantine the snapshot.
     grouped = defaultdict(list)
     for snapshot in snapshots:
-        grouped[(snapshot["season"], snapshot["week"], snapshot["captured_at"])].append(snapshot)
+            grouped[(snapshot["season"], snapshot["week"], snapshot["captured_at"], snapshot["model"], snapshot["engine_sha256"])].append(snapshot)
     result = []
     for group in grouped.values():
         first = group[0]
@@ -171,7 +176,7 @@ def _decision(template, snapshot, row, cohort, checkpoint, policy, *, boundary=N
         # A prior row identifies the opportunity, not its unobserved later offer.
         record.update(raw_projection=None, adjusted_projection=None, line=None, line_from=None)
     record.update(schema_version="selection-decision-v1", provenance_class="local_pregame_membership_observation",
-                  model_version=snapshot["model"] if snapshot else policy["model"],
+                  model_version=snapshot["model"] if snapshot else template.get("_model", policy["model"]),
                   engine_sha256=snapshot["engine_sha256"] if snapshot else template["_engine"],
                   engine_files=snapshot["engine_files"] if snapshot else template["_engine_files"],
                   policy_version=policy["version"], policy_sha256=digest(policy), cohort=cohort,
@@ -208,18 +213,19 @@ def build_decisions(receipts, policy, as_of, expected_hashes):
     snapshots, excluded = _snapshots(receipts, policy, as_of, expected_hashes)
     groups, observations = defaultdict(list), defaultdict(list)
     for snapshot in snapshots:
-        groups[(snapshot["season"], snapshot["week"])].append(snapshot)
+        groups[(snapshot["season"], snapshot["week"], snapshot["model"], snapshot["engine_sha256"])].append(snapshot)
         for key, row in snapshot["rows"].items():
-            observations[key].append((snapshot, row))
+            observations[key + (snapshot["model"], snapshot["engine_sha256"])].append((snapshot, row))
     records, universe, schedules = [], [], []
     for key, seen in sorted(observations.items()):
         first, original = seen[0]
-        template = dict(original, _engine=first["engine_sha256"], _engine_files=first["engine_files"])
+        opportunity = key[:5]
+        template = dict(original, _engine=first["engine_sha256"], _engine_files=first["engine_files"], _model=first["model"])
         kickoffs = {utc(row["kickoff"]) for _, row in seen}
         schedule_conflict = len(kickoffs) > 1
         if schedule_conflict:
             schedules.append({"opportunity": list(key), "saved_kickoffs": sorted(stamp(k) for k in kickoffs)})
-        if key in first["ambiguous_kickoff_keys"]:
+        if opportunity in first["ambiguous_kickoff_keys"]:
             template["kickoff"] = None
             for cohort in policy["cohorts"]:
                 for checkpoint in ("history", *(c["id"] for c in policy["checkpoints"])):
@@ -246,11 +252,11 @@ def build_decisions(receipts, policy, as_of, expected_hashes):
                     universe.append({"opportunity": list(key), "checkpoint": rule["id"],
                                      "reason": "not_in_observed_universe_before_boundary"})
                     continue
-                eligible = [s for s in groups[key[:2]] if registered < utc(s["captured_at"]) <= boundary]
+                eligible = [s for s in groups[key[:2] + key[5:]] if registered < utc(s["captured_at"]) <= boundary]
                 known_conflict = len({utc(r["kickoff"]) for s, r in seen
                                       if utc(s["captured_at"]) <= boundary}) > 1
                 chosen = eligible[-1] if eligible else None
-                row = chosen["rows"].get(key) if chosen else None
+                row = chosen["rows"].get(opportunity) if chosen else None
                 action = reason = None
                 if boundary <= registered:
                     action, reason = "EXCLUDED", "checkpoint_not_after_registration"
@@ -390,14 +396,17 @@ def grade_decisions(records, outcomes):
     for decision in records:
         row = dict(decision)
         outcome = outcomes.get(identity(row))
+        binding = None
+        if row["action"] == "SELECT":
+            outcome, binding = bind_outcome(row, outcome, key=identity(row))
         status, reason, actual = "pending", "no_saved_final_outcome", None
         if row["action"] != "SELECT":
             status = {"NO_ACTION": "no_action", "NOT_DUE": "not_due", "EXCLUDED": "excluded"}[row["action"]]
             reason = row["reason"]
         elif outcome:
             status, reason = outcome["status"], outcome.get("reason")
-            if outcome.get("team") != row["team"] or not outcome.get("kickoff") or utc(outcome["kickoff"]) != utc(row["kickoff"]):
-                status, reason = "unresolved", "outcome_team_or_saved_kickoff_mismatch"
+            if binding["status"] in ("identity_mismatch", "schedule_changed"):
+                status, reason = "unresolved", outcome["reason"]
             elif outcome.get("outcome_conflict"):
                 status, reason = "unresolved", "conflicting_confirmed_outcomes"
             elif status == "resolved":
@@ -601,34 +610,38 @@ def _original_boards(paths, roots, pins):
     return records, manifest
 
 
-def _descriptive_report(roots, output, inputs, outcomes, expected_hashes, now, pins, boards):
-    first, pairs, coverage = descriptive_forecasts(inputs["forward"], expected_hashes, now)
+def _descriptive_report(roots, output, inputs, outcomes, expected_hashes, now, pins, boards, *, model_version="original_sleeper_matchup_baseline"):
+    modern = model_version == corrected.MODEL
+    contract = descriptive_contract(presence_aware=modern)
+    first, pairs, coverage = descriptive_forecasts(inputs["forward"], corrected.V2_SOURCE_SHA256 if modern else expected_hashes,
+                                                  now, model_version=model_version)
     extra = {key: row for key, row in first.items() if row["category"] in EXTRA_CATEGORIES}
     sink = output / "descriptive-evaluation"
     for root in roots:
         if (root / "output/data/week.json").exists():
             snapshot_outcomes(root, extra, now, output_root=sink,
-                derived_context={"statistic_contract": descriptive_contract()["version"],
+                derived_context={"statistic_contract": contract["version"],
                                  "scope": "saved_input_bytes_only_not_provider_observation",
                                  "input_git_pin": _input_pin(root, pins)},
-                include_populations=False, statistic_contract=descriptive_contract())
+                include_populations=False, statistic_contract=contract)
     saved, unsupported = [], []
     for payload in inputs["outcomes"] + [read(path) for path in (sink / "data/outcomes_derived").rglob("*.json.gz")]:
-        if payload.get("schema_version") == "forecast-outcomes-v1":
+        if payload.get("schema_version") in ("forecast-outcomes-v1", corrected.OUTCOMES):
             # Existing ten-category evidence is consumed through the unchanged
             # map. Old unsupported fpts/TD rows are not silently reinterpreted.
             if any(row.get("category") in EXTRA_CATEGORIES for row in payload.get("rows", [])):
                 unsupported.append({"payload_sha256": digest(payload), "reason": "unsupported_legacy_extra_statistic"})
             continue
-        if (payload.get("schema_version") != DERIVED_STAT_SCHEMA or
+        if (payload.get("schema_version") not in (DERIVED_STAT_SCHEMA, corrected.DESCRIPTIVE_OUTCOMES) or
                 not isinstance(payload.get("statistic_contract"), dict) or
-                payload["statistic_contract"].get("version") != descriptive_contract()["version"]):
+                payload["statistic_contract"].get("version") not in (descriptive_contract()["version"],
+                                                                       descriptive_contract(presence_aware=True)["version"])):
             unsupported.append({"payload_sha256": digest(payload), "reason": "unsupported_descriptive_outcome_contract"})
             continue
         if utc(payload["collected_at"]) > now:
             raise IntegrityError("Saved descriptive outcome is in the future")
         saved.append(payload)
-    result = evaluate_descriptive(first, pairs, outcomes, latest_outcomes(saved), original_boards=boards)
+    result = evaluate_descriptive(first, pairs, outcomes, latest_outcomes(saved), original_boards=boards, model_version=model_version)
     result.update(capture_coverage=coverage, unsupported_outcome_receipts=unsupported)
     return result
 
@@ -772,7 +785,8 @@ def render_html(report, group=None):
 
 
 def run_report(input_roots, output_root, *, now=None, expected_hashes=None, policy=None, input_pins=None,
-               include_descriptive=False, original_board_paths=(), report_version=VERSION):
+               include_descriptive=False, original_board_paths=(), report_version=VERSION,
+               descriptive_model="original_sleeper_matchup_baseline"):
     if report_version not in (VERSION, LEGACY_VERSION):
         raise IntegrityError("Unsupported selection-report contract")
     now = utc(now or datetime.now(timezone.utc))
@@ -783,7 +797,7 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
     if output.is_relative_to(ROOT) or any(output.is_relative_to(root) or root.is_relative_to(output) for root in roots):
         raise IntegrityError("Output must be outside source and input roots")
     policy = policy or load_json(ROOT / "config/timing-policy.json")
-    expected_hashes = expected_hashes or engine_hashes(ROOT)
+    expected_hashes = expected_hashes or corrected.legacy_engine_hashes()
     manifest, inputs = _inventory(roots, input_pins)
     if original_board_paths and not include_descriptive:
         raise IntegrityError("Original boards require explicit all-category evaluation")
@@ -794,7 +808,7 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
     # Unknown schemas are inventoried, not silently upgraded to qualified data.
     saved, unsupported = [], []
     for payload in inputs["outcomes"]:
-        if payload.get("schema_version") != "forecast-outcomes-v1":
+        if payload.get("schema_version") not in ("forecast-outcomes-v1", corrected.OUTCOMES):
             unsupported.append(digest(payload))
         elif utc(payload["collected_at"]) <= now:
             saved.append(payload)
@@ -860,7 +874,7 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
               "timing_policy_sha256": digest(policy), "evaluation_policy_sha256": digest(primary_policy)}
     if include_descriptive:
         report["descriptive_all_categories"] = _descriptive_report(roots, output, inputs, outcomes,
-                                                                  expected_hashes, now, input_pins, boards)
+                                                                  expected_hashes, now, input_pins, boards, model_version=descriptive_model)
     # Outputs are content-addressed; operational clocks live in a separate run receipt.
     report_id = digest(report)
     directory = output / "reports" / report_id
@@ -906,6 +920,9 @@ def main():
                         help="Optional frozen input reference; local Git blobs are verified when available.")
     parser.add_argument("--all-category-evaluation", action="store_true",
                         help="Opt-in local descriptive evaluation; primary/public-v1 behavior stays unchanged.")
+    parser.add_argument("--descriptive-model", choices=("original_sleeper_matchup_baseline", corrected.MODEL),
+                        default="original_sleeper_matchup_baseline",
+                        help="Explicit local all-category model cohort; never pools original and corrected forecasts.")
     parser.add_argument("--original-board", action="append", type=Path, default=[],
                         help="Optional exact original full forecast JSON; never substitute a later board.")
     args = parser.parse_args()
@@ -917,6 +934,7 @@ def main():
         pins[str(Path(name).resolve())] = sha
     report, directory = run_report(args.input_root, args.output_root, input_pins=pins,
                                   include_descriptive=args.all_category_evaluation,
+                                  descriptive_model=args.descriptive_model,
                                   original_board_paths=args.original_board)
     print(json.dumps({"report": str(directory / "index.html"), "rows": len(report["rows"]),
                       "selected_decision_rows_overlapping": sum(r["action"] == "SELECT" for r in report["rows"]),
