@@ -3,7 +3,7 @@
 **Live site:** https://nicknicky19.github.io/nicks-expert-nfl-picks/
 
 NFL props against real sportsbook lines, fantasy projections, live scoring and play-by-play, league sync and trade ideas, styled after Sleeper.
-A Python build writes static JSON every hour, and a static page on GitHub Pages reads it.
+A scheduled daily Python build writes static JSON, and a static page on GitHub Pages reads it.
 
 This is Nick's edition of [Joshua Moy's original project](https://github.com/joshuam0y/joshua-moy-expert-nfl-picks). The projection code, existing archives, and historical track record came from that project. Newly published results are generated in this repository; the historical record should not be presented as picks originally made by Nick.
 
@@ -128,7 +128,7 @@ cd output && python3 -m http.server 8000
 | `config/evaluation-policy.json` | versioned evaluation/promotion rules |
 | `output/` | the site (`index.html`, `app.js`, `style.css`) and its data |
 | `data/cache/` | trimmed weekly stats (finished weeks are fetched once) |
-| `.github/workflows/hourly.yml` | hourly build, commit and Pages deploy |
+| `.github/workflows/hourly.yml` | daily scheduled build, commit and Pages deploy; manual/code-change runs retained |
 
 Data comes from the Sleeper API (projections, stats, players, injuries, Picks lines) and ESPN (scores,
 play-by-play, box scores, injuries, DraftKings lines). This is for fun, not betting advice.
@@ -137,7 +137,30 @@ Nick's edition is maintained at [NickNicky19/nicks-expert-nfl-picks](https://git
 
 ## GitHub Pages
 
-The `hourly.yml` workflow builds the JSON and deploys `output/` to GitHub Pages on pushes and scheduled updates. In the new repository, set **Settings → Pages → Build and deployment → Source** to **GitHub Actions**, then run **Actions → Hourly update → Run workflow** once. The ticker adds updates during game days.
+The `hourly.yml` workflow has one scheduled website refresh per day, targeting
+**8:06 a.m. America/Chicago**, with daylight-saving changes handled by GitHub.
+GitHub may delay or drop a scheduled run; this is a target, not a completion-time
+guarantee. Deliberate manual refresh/recovery and main code-change runs may also
+occur. The historical filename and **Hourly update** display name are retained
+for existing references. Use **Actions → Hourly update → Run workflow → main**
+for a deliberate manual refresh. The shared `hourly-update` concurrency lock
+and required checks remain in force. Ticker's schedule and dispatch loop are
+retired; its retained entrypoint is inert.
+
+Daily server-generated snapshots provide fewer pregame observations and may
+leave lines, forecasts and grading updates older between successful builds.
+Historical forecasts, selections and outcomes remain preserved. The registered
+24-hour, 6-hour and 90-minute checkpoints still require an eligible observation
+at or before the checkpoint and no more than 60 minutes old. Daily scheduling
+will miss more checkpoints; record missing/unknown coverage under the existing
+policy. Never use a later observation to fill a checkpoint or relax freshness.
+Selection weekday, kickoff weekday and pregame lead time remain distinct.
+
+Apply this cadence to both main and PR #1's development workflow before their
+later integration. The recovery-suite cadence guard must pass on the actual
+integration tree; do not restore the old hourly/half-hour cron or Ticker loop.
+This scheduling change does not activate Phase 2, its experiments or seed
+preparation. GitHub Pages continues using the existing deployment process.
 
 ## Yahoo sign-in and the AI chat (optional)
 
