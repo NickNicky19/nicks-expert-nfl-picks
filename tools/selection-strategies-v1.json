@@ -1,0 +1,31 @@
+{
+  "schema_version": "ranked-selection-policy-v1",
+  "registered_at": "2026-10-22T03:34:19.429916Z",
+  "strategies": [
+    "ranked_biggest_lean_v1",
+    "ranked_projected_points_v1"
+  ],
+  "categories": [
+    "pass_yd",
+    "pass_td",
+    "pass_cmp",
+    "pass_att",
+    "pass_int",
+    "rush_yd",
+    "rush_att",
+    "rec_yd",
+    "rec",
+    "rush_rec_yd"
+  ],
+  "maximum_per_side": 12,
+  "maximum_observation_age_seconds": 3600,
+  "candidate": "production_eligible_real_reference_prop_then_best_relative_gap_per_player_side",
+  "biggest_lean": "descending_abs_adjusted_minus_line_divided_by_max_1_line",
+  "projected_points": "descending_exact_saved_player_proj_ppr_then_relative_gap",
+  "ties": "game_player_category_source_line_ascending",
+  "timing": "genuine_creation_and_completion_before_selected_kickoff;first_completed_native_policy_recording;no_retrospective_membership",
+  "scoring": "standard_Sleeper_offensive_PPR",
+  "missing": "no_substitution_no_forced_fill",
+  "checkpoints": "unchanged_timing_policy_latest_timely_observation_maximum_60_minutes",
+  "economics": "statistical_selections_only_no_probability_EV_ROI_or_venue_settlement"
+}

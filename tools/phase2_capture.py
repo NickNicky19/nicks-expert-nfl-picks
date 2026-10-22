@@ -437,6 +437,17 @@ def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, ini
         "checked_factors": verification["checked_factors"],
         "baseline_receipt": baseline_path.relative_to(root).as_posix(), "baseline_payload_sha256": digest(baseline),
         "scope": "LOCAL_ORIGINAL_INPUT_REPRODUCTION_PUBLICATION_AND_PROVIDER_ASOF_NOT_VERIFIED"})
+    if mode == "live" and (root / "tools/selection-strategies-v1.json").is_file():
+        import selection_strategies
+        selection_strategies.record(root, {
+            "verification_mode": route, "board_sha256": digest(data), "proof": pointer,
+            "matchup_check_receipt": check_path.relative_to(root).as_posix(),
+            "native_receipt": baseline_path.relative_to(root).as_posix(), "native_payload_sha256": digest(baseline),
+            "partial_completion_receipt": completion_path.relative_to(root).as_posix() if completion_path else None,
+            "partial_completion_payload_sha256": digest(read(completion_path)) if completion_path else None}, source_sha)
+        # Reporting observes genuinely completed selections, not the earlier
+        # native capture clock. Original input/native clocks stay unchanged.
+        now = datetime.now(timezone.utc)
     # Record a genuinely new candidate before shadow/outcome/report work can
     # consume its remaining pregame time. Saved evaluation follows statistics.
     experimental = config.get("experimental_recording_enabled", True)
@@ -596,6 +607,58 @@ def _dependency_closure(root):
             if path.is_file():
                 members.append(("imported:" + str(path), hashlib.sha256(path.read_bytes()).hexdigest()))
     return digest(members)
+
+
+def _strategy_qualification(root, qualification, cutoff, *, _checked=None):
+    """Pin original forecast evidence; this does not select a new release plan."""
+    from reliability import make_payload
+    q = qualification; root = Path(root).resolve(); cutoff = utc(cutoff)
+    fields = {"verification_mode", "board_sha256", "proof", "matchup_check_receipt", "native_receipt",
+              "native_payload_sha256", "partial_completion_receipt", "partial_completion_payload_sha256"}
+    if not isinstance(q, dict) or set(q) != fields or q["verification_mode"] not in ("strict", "partial", corrected.VALIDATOR):
+        raise IntegrityError("Unsupported ranked qualification route")
+    before = _dependency_closure(root)
+    # Read the pinned content-addressed original, never today's mutable board.
+    inputs = partial_week._saved(root, q["proof"]["latest_inputs"], "verification")
+    board = inputs["week_data"]
+    if digest(board) != q["board_sha256"] or q["proof"]["output_sha256"] != digest(board):
+        raise IntegrityError("Ranked original board/proof mismatch")
+    if q["verification_mode"] == "strict":
+        if q["partial_completion_receipt"] is not None or q["partial_completion_payload_sha256"] is not None:
+            raise IntegrityError("Strict ranked origin carries an incompatible completion")
+        verified = corrected.legacy_offline(root, board, q["proof"], "live", cutoff)
+        if verified["inputs"] != inputs:
+            raise IntegrityError("Ranked strict original input differs")
+        native = read_native_baseline(root / q["native_receipt"], root, now=cutoff)
+        if native.get("schema_version") != "baseline-capture-v1" or native.get("model") != "original_sleeper_matchup_baseline":
+            raise IntegrityError("Strict ranked origin requires the retained original model")
+        if native["rows"] != make_payload(board, utc(native["captured_at"]), native["engine_files"], "live")["rows"]:
+            raise IntegrityError("Ranked strict native rows differ from original board")
+    else:
+        completed = partial_week._saved(root, q["partial_completion_receipt"], partial_week.COMPLETION_LANE)
+        scope = partial_week._saved(root, completed["scope_receipt"], "verification/partial-scopes")
+        spec = corrected._saved_spec(root, scope)
+        complete, reproduced, native = _qualified_bundle(root, q["partial_completion_receipt"], spec, {} if _checked is None else _checked)
+        expected_schema = "partial-completion-data-integrity-v2" if q["verification_mode"] == corrected.VALIDATOR else partial_week.COMPLETION_VERSION
+        if (complete.get("schema_version") != expected_schema or digest(complete) != q["partial_completion_payload_sha256"]
+                or complete["baseline_receipt"] != q["native_receipt"] or utc(complete["evidence_completed_at"]) > cutoff
+                or reproduced["proof"] != q["proof"] or reproduced["latest_inputs_sha256"] != digest(inputs)):
+            raise IntegrityError("Ranked pinned completion/source/clock mismatch")
+    check = partial_week._saved(root, q["matchup_check_receipt"], "verification/matchup-checks")
+    if (check.get("schema_version") != "matchup-verification-v1" or check["mode"] != "live"
+            or (check["season"], check["week"]) != (board["season"], board["week"])
+            or not utc(native["captured_at"]) <= utc(check["verified_at"]) <= cutoff
+            or utc(native["forecast_generated_at"]) > utc(native["captured_at"])
+            or check["output_sha256"] != digest(board) or native["input_sha256"] != digest(board)
+            or check["latest_inputs"] != q["proof"]["latest_inputs"] or check["latest_inputs_sha256"] != digest(inputs)
+            or check["game_origins"] != q["proof"]["game_origins"] or check["engine_files"] != native["engine_files"]
+            or inputs["engine_files"] != native["engine_files"]
+            or check["baseline_receipt"] != q["native_receipt"] or check["baseline_payload_sha256"] != digest(native)
+            or digest(native) != q["native_payload_sha256"]):
+        raise IntegrityError("Ranked verification/native/input binding mismatch")
+    if _dependency_closure(root) != before:
+        raise IntegrityError("Ranked evidence changed during qualification")
+    return board, native
 
 
 def _qualified_bundle(root, completion, spec, checked):

@@ -861,5 +861,32 @@ class VersionedSummaryTests(unittest.TestCase):
         self.assertTrue(summarize(rows)["disjoint_selected_partitions_reconciled"])
 
 
+class ExtendedJointTests(unittest.TestCase):
+    def test_full_joint_populations_use_exact_rows_and_preserve_legacy_tables(self):
+        policy=timing_policy()
+        observations=[receipt(BOUNDARY-timedelta(minutes=15),[row("A",top=True),row("B",side="under"),row("C","rush_rec_yd")])]
+        decisions,_=build_decisions(observations,policy,BOUNDARY+timedelta(hours=1),ENGINE)
+        rows=grade_decisions(decisions,{})
+        # Separate exact source/day contexts deliberately disagree. No marginal
+        # percentage is a substitute for the actual full joint membership.
+        rows[0]=dict(rows[0],selection_weekday="Tuesday",line_from="dk")
+        old=summarize(rows,contract="selection-report-v3")
+        extended=summarize(rows,contract="selection-report-v4")
+        self.assertFalse(any(t["dimension"]=="category_side_selection_kickoff_lead" for t in old["tables"]))
+        joint=[t for t in extended["tables"] if t["dimension"]=="category_side_selection_kickoff_lead"]
+        self.assertTrue(joint)
+        by_id={r["decision_sha256"]:r for r in rows}
+        for table in joint:
+            value=json.loads(table["value"])
+            for row_id in table["row_ids"]:
+                r=by_id[row_id]
+                self.assertEqual(value,[r.get(k) for k in ("category","side","selection_weekday","kickoff_weekday","lead_time_bucket")])
+                if table["line_source_scope"]!="all":self.assertEqual(r["line_from"] or "unknown",table["line_source_scope"])
+            self.assertEqual(table["rows"],len(table["row_ids"]))
+        old_all={t["summary_id"]:t for t in old["tables"] if t["line_source_scope"]=="all"}
+        new_all={t["summary_id"]:t for t in extended["tables"] if t["line_source_scope"]=="all" and t["dimension"]!="category_side_selection_kickoff_lead"}
+        self.assertEqual(old_all,new_all)
+
+
 if __name__ == "__main__":
     unittest.main()

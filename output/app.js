@@ -62,6 +62,8 @@ const S = {
   leagues: store("leagues") || [],      // [{id, name, season, settings}]
   scFound: null, scMsg: "",
   mine: store("mine") || [],
+  paper: { legs: [], source: "dk", sides: "mixed", categories: [], game: "", size: 2,
+    opened: null, results: null, history: null, historyEpoch: 0, epoch: 0, error: "" },
   cmp: store("cmp") || [null, null],    // the two players on the Compare tab
   trade: store("trade") || { give: [], get: [] },
   yahoo: store("yahoo") || null,       // Yahoo tokens (from the Worker's sign-in)
@@ -77,6 +79,213 @@ function store(key, value) {
     if (value === undefined) return JSON.parse(localStorage.getItem("nflprops." + key));
     localStorage.setItem("nflprops." + key, JSON.stringify(value));
   } catch { return null; }
+}
+
+// Private paper selections are immutable revisions, never offers or accepted
+// financial entries. Each revision has its own key; no shared mutable index.
+const PAPER_PREFIX = "nflprops.paper-ticket.v1.";
+const PAPER_CATEGORIES = ["pass_yd", "pass_td", "pass_cmp", "pass_att", "pass_int", "rush_yd", "rush_att", "rec_yd", "rec", "rush_rec_yd"];
+function paperLegIdentity(leg) {
+  return JSON.stringify([leg.season, leg.week, leg.game_id, leg.player_id, leg.category, leg.team, Date.parse(leg.kickoff)]);
+}
+function validatePaperLeg(leg) {
+  const fields = ["season", "week", "game_id", "player_id", "category", "team", "name", "period", "kickoff", "line", "side", "line_source", "raw_projection", "adjusted_projection", "board_generated_at", "quote_observed_at"];
+  if (!leg || JSON.stringify(Object.keys(leg).sort()) !== JSON.stringify(fields.sort())
+      || !Number.isInteger(leg.season) || leg.season < 2000 || leg.season > 2200 || !Number.isInteger(leg.week) || leg.week < 1 || leg.week > 18
+      || !["game_id", "player_id", "team", "name"].every(k => typeof leg[k] === "string" && leg[k].length > 0 && leg[k].length <= 200)
+      || !PAPER_CATEGORIES.includes(leg.category) || leg.period !== "full_game"
+      || !["over", "under"].includes(leg.side) || !["dk", "sleeper"].includes(leg.line_source)
+      || ![leg.line, leg.raw_projection, leg.adjusted_projection].every(Number.isFinite) || leg.line < 0
+      || ![leg.kickoff, leg.board_generated_at].every(v => typeof v === "string" && /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(v) && Number.isFinite(Date.parse(v)))
+      || Date.parse(leg.board_generated_at) >= Date.parse(leg.kickoff) || leg.quote_observed_at !== null) throw new Error("Unsupported paper leg contract");
+  return leg;
+}
+function validatePaperTicket(ticket) {
+  const fields = ["schema_version", "ticket_id", "revision_id", "parent_revision_id", "saved_at", "clock_basis", "product", "line_source", "legs"];
+  if (!ticket || JSON.stringify(Object.keys(ticket).sort()) !== JSON.stringify(fields.sort())
+      || ticket.schema_version !== "paper-parlay-ticket-v1" || ticket.product !== "paper_all_legs"
+      || ticket.clock_basis !== "OWNER_DEVICE_TIME_NOT_INDEPENDENTLY_TIMESTAMPED"
+      || !["ticket_id", "revision_id"].every(k => typeof ticket[k] === "string" && /^[a-zA-Z0-9-]{16,80}$/.test(ticket[k]))
+      || ticket.parent_revision_id !== null && (typeof ticket.parent_revision_id !== "string" || !/^[a-zA-Z0-9-]{16,80}$/.test(ticket.parent_revision_id) || ticket.parent_revision_id === ticket.revision_id)
+      || typeof ticket.saved_at !== "string" || !/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(ticket.saved_at) || !Number.isFinite(Date.parse(ticket.saved_at)) || !["dk", "sleeper"].includes(ticket.line_source)
+      || !Array.isArray(ticket.legs) || ticket.legs.length < 2 || ticket.legs.length > 6) throw new Error("Unsupported paper ticket");
+  const players = new Set(), games = new Set();
+  for (const leg of ticket.legs) {
+    validatePaperLeg(leg);
+    if (leg.line_source !== ticket.line_source || Date.parse(ticket.saved_at) >= Date.parse(leg.kickoff)
+        || Date.parse(leg.board_generated_at) > Date.parse(ticket.saved_at)
+        || players.has(leg.player_id) || games.has(leg.game_id)) throw new Error("Incompatible paper ticket membership or clock");
+    players.add(leg.player_id); games.add(leg.game_id);
+  }
+  return ticket;
+}
+function savePaperTicket(ticket, storage = localStorage) {
+  validatePaperTicket(ticket);
+  if (ticket.parent_revision_id === null) {
+    for (let i=0;i<storage.length;i++) if (storage.key(i)?.startsWith(PAPER_PREFIX+ticket.ticket_id+".") && storage.key(i)!==PAPER_PREFIX+ticket.ticket_id+"."+ticket.revision_id) throw new Error("Ticket root identity already exists");
+  }
+  if (ticket.parent_revision_id !== null) {
+    const parentBytes = storage.getItem(PAPER_PREFIX + ticket.ticket_id + "." + ticket.parent_revision_id);
+    const parent = parentBytes && validatePaperTicket(JSON.parse(parentBytes));
+    if (!parent || parent.ticket_id !== ticket.ticket_id || parent.revision_id !== ticket.parent_revision_id || Date.parse(parent.saved_at) > Date.parse(ticket.saved_at)) throw new Error("Saved parent revision is unavailable or incompatible");
+    if (!readPaperTickets(storage).tickets.some(v => v.ticket.ticket_id === parent.ticket_id && v.ticket.revision_id === parent.revision_id)) throw new Error("Complete saved parent lineage is unavailable");
+  }
+  const key = PAPER_PREFIX + ticket.ticket_id + "." + ticket.revision_id, bytes = JSON.stringify(ticket);
+  if (bytes.length > 32768) throw new Error("Paper ticket storage bound exceeded");
+  const previous = storage.getItem(key);
+  if (previous !== null && previous !== bytes) throw new Error("Saved paper revision is immutable");
+  storage.setItem(key, bytes);
+  if (storage.getItem(key) !== bytes) throw new Error("Paper ticket save could not be verified");
+  return key;
+}
+function readPaperTickets(storage = localStorage) {
+  const result = [], errors = [];
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i);
+    if (!key?.startsWith(PAPER_PREFIX)) continue;
+    try {
+      const raw = storage.getItem(key);
+      if (!raw || raw.length > 32768) throw new Error("Saved ticket exceeds limit");
+      const ticket = validatePaperTicket(JSON.parse(raw));
+      if (key !== PAPER_PREFIX + ticket.ticket_id + "." + ticket.revision_id) throw new Error("Saved identity mismatch");
+      result.push({ key, ticket });
+    } catch { errors.push("A saved paper ticket is unavailable; its original bytes were preserved."); }
+  }
+  const byRevision = new Map(result.map(v => [v.key, v.ticket]));
+  const roots = new Map();
+  for (const {ticket} of result) if (ticket.parent_revision_id === null) roots.set(ticket.ticket_id,(roots.get(ticket.ticket_id)||0)+1);
+  const valid = result.filter(({ticket}) => {
+    if (roots.get(ticket.ticket_id)!==1) { errors.push("A saved ticket family has an ambiguous or missing root; bytes were preserved."); return false; }
+    let current = ticket; const seen = new Set();
+    while (current.parent_revision_id !== null) {
+      const key = PAPER_PREFIX + current.ticket_id + "." + current.parent_revision_id;
+      const parent = byRevision.get(key);
+      if (!parent || seen.has(key) || Date.parse(parent.saved_at) > Date.parse(current.saved_at)) {
+        errors.push("A saved revision lineage is unavailable; its original bytes were preserved."); return false;
+      }
+      seen.add(key); current = parent;
+    }
+    return true;
+  });
+  return { tickets: valid.sort((a, b) => Date.parse(b.ticket.saved_at) - Date.parse(a.ticket.saved_at) || a.key.localeCompare(b.key)), errors };
+}
+function paperLegStatus(leg, outcomes) {
+  validatePaperLeg(leg);
+  const row = outcomes.get(paperLegIdentity(leg));
+  if (!row || paperLegIdentity(row) !== paperLegIdentity(leg) || row.outcome_conflict || row.outcome_identity_status === "quarantined") return { status: "unresolved", actual: null };
+  if (row.status === "pending") return { status: "pending", actual: null };
+  if (!row.final_confirmed || row.game_state !== "post" || row.outcome_selection !== "confirmed" || row.outcome_source_mix === "conflicting_sources"
+      || !Number.isFinite(Date.parse(row.collected_at)) || Date.parse(row.collected_at) <= Date.parse(leg.kickoff)
+      || ![row.outcome_snapshot_sha256, row.selected_outcome_row_sha256, row.selected_outcome_provenance_sha256].every(v => typeof v === "string" && HASH64.test(v))) return { status: "unresolved", actual: null };
+  if (row.status === "dnp" && row.actual === null) return { status: "dnp", actual: null };
+  if (row.status !== "resolved" || !Number.isSafeInteger(row.actual) || !leg.category.endsWith("_yd") && row.actual < 0) return { status: "unresolved", actual: null };
+  return { status: row.actual === leg.line ? "push" : (row.actual > leg.line) === (leg.side === "over") ? "win" : "loss", actual: row.actual };
+}
+function paperTicketStatus(results) {
+  if (!Array.isArray(results) || results.length < 2 || results.length > 6 || results.some(r => !["win", "loss", "push", "dnp", "pending", "unresolved"].includes(r.status))) return "unresolved";
+  if (results.every(r => r.status === "win")) return "all_legs_won";
+  if (results.some(r => r.status === "loss")) {
+    const open = ["unresolved", "pending", "dnp", "push"].filter(status => results.some(r => r.status === status));
+    return open.length ? "loss_present_with_" + open.join("_") : "completed_with_loss";
+  }
+  if (results.some(r => r.status === "unresolved")) return "unresolved";
+  if (results.some(r => r.status === "pending")) return "pending";
+  if (results.some(r => r.status === "dnp")) return "confirmed_DNP_no_venue_void_rule";
+  if (results.some(r => r.status === "push")) return "push_no_venue_settlement";
+  return "completed_with_loss";
+}
+function paperCandidates(now = Date.now()) {
+  const options = [], f = S.paper;
+  for (const player of S.data.players) {
+    const game = S.games[player.game_id];
+    const originalGame = S.data.games.find(g => g.id === player.game_id);
+    if (!game || !originalGame || originalGame.state !== "pre" || Date.parse(originalGame.kickoff) !== Date.parse(game.kickoff)
+        || originalGame.home !== game.home || originalGame.away !== game.away
+        || game.state !== "pre" || Date.parse(game.kickoff) <= now || player.late || UNAVAILABLE.has(injOf(player).status)
+        || f.game && player.game_id !== f.game) continue;
+    for (const prop of player.props || []) {
+      if (!PAPER_CATEGORIES.includes(prop.key) || prop.line_from !== f.source || !Number.isFinite(prop.line) || prop.line < 0
+          || !Number.isFinite(prop.proj) || !Number.isFinite(prop.adj) || !["over", "under"].includes(prop.lean)
+          || f.sides !== "mixed" && prop.lean !== f.sides || f.categories.length && !f.categories.includes(prop.key)) continue;
+      if (prop.line_from === "sleeper" && (prop.sleeper?.line !== prop.line || !Number.isFinite(prop.sleeper?.[prop.lean]) || prop.sleeper[prop.lean] <= 0)) continue;
+      const leg = { season: S.data.season, week: S.data.week, game_id: String(player.game_id), player_id: String(player.id), category: prop.key,
+        team: player.team, name: player.name, period: "full_game", kickoff: game.kickoff, line: prop.line, side: prop.lean,
+        line_source: prop.line_from, raw_projection: prop.proj, adjusted_projection: prop.adj, board_generated_at: S.data.generated_at, quote_observed_at: null };
+      try { validatePaperLeg(leg); } catch { continue; }
+      options.push({ leg, score: Math.abs(prop.adj - prop.line) / Math.max(1, prop.line) });
+    }
+  }
+  return options.sort((a, b) => b.score - a.score || paperLegIdentity(a.leg).localeCompare(paperLegIdentity(b.leg)));
+}
+async function gradeOpenedPaper() {
+  const paper = S.paper, ticket = paper.opened, grading = S.grading, epoch = ++paper.epoch;
+  paper.results = null;
+  if (!ticket || !grading) return;
+  try {
+    const outcomes = new Map();
+    if (grading.outcomeIndex) {
+      for (const [season, week] of [...new Set(ticket.legs.map(l => JSON.stringify([l.season, l.week])))].map(v => JSON.parse(v))) {
+        const map = await loadOutcomePeriod(grading, season, week);
+        for (const [key, value] of map) outcomes.set(key, value);
+      }
+    } else for (const [key, value] of S.finalOutcomes) outcomes.set(key, value);
+    if (S.grading !== grading || paper.opened !== ticket || paper.epoch !== epoch) return;
+    paper.results = ticket.legs.map(leg => paperLegStatus(leg, outcomes));
+  } catch { if (paper.opened === ticket && paper.epoch === epoch) paper.error = "Required saved outcome evidence is unavailable; no result was substituted."; }
+  if (S.tab === "parlay" && paper.opened === ticket && paper.epoch === epoch) renderParlay();
+}
+async function gradeSavedPaper() {
+  const paper=S.paper, grading=S.grading, epoch=++paper.historyEpoch;
+  paper.history=null;
+  if(!grading){paper.error="Saved outcome publication is unavailable.";renderParlay();return;}
+  try {
+    const saved=readPaperTickets(), tickets=saved.tickets, snapshot=JSON.stringify(tickets);
+    if(snapshot.length>1024*1024)throw new Error("Saved ticket evaluation exceeds its 1 MiB interactive bound; all original tickets remain stored.");
+    const periods=[...new Set(tickets.flatMap(({ticket})=>ticket.legs.map(l=>JSON.stringify([l.season,l.week]))))];
+    if(periods.length>64)throw new Error("Saved ticket evaluation exceeds 64 distinct periods; no partial totals were calculated.");
+    const results=new Map(tickets.map(({key,ticket})=>[key,ticket.legs.map(()=>({status:"unresolved",actual:null}))]));
+    for(const text of periods){
+      const [season,week]=JSON.parse(text);
+      const outcomes=grading.outcomeIndex?await loadOutcomePeriod(grading,season,week):S.finalOutcomes;
+      if(S.grading!==grading||paper.historyEpoch!==epoch)return;
+      for(const {key,ticket} of tickets)ticket.legs.forEach((leg,i)=>{if(leg.season===season&&leg.week===week)results.get(key)[i]=paperLegStatus(leg,outcomes);});
+    }
+    if(S.grading!==grading||paper.historyEpoch!==epoch||JSON.stringify(readPaperTickets().tickets)!==snapshot)return;
+    paper.history={report_id:grading.pointer.report_id,rows:tickets.map(({key,ticket})=>({ticket,status:paperTicketStatus(results.get(key)),legs:results.get(key)})),excluded:saved.errors.length};
+    paper.error="Saved ticket results recomputed from this exact outcome generation.";
+  } catch(error){if(S.grading===grading&&paper.historyEpoch===epoch)paper.error="Saved results unavailable: "+error.message;}
+  if(S.tab==="parlay"&&paper.historyEpoch===epoch)renderParlay();
+}
+function paperPerformanceHtml(history) {
+  if(!history)return "";
+  const originals=history.rows.filter(r=>r.ticket.parent_revision_id===null);
+  return `<div data-paper-performance><h4>Saved ticket results by original ticket size</h4><p>Each first saved ticket is counted once. Later revisions are shown separately below and are related selections, not independent samples. No lucky combinations are reconstructed. ${history.excluded} unavailable stored records/lineages excluded.</p>${[2,3,4,5,6].map(n=>{
+    const rows=originals.filter(r=>r.ticket.legs.length===n),legs=rows.flatMap(r=>r.legs),wins=legs.filter(r=>r.status==="win").length,losses=legs.filter(r=>r.status==="loss").length;
+    const states=Object.fromEntries([...new Set(rows.map(r=>r.status))].map(s=>[s,rows.filter(r=>r.status===s).length]));
+    return `<p>${n} legs · ${rows.length} saved tickets · ${rows.filter(r=>r.status==="all_legs_won").length} all-leg statistical wins · leg W–L ${wins}–${losses} (${wins+losses?fmt(100*wins/(wins+losses))+"%":"Unavailable"}) · states ${esc(JSON.stringify(states))}</p>`;
+  }).join("")}<details><summary>Every saved ticket/revision and leg result</summary>${history.rows.map(r=>`<p>${esc(r.ticket.ticket_id)} / ${esc(r.ticket.revision_id)} · ${r.ticket.legs.length} legs · ${esc(r.status)} · ${esc(r.legs.map(l=>l.status).join(", "))}</p>`).join("")}</details><p style="overflow-wrap:anywhere">Outcome report ${esc(history.report_id)}. Financial ROI and venue settlement unavailable.</p></div>`;
+}
+function renderParlay() {
+  const f = S.paper, candidates = paperCandidates(); let saved;
+  try { saved = readPaperTickets(); } catch { saved = { tickets: [], errors: ["Private ticket storage is unavailable."] }; }
+  const legText = leg => `${leg.name} · ${leg.side} ${leg.line} ${SHORT[leg.category]} · ${leg.team} · ${leg.season} W${leg.week}`;
+  const opened = f.opened;
+  $("#main").innerHTML = `<h2>Parlay Builder <small>Paper only</small></h2><div class="card note">Assemble 2–6 legs from one reference source. No accepted ticket, verified quote freshness, payout, probability, EV or ROI. Suggestions use the existing relative projection gap, not a win probability. Repeated players and same-game combinations are excluded; this does not prove independence. Saves stay on this device; its clock is not an independent pregame timestamp.</div>
+    <section class="card" style="overflow-wrap:anywhere"><div class="gtool">
+    <label>Source <select data-paper-filter="source">${["dk", "sleeper"].map(s => `<option value="${s}" ${s === f.source ? "selected" : ""}>${LINE_FROM[s]} reference</option>`).join("")}</select></label>
+    <label>Side <select data-paper-filter="sides">${["mixed", "over", "under"].map(s => `<option ${s === f.sides ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+    <label>Upcoming game <select data-paper-filter="game"><option value="">All</option>${Object.values(S.games).filter(g => g.state === "pre" && Date.parse(g.kickoff) > Date.now()).map(g => `<option value="${esc(g.id)}" ${g.id === f.game ? "selected" : ""}>${esc(g.away)}–${esc(g.home)}</option>`).join("")}</select></label>
+    <label>Suggestion size <select data-paper-filter="size">${[2,3,4,5,6].map(n => `<option ${n === +f.size ? "selected" : ""}>${n}</option>`).join("")}</select></label></div>
+    <fieldset><legend>Categories (none checked means all supported)</legend>${PAPER_CATEGORIES.map(c => `<label style="display:inline-block;margin:.3rem"><input type="checkbox" data-paper-category="${c}" ${f.categories.includes(c) ? "checked" : ""}> ${SHORT[c]}</label>`).join("")}</fieldset>
+    <p class="note">Fantasy/PPR and anytime-TD offered legs are unavailable in this version. A missing Sleeper side is excluded. Saved multipliers do not verify paired thresholds, accepted product rules or executable prices; DK side availability is unverified. These remain paper reference legs.</p>
+    <button class="tbtn" data-paper-suggest>Suggest up to ${+f.size}</button> <button class="tbtn" data-paper-new>New draft</button>
+    <p role="status">${esc(f.error || (candidates.length ? `${candidates.length} eligible reference opportunities` : "NO_ACTION: no eligible reference opportunities"))}</p>
+    <h3>Draft · ${f.legs.length}/6 legs</h3>${f.legs.map((leg,i) => `<p>${esc(legText(leg))} <button class="tbtn" data-paper-remove="${i}" aria-label="Remove ${esc(leg.name)}">Remove</button></p>`).join("") || "<p>No legs selected.</p>"}
+    <button class="tbtn" data-paper-save ${f.legs.length < 2 ? "disabled" : ""}>${opened ? "Save as a new revision" : "Save private paper ticket"}</button>
+    <details><summary>Ranked shortlist · relative gap</summary>${candidates.slice(0, 60).map(v => `<p>${esc(legText(v.leg))} · ${fmt(v.score,3)} <button class="tbtn" data-paper-add="${esc(JSON.stringify(v.leg))}">Add leg</button></p>`).join("")}</details></section>
+    <section class="card" style="overflow-wrap:anywhere"><h3>Saved tickets</h3>${saved.errors.map(e => `<p role="status">${esc(e)}</p>`).join("")}${saved.tickets.map(({key,ticket}) => `<p><button class="tbtn" data-paper-open="${esc(key)}">${ticket.legs.length} legs · ${esc(ticket.saved_at)}</button> ${esc(ticket.ticket_id)} / ${esc(ticket.revision_id)}${ticket.parent_revision_id ? " · revision" : ""}</p>`).join("") || "<p>No saved tickets.</p>"}
+    <button class="tbtn" data-paper-evaluate>Evaluate saved tickets</button>${paperPerformanceHtml(f.history)}
+    ${opened ? `<h3>Saved ${opened.legs.length}-leg revision</h3><p>Ticket state: ${esc(f.results ? paperTicketStatus(f.results) : "Outcome evidence unavailable or loading")}. Financial result unavailable.</p>${opened.legs.map((leg,i) => `<p>${esc(legText(leg))} · ${esc(f.results?.[i]?.status || "unresolved")}${f.results?.[i]?.actual != null ? ` (${esc(f.results[i].actual)})` : ""}</p>`).join("")}<p class="note">Push, confirmed DNP and unresolved results are distinct; venue void rules are unavailable. Saved membership stays fixed when outcomes are corrected. Revisions are related tickets, not independent performance samples.</p>` : ""}</section>`;
 }
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -320,7 +529,7 @@ function validateGradingTables(pointer, tables, version) {
           (!Object.hasOwn(table, "policy_version") || !Object.hasOwn(table, "policy_sha256")
             || typeof table.policy_version !== "string" || !table.policy_version.trim() || !HASH64.test(table.policy_sha256)
             || !["all", "dk", "sleeper", "ours", "unknown"].includes(table.line_source_scope)
-            || table.line_source_scope !== "all" && !["overall", "category", "category_side"].includes(table.dimension))) throw new Error("Invalid grading policy/source context");
+            || version !== "selection-public-report-v6" && table.line_source_scope !== "all" && !["overall", "category", "category_side"].includes(table.dimension))) throw new Error("Invalid grading policy/source context");
       if (!HASH64.test(table.summary_id) || tableIds.has(table.summary_id) || !Array.isArray(table.row_positions)
           || table.row_positions.length !== table.rows || new Set(table.row_positions).size !== table.rows || !HASH64.test(table.row_ids_sha256)
           || table.row_positions.some((i) => !Number.isInteger(i) || i < 0 || i >= pointer.row_count)
@@ -359,12 +568,107 @@ function validateFinalOutcomes(pointer, rows) {
 
     return result;
 }
+function validateForecastAccuracy(value) {
+  const fail = () => { throw new Error("Invalid aggregate forecast accuracy contract"); };
+  const fields = (v, keys) => { if (!v || typeof v !== "object" || Array.isArray(v) || JSON.stringify(Object.keys(v).sort()) !== JSON.stringify([...keys].sort())) fail(); };
+  const count = n => { if (!Number.isSafeInteger(n) || n < 0) fail(); };
+  const number = n => { if (typeof n !== "number" || !Number.isFinite(n)) fail(); };
+  const same = (a,b) => { if (Math.abs(a-b) > 1e-10 * Math.max(1,Math.abs(a),Math.abs(b))) fail(); };
+  const sample = v => { fields(v,["opportunities","unique_players","unique_games","unique_weeks"]); Object.values(v).forEach(count); if (Object.values(v).some(n=>n>v.opportunities) || v.opportunities && [v.unique_players,v.unique_games,v.unique_weeks].some(n=>!n)) fail(); };
+  const statuses = v => { if (!v || typeof v !== "object" || Array.isArray(v) || Object.keys(v).some(k=>!["resolved","dnp","pending","unresolved","void","excluded_schedule_changed"].includes(k))) fail(); Object.values(v).forEach(count); };
+  const total = v => Object.values(v).reduce((a,b)=>a+b,0);
+  const point = v => {
+    fields(v,["n","mae","rmse","mean_error","bias","absolute_error_sum","squared_error_sum","signed_error_sum"]); count(v.n);
+    [v.absolute_error_sum,v.squared_error_sum,v.signed_error_sum].forEach(number);
+    if (v.absolute_error_sum<0 || v.squared_error_sum<0) fail();
+    if (!v.n) { if ([v.mae,v.rmse,v.mean_error,v.bias].some(n=>n!==null) || [v.absolute_error_sum,v.squared_error_sum,v.signed_error_sum].some(n=>n!==0)) fail(); return; }
+    [v.mae,v.rmse,v.mean_error,v.bias].forEach(number);
+    if (v.mae<0 || v.rmse<0 || Math.abs(v.signed_error_sum)>v.absolute_error_sum+1e-10*Math.max(1,v.absolute_error_sum) || v.mae>v.rmse+1e-10*Math.max(1,v.rmse)) fail();
+    same(v.mae,v.absolute_error_sum/v.n); same(v.rmse*v.rmse,v.squared_error_sum/v.n); same(v.mean_error,v.signed_error_sum/v.n); same(v.bias,v.mean_error);
+  };
+  const pair = v => {
+    fields(v,["raw","adjusted","helps","hurts","ties","absolute_error_change_sum","sample"]); point(v.raw); point(v.adjusted); sample(v.sample);
+    [v.helps,v.hurts,v.ties].forEach(count); number(v.absolute_error_change_sum);
+    if (v.raw.n!==v.adjusted.n || v.raw.n!==v.sample.opportunities || v.helps+v.hurts+v.ties!==v.raw.n) fail();
+    same(v.absolute_error_change_sum,v.adjusted.absolute_error_sum-v.raw.absolute_error_sum);
+  };
+  const probability = v => {
+    fields(v,["n","events","sample","brier_sum","brier","finite_log_loss_sum","infinite_log_loss_count","log_loss","log_loss_state","calibration"]);
+    [v.n,v.events,v.infinite_log_loss_count].forEach(count); sample(v.sample); [v.brier_sum,v.finite_log_loss_sum].forEach(number);
+    if (v.events>v.n || v.infinite_log_loss_count>v.n || v.sample.opportunities!==v.n || v.brier_sum<0 || v.finite_log_loss_sum<0 || v.n===v.infinite_log_loss_count && v.finite_log_loss_sum!==0) fail();
+    const state = v.infinite_log_loss_count ? "positive_infinity" : v.n ? "finite" : "unavailable";
+    if (v.log_loss_state!==state || state!=="finite" && v.log_loss!==null) fail();
+    if (v.n) { number(v.brier); if(v.brier<0||v.brier>1)fail(); same(v.brier,v.brier_sum/v.n); } else if(v.brier!==null||v.brier_sum!==0) fail();
+    if (state==="finite") { number(v.log_loss); if(v.log_loss<0)fail(); same(v.log_loss,v.finite_log_loss_sum/v.n); }
+    if (!Array.isArray(v.calibration)||v.calibration.length!==10)fail();
+    v.calibration.forEach((b,i)=>{
+      fields(b,["lower","upper","upper_inclusive","n","events","predicted_mean","event_rate","sample"]);
+      number(b.lower);number(b.upper);count(b.n);count(b.events);sample(b.sample);
+      if (b.lower!==i/10 || b.upper!==(i+1)/10 || b.upper_inclusive!==(i===9) || b.events>b.n || b.sample.opportunities!==b.n)fail();
+      if(b.n){number(b.predicted_mean);number(b.event_rate);if(b.predicted_mean<b.lower||b.predicted_mean>b.upper||i<9&&b.predicted_mean===b.upper||b.event_rate<0||b.event_rate>1)fail();same(b.event_rate,b.events/b.n);}
+      else if(b.predicted_mean!==null||b.event_rate!==null)fail();
+    });
+    if(v.calibration.reduce((s,b)=>s+b.n,0)!==v.n||v.calibration.reduce((s,b)=>s+b.events,0)!==v.events)fail();
+  };
+  const models = {
+    original_sleeper_matchup_baseline: ["e8e8823f460e074485ee91a0dc1c1cfc43877146c4498ef074d15d2b5a735d07","53f6016d59fe93f9ce09bc23c472f7e77471e7a80a8b1f75e78b2ab3ed4a258d"],
+    "sleeper-matchup-data-integrity-v2": ["3909c7ac5470970182065576f057e8036f31ad30da13f1ef9999eb1108a183b4","fd024229abd98a661f0ffa53866bf55bf13142e891b2e64ecee94012dcbe1948"] };
+  const cats=[...PAPER_CATEGORIES,"fpts","anytime_td"], provenance=["missing","unknown_unverified","identity_quarantined","conflicting_outcome_evidence","saved_cache_descriptive_regrade","recorded_outcome_receipt"];
+  fields(value,["schema_version","cohorts","capture_coverage","uncertainty","limitations"]);
+  if(value.schema_version!=="forecast-accuracy-public-v1"||!Array.isArray(value.cohorts)||value.cohorts.length>12||!Array.isArray(value.capture_coverage)||value.capture_coverage.length>2)fail();
+  fields(value.uncertainty,["status","interval","calibration"]);
+  const limitations=["Cumulative saved original pregame forecasts; independent of selection filters.","Model versions and selected outcome provenance are separate populations.","Component-derived PPR and saved direct-provider PPR are different comparators.","Recorded and formula-rederived TD probabilities are separate.","No mixed-unit accuracy, calibrated pick probability, promotion, profit or ROI claim."];
+  if(value.uncertainty.status!=="UNAVAILABLE_DESCRIPTIVE_EXTENSION_NO_REGISTERED_INTERVAL"||value.uncertainty.interval!==null||value.uncertainty.calibration!=="DESCRIPTIVE_NOT_CONFIRMED"||JSON.stringify(value.limitations)!==JSON.stringify(limitations))fail();
+  const captures=new Set(),cohorts=new Set(),cohortModels=new Set();
+  for(const c of value.capture_coverage){
+    fields(c,["model_version","capture_coverage","unsupported_outcome_counts"]);
+    if(!Object.hasOwn(models,c.model_version)||captures.has(c.model_version))fail();captures.add(c.model_version);
+    const v=c.capture_coverage;fields(v,["unique_receipts","duplicate_receipts","eligible_capture_rows","paired_capture_rows","excluded"]);count(v.unique_receipts);count(v.duplicate_receipts);
+    for(const [key,allowed] of [["eligible_capture_rows",cats],["paired_capture_rows",cats],["excluded",["unsupported_forecast_contract_or_engine","non_live_receipt","future_receipt","unsupported_category","unsupported_category_position","not_pregame","missing_forecast"]]]){
+      if(!v[key]||typeof v[key]!=="object"||Array.isArray(v[key])||Object.keys(v[key]).some(k=>!allowed.includes(k)))fail();Object.values(v[key]).forEach(count);
+    }
+    if(Object.entries(v.paired_capture_rows).some(([k,n])=>n>(v.eligible_capture_rows[k]||0)))fail();
+    if(!c.unsupported_outcome_counts||typeof c.unsupported_outcome_counts!=="object"||Array.isArray(c.unsupported_outcome_counts)||Object.keys(c.unsupported_outcome_counts).some(k=>!["unsupported_legacy_extra_statistic","unsupported_descriptive_outcome_contract"].includes(k)))fail();Object.values(c.unsupported_outcome_counts).forEach(count);
+  }
+  for(const c of value.cohorts){
+    fields(c,["model_version","engine_sha256","period","forecast_provenance","outcome_provenance","statistic_contract_sha256","source_report_sha256","coverage","categories"]);
+    const key=c.model_version+":"+c.outcome_provenance;
+    if(!Object.hasOwn(models,c.model_version)||cohorts.has(key)||!provenance.includes(c.outcome_provenance)||c.period!=="cumulative"||c.forecast_provenance!=="original_recorded_pregame_observation"||c.engine_sha256!==models[c.model_version][0]||c.statistic_contract_sha256!==models[c.model_version][1]||!HASH64.test(c.source_report_sha256))fail();
+    cohorts.add(key);cohortModels.add(c.model_version);sample(c.coverage);fields(c.categories,cats);
+    for(const [category,v] of Object.entries(c.categories)){
+      fields(v,["coverage","paired_coverage","outcome_status","paired_status","paired","unpaired_coverage","unpaired_status","unpaired_missingness","adjusted_only",...(category==="fpts"?["direct_provider_ppr"]:[]),...(category==="anytime_td"?["probability","probability_unavailable"]:[])]);
+      sample(v.coverage);sample(v.paired_coverage);sample(v.unpaired_coverage);statuses(v.outcome_status);statuses(v.paired_status);statuses(v.unpaired_status);pair(v.paired);point(v.adjusted_only);
+      if(total(v.outcome_status)!==v.coverage.opportunities||total(v.paired_status)!==v.paired_coverage.opportunities||total(v.unpaired_status)!==v.unpaired_coverage.opportunities||v.paired.raw.n!==(v.paired_status.resolved||0)||v.adjusted_only.n>(v.unpaired_status.resolved||0)||v.unpaired_coverage.opportunities>v.coverage.opportunities)fail();
+      if(!v.unpaired_missingness||typeof v.unpaired_missingness!=="object"||Array.isArray(v.unpaired_missingness)||Object.keys(v.unpaired_missingness).some(k=>!["raw_missing","adjusted_missing"].includes(k)))fail();Object.values(v.unpaired_missingness).forEach(count);if(total(v.unpaired_missingness)!==v.unpaired_coverage.opportunities)fail();
+      if(category==="fpts"){pair(v.direct_provider_ppr);if(v.direct_provider_ppr.raw.n>v.paired.raw.n)fail();}
+      if(category==="anytime_td"){
+        fields(v.probability,["originally_recorded_probability","rederived_from_original_count_retained_formula"]);Object.values(v.probability).forEach(probability);
+        if(!v.probability_unavailable||typeof v.probability_unavailable!=="object"||Array.isArray(v.probability_unavailable)||Object.keys(v.probability_unavailable).some(k=>k!=="invalid_exact_original_board"))fail();Object.values(v.probability_unavailable).forEach(count);
+        const n=Object.values(v.probability).reduce((s,p)=>s+p.n,0);if(n>(v.outcome_status.resolved||0)||n+total(v.probability_unavailable)>v.coverage.opportunities)fail();
+      }
+    }
+    if(Object.values(c.categories).reduce((s,v)=>s+v.coverage.opportunities,0)!==c.coverage.opportunities)fail();
+  }
+  if([...captures].sort().join()!==[...cohortModels].sort().join())fail();
+  return value;
+}
+function forecastAccuracyHtml(value) {
+  if (!value) return "";
+  const metric = v => v.n ? `${fmt(v.mae,3)} / ${fmt(v.rmse,3)} / ${fmt(v.bias,3)}` : "Unavailable";
+  return `<section class="card" data-forecast-accuracy><h3>Saved forecast accuracy · cumulative</h3><p class="note">Independent of selection filters. Paired raw/adjusted errors use the same saved observation and supported final outcome. First-observation coverage and earliest-valid-pair coverage can differ. Category units stay separate. Uncertainty and later confirmation are unavailable; this is descriptive evidence, not predictive improvement or a pick probability.</p>${value.cohorts.map(c=>`<details><summary>${esc(c.model_version)} · ${esc(gradingLabel(c.outcome_provenance))} · ${c.coverage.opportunities} saved forecasts</summary><p style="overflow-wrap:anywhere">Engine ${esc(c.engine_sha256)} · ${esc(c.forecast_provenance)} · ${c.coverage.unique_players} players / ${c.coverage.unique_games} games / ${c.coverage.unique_weeks} weeks</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Category</th><th>Saved / paired coverage</th><th>Resolved paired N</th><th>Raw MAE / RMSE / bias</th><th>Adjusted MAE / RMSE / bias</th><th>Other coverage</th></tr></thead><tbody>${Object.entries(c.categories).map(([key,v])=>`<tr><th>${esc(SHORT[key])}</th><td>${v.coverage.opportunities} / ${v.paired_coverage.opportunities}</td><td>${v.paired.raw.n}</td><td>${metric(v.paired.raw)}</td><td>${metric(v.paired.adjusted)}</td><td><details><summary>Coverage and sample</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({outcomes:v.outcome_status,paired_outcomes:v.paired_status,sample:v.paired.sample,unpaired:v.unpaired_coverage,missing:v.unpaired_missingness,adjusted_only:v.adjusted_only},null,2))}</pre></details></td></tr>`).join("")}</tbody></table></div><p>Offensive PPR above is component-derived. Direct saved provider PPR comparator: N ${c.categories.fpts.direct_provider_ppr.raw.n}; provider ${metric(c.categories.fpts.direct_provider_ppr.raw)}; adjusted component ${metric(c.categories.fpts.direct_provider_ppr.adjusted)}. No missing direct total is inferred.</p><h4>Anytime rushing/receiving TD probability</h4>${Object.entries(c.categories.anytime_td.probability).map(([basis,v])=>`<details><summary>${esc(gradingLabel(basis))} · N ${v.n} · events ${v.events} · Brier ${v.n?fmt(v.brier,4):"Unavailable"} · log loss ${v.log_loss_state==="positive_infinity"?"Positive infinity":v.n?fmt(v.log_loss,4):"Unavailable"}</summary><p>Fixed calibration bins are descriptive; no calibrated ticket probability is established.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify(v.calibration,null,2))}</pre></details>`).join("")}<p>Missing TD probability coverage: ${esc(JSON.stringify(c.categories.anytime_td.probability_unavailable))}</p></details>`).join("")}<details><summary>Capture exclusions and scope</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({capture_coverage:value.capture_coverage,uncertainty:value.uncertainty,limitations:value.limitations},null,2))}</pre></details></section>`;
+}
 async function validateGradingIndexes(pointer, summary, outcomes) {
-  if (summary.schema_version !== (pointer.schema_version === "selection-publication-pointer-v4" ? "selection-public-report-v5" : pointer.schema_version === "selection-publication-pointer-v3" ? "selection-public-report-v4" : "selection-public-report-v3") || summary.report_schema_version !== "selection-report-v3"
+  const extended = summary.schema_version === "selection-public-report-v6" && summary.report_schema_version === "selection-report-v4" && pointer.schema_version === "selection-publication-pointer-v4";
+  if ((!extended && (summary.schema_version !== (pointer.schema_version === "selection-publication-pointer-v4" ? "selection-public-report-v5" : pointer.schema_version === "selection-publication-pointer-v3" ? "selection-public-report-v4" : "selection-public-report-v3") || summary.report_schema_version !== "selection-report-v3"))
       || summary.row_count !== pointer.row_count || !summary.contexts || typeof summary.contexts !== "object" || Array.isArray(summary.contexts)
       || !Array.isArray(summary.summary_partitions) || Object.hasOwn(summary.summary || {}, "tables")
       || outcomes.schema_version !== (pointer.schema_version === "selection-publication-pointer-v4" ? "selection-final-outcome-index-v2" : "selection-final-outcome-index-v1") || !Array.isArray(outcomes.periods)
       || !Number.isInteger(outcomes.outcome_count) || outcomes.outcome_count < 0) throw new Error("Unsupported grading indexes");
+  if (extended) {
+    const fields=["schema_version","report_schema_version","report_id","row_count","source_sha","input_binding","input_content_sha256","summary","coverage","primary_raw_vs_adjusted","forecast_accuracy","uncertainty","limitations","contexts","summary_partitions"];
+    if(JSON.stringify(Object.keys(summary).sort())!==JSON.stringify(fields.sort())||!/^[a-f0-9]{40}$/.test(summary.source_sha)||!HASH64.test(summary.input_content_sha256)||summary.input_binding!=="NOT_YET_GIT_COMMITTED")throw new Error("Unknown modern report fields or source binding");
+    validateForecastAccuracy(summary.forecast_accuracy);
+  }
   const used = new Set(), pairs = new Set();
   for (const [id, context] of Object.entries(summary.contexts)) {
     if (!HASH64.test(id) || !context || JSON.stringify(Object.keys(context).sort()) !== JSON.stringify([...PARTITION_CONTEXT_FIELDS].sort())
@@ -414,7 +718,7 @@ async function loadSelectedGradingSummary(grading = S.grading) {
     if (part.schema_version !== "selection-public-summary-partition-v1" || part.context_id !== descriptor.context_id || part.period !== descriptor.period
         || !Array.isArray(part.tables) || part.tables.length !== descriptor.table_count
         || part.tables.some(table => table.period !== descriptor.period || PARTITION_CONTEXT_FIELDS.some(field => table[field] !== grading.index.contexts[descriptor.context_id][field]))) throw new Error("Wrong summary partition context/period");
-    validateGradingTables(grading.pointer, part.tables, "selection-public-report-v3");
+    validateGradingTables(grading.pointer, part.tables, grading.index.schema_version);
     if (S.grading !== grading || revision !== grading.viewRevision) return;
     grading.parts.set(key, part.tables);
   } catch (err) {
@@ -429,6 +733,7 @@ async function loadSelectedGradingSummary(grading = S.grading) {
 }
 async function loadGrading() {
   const revision = ++gradingLoadRevision;
+  S.paper.epoch++; S.paper.results = null; S.paper.historyEpoch++; S.paper.history=null;
   S.grading = null; S.gradingError = null; S.finalOutcomes = new Map();
   try {
     const response = await fetch(GRADING_BASE + "latest.json", { cache: "no-store" });
@@ -466,6 +771,7 @@ async function loadGrading() {
     if (revision !== gradingLoadRevision) return;
     S.grading = grading; S.finalOutcomes = finalOutcomes; S.gradingGroup = null;
     if (partitioned) await loadSelectedGradingSummary(grading);
+    if (S.paper.opened) gradeOpenedPaper();
   } catch (err) {
     if (revision !== gradingLoadRevision) return;
     S.grading = null; S.finalOutcomes = new Map(); S.gradingError = String(err.message || "Unavailable saved grading");
@@ -3013,6 +3319,9 @@ function dkSection(c) {
 }
 
 const GRADING_LABELS = {
+  ranked_biggest_lean_v1: "Recorded Biggest-lean strategy v1", ranked_projected_points_v1: "Recorded Projected-points strategy v1",
+  completed_prospective_ranked_selection: "Completed prospective ranked selections",
+  category_side_selection_kickoff_lead: "Exact category × side × selection day × kickoff day × lead time",
   all_qualifying_leans: "All qualifying leans", top_picks: "Actual recorded Top Picks",
   top_at_all_lean_decision: "Top at the all-lean decision", non_top_at_all_lean_decision: "Non-Top leans (disjoint)",
   local_pregame_membership_observation: "Original local pregame observations",
@@ -3058,7 +3367,7 @@ function selectionPerformanceHtml(baseTables) {
   const unclassified=r=>Math.max(0,(r.combined?.rows||0)-(r.over?.rows||0)-(r.under?.rows||0));
   return `<section data-performance-primary><h3>Recorded selection performance</h3><p class="note" data-performance-context>${esc(context)}</p>
     <div class="card" data-performance-headline>${cell(total,"overall")}</div>
-    <p class="note">Choose any W–L result to inspect its exact supporting rows. No decided sample means unavailable. Combined includes no-side coverage; it is not an independent sample of Over and Under. ${["selection-public-report-v2", "selection-public-report-v3", "selection-public-report-v4", "selection-public-report-v5"].includes(S.grading.summary.schema_version) ? "Our selections by line source use matched joint decision groups. Source-specific day breakdowns are unavailable; choose All line sources for those views." : "Legacy aggregates do not separate timing policies or offer source jointly; only All line sources is available."}</p>
+    <p class="note">Choose any W–L result to inspect its exact supporting rows. No decided sample means unavailable. Combined includes no-side coverage; it is not an independent sample of Over and Under. ${S.grading.summary.schema_version === "selection-public-report-v6" ? "Exact joint category/side/Chicago selection day/kickoff day/lead-time groups retain the same source and strategy context. Observed leaders are descriptive, not later confirmed findings. Ranked strategies contain only genuinely recorded prospective membership; display sorts and older observations are not strategy history." : ["selection-public-report-v2", "selection-public-report-v3", "selection-public-report-v4", "selection-public-report-v5"].includes(S.grading.summary.schema_version) ? "Our selections by line source use matched joint decision groups. Source-specific day breakdowns are unavailable; choose All line sources for those views." : "Legacy aggregates do not separate timing policies or offer source jointly; only All line sources is available."}</p>
     <table class="tbl performance-desktop"><thead><tr><th class="l">Category</th><th>Over W–L / hit rate / decided N</th><th>Under W–L / hit rate / decided N</th><th>Combined</th></tr></thead><tbody>${rows.map(r=>`<tr data-category-performance="${r.key}"><th class="l">${esc(r.label)}</th><td>${cell(r.over,"over")}</td><td>${cell(r.under,"under")}</td><td>${cell(r.combined,"combined")}<small>${unclassified(r)} no-side coverage rows</small></td></tr>`).join("")}</tbody></table>
     <div class="performance-phone">${rows.map(r=>`<article class="card" data-category-performance="${r.key}"><h4>${esc(r.label)}</h4><div class="performance-side"><b>Over</b><div>${cell(r.over,"over")}</div></div><div class="performance-side"><b>Under</b><div>${cell(r.under,"under")}</div></div><div class="performance-side"><b>Combined</b><div>${cell(r.combined,"combined")}<small>${unclassified(r)} no-side coverage rows</small></div></div></article>`).join("")}</div></section>`;
 }
@@ -3092,7 +3401,7 @@ function gradingReportHtml() {
     <div class="tbl-wrap"><table class="tbl" data-grading-summaries><thead><tr><th class="l">Group</th><th>Hit rate</th><th>Sample</th><th class="l">Results and coverage</th><th>Rows</th></tr></thead><tbody>${tables.map((table) => `<tr data-grading-summary="${table.summary_id}"><td class="l">${esc(gradingLabel(table.value))}</td><td>${table.hit_rate == null ? "Unavailable" : fmt(100 * table.hit_rate) + "%"}<br><small>W / (W + L)</small></td><td>${table.decided} decided<br>${table.decided_unique_players} players · ${table.decided_unique_games} games · ${table.decided_unique_weeks} weeks</td><td class="l">${esc(statusCounts(table))}<br>${table.selected} selected / ${table.rows} coverage rows<br>${esc(Object.entries(table.coverage_reason_counts || {}).map(([reason, count]) => `${reason}: ${count}`).join(" · "))}<br>${table.unique_players} players · ${table.unique_games} games · ${table.unique_weeks} archived/observed weeks</td><td><button class="tbtn" data-grading-group="${table.summary_id}">Inspect ${table.rows} rows</button></td></tr>`).join("")}</tbody></table></div>
     <p class="note">NO_ACTION reasons remain in the rows: observed abstention or non-Top membership differs from missing/stale observations, absent source rows and an unknown universe. Reference-only records are not executable offers. Inherited clocks stay unknown; saved-cache regrades remain separately labelled outcomes.</p>
     ${S.gradingGroup ? `<div class="card" data-grading-details>${gradingRowsHtml(S.gradingGroup)}</div>` : ""}
-    <details class="card"><summary>Raw Sleeper versus unchanged adjusted point forecasts</summary><p>Separate registered three-target comparison, independent of the selection filters above. Same original observation and valid matched outcomes. Category-specific units; no mixed-unit accuracy claim. Descriptive comparisons do not prove improvement. All-category numerical/PPR/TD evaluation remains local and opt-in.</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Category</th><th>Matched n</th><th>Raw MAE / RMSE / bias</th><th>Adjusted MAE / RMSE / bias</th></tr></thead><tbody>${Object.entries(pointCategories).map(([key, item]) => { const raw = item.raw_sleeper || {}, adjusted = item.unchanged_clone || {}; return `<tr><td>${esc(SHORT[key] || key)}</td><td>${raw.n || 0}</td><td>${fmt(raw.mae, 3)} / ${fmt(raw.rmse, 3)} / ${fmt(raw.mean_error, 3)}</td><td>${fmt(adjusted.mae, 3)} / ${fmt(adjusted.rmse, 3)} / ${fmt(adjusted.mean_error, 3)}</td></tr>`; }).join("") || `<tr><td colspan="4">No matched point outcomes available.</td></tr>`}</tbody></table></div></details>
+    ${forecastAccuracyHtml(summary.forecast_accuracy)}<details class="card"><summary>Raw Sleeper versus unchanged adjusted point forecasts</summary><p>Separate registered three-target comparison, independent of the selection filters above. Same original observation and valid matched outcomes. Category-specific units; no mixed-unit accuracy claim. Descriptive comparisons do not prove improvement. ${summary.forecast_accuracy ? "The all-category descriptive extension is separate from the registered experiment." : "All-category numerical/PPR/TD evaluation remains local and opt-in for this legacy report."}</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Category</th><th>Matched n</th><th>Raw MAE / RMSE / bias</th><th>Adjusted MAE / RMSE / bias</th></tr></thead><tbody>${Object.entries(pointCategories).map(([key, item]) => { const raw = item.raw_sleeper || {}, adjusted = item.unchanged_clone || {}; return `<tr><td>${esc(SHORT[key] || key)}</td><td>${raw.n || 0}</td><td>${fmt(raw.mae, 3)} / ${fmt(raw.rmse, 3)} / ${fmt(raw.mean_error, 3)}</td><td>${fmt(adjusted.mae, 3)} / ${fmt(adjusted.rmse, 3)} / ${fmt(adjusted.mean_error, 3)}</td></tr>`; }).join("") || `<tr><td colspan="4">No matched point outcomes available.</td></tr>`}</tbody></table></div></details>
     <details class="card"><summary>Coverage, limitations and report identity</summary><p>Report ${esc(pointer.report_id)} · ${esc(summary.report_schema_version)}. Source ${esc(summary.source_sha || "Unbound")}; generated input binding ${esc(summary.input_binding || "Unknown")}.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({ coverage: summary.coverage, limitations: summary.limitations, uncertainty: summary.uncertainty }, null, 2))}</pre></details></section>`;
 }
 async function loadGradingRows(id, more = false) {
@@ -4147,7 +4456,7 @@ function applyHash() {
   }
   const tm = location.hash.match(/^#\/teams(?:\/([A-Z]{2,3}))?$/);
   if (tm) { S.gameView = null; S.tab = "teams"; S.teamView = tm[1] || null; return true; }
-  const t = location.hash.match(/^#\/(props|fantasy|compare|league|trade|mine|news|record|about)$/);
+  const t = location.hash.match(/^#\/(props|fantasy|compare|league|trade|mine|parlay|news|record|about)$/);
   if (t) { S.gameView = null; S.tab = t[1]; return true; }
   return false;
 }
@@ -4935,7 +5244,7 @@ function renderMine() {
 function render() {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", !S.gameView && b.dataset.tab === S.tab));
   if (S.gameView) { renderGame(); renderScores(); return; }
-  ({ props: renderProps, fantasy: renderFantasy, compare: renderCompare, league: renderLeagueTab, trade: renderTrade, mine: renderMine, news: renderNews, teams: renderTeams, record: renderRecord, about: renderAbout })[S.tab]();
+  ({ props: renderProps, fantasy: renderFantasy, compare: renderCompare, league: renderLeagueTab, trade: renderTrade, mine: renderMine, parlay: renderParlay, news: renderNews, teams: renderTeams, record: renderRecord, about: renderAbout })[S.tab]();
   updateSyncBtn();
   updateMineBadge();
   renderScores();
@@ -4943,6 +5252,7 @@ function render() {
 
 // Live ticks update numbers in place, so open cards, focus and scroll position survive
 function renderLiveParts() {
+  if (!S.gameView && S.tab === "parlay") { if (!document.activeElement?.matches("input,select")) renderParlay(); return; }
   if (!S.gameView && S.tab === "mine") { if (!document.activeElement?.matches("input")) { const y = window.scrollY; renderMine(); window.scrollTo(0, y); } return; }
   if (!S.gameView && S.tab === "league") { if ((S.leagueView || "team") === "matchups" && !document.activeElement?.matches("input")) { const y = window.scrollY; renderLeagueTab(); window.scrollTo(0, y); } return; }
   if (!S.gameView && S.tab === "compare") { if (!document.activeElement?.matches("input")) { const y = window.scrollY; renderCompare(); window.scrollTo(0, y); } return; }
@@ -4975,6 +5285,51 @@ function renderLiveParts() {
 
 document.addEventListener("click", (e) => {
   const t = e.target;
+  if(t.closest("[data-paper-evaluate]")){gradeSavedPaper();return;}
+  if (t.closest("[data-paper-new]")) { Object.assign(S.paper, { legs: [], opened: null, results: null, error: "" }); renderParlay(); return; }
+  const paperRemove = t.closest("[data-paper-remove]");
+  if (paperRemove) { S.paper.legs.splice(+paperRemove.dataset.paperRemove, 1); renderParlay(); return; }
+  if (t.closest("[data-paper-suggest]")) {
+    S.paper.legs = []; S.paper.error = "";
+    for (const { leg } of paperCandidates()) {
+      if (S.paper.legs.some(l => l.player_id === leg.player_id || l.game_id === leg.game_id)) continue;
+      S.paper.legs.push(leg); if (S.paper.legs.length === +S.paper.size) break;
+    }
+    if (S.paper.legs.length < 2) S.paper.error = "NO_ACTION: fewer than two compatible legs; no forced filling.";
+    renderParlay(); return;
+  }
+  const paperAdd = t.closest("[data-paper-add]");
+  if (paperAdd) {
+    let leg;
+    try {
+      const rendered = validatePaperLeg(JSON.parse(paperAdd.dataset.paperAdd));
+      leg = paperCandidates().find(v => gradingCanonical(v.leg) === gradingCanonical(rendered))?.leg;
+    } catch { /* Stale/malformed rendered contracts cannot select another leg. */ }
+    if (!leg || S.paper.legs.length >= 6 || S.paper.legs.some(l => l.player_id === leg.player_id || l.game_id === leg.game_id || l.line_source !== leg.line_source)) S.paper.error = "Leg unavailable or incompatible with this draft.";
+    else { S.paper.legs.push(leg); S.paper.error = ""; }
+    renderParlay(); return;
+  }
+  if (t.closest("[data-paper-save]")) {
+    try {
+      const now = Date.now(), candidates = paperCandidates(now);
+      if (S.paper.legs.some(leg => !candidates.some(v => gradingCanonical(v.leg) === gradingCanonical(leg)))) throw new Error("A draft contract changed or started. Recheck the draft before saving.");
+      const previous = S.paper.opened, ticket = { schema_version: "paper-parlay-ticket-v1", ticket_id: previous?.ticket_id || crypto.randomUUID(), revision_id: crypto.randomUUID(),
+        parent_revision_id: previous?.revision_id || null, saved_at: new Date(now).toISOString(), clock_basis: "OWNER_DEVICE_TIME_NOT_INDEPENDENTLY_TIMESTAMPED",
+        product: "paper_all_legs", line_source: S.paper.legs[0]?.line_source, legs: structuredClone(S.paper.legs) };
+      savePaperTicket(ticket); S.paper.opened = ticket; S.paper.history=null;S.paper.historyEpoch++; S.paper.error = "Saved and read back on this device."; gradeOpenedPaper();
+    } catch (error) { S.paper.error = "Not saved: " + error.message; }
+    renderParlay(); return;
+  }
+  const paperOpen = t.closest("[data-paper-open]");
+  if (paperOpen) {
+    try {
+      const item = readPaperTickets().tickets.find(v => v.key === paperOpen.dataset.paperOpen);
+      if (!item) throw new Error("Saved revision unavailable");
+      S.paper.opened = item.ticket; S.paper.legs = structuredClone(item.ticket.legs); S.paper.source = item.ticket.line_source; S.paper.error = "";
+      gradeOpenedPaper();
+    } catch (error) { S.paper.error = error.message; }
+    renderParlay(); return;
+  }
   const gradingGroup = t.closest("[data-grading-group]");
   if (gradingGroup) { loadGradingRows(gradingGroup.dataset.gradingGroup); return; }
   if (t.closest("[data-grading-more]")) { if (S.gradingGroup) loadGradingRows(S.gradingGroup.id, true); return; }
@@ -5320,6 +5675,12 @@ document.addEventListener("input", (e) => {
 });
 
 document.addEventListener("change", (e) => {
+  if (e.target.dataset.paperFilter) { S.paper[e.target.dataset.paperFilter] = e.target.value; renderParlay(); return; }
+  if (e.target.dataset.paperCategory) {
+    const key = e.target.dataset.paperCategory;
+    S.paper.categories = e.target.checked ? [...new Set([...S.paper.categories, key])] : S.paper.categories.filter(c => c !== key);
+    renderParlay(); return;
+  }
   if (e.target.dataset.gradingFilter) {
     S.gradingFilters[e.target.dataset.gradingFilter] = e.target.value;
     S.gradingGroup = null;
@@ -5388,7 +5749,7 @@ $("#reload").addEventListener("click", async () => {
 
 (async function start() {
   const saved = store("tab");
-  if (["props", "fantasy", "compare", "league", "trade", "mine", "news", "record", "about"].includes(saved)) S.tab = saved;
+  if (["props", "fantasy", "compare", "league", "trade", "mine", "parlay", "news", "record", "about"].includes(saved)) S.tab = saved;
   try {
     await load();
   } catch (err) {

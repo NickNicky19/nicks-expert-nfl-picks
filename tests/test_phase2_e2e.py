@@ -1501,7 +1501,9 @@ class PartialOperationalPipelineTests(unittest.TestCase):
             summary = validate_publication(root / "output/data/selection-grading",
                                            load_json(root / "output/data/selection-grading/latest.json"))
             self.assertEqual((summary["schema_version"], summary["report_schema_version"]),
-                             ("selection-public-report-v2", "selection-report-v3"))
+                             ("selection-public-report-v6", "selection-report-v4"))
+            from accuracy_publication import validate_accuracy
+            validate_accuracy(summary["forecast_accuracy"])
             aggregate = load_json(root / "output/data/forecast-scorecard.json")
             rich = read(root / again["phase2"]["rich_scorecard_receipt"])
             self.assertEqual(aggregate["report_sha256"], digest(rich["report"]))
@@ -1997,7 +1999,13 @@ class EncodedHostingTests(unittest.TestCase):
         self.run_live(root)
         base=root/'output/data/selection-grading'
         summary,rows,outcomes=selection_publication.publication_contents(base,load_json(base/'latest.json'))
-        chunks=[rows[n:n+250] for n in range(0,len(rows),250)]
+        # Exercise the explicit retained legacy producer; never relabel a
+        # modern summary or strip required modern membership/context fields.
+        with tempfile.TemporaryDirectory() as analysis:
+            legacy,_=selection_publication.run_report([root],Path(analysis),now=self.AT,
+                expected_hashes=corrected.legacy_engine_hashes(),report_version='selection-report-v3')
+        summary,rows,outcomes,chunks,_=selection_publication._projection(legacy,
+            source_sha=summary['source_sha'],input_digest=summary['input_content_sha256'])
         pointer=selection_publication.prepare_publication(base,summary,rows,outcomes,chunks,self.AT)
         atomic_json(base/'latest.json',pointer)
         generation=load_json(root/'output/data/release-identity.json');generation.pop('generation_sha256')
@@ -2468,6 +2476,180 @@ class PreparedPublicationTests(unittest.TestCase):
                 validate_publication(base, pointer, _checked=checked)
                 validate_publication(base, pointer, _checked=checked)
                 self.assertEqual(complete.call_count, 2)
+
+
+
+# Reuse the retained smallest mixed-original/corrected fixture. These controls
+# do not change that earlier fixture or invoke a provider. The only substitutions
+# are explicitly fictional HTTP, clocks and public-archive transport lookup.
+RANKED_CONNECTED_SEED = r'''
+code,root=Path(sys.argv[1]),Path(sys.argv[2])
+m=bind(code)
+import selection_strategies as strategies
+provider=Provider(m,DIMENSIONS)
+m['_provider']=provider
+provider.at=START+timedelta(hours=53)
+board=m['rel'].load_json(root/'output/data/week.json')
+plan(m,root,board,provider.at,True)
+def git(*args):
+    return subprocess.check_output(['git','-C',str(root),*args],stderr=subprocess.PIPE).decode().strip()
+def commit():
+    git('add','data','output/data','ranked-state.json')
+    git('-c','user.name=FictionalRegression','-c','user.email=fictional@example.invalid',
+        '-c','core.hooksPath=/dev/null','commit','-qm','Wholly fictional ranked-selection regression')
+def public_tree(ref,tree):
+    if git('rev-parse',ref+'^{tree}')!=tree:
+        raise RuntimeError('Fictional archive tree mismatch')
+class StrategyClock(datetime):
+    @classmethod
+    def now(cls,tz=None): return provider.at
+state=dict(updates=[],source_sha=sys.argv[3])
+with external(m,provider,root),patch.object(strategies,'datetime',StrategyClock), \
+        patch.object(m['capture'],'_public_archive_commit',side_effect=public_tree):
+    for step in range(3):
+        provider.at=START+timedelta(hours=53,seconds=step*5)
+        report,health=m['capture'].run_capture(root,build_first=(step!=1))
+        generation=m['capture'].validate_generation(root)
+        completions=sorted(p.relative_to(root).as_posix()
+            for p in (root/'data'/strategies.COMPLETE_LANE).rglob('*.json.gz'))
+        rows=strategies.decisions([root],m['rel'].load_json(root/'config/timing-policy.json'),
+            provider.at,ledger_root=root)
+        selected=[row for row in rows if row['checkpoint']=='history' and row['action']=='SELECT']
+        if not selected: raise RuntimeError('Actual connected fixture produced no ranked selections')
+        if len(completions)!=(1 if step<2 else 2):
+            raise RuntimeError('Unchanged retry changed first ranked recording or new input failed to record')
+        state['updates'].append(dict(at=provider.at.isoformat(),generation=generation,
+            completions=completions,selected=selected,health=health))
+        m['rel'].atomic_json(root/'ranked-state.json',state)
+        commit()
+    m['capture'].stage_pages(root,root.parent/'ranked-pages')
+    pointer=m['rel'].load_json(root/'output/data/selection-grading/latest.json')
+    summary,rows,outcomes=m['publication'].publication_contents(root/'output/data/selection-grading',pointer)
+    if summary['schema_version']!='selection-public-report-v6':
+        raise RuntimeError('Connected report did not use the explicit strategy-aware contract')
+    if not any(row['cohort'] in strategies.STRATEGIES and row['action']=='SELECT' for row in rows):
+        raise RuntimeError('Public projection dropped the actual ranked selections')
+    clean=root.parent/'ranked-clean-copy'
+    shutil.copytree(root,clean)
+    if m['capture'].validate_generation(clean)!=state['updates'][-1]['generation']:
+        raise RuntimeError('Independent copied-root replay changed generation')
+    cold=strategies.decisions([clean],m['rel'].load_json(clean/'config/timing-policy.json'),
+        provider.at,ledger_root=clean)
+    if cold!=strategies.decisions([root],m['rel'].load_json(root/'config/timing-policy.json'),
+        provider.at,ledger_root=root):
+        raise RuntimeError('Independent copied-root strategy decisions changed')
+    state['clean_replay']='PASS'
+    m['rel'].atomic_json(root/'ranked-state.json',state)
+'''
+
+
+class RankedStrategyConnectedPipelineTests(unittest.TestCase):
+    """Real source-bound recorded update and saved consumers, after commit.
+
+    The retained legacy builder runs in its retained source process. The new
+    builder and all qualification/ranking/completion/publication algorithms run
+    from the actual new commit; no validator or source manifest is mocked.
+    """
+    @classmethod
+    def setUpClass(cls):
+        from test_data_integrity_v2 import FROZEN_FRONTIER_SUPPORT, FROZEN_FRONTIER_SEED, frontier_process
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.base = Path(cls.temporary.name) / "ranked-fixture"
+        cls.base.mkdir()
+        namespace = {}
+        exec(FROZEN_FRONTIER_SUPPORT, namespace)
+        legacy_env = dict(os.environ)
+        legacy_env.pop("GITHUB_SHA", None)
+        with corrected.legacy_source() as retained:
+            namespace["copy_source"](retained, cls.base)
+            frontier_process([sys.executable, "-c", FROZEN_FRONTIER_SUPPORT + FROZEN_FRONTIER_SEED,
+                              str(retained), str(cls.base), "legacy"], env=legacy_env)
+        namespace["copy_source"](ROOT, cls.base)
+        subprocess.run(["git", "init", "-q", str(cls.base)], check=True)
+        objects = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-path", "objects"], text=True).strip()
+        (cls.base / ".git/objects/info/alternates").write_text(objects + "\n")
+        cls.source = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+        subprocess.run(["git", "-C", str(cls.base), "update-ref", "refs/fixture/source", cls.source], check=True)
+        subprocess.run(["git", "-C", str(cls.base), "remote", "add", "origin", "https://github.com/NickNicky19/nicks-expert-nfl-picks"], check=True)
+        subprocess.run(["git", "-C", str(cls.base), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(cls.base), "-c", "user.name=FictionalRegression", "-c", "user.email=fictional@example.invalid",
+                        "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Wholly fictional ranked initial fixture"], check=True)
+        frontier_process([sys.executable, "-c", FROZEN_FRONTIER_SUPPORT + RANKED_CONNECTED_SEED,
+                          str(cls.base), str(cls.base), cls.source], env=dict(os.environ, GITHUB_SHA=cls.source))
+        cls.state = load_json(cls.base / "ranked-state.json")
+
+    def setUp(self):
+        self.temporary_case = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_case.cleanup)
+        self.root = Path(self.temporary_case.name) / "copy"
+        shutil.copytree(self.base, self.root)
+        self.at = utc(self.state["updates"][-1]["at"])
+        self.first_name = self.state["updates"][0]["completions"][0]
+
+    def clock(self):
+        at = self.at
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None): return at
+        return Clock
+
+    def first(self):
+        import selection_strategies as strategies
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            return strategies.read_completed(self.root, self.first_name, now=self.at)
+
+    def test_actual_mixed_updater_retry_complete_publication_and_clean_copy(self):
+        import selection_strategies as strategies
+        self.assertEqual(self.state["clean_replay"], "PASS")
+        self.assertEqual(self.state["source_sha"], self.source)
+        first, done = self.first()
+        self.assertEqual(first["source_sha"], self.source)
+        self.assertEqual(first["source_files"], strategies._source(ROOT, self.source))
+        self.assertEqual([len(item["completions"]) for item in self.state["updates"]], [1, 1, 2])
+        self.assertEqual(self.state["updates"][0]["selected"], self.state["updates"][1]["selected"])
+        self.assertEqual(self.state["updates"][0]["selected"], self.state["updates"][2]["selected"])
+        originals = {p.relative_to(self.root): p.read_bytes() for p in (self.root / "data").rglob("*.json.gz")}
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            phase2_capture.validate_generation(self.root)
+            summary, rows, outcomes = selection_publication.publication_contents(self.root / "output/data/selection-grading",
+                load_json(self.root / "output/data/selection-grading/latest.json"))
+        self.assertEqual(summary["schema_version"], "selection-public-report-v6")
+        self.assertTrue(any(row["cohort"] in strategies.STRATEGIES and row["action"] == "SELECT" for row in rows))
+        for name, raw in originals.items(): self.assertEqual((self.root / name).read_bytes(), raw)
+
+    def test_actual_source_qualified_originals_and_completion_bindings_are_required(self):
+        saved, completion = self.first()
+        q = saved["qualification"]
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            board, native = phase2_capture._strategy_qualification(self.root, q, utc(saved["created_at"]))
+            self.assertEqual(digest(board), q["board_sha256"])
+            self.assertEqual(digest(native), q["native_payload_sha256"])
+            for field in ("board_sha256", "native_payload_sha256", "partial_completion_payload_sha256"):
+                bad = copy.deepcopy(q); bad[field] = "0" * 64
+                with self.subTest(field=field), self.assertRaises(IntegrityError):
+                    phase2_capture._strategy_qualification(self.root, bad, utc(saved["created_at"]))
+            with self.assertRaises(IntegrityError):
+                phase2_capture._strategy_qualification(self.root, q, utc(saved["created_at"]) - timedelta(seconds=1))
+        # Actual pinned bytes are necessary, even with matching saved flags.
+        native_path = self.root / q["native_receipt"]
+        native_path.write_bytes(b"FICTIONAL corrupt native bytes")
+        with patch.object(phase2_capture, "datetime", self.clock()), self.assertRaises((IntegrityError, OSError, EOFError)):
+            self.first()
+
+    def test_failure_marker_excludes_saved_strategy_without_rewriting_original_evidence(self):
+        import selection_strategies as strategies
+        saved, completion = self.first()
+        native_path = self.root / saved["qualification"]["native_receipt"]
+        original = native_path.read_bytes()
+        write(self.root, strategies.FAILURE_LANE, {"schema_version": "ranked-selection-failure-v1",
+              "season": saved["season"], "week": saved["week"], "completion_sha256": digest(completion), "failed_at": stamp(self.at)})
+        with self.assertRaises(strategies.UnqualifiedStrategy): self.first()
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            rows = strategies.decisions([self.root], load_json(self.root / "config/timing-policy.json"), self.at)
+        self.assertFalse(any(row["action"] == "SELECT" and row["strategy_receipt_sha256"] == digest(saved) for row in rows))
+        self.assertEqual(native_path.read_bytes(), original)
+
 
 
 if __name__ == "__main__":

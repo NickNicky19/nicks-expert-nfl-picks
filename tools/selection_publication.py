@@ -23,12 +23,14 @@ from evidence import read, write
 from reliability import _pairs, ENGINE_PATHS, IntegrityError, canonical, digest, engine_hashes, load_json, stamp, utc
 from scorecard import identity
 import data_integrity_v2 as corrected
+import accuracy_publication
+import selection_strategies
 from selection_report import (PATTERNS, RESULTS, _create_file, _tally, build_decisions, run_report, summarize, weekday)
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_VERSION = "selection-public-report-v2"
 REPORT_CONTRACTS = {"selection-report-v2": "selection-public-report-v1",
-                    "selection-report-v3": PUBLIC_VERSION}
+                    "selection-report-v3": PUBLIC_VERSION, "selection-report-v4": "selection-public-report-v6"}
 SUMMARY_LIMIT = 12 * 1024 * 1024
 ROW_LIMIT = 2 * 1024 * 1024
 POINTER_VERSION = "selection-publication-pointer-v1"
@@ -47,6 +49,7 @@ GZIP_PUBLIC_VERSION = "selection-public-report-v4"
 GZIP_LAYOUT_VERSION = "gzip-context-period-v1"
 SHARED_POINTER_VERSION = "selection-publication-pointer-v4"
 SHARED_PUBLIC_VERSION = "selection-public-report-v5"
+EXTENDED_PUBLIC_VERSION = "selection-public-report-v6"
 SHARED_LAYOUT_VERSION = "shared-payload-context-period-v1"
 SHARED_ROWS_VERSION = "selection-public-rows-v2"
 SHARED_SUMMARY_VERSION = "selection-public-summary-partition-v2"
@@ -79,6 +82,7 @@ week_confirmed_complete outcome_provenance selected_outcome_provenance_sha256 ou
 outcome_identity_status outcome_identity_reasons outcome_selection outcome_revision
 selected_outcome_snapshot_sha256 selected_outcome_row_sha256 outcome_active_observations
 """.split())
+STRATEGY_FIELDS = frozenset(("strategy_version", "strategy_policy_sha256", "strategy_receipt_sha256", "strategy_rank"))
 OUTCOME_FIELDS = frozenset("""
 season week game_id player_id category team kickoff status actual reason game_state final_confirmed
 outcome_conflict outcome_selection outcome_source_mix outcome_identity_status outcome_identity_reasons
@@ -145,7 +149,14 @@ def _publication_helpers():
     reuse must not accidentally borrow an older helper's parsed or semantic PASS.
     """
     parts = []
-    for name in (__name__, "selection_report", "scorecard", "reliability", "evidence", "data_integrity_v2", "grade", "scoring"):
+    # The new registry is an actual helper dependency, not a caller-supplied
+    # digest or a filesystem timestamp. Changing it cannot inherit cached trust.
+    registry = Path(selection_strategies.__file__).resolve().with_name("selection-strategies-v1.json")
+    try:
+        parts.append((str(registry), hashlib.sha256(registry.read_bytes()).hexdigest()))
+    except OSError:
+        return None
+    for name in (__name__, "selection_report", "selection_strategies", "accuracy_publication", "scorecard", "reliability", "evidence", "data_integrity_v2", "grade", "scoring"):
         module = sys.modules.get(name)
         try:
             path = Path(module.__file__).resolve()
@@ -249,8 +260,30 @@ def _record_fields(record):
             _hash(value)
 
 
-def _row(row):
-    result = _project(row, ROW_FIELDS)
+def _row(row, *, extended=False):
+    modern = extended and row.get("schema_version") == "selection-decision-v2"
+    if extended and row.get("schema_version") not in ("selection-decision-v1", "selection-decision-v2"):
+        raise IntegrityError("Unknown modern decision schema")
+    if not modern and (set(row) & STRATEGY_FIELDS or row.get("cohort") in selection_strategies.STRATEGIES):
+        raise IntegrityError("Ranked membership requires its typed prospective decision contract")
+    if row.get("schema_version") == "selection-decision-v2" and not extended:
+        raise IntegrityError("Strategy row outside its explicit enclosing contract")
+    result = _project(row, ROW_FIELDS | STRATEGY_FIELDS if modern else ROW_FIELDS)
+    if modern:
+        engines = {"original_sleeper_matchup_baseline": digest(corrected.legacy_engine_hashes()), corrected.MODEL: digest(corrected.V2_SOURCE_SHA256)}
+        if (result.get("strategy_version") != "ranked-selection-policy-v1" or result.get("strategy_policy_sha256") != digest(selection_strategies.policy())
+                or result.get("cohort") not in selection_strategies.STRATEGIES
+                or result.get("model_version") not in engines or result.get("engine_sha256") != engines[result["model_version"]]
+                or result.get("provenance_class") != "completed_prospective_ranked_selection"
+                or result.get("strategy_rank") is not None and (type(result["strategy_rank"]) is not int or not 1 <= result["strategy_rank"] <= 12)
+                or result.get("action") == "SELECT" and (result.get("strategy_rank") is None or not result.get("strategy_receipt_sha256"))):
+            raise IntegrityError("Unsupported public strategy row")
+        if result.get("action") == "SELECT" and (result.get("side") not in ("over", "under") or result.get("line_from") not in ("dk", "sleeper")
+                or result.get("selection_clock_basis") != "LOCAL_COMPLETED_RANKED_SELECTION"
+                or result.get("recorded_selection_at") != result.get("original_selection_created_at")
+                or not result.get("collected_at") or not result.get("original_selection_created_at")
+                or not utc(result["forecast_generated_at"]) <= utc(result["collected_at"]) <= utc(result["original_selection_created_at"]) < utc(result["kickoff"])):
+            raise IntegrityError("Ranked public selection clocks/offer differ")
     _record_identity(result)
     _record_fields(result)
     _hash(result.get("decision_sha256"))
@@ -326,15 +359,15 @@ def _projection(report, *, source_sha, input_digest):
     contract = report.get("schema_version")
     if contract not in REPORT_CONTRACTS:
         raise IntegrityError("Unsupported source selection report")
-    fields = TABLE_FIELDS_V2 if contract == "selection-report-v3" else TABLE_FIELDS
-    if contract == "selection-report-v3":
+    fields = TABLE_FIELDS_V2 if contract != "selection-report-v2" else TABLE_FIELDS
+    if contract != "selection-report-v2":
         for row in report["rows"]:
             if (row.get("line_from") not in (None, "dk", "sleeper", "ours", "unknown")
                     or not isinstance(row.get("policy_version"), str) or not row["policy_version"].strip()
                     or not HEX.fullmatch(row.get("policy_sha256") or "")):
                 raise IntegrityError("Unsupported public-v2 source or policy identity")
     # Physical locality only; recommendation membership and ranking stay recorded.
-    rows = sorted((_row(row) for row in report["rows"]), key=lambda row: (
+    rows = sorted((_row(row, extended=contract == "selection-report-v4") for row in report["rows"]), key=lambda row: (
         row["provenance_class"], row["model_version"], row.get("engine_sha256") or "",
         row["season"], row["week"], row["cohort"], row["checkpoint"],
         row["category"], row.get("side") or "", row["decision_sha256"]))
@@ -386,6 +419,9 @@ def _projection(report, *, source_sha, input_digest):
                                "Quote freshness, full contracts and the entirely unobserved opportunity universe are unverified.",
                                "Local recorded membership time does not prove website publication or original selection creation."]}
     summary["coverage"]["outcome_index_omitted_unknown_kickoff"] = len(unknown_kickoffs)
+    if contract == "selection-report-v4":
+        summary["forecast_accuracy"] = copy.deepcopy(accuracy_publication.validate_accuracy(report["forecast_accuracy"]))
+        summary["limitations"][3] = "Scoped original-model-input archive review completed; different or later artifacts need delta review."
     public_id = digest({"summary": summary, "rows": rows, "outcomes": outcomes})
     return summary, rows, outcomes, chunks, public_id
 
@@ -424,15 +460,19 @@ def _validate_legacy_publication(base, pointer, *, _partitioned=None, _row_reade
     expected_summary_fields = {"schema_version", "report_schema_version", "report_id", "row_count", "source_sha",
                                "input_binding", "input_content_sha256", "summary", "coverage",
                                "primary_raw_vs_adjusted", "uncertainty", "limitations"}
+    if summary.get("report_schema_version") == "selection-report-v4": expected_summary_fields.add("forecast_accuracy")
     if set(summary) != expected_summary_fields:
         raise IntegrityError("Unknown public summary fields")
     contract = summary.get("report_schema_version")
+    if contract == "selection-report-v4" and (_partitioned is None or _layout != SHARED_LAYOUT_VERSION):
+        raise IntegrityError("Extended report requires shared gzip partition validation")
     if (contract not in REPORT_CONTRACTS or summary.get("schema_version") != REPORT_CONTRACTS[contract]
             or summary.get("report_id") != report_id):
         raise IntegrityError("Malformed public summary identity")
     if summary.get("input_binding") != "NOT_YET_GIT_COMMITTED":
         raise IntegrityError("Unsupported public source/binding contract")
-    fields = TABLE_FIELDS_V2 if contract == "selection-report-v3" else TABLE_FIELDS
+    fields = TABLE_FIELDS_V2 if contract != "selection-report-v2" else TABLE_FIELDS
+    if contract == "selection-report-v4": accuracy_publication.validate_accuracy(summary["forecast_accuracy"])
     if SOURCE_HEX.fullmatch(summary.get("source_sha", "")) is None:
         raise IntegrityError("Malformed public source commit")
     _hash(summary.get("input_content_sha256"))
@@ -453,7 +493,7 @@ def _validate_legacy_publication(base, pointer, *, _partitioned=None, _row_reade
                 or index < len(pointer["rows"]) - 1 and len(payload["rows"]) != CHUNK_SIZE):
             raise IntegrityError("Invalid public row chunk size")
         for row in payload["rows"]:
-            if _row(row) != row:
+            if _row(row, extended=contract == "selection-report-v4") != row:
                 raise IntegrityError("Nonpublic field in row chunk")
             if row["decision_sha256"] in locations:
                 raise IntegrityError("Duplicate public row identity")
@@ -474,11 +514,11 @@ def _validate_legacy_publication(base, pointer, *, _partitioned=None, _row_reade
         if len(expected_tables) != len(summary["summary"]["tables"]):
             raise IntegrityError("Public summary groups do not reconcile")
         for table in summary["summary"]["tables"]:
-            if contract == "selection-report-v3" and (
+            if contract != "selection-report-v2" and (
                     not isinstance(table.get("policy_version"), str) or not table["policy_version"].strip()
                     or not HEX.fullmatch(table.get("policy_sha256") or "")
                     or table.get("line_source_scope") not in ("all", "dk", "sleeper", "ours", "unknown")
-                    or table["line_source_scope"] != "all" and table["dimension"] not in ("overall", "category", "category_side")):
+                    or contract == "selection-report-v3" and table["line_source_scope"] != "all" and table["dimension"] not in ("overall", "category", "category_side")):
                 raise IntegrityError("Unsupported public-v2 summary context")
             if set(table) - (fields - {"row_ids"}) - {"row_chunks", "coverage_reason_counts", "row_positions", "row_ids_sha256"}:
                 raise IntegrityError("Nonpublic field in summary")
@@ -685,8 +725,10 @@ def _read_partitions(base, pointer, *, _checked=None, _prepared=None):
     fields = {"schema_version", "report_schema_version", "report_id", "row_count", "source_sha",
               "input_binding", "input_content_sha256", "summary", "coverage", "primary_raw_vs_adjusted",
               "uncertainty", "limitations", "contexts", "summary_partitions"}
-    if (set(index) != fields or index["schema_version"] != (SHARED_PUBLIC_VERSION if shared else GZIP_PUBLIC_VERSION if encoded else PARTITION_PUBLIC_VERSION)
-            or index["report_schema_version"] != "selection-report-v3" or index["report_id"] != report_id
+    extended = index.get("report_schema_version") == "selection-report-v4"
+    if extended: fields.add("forecast_accuracy")
+    if (set(index) != fields or index["schema_version"] != (EXTENDED_PUBLIC_VERSION if extended else SHARED_PUBLIC_VERSION if shared else GZIP_PUBLIC_VERSION if encoded else PARTITION_PUBLIC_VERSION)
+            or index["report_schema_version"] not in ("selection-report-v3", "selection-report-v4") or extended and not shared or index["report_id"] != report_id
             or index["row_count"] != pointer["row_count"]
             or set(index["summary"]) != {"warning", "disjoint_selected_partitions_reconciled"}
             or not isinstance(index["contexts"], dict) or not isinstance(index["summary_partitions"], list)):
@@ -920,7 +962,9 @@ def prepare_publication(base, summary, rows, outcomes, chunks, generated_at, *, 
     base = Path(base)
     if len(chunks) > 4000:
         raise IntegrityError("Public row-chunk count exceeds supported bounds")
-    use_parts = partitioned and summary["report_schema_version"] == "selection-report-v3"
+    use_parts = partitioned and summary["report_schema_version"] in ("selection-report-v3", "selection-report-v4")
+    if summary["report_schema_version"] == "selection-report-v4" and not (use_parts and shared and encoding == "gzip"):
+        raise IntegrityError("Extended report requires the existing shared gzip partition layout")
     if encoding not in (None, "gzip") or encoding == "gzip" and not use_parts:
         raise IntegrityError("Unsupported publication encoding contract")
     encoded = encoding == "gzip"
@@ -978,7 +1022,7 @@ def prepare_publication(base, summary, rows, outcomes, chunks, generated_at, *, 
                 payload["report_id"] = public_id
             value = save("summary.json", payload, SUMMARY_LIMIT, content_addressed=True, compress=True)
             parts.append(dict(value, context_id=cid, period=period, table_count=len(tables)))
-        index = dict(summary, schema_version=SHARED_PUBLIC_VERSION if shared else GZIP_PUBLIC_VERSION if encoded else PARTITION_PUBLIC_VERSION, report_id=public_id,
+        index = dict(summary, schema_version=EXTENDED_PUBLIC_VERSION if summary["report_schema_version"] == "selection-report-v4" else SHARED_PUBLIC_VERSION if shared else GZIP_PUBLIC_VERSION if encoded else PARTITION_PUBLIC_VERSION, report_id=public_id,
                      summary={key: value for key, value in summary["summary"].items() if key != "tables"},
                      contexts=contexts, summary_partitions=parts)
         summary_descriptor = save("summary.json", index, INDEX_LIMIT)
@@ -1184,8 +1228,18 @@ def publish_selection_report(root, observed_at=None, *, source_sha=None, _checke
         stage.mkdir()
         # No .git or separate population/raw-capture lanes. Changed generated
         # files are bound to these exact bytes, never falsely asserted at HEAD.
-        for pattern in PATTERNS:
+        patterns = list(PATTERNS)
+        has_ranked = any((root / "data" / selection_strategies.COMPLETE_LANE).rglob("*.json.gz"))
+        if has_ranked:
+            # A copied report root is a separate trust namespace. Carry its
+            # original source/evidence closure, not a cached qualification.
+            patterns += ["data/verification/**/*.json.gz", "pull/**/*", "tools/**/*", "config/**/*",
+                         "output/data/meta.json", "output/data/matchup-proof.json", "output/data/verification-scope.json"]
+        else:
+            patterns += ["data/verification/[0-9][0-9][0-9][0-9]/w[0-9][0-9]/*.json.gz"]
+        for pattern in patterns:
             for path in sorted(root.glob(pattern)):
+                if path.is_dir() or "__pycache__" in path.parts or path.suffix == ".pyc": continue
                 name = path.relative_to(root).as_posix()
                 if name in originals:
                     continue
@@ -1196,6 +1250,27 @@ def publish_selection_report(root, observed_at=None, *, source_sha=None, _checke
                 target = stage / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(raw)
+        written = set()
+        def fresh_inputs():
+            names = set()
+            for pattern in patterns:
+                for path in root.glob(pattern):
+                    if "__pycache__" in path.parts or path.suffix == ".pyc": continue
+                    _no_symlinks(path, root)
+                    if path.is_file(): names.add(path.relative_to(root).as_posix())
+            if set(originals) - names or names - set(originals) - written:
+                raise IntegrityError("Saved input dependency inventory changed during publication")
+            if any(hashlib.sha256((root / name).read_bytes()).hexdigest() != sha for name, sha in originals.items()):
+                raise IntegrityError("Saved input changed during public report")
+        board_paths = []
+        for path in sorted((stage / "data/verification").glob("[0-9][0-9][0-9][0-9]/w[0-9][0-9]/*.json.gz")):
+            original = read(path)
+            if original.get("schema_version") not in ("matchup-inputs-v2", corrected.INPUTS): continue
+            board = original.get("week_data")
+            if not isinstance(board, dict) or original.get("output_sha256") != digest(board):
+                raise IntegrityError("Saved original board/input digest differs")
+            board_path = stage / "saved-original-boards" / (digest(board) + ".json")
+            _create_file(board_path, canonical(board) + b"\n"); board_paths.append(board_path)
         input_digest = digest(originals)
         state = root / "data/verification/selection-grading/decisions"
         _no_symlinks(state, root)
@@ -1205,8 +1280,14 @@ def publish_selection_report(root, observed_at=None, *, source_sha=None, _checke
             _no_symlinks(path, root)
             payload = _ledger(read(path), policy, hashes, observed_at)
             write(analysis, "selection_decisions", payload)
+        import partial_week
+        ranked_state = root / "data/verification/ranked-selection-decisions"
+        for path in sorted(ranked_state.rglob("*.json.gz")):
+            payload = partial_week._saved(root, path.relative_to(root).as_posix(), "verification/ranked-selection-decisions")
+            write(analysis, "ranked_selection_decisions", payload)
         report, _ = run_report([stage], analysis, now=observed_at,
-                              policy=policy, expected_hashes=hashes)
+                              policy=policy, expected_hashes=hashes, report_version="selection-report-v4",
+                              original_board_paths=board_paths)
         summary, rows, outcomes, chunks, public_id = _projection(report, source_sha=source_sha,
                                                                input_digest=input_digest)
         base = root / "output/data/selection-grading"
@@ -1220,25 +1301,28 @@ def publish_selection_report(root, observed_at=None, *, source_sha=None, _checke
         public_id = pointer["report_id"]
         # Recheck every source byte before publishing either persistent state or
         # latest. Failure may leave unreachable content-addressed assets only.
-        if any(hashlib.sha256((root / name).read_bytes()).hexdigest() != sha for name, sha in originals.items()):
-            raise IntegrityError("Saved input changed during public report")
+        fresh_inputs()
         for path in sorted((analysis / "data/selection_decisions").rglob("*.json.gz")):
             payload = read(path)
             checkpoint_rows = [row for row in payload["rows"] if row["checkpoint"] != "history"]
             if checkpoint_rows:
-                _state_write(root, "verification/selection-grading/decisions",
+                saved_path = _state_write(root, "verification/selection-grading/decisions",
                              _ledger(dict(payload, rows=checkpoint_rows), policy, hashes, observed_at))
+                written.add(saved_path.relative_to(root).as_posix())
+        for path in sorted((analysis / "data/ranked_selection_decisions").rglob("*.json.gz")):
+            saved_path = _state_write(root, "verification/ranked-selection-decisions", read(path))
+            written.add(saved_path.relative_to(root).as_posix())
         data = load_json(root / "output/data/week.json")
-        _state_write(root, "verification/selection-grading/runs", {
+        saved_path = _state_write(root, "verification/selection-grading/runs", {
             "schema_version": "selection-publication-run-v1", "season": data["season"], "week": data["week"],
             "generated_at": stamp(observed_at), "source_sha": source_sha,
             "input_content_sha256": input_digest, "public_report_sha256": public_id,
             "input_binding": "NOT_YET_GIT_COMMITTED"})
+        written.add(saved_path.relative_to(root).as_posix())
         from reliability import atomic_json
         # Rehash the complete produced graph at the last publication boundary.
         # A typed/semantic cache never substitutes for fresh physical bytes.
         validate_publication(base, pointer, _checked=checked)
-        if any(hashlib.sha256((root / name).read_bytes()).hexdigest() != sha for name, sha in originals.items()):
-            raise IntegrityError("Saved input changed before public pointer advancement")
+        fresh_inputs()
         atomic_json(base / "latest.json", pointer)
         return pointer

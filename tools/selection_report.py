@@ -27,10 +27,13 @@ import data_integrity_v2 as corrected
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "selection-report-v3"
 LEGACY_VERSION = "selection-report-v2"
+EXTENDED_VERSION = "selection-report-v4"
 CHICAGO = ZoneInfo("America/Chicago")
 RESULTS = ("win", "loss", "push", "dnp", "pending", "unresolved", "excluded", "no_action", "not_due")
 PATTERNS = ("data/forward/**/*.json.gz", "data/outcomes/**/*.json.gz",
             "data/offers/**/*.json.gz", "data/cache/stats_*.json",
+            "data/verification/ranked-selections/**/*.json.gz", "data/verification/ranked-selection-completions/**/*.json.gz",
+            "data/verification/ranked-selection-failures/**/*.json.gz",
             "output/data/archive/*.json", "output/data/weeks/*.json",
             "output/data/week.json", "output/data/game-status.json")
 
@@ -454,17 +457,19 @@ def _tally(rows):
 
 
 def summarize(rows, *, contract=VERSION):
-    if contract not in (VERSION, LEGACY_VERSION):
+    if contract not in (VERSION, LEGACY_VERSION, EXTENDED_VERSION):
         raise IntegrityError("Unsupported selection-summary contract")
     context = ("provenance_class", "model_version", "engine_sha256")
-    if contract == VERSION:
+    if contract != LEGACY_VERSION:
         context += ("policy_version", "policy_sha256")
     context += ("view", "checkpoint")
-    if contract == VERSION:
+    if contract != LEGACY_VERSION:
         context += ("line_source_scope",)
     groups = defaultdict(list)
     dimensions = ("category", "side", "venue", "selection_weekday", "kickoff_weekday", "lead_time_bucket",
                   "checkpoint", "selection_clock_basis", "category_side")
+    if contract == EXTENDED_VERSION:
+        dimensions += ("category_side_selection_kickoff_lead",)
     for row in rows:
         views = [row["cohort"]]
         if row["cohort"] == "all_qualifying_leans" and row["action"] == "SELECT":
@@ -478,10 +483,11 @@ def summarize(rows, *, contract=VERSION):
                     values = dict(row, view=view, line_source_scope=source)
                     base = tuple(values.get(key) for key in context)
                     groups[(base, period, "overall", "all")].append(row)
-                    scoped_dimensions = dimensions if source == "all" else ("category", "category_side")
+                    scoped_dimensions = dimensions if source == "all" or contract == EXTENDED_VERSION else ("category", "category_side")
                     for dimension in scoped_dimensions:
                         value = (row["line_from"] if dimension == "venue" else
-                                 f"{row['category']}:{row['side']}" if dimension == "category_side" else row.get(dimension))
+                                 f"{row['category']}:{row['side']}" if dimension == "category_side" else
+                                 canonical([row.get(k) for k in ("category", "side", "selection_weekday", "kickoff_weekday", "lead_time_bucket")]).decode() if dimension == "category_side_selection_kickoff_lead" else row.get(dimension))
                         groups[(base, period, dimension, value)].append(row)
     tables = []
     for (base, period, dimension, value), members in sorted(groups.items(), key=lambda item: repr(item[0])):
@@ -787,7 +793,7 @@ def render_html(report, group=None):
 def run_report(input_roots, output_root, *, now=None, expected_hashes=None, policy=None, input_pins=None,
                include_descriptive=False, original_board_paths=(), report_version=VERSION,
                descriptive_model="original_sleeper_matchup_baseline"):
-    if report_version not in (VERSION, LEGACY_VERSION):
+    if report_version not in (VERSION, LEGACY_VERSION, EXTENDED_VERSION):
         raise IntegrityError("Unsupported selection-report contract")
     now = utc(now or datetime.now(timezone.utc))
     roots = sorted({Path(root).resolve() for root in input_roots})
@@ -799,9 +805,9 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
     policy = policy or load_json(ROOT / "config/timing-policy.json")
     expected_hashes = expected_hashes or corrected.legacy_engine_hashes()
     manifest, inputs = _inventory(roots, input_pins)
-    if original_board_paths and not include_descriptive:
+    if original_board_paths and not include_descriptive and report_version != EXTENDED_VERSION:
         raise IntegrityError("Original boards require explicit all-category evaluation")
-    boards, board_manifest = _original_boards(original_board_paths, roots, input_pins) if include_descriptive else ([], [])
+    boards, board_manifest = _original_boards(original_board_paths, roots, input_pins) if include_descriptive or report_version == EXTENDED_VERSION else ([], [])
     manifest.extend(board_manifest)
     decisions, coverage = build_decisions(inputs["forward"], policy, now, expected_hashes)
     decisions.extend(archive_decisions(inputs["archives"], policy))
@@ -831,6 +837,14 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
     derived.extend(read(path) for path in (output / "data/outcomes_derived").rglob("*.json.gz"))
     outcomes = latest_outcomes(saved + derived)
     decisions, conflicts = _frozen_decisions(output, decisions, now)
+    if report_version == EXTENDED_VERSION:
+        import selection_strategies
+        from phase2_capture import _dependency_closure
+        strategy_roots = [root for root in roots if any((root / "data" / selection_strategies.COMPLETE_LANE).rglob("*.json.gz"))]
+        closures = {str(root): _dependency_closure(root) for root in strategy_roots}
+        decisions.extend(selection_strategies.decisions(strategy_roots, policy, now, ledger_root=output))
+        if any(_dependency_closure(Path(root)) != sha for root, sha in closures.items()):
+            raise IntegrityError("Strategy dependencies changed during saved report consumption")
     rows = grade_decisions(decisions, outcomes)
     summary = summarize(rows, contract=report_version)
     sources = []
@@ -855,8 +869,10 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
                                                        if r["result"] in ("win", "loss")}),
                     independently_qualified_completed_weeks=sorted({(r["season"], r["week"]) for r in rows
                                                                    if r["week_confirmed_complete"]}))
-    code = {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in
-            (Path(__file__), ROOT / "tools/scorecard.py", ROOT / "pull/grade.py")}
+    code_paths = [Path(__file__), ROOT / "tools/scorecard.py", ROOT / "pull/grade.py"]
+    if report_version == EXTENDED_VERSION:
+        code_paths.extend(ROOT / name for name in ("tools/accuracy_publication.py", "tools/selection_strategies.py", "tools/selection-strategies-v1.json"))
+    code = {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in code_paths}
     report = {"schema_version": report_version, "rows": rows, "summary": summary, "coverage": coverage,
               "final_outcomes": final_outcome_records(outcomes),
               "outcome_observation_index": {digest(observation): observation for outcome in outcomes.values()
@@ -875,6 +891,11 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
     if include_descriptive:
         report["descriptive_all_categories"] = _descriptive_report(roots, output, inputs, outcomes,
                                                                   expected_hashes, now, input_pins, boards, model_version=descriptive_model)
+    if report_version == EXTENDED_VERSION:
+        from accuracy_publication import project_accuracy
+        report["forecast_accuracy"] = project_accuracy([
+            _descriptive_report(roots, output / model, inputs, outcomes, expected_hashes, now, input_pins, boards, model_version=model)
+            for model in ("original_sleeper_matchup_baseline", corrected.MODEL)])
     # Outputs are content-addressed; operational clocks live in a separate run receipt.
     report_id = digest(report)
     directory = output / "reports" / report_id

@@ -1,5 +1,41 @@
 const assert = require('node:assert/strict');
 
+// Actual private paper helpers: no provider, storage or ticket-network mock is
+// mistaken for a production offer or an independently timestamped selection.
+{
+  let checks=0;const check=new Proxy(assert,{get:(target,key)=>typeof target[key]==='function'?(...args)=>{checks++;return target[key](...args);}:target[key]});
+  const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+  const source=fs.readFileSync(path.join(__dirname,'../output/app.js'),'utf8');
+  const names=['paperLegIdentity','validatePaperLeg','validatePaperTicket','savePaperTicket','readPaperTickets','paperLegStatus','paperTicketStatus','paperCandidates'];
+  const functions=names.map(name=>{const value=source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));check.ok(value,name);return value[0];}).join('\n');
+  const prefix='nflprops.paper-ticket.v1.',data=new Map([['nflprops.mine','PRESERVED_OWNER_BYTES']]);
+  const storage={get length(){return data.size;},key:i=>[...data.keys()][i],getItem:key=>data.has(key)?data.get(key):null,setItem:(key,value)=>data.set(key,value)};
+  const category=['pass_yd','pass_td','pass_cmp','pass_att','pass_int','rush_yd','rush_att','rec_yd','rec','rush_rec_yd'];
+  const state={paper:{source:'dk',sides:'mixed',categories:[],game:''},data:{season:2026,week:7,generated_at:'2026-10-24T10:00:00Z',games:[],players:[]},games:{}};
+  const context={PAPER_PREFIX:prefix,PAPER_CATEGORIES:category,HASH64:/^[a-f0-9]{64}$/,S:state,UNAVAILABLE:new Set(['Out']),injOf:p=>({status:p.injury}),localStorage:storage};
+  vm.createContext(context);vm.runInContext(functions+'\nthis.api={'+names.join(',')+'};',context);const a=context.api;
+  const leg=i=>({season:2026,week:7,game_id:'fictional-game-'+i,player_id:'fictional-player-'+i,category:'rec',team:'AAA',name:'Fictional '+i,period:'full_game',kickoff:'2026-10-25T17:00:00Z',line:5.5,side:'over',line_source:'dk',raw_projection:5,adjusted_projection:7,board_generated_at:'2026-10-24T10:00:00Z',quote_observed_at:null});
+  const ticket={schema_version:'paper-parlay-ticket-v1',ticket_id:'fictional-ticket-0001',revision_id:'fictional-revision-0001',parent_revision_id:null,saved_at:'2026-10-24T11:00:00Z',clock_basis:'OWNER_DEVICE_TIME_NOT_INDEPENDENTLY_TIMESTAMPED',product:'paper_all_legs',line_source:'dk',legs:[leg(1),leg(2)]};
+  const key=a.savePaperTicket(ticket,storage),original=data.get(key);check.equal(a.readPaperTickets(storage).tickets.length,1);check.equal(data.get('nflprops.mine'),'PRESERVED_OWNER_BYTES');
+  for(const change of [t=>t.legs.pop(),t=>t.legs.push(...Array.from({length:5},(_,i)=>leg(i+3))),t=>t.legs[1].line_source='sleeper',t=>t.legs[1].game_id=t.legs[0].game_id,t=>t.saved_at=123,t=>t.legs[0].kickoff=123,t=>t.legs[0].category='anytime_td',t=>t.saved_at='2026-10-25T17:00:00Z']){const t=structuredClone(ticket);change(t);check.throws(()=>a.validatePaperTicket(t));}
+  const revision={...structuredClone(ticket),revision_id:'fictional-revision-0002',parent_revision_id:ticket.revision_id,saved_at:'2026-10-24T11:01:00Z'};a.savePaperTicket(revision,storage);check.equal(data.get(key),original);check.equal(a.readPaperTickets(storage).tickets.length,2);
+  check.throws(()=>a.savePaperTicket({...revision,parent_revision_id:'fictional-missing-0001'},storage));
+  check.throws(()=>a.savePaperTicket({...ticket,revision_id:'fictional-revision-0003'},storage));
+  check.throws(()=>a.savePaperTicket({...ticket,legs:[{...leg(1),line:6.5},leg(2)]},storage));
+  check.throws(()=>a.savePaperTicket(ticket,{...storage,setItem:()=>{throw new Error('QUOTA');},getItem:()=>null}));
+  data.set(prefix+'bad','{');check.equal(a.readPaperTickets(storage).tickets.length,2);check.equal(a.readPaperTickets(storage).errors.length,1);
+  data.delete(key);check.equal(a.readPaperTickets(storage).tickets.length,0);check.throws(()=>a.savePaperTicket({...revision,revision_id:'fictional-revision-0004',parent_revision_id:revision.revision_id},storage));data.set(key,original);
+  const l=leg(1),outcome={...l,status:'resolved',actual:0,final_confirmed:true,outcome_conflict:false,game_state:'post',outcome_selection:'confirmed',collected_at:'2026-10-25T21:00:00Z',outcome_snapshot_sha256:'a'.repeat(64),selected_outcome_row_sha256:'b'.repeat(64),selected_outcome_provenance_sha256:'c'.repeat(64)};
+  const outcomes=new Map([[a.paperLegIdentity(l),outcome]]);
+  check.equal(a.paperLegStatus(l,outcomes).status,'loss');check.equal(a.paperLegStatus({...l,side:'under'},outcomes).status,'win');
+  outcome.actual=5;check.equal(a.paperLegStatus({...l,line:5},outcomes).status,'push');outcome.actual=8;check.equal(a.paperLegStatus(l,outcomes).status,'win');
+  outcome.week=8;check.equal(a.paperLegStatus(l,outcomes).status,'unresolved');outcome.week=7;outcome.outcome_conflict=true;check.equal(a.paperLegStatus(l,outcomes).status,'unresolved');outcome.outcome_conflict=false;outcome.status='dnp';outcome.actual=null;check.equal(a.paperLegStatus(l,outcomes).status,'dnp');
+  check.match(a.paperTicketStatus([{status:'loss'},{status:'push'}]),/loss_present.*push/);check.equal(a.paperTicketStatus([{status:'win'},{status:'win'}]),'all_legs_won');
+  state.data.players=[{id:l.player_id,name:l.name,game_id:l.game_id,team:l.team,injury:null,props:[{key:'rec',proj:5,adj:7,line:5.5,line_from:'dk',lean:'over'}]}];state.data.games=[{id:l.game_id,home:'AAA',away:'BBB',kickoff:l.kickoff,state:'pre'}];state.games[l.game_id]={...state.data.games[0]};
+  check.equal(a.paperCandidates(Date.parse(ticket.saved_at)).length,1);state.games[l.game_id].kickoff='2026-10-26T17:00:00Z';check.equal(a.paperCandidates(Date.parse(ticket.saved_at)).length,0);state.games[l.game_id].kickoff=l.kickoff;state.data.players[0].injury='Out';check.equal(a.paperCandidates(Date.parse(ticket.saved_at)).length,0);
+  console.log(`Private paper contracts: ${checks} storage, identity, clock, correction and eligibility checks passed.`);
+}
+
 // Presence correction: actual helpers preserve known zero, signed PPR and
 // unknown components. No forecast, saved-line or device-state mutation.
 {

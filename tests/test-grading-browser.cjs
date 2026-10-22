@@ -488,6 +488,259 @@ async function archiveAndDecoderChecks(browser, origin) {
   } finally { fixture=savedFixture;variant=savedVariant;await context.close(); /* Preserve committed fictional archive for evidence. */ }
 }
 
+// Proposed insertion into tests/test-grading-browser.cjs, before its final IIFE.
+// Uses that file's existing server, fictionalPublication, partitionedPublication,
+// gzipPublication, sha/encode, fixture/week/variant variables and Chromium.
+// This is fictional browser transport. It does not certify capture qualification,
+// independently timestamped selections, offered entries or predictive performance.
+const PAPER_TEST_START = '2026-11-01T10:00:00Z';
+const PAPER_TEST_KICKOFF = '2026-11-02T18:00:00Z';
+const PAPER_TEST_FINAL = '2026-11-04T10:00:00Z';
+const PAPER_TEST_CORRECTION = '2026-11-04T11:00:00Z';
+
+function paperBrowserWeek() {
+  const value = fictionalWeek(), template = structuredClone(value.players[0]);
+  const prop = structuredClone(template.props[0]);
+  value.generated_at = PAPER_TEST_START;
+  value.games = Array.from({ length: 10 }, (_, i) => ({
+    id: 'paper-game-' + i, home: 'AAA', away: 'BBB', kickoff: PAPER_TEST_KICKOFF,
+    state: 'pre', detail: 'Scheduled', home_score: null, away_score: null,
+  }));
+  value.players = Array.from({ length: 11 }, (_, i) => {
+    const source = i >= 8 && i < 10 ? 'sleeper' : 'dk';
+    const side = [1, 3, 5, 6, 9].includes(i) ? 'under' : 'over';
+    const line = [2, 3].includes(i) ? 4 : 5.5;
+    return { ...structuredClone(template), id: 'paper-player-' + i,
+      name: 'FICTIONAL paper player ' + i, game_id: 'paper-game-' + (i === 10 ? 0 : i),
+      team: 'AAA', opp: 'BBB', injury: null, inj: null, late: false, actual: null,
+      props: [
+        { ...structuredClone(prop), key: 'rec', line, line_from: source, sleeper: source==='sleeper'?{line,over:1.8,under:1.8}:undefined, proj: side === 'over' ? 7 : 4,
+          adj: side === 'over' ? line + 2.5 : line - 2.5, lean: side },
+        { ...structuredClone(prop), key: 'rec_yd', line: 40.5, line_from: source, sleeper:source==='sleeper'?{line:40.5,over:1.8,under:1.8}:undefined, proj: side === 'over' ? 55 : 30,
+          adj: side === 'over' ? 60 : 20, lean: side },
+      ],
+    };
+  });
+  value.picks = { over: [], under: [] };
+  return value;
+}
+
+function paperBrowserPublication(stage) {
+  const value = fictionalPublication('PAPER_BROWSER_COMMON_INPUT_NOT_CAPTURE_PROOF');
+  const observed = stage === 'pre' ? PAPER_TEST_START : stage === 'correction' ? PAPER_TEST_CORRECTION : PAPER_TEST_FINAL;
+  const finalRows = paperBrowserWeek().players.map((player, i) => {
+    const status = stage === 'pre' ? 'pending' : i === 3 ? 'dnp' : i === 4 || i === 7 ? 'unresolved' : i === 5 ? 'pending' : 'resolved';
+    const confirmed = ['resolved', 'dnp'].includes(status), corrected = stage === 'correction' && i === 0;
+    const tag = corrected ? 'paper-corrected-final-0' : 'paper-original-final-' + i;
+    const actual = status !== 'resolved' ? null : i === 0 ? (corrected ? 3 : 8) : i === 2 ? 4 : i === 6 ? 0 : [1, 9].includes(i) ? 3 : 8;
+    return { season: 2026, week: 6, player_id: player.id, game_id: player.game_id, category: 'rec', team: player.team,
+      kickoff: PAPER_TEST_KICKOFF, status, actual, final_confirmed: confirmed,
+      outcome_conflict: stage !== 'pre' && i === 7, game_state: stage === 'pre' ? 'pre' : 'post',
+      outcome_selection: confirmed ? 'confirmed' : i === 7 && stage !== 'pre' ? 'conflict' : 'incomplete_observation',
+      outcome_snapshot_sha256: confirmed ? sha(tag + '-snapshot') : null,
+      selected_outcome_provenance_sha256: confirmed ? sha(tag + '-provenance') : null,
+      selected_outcome_row_sha256: confirmed ? sha(tag + '-row') : null,
+      reason: i === 7 && stage !== 'pre' ? 'conflicting_sources' : confirmed ? null : 'awaiting_saved_final',
+      outcome_provenance: 'recorded_outcome_receipt', outcome_source_mix: i === 7 && stage !== 'pre' ? 'conflicting_sources' : 'single_source',
+      outcome_identity_status: 'bound_to_recorded_game', collected_at: corrected ? PAPER_TEST_CORRECTION : stage === 'pre' ? PAPER_TEST_START : PAPER_TEST_FINAL };
+  });
+  value.finals = finalRows;
+  value.pointer.generated_at = observed;
+  const originalOutcomeBytes = encode({ schema_version: 'selection-final-outcomes-v1', report_id: value.pointer.report_id, outcomes: finalRows });
+  value.pointer.outcomes = { ...value.pointer.outcomes, sha256: sha(originalOutcomeBytes) };
+  value.assets.set('/data/selection-grading/' + value.pointer.outcomes.path, originalOutcomeBytes);
+  const plain = partitionedPublication(value);
+  const put = payload => {
+    const bytes = encode({ ...payload, report_id: plain.pointer.report_id }), digest = sha(bytes);
+    const descriptor = { path: digest + '/outcomes.json', sha256: digest, decoded_bytes: bytes.length };
+    plain.assets.set('/data/selection-grading/' + descriptor.path, bytes);
+    return descriptor;
+  };
+  // An intentionally different current-period value is a negative cross-period
+  // join control. It must never settle this saved Week6 ticket.
+  const currentRows = finalRows.map((row, i) => ({ ...row, week: 7,
+    actual: row.status === 'resolved' ? 99 : null,
+    outcome_snapshot_sha256: row.final_confirmed ? sha('paper-week7-snapshot-' + i) : null,
+    selected_outcome_provenance_sha256: row.final_confirmed ? sha('paper-week7-provenance-' + i) : null,
+    selected_outcome_row_sha256: row.final_confirmed ? sha('paper-week7-row-' + i) : null,
+    collected_at: stage === 'pre' ? PAPER_TEST_START : PAPER_TEST_FINAL }));
+  const periods = [6, 7].map(weekNumber => {
+    const outcomes = weekNumber === 6 ? finalRows : currentRows;
+    return { ...put({ schema_version: 'selection-final-outcome-period-v1', season: 2026, week: weekNumber, outcomes }),
+      season: 2026, week: weekNumber, count: outcomes.length };
+  });
+  plain.pointer.outcomes = put({ schema_version: 'selection-final-outcome-index-v1', outcome_count: finalRows.length + currentRows.length, periods });
+  plain.pointer.generated_at = observed;
+  return gzipPublication(plain, 'paper-browser-' + stage);
+}
+
+async function paperBuilderChecks(browser, origin) {
+  if (arg('--root')) return { skipped: 'Saved release roots are not replaced by fictional browser inputs.' };
+  const savedFixture = fixture, savedWeek = week, savedVariant = variant;
+  const publications = Object.fromEntries(['pre', 'final', 'correction'].map(stage => [stage, paperBrowserPublication(stage)]));
+  const output = [];
+  try {
+    for (const width of [1280, 390, 320]) {
+      fixture = publications.pre; week = paperBrowserWeek(); variant = 'valid';
+      const context = await browser.newContext({ viewport: { width, height: 900 } });
+      const requestsMade = [], pageErrors = [], checks = [];
+      await context.route('**/*', route => {
+        const request = route.request(), url = request.url();
+        requestsMade.push({ method: request.method(), own: url.startsWith(origin + '/'), url });
+        if (url.startsWith(origin + '/')) return route.continue();
+        return route.fulfill({ status: 200, contentType: 'application/json', body: url.includes('api.sleeper.app/stats') ? '[]' : '{"events":[]}' });
+      });
+      const page = await context.newPage();
+      page.on('pageerror', error => pageErrors.push(error.message));
+      await page.clock.install({ time: new Date(PAPER_TEST_START) });
+      const check = (condition, description) => { assert.ok(condition, description); checks.push(description); };
+      const equal = (actual, expected, description) => { assert.deepEqual(actual, expected, description); checks.push(description); };
+      const records = () => page.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter(k => k.startsWith(PAPER_PREFIX)).sort().map(k => [k, localStorage.getItem(k)])));
+      const add = async (id, category = 'rec') => {
+        const payload = await page.locator('[data-paper-add]').evaluateAll((buttons, value) => {
+          const element = buttons.find(button => { const leg = JSON.parse(button.dataset.paperAdd); return leg.player_id === value.id && leg.category === value.category; });
+          return element?.dataset.paperAdd || null;
+        }, { id, category });
+        assert.ok(payload, 'fictional candidate exists: ' + id + '/' + category);
+        await page.locator('[data-paper-add]').filter({ hasText: 'Add leg' }).evaluateAll((buttons, value) => {
+          const element = buttons.find(button => button.dataset.paperAdd === value);
+          if (!element) throw new Error('Rendered exact leg disappeared');
+          element.click();
+        }, payload);
+      };
+      const newDraft = () => page.locator('[data-paper-new]').click();
+      const open = key => page.locator('[data-paper-open]').evaluateAll((buttons, value) => {
+        const button = buttons.find(button => button.dataset.paperOpen === value);
+        if (!button) throw new Error('Saved revision missing'); button.click();
+      }, key);
+      const save = async ids => {
+        await newDraft();
+        await page.locator('[data-paper-filter=source]').selectOption('dk');
+        await page.locator('[data-paper-filter=sides]').selectOption('mixed');
+        await page.locator('[data-paper-filter=game]').selectOption('');
+        await page.locator('[data-paper-category=rec]').check();
+        for (const id of ids) await add('paper-player-' + id);
+        await page.locator('[data-paper-save]').click();
+        await page.waitForFunction(() => S.paper.opened && S.paper.error.includes('Saved and read back'));
+        return page.evaluate(() => ({ key: PAPER_PREFIX + S.paper.opened.ticket_id + '.' + S.paper.opened.revision_id, ticket: S.paper.opened }));
+      };
+      try {
+        await page.goto(origin + '/#/parlay');
+        await page.waitForSelector('[data-paper-suggest]');
+        await page.waitForFunction(() => S.grading && !S.grading.partLoading && !ticking);
+        await page.evaluate(() => localStorage.setItem('nflprops.mine', '[{"private":"preserve this exact value"}]'));
+        const mine = await page.evaluate(() => localStorage.getItem('nflprops.mine'));
+        equal(await page.evaluate(() => S.tab), 'parlay', 'deep link opens actual builder');
+        equal(await page.evaluate(() => readPaperTickets().tickets.length), 0, 'new profile has no invented tickets');
+        await page.locator('[data-paper-category=rec]').check();
+        await page.locator('[data-paper-filter=sides]').selectOption('over');
+        check(await page.evaluate(() => paperCandidates().length && paperCandidates().every(v => v.leg.category === 'rec' && v.leg.side === 'over' && v.leg.line_source === 'dk')), 'single category/Over/source controls reach actual candidates');
+        await page.locator('[data-paper-filter=sides]').selectOption('under');
+        check(await page.evaluate(() => paperCandidates().length && paperCandidates().every(v => v.leg.side === 'under')), 'Under-only has genuine under candidates');
+        await page.locator('[data-paper-filter=sides]').selectOption('mixed');
+        await page.locator('[data-paper-category=rec_yd]').check();
+        equal(await page.evaluate(() => [...new Set(paperCandidates().map(v => v.leg.category))].sort()), ['rec', 'rec_yd'], 'multiple categories supported');
+        await add('paper-player-0');
+        check(await page.locator('[data-paper-save]').isDisabled(), 'one leg cannot be saved');
+        await add('paper-player-0', 'rec_yd');
+        equal(await page.evaluate(() => S.paper.legs.length), 1, 'repeat player rejected');
+        await add('paper-player-10');
+        equal(await page.evaluate(() => S.paper.legs.length), 1, 'different player in same game rejected');
+        await page.locator('[data-paper-filter=source]').selectOption('sleeper');
+        await add('paper-player-8');
+        equal(await page.evaluate(() => S.paper.legs.length), 1, 'DK and Sleeper legs cannot mix');
+        await newDraft(); await page.locator('[data-paper-filter=source]').selectOption('dk');
+        await page.locator('[data-paper-filter=game]').selectOption('paper-game-0');
+        await page.locator('[data-paper-suggest]').click();
+        equal(await page.evaluate(() => S.paper.legs.length), 1, 'restricted single game does not force two legs');
+        check((await page.locator('#main').innerText()).includes('NO_ACTION'), 'insufficient compatible population is NO_ACTION');
+        await newDraft(); await page.locator('[data-paper-filter=game]').selectOption('');
+        await page.locator('[data-paper-category=rec_yd]').uncheck();
+        const exactTarget = await page.locator('[data-paper-add]').evaluateAll(buttons => buttons.map(b => b.dataset.paperAdd).find(v => JSON.parse(v).player_id === 'paper-player-4'));
+        await page.evaluate(() => { S.games['paper-game-0'].state = 'post'; });
+        await page.locator('[data-paper-add]').evaluateAll((buttons, value) => buttons.find(b => b.dataset.paperAdd === value).click(), exactTarget);
+        equal(await page.evaluate(() => S.paper.legs[0].player_id), 'paper-player-4', 'a stale displayed position never substitutes another leg');
+        await page.evaluate(() => { S.games['paper-game-0'].state = 'pre'; S.games['paper-game-4'].kickoff = '2026-11-03T18:00:00Z'; });
+        check(await page.evaluate(() => !paperCandidates().some(v => v.leg.player_id === 'paper-player-4')), 'changed live schedule cannot relabel original board');
+        await page.evaluate(() => { S.games['paper-game-4'].kickoff = S.data.games.find(g => g.id === 'paper-game-4').kickoff; S.injNews['paper-player-4'] = { status: 'Out' }; });
+        check(await page.evaluate(() => !paperCandidates().some(v => v.leg.player_id === 'paper-player-4')), 'new existing inactive evidence blocks a new leg');
+        await page.evaluate(() => { delete S.injNews['paper-player-4']; });
+
+        const original = await save([0, 1]);
+        const originalBytes = (await records())[original.key];
+        equal(original.ticket.legs.map(v => [v.player_id, v.line, v.side]), [['paper-player-0', 5.5, 'over'], ['paper-player-1', 5.5, 'under']], 'actual UI freezes requested exact contracts');
+        await page.reload(); await page.waitForSelector('[data-paper-open]');
+        equal((await records())[original.key], originalBytes, 'reload preserves original exact bytes');
+        await open(original.key); await page.waitForFunction(() => S.paper.results);
+        equal(await page.evaluate(() => S.paper.results.map(r => r.status)), ['pending', 'pending'], 'pregame pending evidence stays pending');
+        await page.locator('[data-paper-remove="1"]').click(); await add('paper-player-2');
+        await page.locator('[data-paper-save]').click();
+        await page.waitForFunction(id => S.paper.opened && S.paper.opened.parent_revision_id === id, original.ticket.revision_id);
+        const revision = await page.evaluate(() => structuredClone(S.paper.opened));
+        equal(revision.ticket_id, original.ticket.ticket_id, 'revision retains logical ticket');
+        check(revision.revision_id !== original.ticket.revision_id, 'revision receives a new identity');
+        equal((await records())[original.key], originalBytes, 'revision never overwrites original membership');
+        const pushed = await save([2, 3]), incomplete = await save([4, 5]), zero = await save([6, 7]);
+        await save([0, 1, 2, 3, 4, 5]);
+        await add('paper-player-6');
+        equal(await page.evaluate(() => S.paper.legs.length), 6, 'seventh leg cannot enter saved draft');
+        await newDraft(); await page.locator('[data-paper-filter=source]').selectOption('sleeper');
+        await add('paper-player-8'); await add('paper-player-9'); await page.locator('[data-paper-save]').click();
+        check(await page.evaluate(() => S.paper.opened.line_source === 'sleeper' && S.paper.opened.legs.every(l => l.line_source === 'sleeper')), 'same-source Sleeper paper ticket saves');
+        const beforeQuota = await records();
+        await newDraft(); await page.locator('[data-paper-filter=source]').selectOption('dk');
+        await add('paper-player-0'); await add('paper-player-1');
+        await page.evaluate(() => { window.paperOriginalSetItem = Storage.prototype.setItem; Storage.prototype.setItem = function(key, value) { if (key.startsWith(PAPER_PREFIX)) throw new DOMException('FICTIONAL quota control', 'QuotaExceededError'); return window.paperOriginalSetItem.call(this, key, value); }; });
+        await page.locator('[data-paper-save]').click();
+        check((await page.locator('#main').innerText()).includes('Not saved:'), 'storage quota failure is explicit');
+        await page.evaluate(() => { Storage.prototype.setItem = window.paperOriginalSetItem; delete window.paperOriginalSetItem; });
+        equal(await records(), beforeQuota, 'quota failure retains all saved records');
+
+        // Future final/correction publication transport is separately identified.
+        // Week7 carries deliberately different numbers as the negative join control.
+        fixture = publications.final; week = paperBrowserWeek(); week.week = 7; week.generated_at = PAPER_TEST_FINAL;
+        week.games = week.games.map(g => ({ ...g, state: 'post', detail: 'Final' }));
+        await page.clock.setFixedTime(new Date(PAPER_TEST_FINAL));
+        await page.reload(); await page.waitForSelector('[data-paper-open]');
+        await page.waitForFunction(() => S.grading && [...S.finalOutcomes.values()].every(row => row.week === 7));
+        await open(original.key); await page.waitForFunction(() => S.paper.results);
+        equal(await page.evaluate(() => S.paper.results.map(r => [r.status, r.actual])), [['win', 8], ['win', 3]], 'saved Week6 ticket cannot borrow Week7 actual99');
+        await open(pushed.key); await page.waitForFunction(() => S.paper.results);
+        equal(await page.evaluate(() => S.paper.results.map(r => r.status)), ['push', 'dnp'], 'integer push and confirmed DNP remain distinct');
+        await open(incomplete.key); await page.waitForFunction(() => S.paper.results);
+        equal(await page.evaluate(() => S.paper.results.map(r => r.status)), ['unresolved', 'pending'], 'missing and pending are distinct');
+        await open(zero.key); await page.waitForFunction(() => S.paper.results);
+        equal(await page.evaluate(() => S.paper.results.map(r => [r.status, r.actual])), [['win', 0], ['unresolved', null]], 'played zero is scored; conflicting evidence is not');
+        await page.locator('[data-paper-evaluate]').click(); await page.waitForFunction(() => S.paper.history);
+        equal(await page.evaluate(() => S.paper.history.rows.filter(r => r.ticket.parent_revision_id === null && r.ticket.legs.length === 2).length), 5, 'five actual first-saved2-leg tickets, not reconstructed combinations');
+        equal(await page.evaluate(() => S.paper.history.rows.filter(r => r.ticket.parent_revision_id === null && r.ticket.legs.length === 6).length), 1, 'six-leg ticket is separately counted');
+        check((await page.locator('[data-paper-performance]').innerText()).includes('Financial ROI and venue settlement unavailable'), 'performance does not invent financial return');
+
+        fixture = publications.correction;
+        await page.clock.setFixedTime(new Date(PAPER_TEST_CORRECTION));
+        await page.evaluate(async () => { await loadGrading(); });
+        await open(original.key); await page.waitForFunction(() => S.paper.results);
+        equal(await page.evaluate(() => S.paper.results.map(r => [r.status, r.actual])), [['loss', 3], ['win', 3]], 'later correction changes grade without changing membership');
+        equal((await records())[original.key], originalBytes, 'correction preserves original saved selection bytes');
+        await page.evaluate(() => { localStorage.setItem(PAPER_PREFIX + 'defective-record', '{broken'); renderParlay(); });
+        check((await page.locator('#main').innerText()).includes('original bytes were preserved'), 'corrupt private record is individually quarantined');
+        equal((await records())[original.key], originalBytes, 'corrupt record does not overwrite valid ticket');
+        equal(await page.evaluate(() => localStorage.getItem(PAPER_PREFIX + 'defective-record')), '{broken', 'defective original bytes retained');
+        equal(await page.evaluate(() => localStorage.getItem('nflprops.mine')), mine, 'My Picks bytes never change');
+        equal(requestsMade.filter(r => r.method !== 'GET').length, 0, 'ticket saves/evaluation create no network write');
+        equal(await page.evaluate(() => document.documentElement.scrollWidth), width, 'entire builder stays within viewport');
+        equal(pageErrors, [], 'no browser page errors');
+        if (evidence) await page.screenshot({ path: path.join(evidence, 'paper-builder-' + width + '.png'), fullPage: true });
+        output.push({ width, checks: checks.length, descriptions: checks, original_ticket: sha(originalBytes),
+          source: 'FICTIONAL_BROWSER_TRANSPORT', capture_qualification_exercised: false,
+          provider_requests: 0, owner_device_accessed: false, physical_device: false });
+      } finally { await context.close(); }
+    }
+  } finally { fixture = savedFixture; week = savedWeek; variant = savedVariant; }
+  return output;
+}
+
+
 (async () => {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = 'http://127.0.0.1:' + server.address().port;
@@ -495,6 +748,8 @@ async function archiveAndDecoderChecks(browser, origin) {
   const measurements = [];
   const presentation = [];
   try {
+    const paper = await paperBuilderChecks(browser, origin);
+    if (args.includes('--paper-only')) { console.log(JSON.stringify({ paper, app_sha256: sha(fs.readFileSync(path.join(staticRoot, 'app.js'))), scope: 'FOCUSED_PAPER_UI_ONLY', performance_claim: false }, null, 2)); return; }
     for (const width of [1280, 390, 320]) {
       variant = 'valid';
       const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 900 } });
@@ -682,7 +937,7 @@ async function archiveAndDecoderChecks(browser, origin) {
       }
     }
     const hosting = !arg('--root') ? await archiveAndDecoderChecks(browser, origin) : null;
-    const result = { hosting, fixture: arg('--root') ? 'AUTHORIZED_SAVED_DATA_ISOLATED_ROOT' : 'FICTIONAL_ONLY', public_deployment_test: false,
+    const result = { hosting, paper, fixture: arg('--root') ? 'AUTHORIZED_SAVED_DATA_ISOLATED_ROOT' : 'FICTIONAL_ONLY', public_deployment_test: false,
       external_network_requests: 0, app_sha256: sha(fs.readFileSync(path.join(staticRoot, 'app.js'))),
       html_sha256: sha(fs.readFileSync(path.join(staticRoot, 'index.html'))), measurements, presentation, requests: [...new Set(requests)], assertions: 'passed' };
     if (evidence) fs.writeFileSync(path.join(evidence, 'grading-browser-results.json'), JSON.stringify(result, null, 2) + '\n');
