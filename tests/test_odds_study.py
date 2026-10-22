@@ -61,6 +61,25 @@ def rules():
             for book in ("book-a", "book-b", "book-c")}
 
 
+def dense_fixture(players=30, books=20):
+    """Distinct fictional contracts; bounded response, expanded comparison graph."""
+    b, m = fixture(); original = b["players"][0]; b["players"] = []
+    for i in range(players):
+        p = copy.deepcopy(original)
+        p.update(id=f"fiction-player-{i}", name=f"Fiction Receiver {i}")
+        p["props"].append(dict(p["props"][0], key="rec_yd", proj=50.0, adj=55.0, line=49.5))
+        b["players"].append(p)
+    b["picks"] = {"over": [], "under": []}; e = event(); response = dict(e, bookmakers=[])
+    for i in range(books):
+        markets = []
+        for market, line in (("player_receptions", 5.5), ("player_reception_yds", 49.5)):
+            outcomes = [{"name": side, "description": p["name"], "point": line, "price": 2.0}
+                        for p in b["players"] for side in ("Over", "Under")]
+            markets.append({"key": market, "last_update": s.stamp(T), "outcomes": outcomes})
+        response["bookmakers"].append({"key": f"fiction-book-{i}", "last_update": s.stamp(T), "markets": markets})
+    return b, m, response
+
+
 class FakeLedger:
     def __init__(self, fail=False):
         self.records = []; self.previous = None; self.fail = fail
@@ -146,6 +165,77 @@ class StudyTests(unittest.TestCase):
         self.assertEqual(s.MAX_CREDITS, 176)
         self.assertNotIn("fpts", s.MARKETS.values())
         self.assertNotIn("player_rush_tds", s.MARKETS)
+
+    def dense_batch(self, players=30, books=20):
+        b, m, data = dense_fixture(players, books); self.snapshot = snapshot(b, m)
+        for name, value in (("forecast/week.json", b), ("forecast/meta.json", m), ("SNAPSHOT.json", self.snapshot)):
+            (self.root / name).write_bytes(s.canonical(value))
+        class DenseProvider(FakeProvider):
+            def request(self, event_id=None):
+                r = super().request(event_id)
+                if event_id:
+                    r["body"] = s.canonical(data)
+                return r
+        provider = DenseProvider()
+        return self.run_batch(provider=provider), data
+
+    def test_bounded_many_book_report_is_consumable_without_losing_contracts(self):
+        report, data = self.dense_batch()
+        self.assertEqual(report["status"], "COMPLETE")
+        self.assertEqual(len(report["quotes"]), 2400)
+        self.assertEqual(len({q["id"] for q in report["quotes"]}), 2400)
+        self.assertEqual(len(report["comparisons"]), 2400)
+        self.assertLess(len(s.canonical(data)), s.BODY_LIMIT)
+        raw = (self.root / "REPORT.json").read_bytes()
+        self.assertLess(len(raw), 32 * s.MIB)
+        with self.assertRaisesRegex(s.Stop, "JSON_STRUCTURE_LIMIT"):
+            s.parse(raw, 32 * s.MIB)  # still the original provider-entity bound
+        self.assertEqual(s.parse(raw, 32 * s.MIB, node_limit=s.REPORT_NODES), report)
+        digest = self.seal(report)
+        self.assertEqual(s.verify_bundle(self.root, digest)["batch_status"], "COMPLETE")
+        self.assertEqual(s.summary(self.root)["quotes"], 2400)
+        original = (self.root / "responses/01.body").read_bytes()
+        self.assertEqual(original, s.canonical(data))
+        out = self.root.parent / "dense.tar.gz"
+        self.assertEqual(s.bundle(self.root, out)["batch_status"], "COMPLETE")
+        self.assertEqual((self.root / "responses/01.body").read_bytes(), original)
+
+    def test_actual_derived_node_bound_stops_and_replays_failure_with_originals(self):
+        report, data = self.dense_batch(players=50, books=30)
+        self.assertEqual(report["status"], "FAILED_SAFE")
+        self.assertEqual(report["reason"], "DERIVED_REPORT_LIMIT_SOURCE_RETAINED")
+        self.assertEqual(report["reserved_credits"], 11)
+        self.assertEqual(report["known_request_credits"], 11)
+        self.assertEqual(len(self.provider.calls), 3)  # two free discoveries + one event
+        self.assertEqual(report["quotes"], [])
+        raw = (self.root / "responses/01.body").read_bytes()
+        rows = s.normalize(s.parse(raw), event(), self.snapshot, s.stamp(T), s.sha(raw))[0]
+        derived = {"quotes": rows, "comparisons": s.compare(self.snapshot, rows)}
+        self.assertEqual(len(rows), 6000)
+        self.assertLessEqual(len(s.canonical(derived)), 32 * s.MIB)
+        with self.assertRaisesRegex(s.Stop, "JSON_STRUCTURE_LIMIT"):
+            s.structure(derived, s.DERIVED_NODES)
+        self.seal(report)
+        self.assertEqual(s.verify_bundle(self.root)["batch_status"], "FAILED_SAFE")
+        self.assertEqual(raw, s.canonical(data))
+        self.assertEqual(s.summary(self.root)["batch_status"], "FAILED_SAFE")
+
+    def test_report_parser_and_entity_parser_keep_distinct_finite_node_limits(self):
+        raw = s.canonical([0] * s.ENTITY_NODES)
+        self.assertLess(len(raw), s.BODY_LIMIT)
+        with self.assertRaisesRegex(s.Stop, "JSON_STRUCTURE_LIMIT"):
+            s.parse(raw)
+        self.assertEqual(len(s.parse(raw, node_limit=s.REPORT_NODES)), s.ENTITY_NODES)
+        with self.assertRaisesRegex(s.Stop, "JSON_STRUCTURE_LIMIT"):
+            s.parse(s.canonical([0] * s.REPORT_NODES), node_limit=s.REPORT_NODES)
+
+    def test_fabricated_derived_complexity_failure_is_not_a_saved_pass(self):
+        report = self.run_batch(); report["status"] = "FAILED_SAFE"
+        report["reason"] = "DERIVED_REPORT_LIMIT_SOURCE_RETAINED"
+        report["quotes"] = []; report["comparisons"] = []
+        (self.root / "REPORT.json").write_bytes(s.canonical(report)); self.seal(report)
+        with self.assertRaisesRegex(s.Stop, "FALSE_DERIVED_SIZE_FAILURE"):
+            s.verify_bundle(self.root)
 
     def test_snapshot_preserves_zero_null_signed_values_and_clocks(self):
         b, m = fixture(); b["players"][0]["props"][0].update(proj=0, adj=None, line=0.5)

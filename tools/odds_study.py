@@ -31,6 +31,10 @@ BOT = 41898282
 MAX_CREDITS, MAX_GAMES, DAYS = 176, 16, 8
 MIB = 1024 ** 2
 BODY_LIMIT, BUNDLE_LIMIT = 4 * MIB, 128 * MIB
+# A derived report includes every normalized quote plus comparison references;
+# it is not one provider entity. Keep both roles finite and keep all byte caps.
+ENTITY_NODES, REPORT_NODES = 150000, 500000
+DERIVED_NODES = REPORT_NODES - 20000  # fixed <=16-event envelope has ample reserve
 MARKETS = {
     "player_pass_yds": "pass_yd", "player_pass_tds": "pass_td",
     "player_pass_completions": "pass_cmp", "player_pass_attempts": "pass_att",
@@ -87,21 +91,25 @@ def _pairs(values):
     return result
 
 
-def parse(raw, limit=BODY_LIMIT):
+def structure(value, node_limit=ENTITY_NODES):
+    pending = [(value, 0)]; nodes = 0
+    while pending:
+        v, depth = pending.pop(); nodes += 1
+        require(depth <= 24 and nodes <= node_limit, "JSON_STRUCTURE_LIMIT")
+        if type(v) is dict:
+            pending.extend((x, depth + 1) for x in v.values())
+        elif type(v) is list:
+            pending.extend((x, depth + 1) for x in v)
+
+
+def parse(raw, limit=BODY_LIMIT, *, node_limit=ENTITY_NODES):
     require(type(raw) is bytes and len(raw) <= limit, "BOUNDED_JSON_REQUIRED")
     try:
         value = json.loads(raw, object_pairs_hook=_pairs,
                            parse_constant=lambda _: (_ for _ in ()).throw(Stop("NONFINITE_JSON")))
         # Bound traversal as well as input bytes. Unknown nested provider objects
         # remain original bytes; they do not become executable configuration.
-        pending = [(value, 0)]; nodes = 0
-        while pending:
-            v, depth = pending.pop(); nodes += 1
-            require(depth <= 24 and nodes <= 150000, "JSON_STRUCTURE_LIMIT")
-            if type(v) is dict:
-                pending.extend((x, depth + 1) for x in v.values())
-            elif type(v) is list:
-                pending.extend((x, depth + 1) for x in v)
+        structure(value, node_limit)
         return value
     except Stop:
         raise
@@ -460,6 +468,20 @@ def compare(snapshot, quotes, *, rules=None):
     return result
 
 
+def derivation_fits(snapshot, quotes):
+    """Producer and failure replay use the same finite byte AND node contract."""
+    value = {"quotes": quotes, "comparisons": compare(snapshot, quotes)}
+    if len(canonical(value)) > 32 * MIB:
+        return False
+    try:
+        structure(value, DERIVED_NODES)
+    except Stop as error:
+        if error.code != "JSON_STRUCTURE_LIMIT":
+            raise
+        return False
+    return True
+
+
 class GitHub:
     """No unrestricted routes, redirects, retries, update or delete methods."""
     def __init__(self, token):
@@ -658,8 +680,7 @@ def collect_batch(directory, snapshot, provider, ledger, *, clock=now, secrets=(
             rows, excluded = normalize(parse(r["body"]), event, snapshot, r["retrieved_at"], sha(r["body"]))
             # Source originals remain complete and immutable if derived expansion
             # exceeds this finite study's budget; do not spend on another game.
-            require(len(canonical({"quotes": quotes + rows,
-                    "comparisons": compare(snapshot, quotes + rows)})) <= 32 * MIB,
+            require(derivation_fits(snapshot, quotes + rows),
                     "DERIVED_REPORT_LIMIT_SOURCE_RETAINED")
             quotes.extend(rows); unsupported.update(excluded)
     except Stop as error:
@@ -680,6 +701,7 @@ def collect_batch(directory, snapshot, provider, ledger, *, clock=now, secrets=(
     report["collection_identity"] = getattr(ledger, "context", {})
     if reason == "SECRET_BLOCKED":
         return report  # No artifact seal or upload after an unsafe original.
+    structure(report, REPORT_NODES)
     write_file(root, "REPORT.json", canonical(report), secrets)
     return report
 
@@ -744,7 +766,7 @@ def verify_bundle(directory, expected_manifest_sha256=None):
     b, m = read_file(root / "forecast/week.json"), read_file(root / "forecast/meta.json")
     rebuilt = make_snapshot(b, m, snapshot["source"], instant(snapshot["frozen_at"]))
     require(rebuilt == snapshot, "SAVED_SNAPSHOT_MISMATCH")
-    report = parse(read_file(root / "REPORT.json"), 64 * MIB)
+    report = parse(read_file(root / "REPORT.json"), 64 * MIB, node_limit=REPORT_NODES)
     require(report.get("schema_version") == VERSION and report.get("batch_id") == BATCH
             and report.get("status") in ("COMPLETE", "FAILED_SAFE") and report.get("claimed") is True,
             "UNSUPPORTED_STUDY_REPORT")
@@ -854,8 +876,7 @@ def verify_bundle(directory, expected_manifest_sha256=None):
             require(report["status"] != "COMPLETE", "INVALID_COMPLETED_RESPONSE")
             continue
         if report["reason"] == "DERIVED_REPORT_LIMIT_SOURCE_RETAINED" and len(rebuilt_quotes) == len(report["quotes"]):
-            require(len(canonical({"quotes": rebuilt_quotes + rows,
-                                   "comparisons": compare(snapshot, rebuilt_quotes + rows)})) > 32 * MIB,
+            require(not derivation_fits(snapshot, rebuilt_quotes + rows),
                     "FALSE_DERIVED_SIZE_FAILURE")
             continue
         rebuilt_quotes.extend(rows); rebuilt_unsupported.update(unsupported); successful_entities += 1
@@ -867,7 +888,7 @@ def verify_bundle(directory, expected_manifest_sha256=None):
 
 def summary(directory):
     verified = verify_bundle(directory)
-    report = parse(read_file(Path(directory) / "REPORT.json"), 64 * MIB)
+    report = parse(read_file(Path(directory) / "REPORT.json"), 64 * MIB, node_limit=REPORT_NODES)
     unsupported = dict(Counter(r["reason"] for r in report["comparisons"] if r["reason"]) + Counter(report["unsupported"]))
     result = {"schema_version": "odds-study-summary-v1", **verified,
               "quotes": len(report["quotes"]), "comparisons": len(report["comparisons"]),

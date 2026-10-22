@@ -1358,3 +1358,21 @@ performed: after the batch the owner can replace the same
 repository Actions secret through Settings > Secrets and variables > Actions;
 no browser or research credential migration is required. A replacement key's
 validity is not claimed without a separately permitted check.
+
+An additional bounded offline control then exposed a saved-reader defect in
+that initial implementation: one188,846-byte fictional response containing
+2,400 distinct quotes produced a9,667,338-byte report, marked COMPLETE, that the
+generic entity parser rejected. The original failure and bytes remain retained;
+the earlier59 tests did not cover this case. The correction keeps provider
+entities at150,000 value nodes and depth24, and gives the larger derived report
+its own finite500,000-node reader contract. Producer and saved failure replay
+share a480,000-node quote/comparison bound, reserving20,000 nodes for the fixed
+sixteen-event envelope. The4MiB original-body,32MiB derived-content and128MiB
+archive/decoded caps are unchanged. A byte or complexity overflow stops before
+another acquisition, retains the full original entity and reservation, and
+records FAILED_SAFE; a partial comparison is never called a complete study.
+Fresh saved verification recomputes that exact failure condition rather than
+trusting its reason label. The2,400-quote case now round-trips without lost
+contracts, and a separate6,000-quote case exercises the real complexity-failure
+bound below32MiB. All63 focused tests passed locally; these are finite correctness
+controls, not a live coverage, resource or operating-performance qualification.
