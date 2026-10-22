@@ -1187,3 +1187,12 @@ result. A bounded package-relative diagnostic identifies the actual layout
 without publishing resolved workspace paths or accepting unknown dependencies.
 Current-base PR regression execution and source-seal qualification remain
 distinct until the final combined source passes both.
+
+The exact hosted rejection was pip's generated certifi bytecode recorded in
+a transient per-install cache directory. The bounded correction disables pip's
+explicit compilation (`--no-compile`) in source CI and updater dependency setup;
+Python imports retain fresh isolated caches and disabled bytecode writes. The
+reader continues to reject unknown external dependencies. A tiny fictional
+local wheel exercises actual default-pip compilation and the no-compilation
+control without an index or network. This is runtime packaging compatibility,
+not a forecast, data-validation or operating-performance improvement.

@@ -451,6 +451,48 @@ class EnvironmentTests(unittest.TestCase):
 
 
 
+class PipIsolationTests(unittest.TestCase):
+    def test_no_compile_avoids_recording_inactive_external_bytecode(self):
+        """Actual pip, wholly fictional local wheel, no index or network."""
+        import base64
+        import csv
+        import zipfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = "fictional_source_ci_fixture-1.0.dist-info"
+            files = {"fictional_source_ci_fixture/__init__.py": b"value = 1\n",
+                     metadata + "/METADATA": b"Metadata-Version: 2.1\nName: fictional-source-ci-fixture\nVersion: 1.0\n",
+                     metadata + "/WHEEL": b"Wheel-Version: 1.0\nGenerator: fictional-control\nRoot-Is-Purelib: true\nTag: py3-none-any\n"}
+            record = io.StringIO(); writer = csv.writer(record)
+            for name, raw in files.items():
+                checksum = base64.urlsafe_b64encode(__import__("hashlib").sha256(raw).digest()).decode().rstrip("=")
+                writer.writerow([name, "sha256=" + checksum, len(raw)])
+            writer.writerow([metadata + "/RECORD", "", ""])
+            files[metadata + "/RECORD"] = record.getvalue().encode()
+            wheel = root / "fictional_source_ci_fixture-1.0-py3-none-any.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                for name, raw in files.items(): archive.writestr(name, raw)
+            for no_compile in (False, True):
+                target = root / ("without-compile" if no_compile else "default-compile")
+                cache = root / ("cache-no" if no_compile else "cache-yes"); cache.mkdir()
+                env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPYCACHEPREFIX=str(cache))
+                arguments = [sys.executable, "-m", "pip", "--isolated", "--disable-pip-version-check",
+                             "install", "--no-index", "--no-deps", "--target", str(target)]
+                if no_compile: arguments.append("--no-compile")
+                ci.command(arguments + [str(wheel)], env=env, limit=ci.API_LIMIT)
+                rows = list(csv.reader((target / metadata / "RECORD").read_text().splitlines()))
+                pyc = [row[0] for row in rows if row[0].endswith(".pyc")]
+                if no_compile:
+                    self.assertEqual(pyc, [])
+                    self.assertFalse(list(cache.rglob("*.pyc")))
+                else:
+                    self.assertTrue(pyc, "Retain the observed default-pip failure control")
+                    self.assertTrue(list(cache.rglob("*.pyc")))
+                    self.assertTrue(all(not (target / name).resolve().is_relative_to(target) for name in pyc))
+                self.assertEqual((target / "fictional_source_ci_fixture/__init__.py").read_bytes(),
+                                 files["fictional_source_ci_fixture/__init__.py"])
+
+
 class TransportTests(unittest.TestCase):
     def test_command_output_is_bounded_during_reading(self):
         with self.assertRaises(ci.Rejected):
