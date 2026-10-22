@@ -1,0 +1,49 @@
+name: NFL operating diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Capability only by default; campaign requires separate exact authorization
+        required: true
+        type: choice
+        default: capability
+        options: [capability, campaign]
+      source_sha:
+        description: Exact approved installed development commit; must equal actual dispatch SHA
+        required: true
+        type: string
+      campaign_id:
+        description: Existing frozen fictional campaign identity
+        required: true
+        type: string
+        default: NFL-WEB-OPERATING-SEED-THREE-20261020-B3
+      artifact_approval_json:
+        description: Campaign only; separately approved technical artifact manifest, exact UTF-8 bytes
+        required: false
+        type: string
+      artifact_approval_sha256:
+        description: Campaign only; ordinary SHA-256 of exact supplied technical approval bytes
+        required: false
+        type: string
+      confirm_nonpublishing:
+        description: Enter READ_ONLY_NO_PROVIDER_NO_UPLOAD after exact invocation approval
+        required: true
+        type: string
+      confirm_runner_privilege:
+        description: Enter ONE_RUN_LOCAL_RESOURCE_UNIT after exact privilege approval
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  registration_only:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Inert default-branch manual dispatch registration
+        run: exit 1
