@@ -1,0 +1,413 @@
+"""LOCAL proposal unit controls; all CI responses are mocks, never qualification."""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+HERE=Path(__file__).resolve().parents[1]
+DEPENDENCY_ROOT=HERE
+sys.path.insert(0,str(DEPENDENCY_ROOT/'tools'))
+spec=importlib.util.spec_from_file_location('proposed_operating_campaign',HERE/'tools/operating_campaign.py')
+c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
+
+class Campaign(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name)
+        self.code=self.base/'candidate';self.root=self.base/'derived';self.result=self.base/'result.json'
+        self.fp=dict(commit='1'*40,tree='2'*40,source_manifest_sha256='3'*64,environment={'python':{'version':'3.12.15'},'node':{'version':'22.23.3'},'distributions':[{'name':'certifi','version':'2026.10.19'}]},files=[])
+        self.proof=dict(schema_version='source-ci-verification-v1',executed_commit=self.fp['commit'],executed_tree=self.fp['tree'],
+            source_manifest_sha256=self.fp['source_manifest_sha256'],source_ci_commit=self.fp['commit'],job_id=456,seal_sha256='c'*64,environment_sha256=c.sha(c.encoded(self.fp['environment'])),
+            claim='COMPLETE_SOURCE_CHECKS_ONLY_NOT_GENERATION_OR_OPERATING_QUALIFICATION',run_id=123,run_attempt=1)
+    def tearDown(self):
+        if hasattr(self,'fixture_env'):self.fixture_env.stop()
+        self.temp.cleanup()
+    def test_matched_private_binding(self):c._matched_source_ci(self.proof,self.fp)
+    def test_changed_source_binding(self):
+        self.fp['source_manifest_sha256']='f'*64
+        with self.assertRaisesRegex(RuntimeError,'differs'):c._matched_source_ci(self.proof,self.fp)
+    def test_changed_runtime_binding(self):
+        self.fp['environment']['node']['version']='changed'
+        with self.assertRaisesRegex(RuntimeError,'differs'):c._matched_source_ci(self.proof,self.fp)
+    def test_source_only_claim_required(self):
+        self.proof['claim']='PASS'
+        with self.assertRaises(RuntimeError):c._matched_source_ci(self.proof,self.fp)
+    def test_cli_uses_fresh_private_prefix_per_child(self):
+        observed=[]
+        def child(code,action,env):
+            path=Path(env['PYTHONPYCACHEPREFIX'])
+            self.assertEqual(path.stat().st_mode&0o777,0o700)
+            self.assertEqual(list(path.iterdir()),[])
+            self.assertEqual(env['PYTHONDONTWRITEBYTECODE'],'1')
+            self.assertEqual(action,'fingerprint');observed.append(path)
+            return self.fp
+        with patch.object(c,'_fresh_cli',side_effect=child),patch.object(c.Path,'cwd',return_value=self.code),patch.dict(os.environ,{'RUNNER_TEMP':str(self.base)}):
+            self.assertEqual(c._source_ci_cli(self.code,'fingerprint'),self.fp)
+            self.assertEqual(c._source_ci_cli(self.code,'fingerprint'),self.fp)
+        self.assertNotEqual(observed[0],observed[1])
+        self.assertTrue(all(not p.exists() for p in observed))
+    def transport(self):
+        return SimpleNamespace(__file__=str(self.code/'tools/operating_seed_transport.py'),
+            read_approval=lambda *args:{'seed_manifest_sha256':'a'*64},retrieve=lambda *a,**kw:None)
+    def test_cli_rejects_different_cwd_and_actions(self):
+        with self.assertRaises(RuntimeError):c._source_ci_cli(self.code,'fingerprint')
+        with self.assertRaises(RuntimeError):c._source_ci_cli(self.code,'anything')
+    def test_launch_keeps_only_trusted_coordinator_online_and_uses_private_state(self):
+        events=[];observed={}
+        def cli(code,action):
+            events.append(action)
+            self.assertTrue(os.environ.get('GH_TOKEN'))
+            return self.proof if action=='verify' else self.fp
+        def guarded(*args,**kwargs):
+            self.assertTrue(os.environ.get('GH_TOKEN'));events.append('isolated-child')
+        def job(*args,**kwargs):observed.update(operation=kwargs['_operation']);events.append('job')
+        guard=SimpleNamespace(__file__=str(self.code/'tools/diagnostic_network_guard.py'),install=guarded,controls=lambda:events.append('controls'))
+        with patch.object(c,'_job_context'),patch.object(c,'_resource_preflight',return_value={'status':'MOCK_ONLY'}),patch.object(c,'_transport_allocation'),patch.object(c,'_restoration_allocation'),patch.dict(sys.modules,{'operating_seed_transport':self.transport()}),patch.dict(os.environ,{'RUNNER_TEMP':str(self.base),'OPERATING_ARTIFACT_APPROVAL_SHA256':'a'*64,'SEED_MANIFEST_SHA256':'a'*64}),patch.object(c,'_source_ci_cli',side_effect=cli),patch.object(c,'job',side_effect=job),patch.object(c,'require_offline'),patch.object(c,'_guarded_stage',side_effect=guarded),patch.dict(os.environ,{'GH_TOKEN':'fictional-unit-token'}):
+            c.launch_job(self.code,self.root,self.result,1)
+        self.assertEqual(events,['verify','fingerprint','isolated-child','job'])
+        self.assertNotIn('GH_TOKEN',os.environ)
+        self.proof['run_id']=999;self.fp['environment']['node']['version']='later mutation'
+        self.assertEqual(observed['operation'][0]['run_id'],123)
+        self.assertEqual(observed['operation'][1]['environment']['node']['version'],'22.23.3')
+        self.assertLessEqual(observed['operation'][2],observed['operation'][3]['source_ci_online']['end']+observed['operation'][2])
+    def test_failed_online_verification_never_enters_data_worker(self):
+        with patch.object(c,'_job_context'),patch.object(c,'_resource_preflight',return_value={'status':'MOCK_ONLY'}),patch.object(c,'_transport_allocation'),patch.object(c,'_restoration_allocation'),patch.dict(sys.modules,{'operating_seed_transport':self.transport()}),patch.dict(os.environ,{'RUNNER_TEMP':str(self.base),'OPERATING_ARTIFACT_APPROVAL_SHA256':'a'*64,'SEED_MANIFEST_SHA256':'a'*64}),patch.object(c,'_source_ci_cli',side_effect=RuntimeError('mock unavailable')),patch.object(c,'job') as job,patch.object(c,'git',return_value='1'*40),patch.dict(os.environ,{'GH_TOKEN':'fictional-unit-token'}):
+            with self.assertRaises(RuntimeError):c.launch_job(self.code,self.root,self.result,1)
+            self.assertNotIn('GH_TOKEN',os.environ);job.assert_not_called()
+        self.assertEqual(json.loads(self.result.read_bytes())['status'],'SOURCE_CI_OR_ISOLATION_SETUP_FAILED')
+    def test_changed_after_online_stops_before_guard(self):
+        self.fp['environment']['node']['version']='changed'
+        with patch.object(c,'_job_context'),patch.object(c,'_resource_preflight',return_value={'status':'MOCK_ONLY'}),patch.object(c,'_transport_allocation'),patch.object(c,'_restoration_allocation'),patch.dict(sys.modules,{'operating_seed_transport':self.transport()}),patch.dict(os.environ,{'RUNNER_TEMP':str(self.base),'OPERATING_ARTIFACT_APPROVAL_SHA256':'a'*64,'SEED_MANIFEST_SHA256':'a'*64}),patch.object(c,'_source_ci_cli',side_effect=[self.proof,self.fp]),patch.object(c,'job') as job,patch.object(c,'git',return_value='1'*40):
+            with self.assertRaises(RuntimeError):c.launch_job(self.code,self.root,self.result,1)
+            job.assert_not_called()
+    def test_direct_job_cannot_use_disk_pass_or_flag(self):
+        with patch.object(c,'_job_context'):
+            with self.assertRaisesRegex(RuntimeError,'trusted'):c.job(self.code,self.root,self.result,1)
+    def test_pending_packaging_cannot_run_connected_update(self):
+        with patch.object(c,'execution_identity',side_effect=RuntimeError('packaging pending')),patch.object(c.seed_v1,'sample') as sample:
+            with self.assertRaises(RuntimeError):c.sample_capture(self.code,self.root,self.result)
+            sample.assert_not_called()
+    def test_unrelated_credential_rejected_before_any_child(self):
+        with patch.dict(os.environ,{'OPENAI_API_KEY':'fictional-not-a-key'}),patch.object(c.subprocess,'check_output') as child:
+            with self.assertRaisesRegex(RuntimeError,'Unrelated'):c._job_context(self.code,self.root,self.result,1)
+            child.assert_not_called()
+    def fixture(self):
+        for root in (self.code,self.root):
+            root.mkdir()
+            for lane in ('pull','tools','config','data','output'): (root/lane).mkdir()
+            (root/'output/data').mkdir()
+            (root/'pull/build.py').write_text('# identical fictional arithmetic\n')
+            (root/'config/unchanged.json').write_text('{"same":true}\n')
+            (root/'config/phase2.json').write_text('{"fictional":true}\n' if root==self.root else '{"production":true}\n')
+            (root/'tools/old.py').write_text('# candidate\n' if root==self.code else '# retained old\n')
+            (root/'output/app.js').write_text('// candidate\n' if root==self.code else '// retained old\n')
+            (root/'output/index.html').write_text('<html>same</html>\n')
+            for command in (('init','-q'),('add','.'),('-c','user.name=FictionalUnit','-c','user.email=fictional@example.invalid','commit','-qm','Wholly fictional unit control')):
+                subprocess.run(['git','-C',str(root),*command],check=True)
+        (self.root/'data/original.json').write_text('{"immutable":"fictional"}\n')
+        (self.root/'FICTIONAL_ONLY.json').write_text(json.dumps(dict(reviewed_source=c.BASE,construction_code=c.BASE,campaign=c.CAMPAIGN,dimensions=c.seed_v1.SMALL,notice=c.NOTICE)))
+        c.git(self.root,'add','.');c.git(self.root,'commit','-qm','Wholly fictional unit evidence')
+        fp=dict(self.fp);fp['commit']=c.git(self.code,'rev-parse','HEAD');fp['tree']=c.git(self.code,'rev-parse','HEAD^{tree}');fp['files']=[]
+        for p in sorted(self.code.rglob('*')):
+            if p.is_file() and '.git' not in p.parts:
+                raw=p.read_bytes();fp['files'].append(dict(path=p.relative_to(self.code).as_posix(),mode='100644',bytes=len(raw),sha256=c.sha(raw),blob=c.git(self.code,'hash-object',str(p))))
+        seed=self.root.parent/'retrieved-seed';seed.mkdir()
+        raw=c.encoded(dict(schema_version='fictional-operating-seed-v1',full_admitted=True,application_source=c.BASE,
+            harness_sha256=c.SEED_HARNESS_SHA256,files={'config/phase2.json':dict(sha256=c._hash_file(self.root/'config/phase2.json'),bytes=(self.root/'config/phase2.json').stat().st_size,mode=0o644)}))
+        (seed/'SEED_MANIFEST.json').write_bytes(raw)
+        self.fixture_env=patch.dict(os.environ,{'SEED_MANIFEST_SHA256':c.sha(raw)});self.fixture_env.start()
+        return fp
+    def test_derived_install_preserves_config_data_and_defers_app(self):
+        fp=self.fixture();before=(self.root/'data/original.json').read_bytes();config=(self.root/'config/phase2.json').read_bytes()
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
+            c.install_execution_source(self.code,self.root)
+            c.execution_identity(self.code,self.root,packaged=False)
+            with self.assertRaisesRegex(RuntimeError,'bytes differ'):c.execution_identity(self.code,self.root)
+        self.assertEqual((self.root/'tools/old.py').read_bytes(),(self.code/'tools/old.py').read_bytes())
+        self.assertEqual((self.root/'data/original.json').read_bytes(),before);self.assertEqual((self.root/'config/phase2.json').read_bytes(),config)
+        self.assertEqual((self.root/'output/app.js').read_text(),'// retained old\n')
+        self.assertEqual(json.loads((self.root/'DIAGNOSTIC_EXECUTION_SOURCE.json').read_bytes())['fixture_construction_source'],c.BASE)
+    def test_changed_pull_requires_separate_decision(self):
+        fp=self.fixture();(self.root/'pull/build.py').write_text('# different formula\n')
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
+            with self.assertRaisesRegex(RuntimeError,'model/static'):c.install_execution_source(self.code,self.root)
+    def test_extra_executable_is_not_silently_retained(self):
+        fp=self.fixture();(self.root/'tools/unknown.py').write_text('# unknown\n')
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
+            with self.assertRaisesRegex(RuntimeError,'extra executable'):c.install_execution_source(self.code,self.root)
+    def test_nonactivation_config_difference_rejected(self):
+        fp=self.fixture();(self.root/'config/unchanged.json').write_text('{"same":false}\n')
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
+            with self.assertRaisesRegex(RuntimeError,'configuration difference'):c.install_execution_source(self.code,self.root)
+    def test_added_dependency_after_install_is_not_trusted(self):
+        fp=self.fixture()
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
+            c.install_execution_source(self.code,self.root);(self.root/'tools/late.py').write_text('# changed inventory\n')
+            with self.assertRaisesRegex(RuntimeError,'inventory changed'):c.execution_identity(self.code,self.root,packaged=False)
+    def test_changed_config_after_install_is_not_trusted(self):
+        fp=self.fixture()
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
+            c.install_execution_source(self.code,self.root);(self.root/'config/unchanged.json').write_text('{"same":false}\n')
+            with self.assertRaisesRegex(RuntimeError,'configuration bytes'):c.execution_identity(self.code,self.root,packaged=False)
+    def test_legacy_builder_dependency_is_unchanged(self):
+        self.assertEqual(c.sha((DEPENDENCY_ROOT/'tools/operating_diagnostic.py').read_bytes()),c.SEED_HARNESS_SHA256)
+        integrity=json.loads((DEPENDENCY_ROOT/'tools/cloud-seed-integrity.json').read_bytes())
+        self.assertEqual(integrity['files']['operating_diagnostic.py'],c.SEED_HARNESS_SHA256)
+    def test_campaign_and_source_ci_workflows_are_distinct(self):
+        import source_ci
+        self.assertNotEqual(c.CAMPAIGN_WORKFLOW,source_ci.WORKFLOW_PATH)
+
+    def test_invalid_runtime_does_not_use_seed_version_fallback(self):
+        with self.assertRaisesRegex(RuntimeError,'runtime'):c._runtime_identity({'unit':'fictional'})
+        env={'python':{'version':'3.12.15'},'node':{'version':'22.23.3'},'distributions':[{'name':'certifi','version':'2026.10.19'}]}
+        self.assertEqual(c._runtime_identity(env)['distributions'][0]['version'],'2026.10.19')
+    def test_flat_bytecode_and_native_extras_are_not_ignored(self):
+        self.fixture()
+        for name in ('tools/active.pyc','tools/active.so'):
+            (self.root/name).write_bytes(b'not executable')
+        actual=c._installed_names(self.root,('tools',))
+        self.assertIn('tools/active.pyc',actual);self.assertIn('tools/active.so',actual)
+    def test_inventory_prunes_data_before_descending(self):
+        self.fixture();(self.root/'output/data/irrelevant-link').symlink_to('/nonexistent')
+        self.assertEqual(c._installed_names(self.root,('output',)),{'output/app.js','output/index.html'})
+    def test_directory_and_symlink_budgets_are_enforced(self):
+        self.fixture();(self.root/'tools/extra').mkdir()
+        with patch.object(c,'ENTRY_LIMIT',1):
+            with self.assertRaisesRegex(RuntimeError,'inventory'):c._installed_names(self.root,('tools',))
+        (self.root/'tools/linked').symlink_to(self.code/'pull/build.py')
+        with self.assertRaisesRegex(RuntimeError,'Symlink'):c._installed_names(self.root,('tools',))
+    def test_strict_bounded_duplicate_nonfinite_and_file_types(self):
+        for raw in (b'{"a":1,"a":2}',b'{"a":NaN}',b'[]'):
+            self.result.write_bytes(raw)
+            with self.assertRaises(RuntimeError):c._load(self.result)
+        self.result.write_bytes(b'x'*64)
+        with self.assertRaises(RuntimeError):c._bounded_file(self.result,16)
+        self.result.unlink();self.result.symlink_to(self.code)
+        with self.assertRaises(OSError):c._bounded_file(self.result)
+    def test_early_resource_failure_stops_all_online_work(self):
+        with patch.object(c,'_job_context'),patch.object(c,'_resource_preflight',side_effect=RuntimeError('HOSTED_PREFLIGHT_REQUIRED')),patch.object(c,'_source_ci_cli') as online:
+            with self.assertRaisesRegex(RuntimeError,'HOSTED_PREFLIGHT_REQUIRED'):c.launch_job(self.code,self.root,self.result,1)
+            online.assert_not_called()
+        self.assertEqual(c._load(self.result)['failure_class'],'RuntimeError')
+    def test_unknown_transport_is_not_replaced_with_git_route(self):
+        self.assertNotIn("elif a.action=='retrieve'",(HERE/'tools/operating_campaign.py').read_text())
+
+    def test_original_failure_is_preserved_and_failed_fixture_is_not_deleted(self):
+        code=HERE;work=self.base/'nfl-operating-1';root=work/'fixture';result=work/'RESULT.json'
+        fp=dict(self.fp);fp['files']=[dict(path='tools/operating_campaign.py',sha256='a'*64)]
+        proof=dict(self.proof)
+        def command(*a,**kw):
+            root.mkdir();(root/'retained-failure.txt').write_text('fictional failure retained')
+            raise ValueError('original-stage-error')
+        monitor=SimpleNamespace(start=lambda:None,finish=lambda:(_ for _ in ()).throw(OSError('monitor-error')))
+        env={'RUNNER_TEMP':str(self.base),'DIAGNOSTIC_RESOURCE_BACKEND':'root-supervised-cgroup-v1',
+            'CAMPAIGN_ID':c.CAMPAIGN,'GITHUB_ACTOR_ID':'208912933','GITHUB_RUN_ID':'123','GITHUB_RUN_ATTEMPT':'1',
+            'OPERATING_ARTIFACT_APPROVAL_SHA256':'b'*64}
+        with patch.dict(os.environ,env),patch.object(c,'_job_context'),patch.object(c,'require_offline'),patch.object(c,'_hash_file',return_value='a'*64),patch.object(c,'_critical_paths',return_value=[]),patch.object(c,'Resources',return_value=monitor),patch.object(c,'_source_ci_cli',return_value=fp),patch.object(c,'_guarded_stage',side_effect=command):
+            with self.assertRaisesRegex(ValueError,'original-stage-error'):
+                c.job(code,root,result,1,_operation=(proof,fp,c.time.monotonic(),{},{}))
+        self.assertTrue((root/'retained-failure.txt').is_file())
+        recorded=c._load(result)
+        self.assertEqual(recorded['failure_class'],'ValueError')
+        self.assertEqual(recorded['retention']['status'],'FAILED_WORKSPACE_RETAINED_NO_EXPORT')
+        self.assertIn('monitor:OSError',recorded['finalization_errors'])
+
+    def test_fresh_prefix_reaches_actual_child_before_startup(self):
+        self.code.mkdir();(self.code/'tools').mkdir()
+        (self.code/'tools/source_ci.py').write_text('import json,sys,os;print(json.dumps(dict(prefix=sys.pycache_prefix,no_write=sys.dont_write_bytecode,mode=os.stat(sys.pycache_prefix).st_mode&511)))')
+        with patch.object(c.Path,'cwd',return_value=self.code),patch.dict(os.environ,{'RUNNER_TEMP':str(self.base)}):
+            result=c._source_ci_cli(self.code,'fingerprint')
+        self.assertTrue(result['no_write']);self.assertEqual(result['mode'],0o700)
+        self.assertFalse(Path(result['prefix']).exists())
+    def test_stage_log_is_bounded_without_limiting_child_assets(self):
+        log=self.base/'bounded.log'
+        c._bounded_stage([sys.executable,'-c','import sys;sys.stdout.write("x"*100000)'],self.base,log,5,log_limit=1024)
+        self.assertEqual(log.stat().st_size,1024)
+        with self.assertRaises(subprocess.CalledProcessError):
+            c._bounded_stage([sys.executable,'-c','raise SystemExit(7)'],self.base,self.base/'failed.log',5)
+
+    def test_derived_configuration_is_bound_to_actual_saved_seed_manifest(self):
+        fp=self.fixture();(self.root/'config/phase2.json').write_text('{"fictional":"changed"}')
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
+            with self.assertRaisesRegex(RuntimeError,'approved frozen seed'):c.install_execution_source(self.code,self.root)
+    def test_seed_manifest_cannot_be_rehashed_by_caller_without_approved_digest(self):
+        self.fixture();path=self.root.parent/'retrieved-seed/SEED_MANIFEST.json'
+        value=c._load(path);value['files']['config/phase2.json']['sha256']='f'*64;path.write_bytes(c.encoded(value))
+        with self.assertRaisesRegex(RuntimeError,'manifest changed'):c._frozen_seed_manifest(self.root)
+
+    def test_actual_guard_denies_child_and_grandchild_and_scrubs_credentials(self):
+        log=self.base/'network-controls.log'
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.base),'GH_TOKEN':'fictional-not-a-token'}):
+            c._guarded_stage(HERE,[sys.executable,'-c',"import os;assert not os.environ.get('GH_TOKEN');assert not os.environ.get('GITHUB_TOKEN')"],log,15)
+            self.assertEqual(os.environ['GH_TOKEN'],'fictional-not-a-token')
+        facts=json.loads(log.read_text().splitlines()[0]);self.assertEqual(facts['network_isolation'],'PASS')
+        self.assertIn('python_grandchild',facts['controls']);self.assertEqual(facts['provider_contacts'],0)
+    def test_three_fixed_source_ci_boundaries_surround_commit_pages_and_tar(self):
+        code=HERE;work=self.base/'nfl-operating-1';root=work/'fixture';result=work/'RESULT.json';events=[]
+        fp=dict(self.fp);fp['files']=[dict(path='tools/operating_campaign.py',sha256='a'*64)]
+        monitor=SimpleNamespace(start=lambda:None,finish=lambda:{'resource_verdict':'UNKNOWN'})
+        def child(code,argv,*a,**kw):
+            action=argv[2];events.append(action)
+            if action=='restore':root.mkdir()
+            if action=='admit':(work/'admission.json').write_bytes(c.encoded({'status':'ADMITTED'}))
+        def cli(code,action,run_id=None):
+            if action=='verify':self.assertEqual(run_id,123);events.append('online-check');return dict(self.proof)
+            return fp
+        env={'RUNNER_TEMP':str(self.base),'DIAGNOSTIC_RESOURCE_BACKEND':'root-supervised-cgroup-v1','CAMPAIGN_ID':c.CAMPAIGN,
+            'GITHUB_ACTOR_ID':'208912933','GITHUB_RUN_ID':'123','GITHUB_RUN_ATTEMPT':'1','OPERATING_ARTIFACT_APPROVAL_SHA256':'b'*64,'GH_TOKEN':'fictional'}
+        with patch.dict(os.environ,env),patch.object(c,'_job_context'),patch.object(c,'_hash_file',return_value='a'*64),patch.object(c,'_critical_paths',return_value=[]),patch.object(c,'Resources',return_value=monitor),patch.object(c,'_source_ci_cli',side_effect=cli),patch.object(c,'_guarded_stage',side_effect=child):
+            report=c.job(code,root,result,1,_operation=(dict(self.proof),fp,c.time.monotonic(),{},{}))
+        self.assertEqual(events[-5:],['capture-stage','online-check','commit-stage','online-check','tar-stage'])
+        self.assertEqual(set(report['source_ci_boundaries']),{'initial','before_data_commit','after_pages_stage'})
+    def test_actual_advisory_scripts_keep_continue_on_error_and_health_outcomes(self):
+        (self.root/'output/data').mkdir(parents=True);(self.root/'output/data/health.json').write_text('{}')
+        def script(path,args,clock):
+            self.assertEqual(clock,'fictional-clock')
+            if str(path).endswith('verify.py'):raise SystemExit(1)
+        with patch.object(c,'_advisory_script',side_effect=script):
+            result=c._advisories(self.root,{'capture':SimpleNamespace(datetime='fictional-clock')},None)
+        self.assertEqual(result['outcomes']['legacy_verifier']['returncode'],1)
+        self.assertEqual(c._load(self.root/'output/data/health.json'),{'legacy_verifier':'failure','historical_comparison':'success'})
+
+    def evidence(self):
+        categorical=set(c.seed_v1.REQUIRED_SETS)|{'outcome_revisions','original_contexts','recorders_inactive','original_schema','corrected_schema','archives','scope_schema','original_comparator'}
+        return {'advisories':{'outcomes':{'legacy_verifier':{'outcome':'failure','returncode':1},'historical_comparison':{'outcome':'success','returncode':0}},'remote_continuation':'UNMEASURED','unsupported_raw_http_calls':2},'admission':{'numeric_floors':{k:{'actual':v,'required':v,'meets':True} for k,v in c.seed_v1.ENVELOPE.items()},
+            'categorical':{k:True for k in categorical},'population_pass':True,'game_states':{'post':2,'in':7,'pre':5},
+            'qualification_counts':{'retained_legacy_original_proof_missing':9,'new_pregame_original_inputs_verified':5},
+            'public_semantics_sha256':'a'*64,'original_file_sha256':'b'*64},
+            'correction':{'before':3,'after':8,'expected_affected_count':2,'actual_changed_count':2,'original_outcome_count':5,'new_outcome_count':6,
+            'expected_set_sha256':'c'*64,'declaration_sha256':'d'*64,'original_file_sha256':'e'*64}}
+    def test_derived_admission_floors_are_recomputed_not_flag_only(self):
+        value=self.evidence();c._check_evidence_projection(value)
+        value['admission']['numeric_floors']['rows']['actual']=0
+        with self.assertRaisesRegex(RuntimeError,'floor'):c._check_evidence_projection(value)
+
+    def measurement_fixture(self):
+        leaf='/sys/fs/cgroup/system.slice/nfl-operating-123-1.service/nfl-diagnostic-123-1-99'
+        measured=dict(status='COMPLETE',complete_tree=True,peak_reset_verified=True,scope_closure_verified=True,
+            privilege_drop_verified=True,failures=[],returncode=0,minimum_free_bytes=2*1024**3,minimum_free_fraction=.2,
+            resource_verdict='PASS',supervisor_seconds=12,run_id=123,sample=1,source='1'*40,harness_sha256=c.SEED_HARNESS_SHA256,
+            seed_manifest_sha256='b'*64,kernel_peaks={leaf:{'kernel_peak':4*1024**3,'limit':16*1024**3}},
+            event_deltas={leaf:{'oom':0,'oom_kill':0,'oom_group_kill':0}},
+            filesystem_minima={'1':{'free':10*1024**3,'total':20*1024**3,'paths':['/private/path']}})
+        fp=dict(self.fp);fp['files']=[{'path':'tools/operating_campaign.py','sha256':'a'*64,'bytes':10}]
+        report=dict(status='LOCAL_BOUNDARY_COMPLETE_EXTERNAL_JOB_TIMESTAMPS_PENDING',run_id=123,run_attempt=1,sample=1,
+            source='1'*40,source_tree='2'*40,source_manifest_sha256='3'*64,source_ci=dict(self.proof),
+            source_ci_boundaries={k:dict(self.proof) for k in ('initial','before_data_commit','after_pages_stage')},
+            harness_sha256='a'*64,fixture_harness_sha256=c.SEED_HARNESS_SHA256,fixture_construction_source=c.BASE,
+            seed_manifest_sha256='b'*64,dependency_hashes={k:'a'*64 for k in c.DEPENDENCIES},
+            runtime=c._runtime_identity(fp['environment']),environment_sha256=self.proof['environment_sha256'],
+            stages={},harness_wall_seconds=12,failure_class=None,retention={'status':'SUCCESS_JOB_COPY_CLEANED_ORIGINAL_SEED_UNCHANGED'},
+            capability_before_online={'current':leaf,'filesystems':{'1':{}}},worker_argv=['actual','worker'],transport_approval_sha256='c'*64)
+        files={'tools/operating_campaign.py':{'sha256':'a'*64,'bytes':10}}
+        outer=dict(schema_version='operating-root-execution-v1',mode='campaign',purpose='operating',root_uid=0,worker_uid=1001,
+            run_id=123,sample=1,run_attempt=1,repository='NickNicky19/nicks-expert-nfl-picks',repository_id=1411185749,
+            actor_id=208912933,event='workflow_dispatch',branch='upgrade/phase2-reproducible-comparison',workflow_path=c.CAMPAIGN_WORKFLOW,
+            source={'commit':'1'*40,'tree':'2'*40,'files':files,'source_closure_sha256':c.sha(c.encoded(files))},
+            resource_p5_harness_sha256=c.SEED_HARNESS_SHA256,resource_report={'sha256':c.sha(c.encoded(measured)),'bytes':len(c.encoded(measured))},
+            worker_argv=report['worker_argv'],worker_argv_sha256=c.sha(c.encoded(report['worker_argv'])),
+            supervisor_argv=['supervisor','--',*report['worker_argv']],resource_supervisor_returncode=0,resource_supervisor_pid=99,
+            cgroup={'unit':'nfl-operating-123-1.service','scopes':[{'path':'/sys/fs/cgroup'},{'path':str(Path(leaf).parent)},{'path':'supervisor'}]},
+            monitored_leaf_path=leaf,complete_tree=True,privilege_drop_verified=True,
+            status='COMPLETE_RESOURCE_REVIEW_STILL_REQUIRES_JOB_TIMESTAMPS',resource_verdict='PASS',transport_approval={'sha256':'c'*64})
+        outer['supervisor_argv_sha256']=c.sha(c.encoded(outer['supervisor_argv']))
+        return measured,outer,report,fp
+    def test_in_run_projection_is_numeric_derived_and_omits_private_paths(self):
+        measured,outer,report,fp=self.measurement_fixture();work=self.base/'nfl-operating-1';work.mkdir();root=work/'fixture';result=work/'RESULT.json'
+        result.write_bytes(c.encoded(report))
+        records=[(measured,{'sha256':c.sha(c.encoded(measured)),'bytes':len(c.encoded(measured))}),(outer,{'sha256':'d'*64,'bytes':100})]
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.base),'GITHUB_RUN_ID':'123','GITHUB_SHA':'1'*40,'GITHUB_RUN_ATTEMPT':'1','GITHUB_EVENT_NAME':'workflow_dispatch','SEED_MANIFEST_SHA256':'b'*64}),patch.object(c,'_protected_report',side_effect=records),patch.object(c,'_evidence_aggregates',return_value=self.evidence()),patch.object(c,'_source_ci_cli',return_value=fp),patch.object(c,'_hash_file',return_value='a'*64):
+            projection=c.project(self.code,root,result,1)
+        self.assertEqual(projection['resources'],'PASS');self.assertTrue(all(projection['checks'].values()))
+        self.assertNotIn('/private/path',c.encoded(projection).decode());self.assertNotIn('/sys/fs/cgroup',c.encoded(projection).decode())
+        self.assertEqual(projection['claim'],'DERIVED_MEASUREMENTS_NOT_ORIGINAL_RECORD_BYTES')
+    def test_changed_root_binding_cannot_project_resource_pass(self):
+        measured,outer,report,fp=self.measurement_fixture();outer['worker_argv_sha256']='0'*64
+        self.assertFalse(c._resource_binding(measured,outer,report,123,1,'1'*40))
+        measured['failures']=['/private/not-a-code']
+        with self.assertRaises(RuntimeError):c._measurements(measured)
+    def test_actual_log_assessment_recomputes_three_samples_and_rejects_duplicate(self):
+        import copy
+        measured,outer,report,fp=self.measurement_fixture();facts=c._measurements(measured)
+        stage_names={'resource_capability','transport_allocation_admission','restoration_allocation_admission','seed_retrieval','source_ci_online','source_ci_private_binding','network_isolation',
+            'source_ci_isolated_entry','seed_restoration','workload_admission','execution_source_install','execution_saved_packaging',
+            'retained_cheap_checks','capture_and_advisories','source_ci_before_data_commit','local_commit_and_pages_stage',
+            'source_ci_after_pages_stage','uploader_tar','source_ci_isolated_final','cleanup'}
+        stages={k:{'start':i,'end':i+.5,'seconds':.5} for i,k in enumerate(sorted(stage_names))}
+        proof=copy.deepcopy(self.proof);sealed={k:proof[k] for k in ('run_id','run_attempt','job_id','seal_sha256','environment_sha256')}
+        approval=dict(schema_version='operating-campaign-approval-v1',campaign=c.CAMPAIGN,repository='NickNicky19/nicks-expert-nfl-picks',repository_id=1411185749,
+            run_id=123,head_sha='1'*40,workflow_id=99,workflow_path=c.CAMPAIGN_WORKFLOW,actor_id=208912933,attempt=1,seed_manifest_sha256='b'*64,
+            wrapper_sha256='a'*64,dependency_hashes=report['dependency_hashes'],source_manifest_sha256='3'*64,source_ci_identity=sealed,runtime_environment_sha256=proof['environment_sha256'])
+        self.result.write_bytes(c.encoded(approval));run=dict(id=123,head_sha='1'*40,workflow_id=99,path=c.CAMPAIGN_WORKFLOW,event='workflow_dispatch',run_attempt=1,status='completed',
+            head_branch='upgrade/phase2-reproducible-comparison',actor={'id':208912933},repository={'id':1411185749},conclusion='success',created_at='2026-10-22T00:00:00Z',run_started_at='2026-10-22T00:00:01Z')
+        jobs=[];logs={}
+        for n in (1,2,3):
+            jobs.append(dict(id=n,name='Operating sample '+str(n),status='completed',run_id=123,head_sha='1'*40,conclusion='success',
+                started_at=f'2026-10-22T00:{n:02}:00Z',completed_at=f'2026-10-22T00:{n:02}:30Z'))
+            projection=dict(schema_version='operating-measurement-projection-v1',claim='DERIVED_MEASUREMENTS_NOT_ORIGINAL_RECORD_BYTES',run_id=123,run_attempt=1,sample=n,source='1'*40,source_tree='2'*40,
+                status=report['status'],source_ci=proof,source_ci_boundary_count=3,environment_sha256=proof['environment_sha256'],seed_manifest_sha256='b'*64,
+                wrapper_sha256='a'*64,dependency_hashes=report['dependency_hashes'],source_manifest_sha256='3'*64,
+                fixture_harness_sha256=c.SEED_HARNESS_SHA256,fixture_construction_source=c.BASE,harness_wall_seconds=20,stages=stages,
+                workload_evidence=self.evidence(),checks={k:True for k in ('fresh_source_ci_binding','root_record_source_bytes','root_execution_and_resource_binding','protected_original_records','resource_measurements_recomputed')},resource_measurements=facts)
+            logs[n]=b'2026-10-22T00:00:01Z NFL_OPERATING_MEASUREMENT '+c.encoded(projection)+b'\n'
+        inventory={'total_count':3,'jobs':jobs}
+        def get(route,logs=False):
+            if route.endswith('/logs'):return log_records[int(route.split('/')[3])]
+            return inventory if '/jobs?' in route else run
+        log_records=logs;api=SimpleNamespace(get=get);out=self.base/'assessment.json'
+        value=c.assess(self.result,out,api=api);self.assertEqual(value['operating'],'PASS_FICTIONAL_COMPUTE_ONLY')
+        log_records[1]+=log_records[1]
+        failed=c.assess(self.result,out,api=api);self.assertEqual(failed['operating'],'NOT_QUALIFIED')
+        self.assertEqual(len(failed['samples']),3);self.assertEqual(failed['samples'][0]['resources'],'UNKNOWN')
+        log_records[1]=b''
+        missing=c.assess(self.result,out,api=api);self.assertEqual(len(missing['samples']),3)
+        self.assertEqual(missing['samples'][0]['failure'],'MEASUREMENT_RECORD_MISSING')
+        log_records[1]=b'NFL_OPERATING_MEASUREMENT {corrupt-json}\n'
+        corrupt=c.assess(self.result,out,api=api);self.assertEqual(len(corrupt['samples']),3)
+        self.assertEqual(corrupt['operating'],'NOT_QUALIFIED')
+
+    def test_no_seed_capability_projection_never_claims_operating_or_drop_pass(self):
+        measured,outer,report,fp=self.measurement_fixture()
+        measured.update(status='CAPABILITY_READY',complete_tree=True,resource_verdict='NOT_RUN_CAPABILITY_ONLY',
+            capability={'filesystems':{'1':{'free':10*1024**3,'total':20*1024**3}},'ancestor_limits':{'private':'17179869184'}})
+        outer.update(mode='capability',status='CAPABILITY_READY',resource_verdict='NOT_RUN_CAPABILITY_ONLY',worker_argv=None,
+            seed_manifest_sha256=None,transport_approval='NOT_REQUIRED_CAPABILITY_ONLY',resource_report={'sha256':c.sha(c.encoded(measured)),'bytes':len(c.encoded(measured))})
+        value=c._capability_projection(measured,outer,fp,123,1)
+        self.assertEqual(value['resources'],'NOT_RUN_CAPABILITY_ONLY');self.assertFalse(value['capability']['privilege_drop_tested'])
+        outer['seed_manifest_sha256']='a'*64
+        with self.assertRaises(RuntimeError):c._capability_projection(measured,outer,fp,123,1)
+
+class AllocationTests(unittest.TestCase):
+ def seed(self):
+  return ({'files':{'data':{'bytes':1000}},'packs':[{'bytes':200,'objects':10}]},
+          {k:1000 for k in c.METRICS},{'executable_bytes':10,'git_object_bytes':20,'complete_nonalternate_git_store':True})
+ def test_pretransport_keeps_archive_and_decoded_zip_separate(self):
+  self.assertEqual(c.pretransport_plan({'archive_bytes':123}),{'artifact_zip':123,'maximum_decoded_zip_members':2*c.GIB})
+ def test_missing_declared_metric_stops(self):
+  manifest,metrics,source=self.seed();metrics.pop('packed_bytes')
+  with self.assertRaisesRegex(RuntimeError,'packed_bytes'):c.seed_plan(manifest,metrics,source)
+ def test_unknown_alternate_git_closure_stops(self):
+  manifest,metrics,source=self.seed();source['complete_nonalternate_git_store']=False
+  with self.assertRaisesRegex(RuntimeError,'Git closure'):c.seed_plan(manifest,metrics,source)
+ def test_concurrent_copies_and_representations_remain_explicit(self):
+  result=c.seed_plan(*self.seed());self.assertEqual(result['three_pages_roots'],3000)
+  self.assertEqual(result['two_uploader_tars'],2000);self.assertIn('independent_restart_checkout',result)
+ def check(self,free):
+  with patch.object(c.Path,'exists',return_value=True),patch.object(c.Path,'stat',return_value=SimpleNamespace(st_dev=7)), \
+       patch.object(c.shutil,'disk_usage',return_value=SimpleNamespace(total=10*c.GIB,free=free)):
+   return c.admission_allocation([('first','/fictional/one',100),('second','/fictional/two',200)])
+ def test_same_device_sums_different_directories(self):
+  value=self.check(2*c.GIB+300);self.assertEqual(len(value['filesystems']),1)
+  self.assertEqual(value['filesystems']['7']['additional'],300)
+ def test_one_byte_deficient_peak_is_rejected(self):
+  with self.assertRaisesRegex(RuntimeError,'headroom'):self.check(2*c.GIB+299)
+ def test_boolean_and_negative_sizes_rejected(self):
+  for value in (True,-1):
+   with self.subTest(value=value),self.assertRaises(RuntimeError):c.pretransport_plan({'archive_bytes':value})
+
+if __name__=='__main__':unittest.main(verbosity=2)

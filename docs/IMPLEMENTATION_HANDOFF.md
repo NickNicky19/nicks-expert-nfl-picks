@@ -1205,3 +1205,63 @@ limits. A copied public native module and isolated child processes exercise
 addition plus same-size/restored-mtime observable mutation. Flat bytecode was
 already included and its separate suspected omission was disproved. The earlier
 package/RECORD finding and its attempt history are preserved independently.
+
+
+### Operating diagnostic source boundary (2026-10-22)
+
+The fictional seed builder and its original B3 source, observations, input
+contract and source-object closure remain unchanged. The separate operating
+coordinator restores that same seed, validates its original dependencies, and
+uses a derived execution copy. Its executable files come from the actual
+candidate source; the seed's exact fictional activation configuration remains
+separately hash-bound. This is a fictional operating test, not production
+configuration, historical publication proof or experiment activation.
+
+The coordinator includes the existing updater's three complete online source-CI
+checks: initially, before the local data commit, and after Pages staging. Later
+checks retain the initial CI run identity. Complete source tests remain in their
+normal CI job; the updater's compile, JavaScript, UI and About checks still run
+inside the measured operation. Actual advisory scripts and health outcomes also
+run; unsupported advisory provider continuations remain explicitly unmeasured.
+All application, fixture and check subprocess trees use the existing inherited
+network guard with credentials removed. The narrowly bounded GitHub control
+transports remain online. The diagnostic does not claim that the whole job is
+offline or that mocked providers establish live-provider latency.
+
+Only an approved completed preparation artifact can supply the four immutable
+seed parents. Retrieval validates actual bounded file descriptors, the complete
+allowlisted ZIP inventory, preparation identities and freshly rehashed bytes.
+A source checkout, marker or saved admission result alone is insufficient.
+Before allocating transport or restored copies, the coordinator applies the
+unchanged filesystem reserve to the declared concurrent allocation estimate.
+Unknown required measurements stop preparation. Root-supervised accounting must
+independently establish attributable memory, subprocess-tree cleanup, OOM events
+and filesystem headroom; local capability remains unknown where unavailable.
+
+The protected original resource records are checked in the job. A separately
+identified bounded measurement projection exposes numerical facts and aggregate
+admission/correction results under logical scope tags. It omits raw evidence,
+fixture rows, credentials, environment dumps and workspace paths. Subsequent
+assessment retrieves the actual run, jobs and logs, recomputes all three results
+using completed job timestamps, and retains missing or invalid samples as
+failures. A projection is derived evidence, not the original bytes under an
+original record's checksum. Failed raw job copies and private logs are retained
+only on that ephemeral runner; they are not exported or durably preserved after
+runner teardown. The remote immutable seed remains unchanged.
+
+The 960-second planning target, 1,200-second job timeout and historical planning
+misses remain unchanged. This source checkpoint establishes no new runtime,
+resource, hosting or season-long operating PASS. A full admitted cloud seed,
+approved artifact storage/transport, fresh hosted capability checks and the
+separately authorized three cold serial samples remain necessary. The manual
+workflow drafts and default-branch registration are separate protected changes;
+no diagnostic dispatch, production configuration change or deployment is
+implied by installing ordinary diagnostic source.
+
+Local installed-source verification passed 148 focused controls (115 diagnostic
+and 33 retained source-CI controls), Python/JavaScript syntax, 187 UI and 15 About
+assertions. API and root-control responses in unit tests are mocked; harmless
+child/grandchild network-denial controls execute real subprocesses. The full
+split-path positive integration remains pending a genuinely admitted full seed;
+an unadmitted small seed is rejected. None of these local checks establishes
+hosted resource capability or an operating budget.
