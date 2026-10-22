@@ -96,4 +96,51 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(git(root, "status", "--porcelain").strip(), b"")
 
 
+class RefreshCadenceTests(unittest.TestCase):
+    def test_one_daily_schedule_and_deliberate_refresh_routes(self):
+        text = (ROOT / ".github/workflows/hourly.yml").read_text()
+        self.assertEqual(text.count("\non:\n"), 1)
+        events = text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertEqual(events, (
+            "  push:\n"
+            "    branches: [main]\n"
+            "  schedule:\n"
+            '    - cron: "6 8 * * *"\n'
+            '      timezone: "America/Chicago"\n'
+            "  workflow_dispatch: {}"
+        ))
+        self.assertIn("    timeout-minutes: 20\n", text)
+
+    def test_ticker_cannot_schedule_or_dispatch(self):
+        text = (ROOT / ".github/workflows/ticker.yml").read_text()
+        self.assertEqual(text.count("\non:\n"), 1)
+        self.assertEqual(text.split("\non:\n", 1)[1].split("\n\n", 1)[0],
+                         "  workflow_dispatch: {}")
+        self.assertIn("\npermissions: {}\n", text)
+        self.assertIn("    if: ${{ false }}\n", text)
+        for forbidden in ("schedule:", "gh workflow", "actions: write",
+                          "GH_TOKEN", "while ", "sleep "):
+            self.assertNotIn(forbidden, text)
+
+    def test_refresh_and_manual_recovery_keep_serialization(self):
+        workflows = ROOT / ".github/workflows"
+        expected = "concurrency:\n  group: hourly-update\n  cancel-in-progress: false\n"
+        self.assertIn(expected, (workflows / "hourly.yml").read_text())
+        recovery = list(workflows.glob("restore-*.yml"))
+        self.assertTrue(recovery)
+        for path in recovery:
+            with self.subTest(workflow=path.name):
+                text = path.read_text()
+                self.assertIn(expected, text)
+                self.assertIn("workflow_dispatch:", text)
+                self.assertIn("gh workflow run hourly.yml --ref main", text)
+
+    def test_required_code_change_checks_keep_their_triggers(self):
+        text = (ROOT / ".github/workflows/reliability-tests.yml").read_text()
+        self.assertIn("on:\n  pull_request:\n  push:\n    branches: ['upgrade/**']\n", text)
+        self.assertIn("python -m unittest discover", text)
+        self.assertIn("node tests/test-ui.cjs", text)
+
+
+
 if __name__ == "__main__": unittest.main()

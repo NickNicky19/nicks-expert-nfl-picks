@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: "6 * * * *"
-    - cron: "36 * * * 0,1,4,5"
+    - cron: "6 8 * * *"
+      timezone: "America/Chicago"
   workflow_dispatch: {}
 
 # Shared with manual recovery. Never interrupt a commit/deploy pair.
