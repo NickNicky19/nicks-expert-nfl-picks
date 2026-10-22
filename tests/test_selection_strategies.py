@@ -153,6 +153,8 @@ class StrategySavedDecisionTests(unittest.TestCase):
         # Exercise actual rank exclusions, rather than assigning an output state.
         board, _ = fixture()
         board["players"][0]["props"][0]["line_from"] = "ours"
+        board["players"][1]["props"][0]["lean"] = None
+        board["games"][2]["state"] = "in"
         native = make_payload(board, NOW, corrected.legacy_engine_hashes(), "live")
         unknown = self.snapshot(created=NOW)
         from scorecard import identity
@@ -162,7 +164,11 @@ class StrategySavedDecisionTests(unittest.TestCase):
         rows = strategies._records([unknown], self.timing(), NOW + timedelta(seconds=1))
         absent = [r for r in rows if r["player_id"] == "fictional-player-0" and r["checkpoint"] == "history"]
         self.assertEqual(len(absent), len(strategies.STRATEGIES))
-        self.assertTrue(all(r["action"] == "NO_ACTION" and r["reason"] == "missing_real_reference_source" for r in absent))
+        self.assertTrue(all(r["action"] == "EXCLUDED" and r["reason"] == "missing_real_reference_source" for r in absent))
+        no_side = [r for r in rows if r["player_id"] == "fictional-player-1" and r["checkpoint"] == "history"]
+        started = [r for r in rows if r["player_id"] == "fictional-player-2" and r["checkpoint"] == "history"]
+        self.assertTrue(no_side and all(r["action"] == "NO_ACTION" and r["reason"] == "observed_no_side" for r in no_side))
+        self.assertTrue(started and all(r["action"] == "EXCLUDED" and r["reason"] == "not_new_pregame_eligible" for r in started))
 
     def test_frozen_checkpoint_uses_pinned_witness_when_later_inventory_would_choose_another(self):
         boundary = NOW + timedelta(hours=1)
@@ -270,6 +276,74 @@ class StrategyPersistenceBoundaryTests(unittest.TestCase):
         with self.assertRaises(IntegrityError):
             strategies._source(ROOT, "0" * 40)
 
+
+
+
+class StrategyRegistryDispatchTests(unittest.TestCase):
+    def test_missing_or_invalid_registration_fails_before_qualification(self):
+        import json
+        for variant in ("missing", "unknown_schema", "changed_policy"):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); (root / "tools").mkdir()
+                if variant != "missing":
+                    rules = copy.deepcopy(strategies.policy())
+                    if variant == "unknown_schema": rules["schema_version"] = "unrecognized-selection-policy"
+                    else: rules["maximum_per_side"] += 1
+                    (root / strategies.POLICY_PATH).write_text(json.dumps(rules))
+                with patch("phase2_capture._strategy_qualification", side_effect=AssertionError("Invalid registry must fail before qualification")), \
+                        patch.object(strategies, "_source", side_effect=AssertionError("Invalid registry must fail before source transport")):
+                    with self.assertRaises((IntegrityError, FileNotFoundError)):
+                        strategies.record(root, {}, "a" * 40, clock=lambda: NOW)
+                self.assertFalse(list(root.rglob("*.json.gz")))
+
+    def test_supported_registration_does_not_backfill_pre_registration_forecast(self):
+        from reliability import utc
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / "tools").mkdir()
+            (root / strategies.POLICY_PATH).write_bytes((ROOT / strategies.POLICY_PATH).read_bytes())
+            board, native = fixture()
+            native["forecast_generated_at"] = stamp(utc(strategies.policy()["registered_at"]) - timedelta(seconds=1))
+            # This control only establishes dispatch. Actual original-evidence
+            # qualification remains covered by connected updater tests.
+            with patch("phase2_capture._strategy_qualification", return_value=(board, native)) as qualifier, \
+                    patch.object(strategies, "_source", side_effect=AssertionError("Old forecasts must not acquire new source-bound strategies")):
+                self.assertIsNone(strategies.record(root, {"native_payload_sha256": digest(native)}, "a" * 40, clock=lambda: NOW))
+                self.assertEqual(qualifier.call_count, 1)
+            self.assertFalse(list(root.rglob("*.json.gz")))
+
+
+
+class StrategyMissingRuntimeRegistryTests(unittest.TestCase):
+    def test_missing_runtime_registry_distinguishes_qualified_active_and_pre_registration_native(self):
+        from reliability import utc
+        for active in (False, True):
+            with self.subTest(active=active), tempfile.TemporaryDirectory() as directory:
+                target = Path(directory)
+                board, native = fixture()
+                native["forecast_generated_at"] = stamp(utc(strategies.policy()["registered_at"]) + timedelta(seconds=1 if active else -1))
+                qualification = {"native_receipt": "data/forward/2026/w09/fictional.json.gz", "native_payload_sha256": digest(native)}
+                # Only this unit control's input qualification is mocked; the
+                # installed/runtime registry dispatch and no-write boundary are real.
+                with patch("phase2_capture._strategy_qualification", return_value=(board, native)) as qualifier, \
+                        patch.object(strategies, "_source", side_effect=AssertionError("Missing or ineligible registry must not issue a source-bound observation")):
+                    if active:
+                        with self.assertRaises((IntegrityError, FileNotFoundError)):
+                            strategies.record(target, qualification, "a" * 40, clock=lambda: NOW)
+                    else:
+                        self.assertIsNone(strategies.record(target, qualification, "a" * 40, clock=lambda: NOW))
+                    self.assertEqual(qualifier.call_count, 1)
+                self.assertFalse(list(target.rglob("*.json.gz")))
+
+    def test_missing_runtime_registry_never_bypasses_required_qualification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            qualification = {"native_receipt": "data/forward/2026/w09/fictional.json.gz", "native_payload_sha256": "0" * 64}
+            with patch("phase2_capture._strategy_qualification", side_effect=IntegrityError("Unqualified original evidence")) as qualifier, \
+                    patch.object(strategies, "_source", side_effect=AssertionError("No source receipt for unqualified evidence")):
+                with self.assertRaisesRegex(IntegrityError, "Unqualified original evidence"):
+                    strategies.record(target, qualification, "a" * 40, clock=lambda: NOW)
+                self.assertEqual(qualifier.call_count, 1)
+            self.assertFalse(list(target.rglob("*.json.gz")))
 
 
 if __name__ == "__main__": unittest.main()

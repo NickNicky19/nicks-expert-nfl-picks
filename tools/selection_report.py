@@ -781,8 +781,10 @@ def render_html(report, group=None):
             '<p>Top Picks overlap all leans. Disjoint views refer to Top membership at that all-lean decision. '
             'Historical archives lack original clocks. Local observation clocks do not prove publication.</p>'
             '<p>Whole-week uncertainty and confirmation unavailable. Original Week 6 matchup proof is missing; '
-            'independent original-capture evidence review remains pending.</p>'
-            '<p>All category/side/day/timing/venue tables and full provenance: '
+            + ('The exact retained original review archive has scoped independent input-reproduction acceptance; '
+               'that acceptance does not authenticate unrelated contracts.</p>' if report.get('schema_version') == EXTENDED_VERSION
+               else 'independent original-capture evidence review remains pending.</p>')
+            + '<p>All category/side/day/timing/venue tables and full provenance: '
             f'<a href="{prefix}summary.json">summary JSON</a>, <a href="{prefix}rows.json">auditable rows JSON</a>, '
             f'<a href="{prefix}rows.csv">CSV</a>, <a href="{prefix}manifest.json">input/code/policy manifest</a>.</p>' +
             _descriptive_html(report, prefix) + "".join(summary) + '<h2>Auditable rows</h2>' + preview + anchor + '<div class="scroll"><table><thead><tr>' +
@@ -888,6 +890,8 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
                               "No model fitted/promoted; report derivation alone does not establish publication or deployment."],
               "input_manifest_sha256": digest(manifest), "code_sha256": code,
               "timing_policy_sha256": digest(policy), "evaluation_policy_sha256": digest(primary_policy)}
+    if report_version == EXTENDED_VERSION:
+        report["limitations"][1] = "Exact retained original review archive accepted for scoped input reproduction; other contracts require their own proof."
     if include_descriptive:
         report["descriptive_all_categories"] = _descriptive_report(roots, output, inputs, outcomes,
                                                                   expected_hashes, now, input_pins, boards, model_version=descriptive_model)

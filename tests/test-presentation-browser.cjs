@@ -245,16 +245,16 @@ async function controlChecks(browser, origin, lane, width) {
   const browser = await chromium.launch({ executablePath: process.env.NFL_CHROMIUM_PATH || '/usr/bin/chromium', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   const real = [], controls = [], records = [];
   try {
-    for (const width of [1280, 390]) for (const lane of Object.keys(roots)) real.push(await realDataChecks(browser, origin, lane, width));
+    for (const width of [1280, 390, 320]) for (const lane of Object.keys(roots)) real.push(await realDataChecks(browser, origin, lane, width));
     fixture = fictionalWeek();
-    for (const width of [1280, 390]) for (const lane of Object.keys(roots)) controls.push(await controlChecks(browser, origin, lane, width));
+    for (const width of [1280, 390, 320]) for (const lane of Object.keys(roots)) controls.push(await controlChecks(browser, origin, lane, width));
     fixture = null;
-    for (const width of [1280, 390]) for (const lane of Object.keys(roots)) {
+    for (const width of [1280, 390, 320]) for (const lane of Object.keys(roots)) {
       const start = requests.length, item = await open(browser, origin, lane, width, 'record');
       try { equal(item.errors, [], 'record browser has no page errors'); records.push({ lane, width, text: await item.page.locator('#main').innerText(), legacy_cards: await item.page.locator('#main .stats .stat').allTextContents(), legacy_weeks: await item.page.locator('#main details.week > summary').allTextContents(), integrated_state: contracts[lane].authoritativeFinals ? await item.page.locator('#selection-grading').innerText() : null, paths: [...new Set(requests.slice(start).filter(x => x.lane === lane).map(x => x.path))].sort() }); }
       finally { await item.context.close(); }
     }
-    if (roots.before) for (const width of [1280, 390]) {
+    if (roots.before) for (const width of [1280, 390, 320]) {
       equal(real.find(x => x.width === width && x.lane === 'after').invariant_sha256, real.find(x => x.width === width && x.lane === 'before').invariant_sha256, 'all rankings, Top selections and forecast records identical across versioned grading contracts');
       if (contracts.after.authoritativeFinals === contracts.before.authoritativeFinals) {
         equal(controls.find(x => x.width === width && x.lane === 'after').grades, controls.find(x => x.width === width && x.lane === 'before').grades, 'same-version grading contract retained');
@@ -278,7 +278,7 @@ async function controlChecks(browser, origin, lane, width) {
       const scorecardPaths = [...new Set(requests.filter(x => x.lane === lane && x.path.includes('forecast-scorecard')).map(x => x.path))];
       equal(scorecardPaths, contracts[lane].authoritativeFinals ? ['/data/forecast-scorecard.json'] : [], 'only the exact supported public forecast scorecard may be requested');
     }
-    const result = { status: 'PASS', contracts, checks, provider_requests_sent: 0, external_requests: 'ALL MOCKED', phone: '390x844 Chromium emulation, not physical iPhone/Safari or public-site acceptance', data_sha256: sha(fs.readFileSync(path.join(roots.after, 'data/week.json'))), app_sha256: Object.fromEntries(Object.entries(roots).map(([lane, root]) => [lane, sha(fs.readFileSync(path.join(root, 'app.js')))])), real, controls, record: records.map(({ text, ...x }) => ({ ...x, text_sha256: sha(text) })) };
+    const result = { status: 'PASS', contracts, checks, provider_requests_sent: 0, external_requests: 'ALL MOCKED', phone: '320/390px Chromium emulation, not physical iPhone/Safari or public-site acceptance', data_sha256: sha(fs.readFileSync(path.join(roots.after, 'data/week.json'))), app_sha256: Object.fromEntries(Object.entries(roots).map(([lane, root]) => [lane, sha(fs.readFileSync(path.join(root, 'app.js')))])), real, controls, record: records.map(({ text, ...x }) => ({ ...x, text_sha256: sha(text) })) };
     if (evidence) fs.writeFileSync(path.join(evidence, 'browser-results.json'), JSON.stringify(result, null, 2) + '\n');
     console.log(JSON.stringify(result, null, 2));
   } finally { await browser.close(); }

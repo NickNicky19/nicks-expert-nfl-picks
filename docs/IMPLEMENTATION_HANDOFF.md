@@ -1011,3 +1011,54 @@ is performed by this source checkpoint. The future final-source operating campai
 production-rooted artifact/content review and combined release/public/cache/My Picks/
 compatible-recovery decision remain separate. PR #2 and its owner-reported limited
 phone/My Picks confirmation remain preserved. Physical Safari was not retested.
+
+
+## Connected reporting and paper-builder checkpoint — 2026-10-22
+
+Status: implemented locally; focused checks completed; final combined suite and
+exact-source push/PR test-merge CI pending; operating qualification unresolved;
+Phase 2 deployment not performed. Local source checkpoint
+`0eb74e248ea75e9eb1afa9153f4dbd927ef1fbb8` has not been published. The current
+owned ordinary operation has a 19-path scope; its completion requires the actual
+final source, scope/preservation checks, CI identities and normal closure.
+
+Public Phase 1 Props/Record/My Picks features and the separate daily-cadence
+checkpoint must not be described as deployment of the new report. The local
+report includes weekly/cumulative Top Over/Under and qualifying-lean grading,
+category/side/source and exact joint timing groups, newly prospective recorded
+Biggest-lean/Projected-points cohorts, and the typed all-category descriptive
+accuracy aggregate. Their implementation does not create historical strategy
+records or validate an unperformed public release. The source-defined rules and
+compatibility boundaries are appended to `TIMING_PROTOCOL.md` and
+`EVALUATION_PROTOCOL.md`; historical document sections above remain unchanged.
+
+The current targeted evidence is 11 strategy checks, three actual connected
+strategy integrations, nine aggregate-accuracy checks and 120 paper-builder
+browser checks. These counts identify focused local evidence, not a completed
+final suite, GitHub CI, physical iPhone/Safari verification or hosted operating
+measurement. The final result must retain intermediate failures, name any mock
+boundaries, and report actual final checkouts and preservation/recovery results.
+The paper builder is a separate feature in the same website, using private
+immutable 2–6-leg ticket revisions and statistical outcomes. It is not an
+executable offer, verified venue settlement, ticket probability or ROI feature.
+
+The completed original-artifact review remains complete for its exact archive.
+Original/derived packages and production frozen contracts stay separate; proof
+is attached only to the exact contract it validates. Neither a new publication
+format nor a later observation supplies missing original proof. Existing legacy
+readers remain supported; the new report/public versions have explicit dispatch.
+My Picks bytes and saved personal lines remain preserved; pending, unresolved,
+push, confirmed DNP, reversible live progress and supported final corrections
+retain their distinct states.
+
+No full admitted representative seed or hosted operating qualification is
+established by this checkpoint. The historical local planning observations
+960.625703 seconds and 1015.945480 seconds remain misses against 960 seconds;
+the existing job timeout remains 1,200 seconds. Changed report/source bytes do
+not inherit an earlier runtime or memory result. Remaining release work is the
+bounded cloud preparation and operating-validation decision, current-main
+integration and exact production-rooted artifact review, actual GitHub/Pages
+content approval, and separately approved deployment/public Props/Record/cache/
+phone/My Picks verification with format-compatible evidence-preserving recovery.
+No main integration, provider collection, real-data export, deployment or
+experimental activation is performed by this development checkpoint.

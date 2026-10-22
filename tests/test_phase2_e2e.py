@@ -62,6 +62,8 @@ class ReplayClock(datetime):
 
 
 def prepare(root, source_unavailable=False, *, mode="replay", at=NOW, kickoff_hours=1, all_ten=False, week=5):
+    (root / "tools").mkdir(exist_ok=True)
+    shutil.copyfile(ROOT / "tools/selection-strategies-v1.json", root / "tools/selection-strategies-v1.json")
     for path in ENGINE_PATHS:
         target = root / path; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(corrected._legacy_blob(path, ROOT))
     (root / "output").mkdir(exist_ok=True)
@@ -1448,6 +1450,8 @@ class CandidateRecordingPipelineTests(unittest.TestCase):
 
 class PartialOperationalPipelineTests(unittest.TestCase):
     def configure(self, root):
+        (root / "tools").mkdir(exist_ok=True)
+        shutil.copyfile(ROOT / "tools/selection-strategies-v1.json", root / "tools/selection-strategies-v1.json")
         from test_partial_week import fixture
         data, proof, spec, registration = fixture(root)
         for name in ("release-mode.json", "timing-policy.json", "sleeper-rules-provenance.json"):
@@ -1509,6 +1513,28 @@ class PartialOperationalPipelineTests(unittest.TestCase):
             self.assertEqual(aggregate["report_sha256"], digest(rich["report"]))
             self.assertEqual(set(aggregate["categories"]), {"rec", "rush_att", "pass_yd"})
             self.assertNotIn("rows", aggregate)
+
+    def test_live_invalid_ranked_registry_fails_and_preserves_publication(self):
+        import selection_strategies as strategies
+        for variant in ("unknown_schema",):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.configure(root)
+                self.run_partial(root)
+                mutable = {name: (root / name).read_bytes() for name in
+                           ("output/data/health.json", "output/data/release-identity.json", "output/data/selection-grading/latest.json")}
+                originals = {p.relative_to(root): p.read_bytes() for p in (root / "data").rglob("*.json.gz")}
+                registry = root / strategies.POLICY_PATH
+                if variant == "missing": registry.unlink()
+                else:
+                    rules = load_json(registry); rules["schema_version"] = "unrecognized-selection-policy"
+                    atomic_json(registry, rules)
+                # Uses actual saved input/native/completion validators; only
+                # HTTP/status and the declared fictional clocks are substituted.
+                with self.assertRaises((IntegrityError, FileNotFoundError)):
+                    self.run_partial(root, NOW + timedelta(seconds=5))
+                for name, raw in mutable.items(): self.assertEqual((root / name).read_bytes(), raw)
+                for name, raw in originals.items(): self.assertEqual((root / name).read_bytes(), raw)
 
     def test_failed_active_generation_retains_last_publication_and_failed_originals(self):
         from test_partial_week import save_build
@@ -2618,6 +2644,125 @@ class RankedStrategyConnectedPipelineTests(unittest.TestCase):
         self.assertTrue(any(row["cohort"] in strategies.STRATEGIES and row["action"] == "SELECT" for row in rows))
         for name, raw in originals.items(): self.assertEqual((self.root / name).read_bytes(), raw)
 
+    def test_format_compatible_forward_recovery_and_two_actual_mocked_updates(self):
+        """Exact current-source recovery; no old-reader or runtime qualification."""
+        from test_data_integrity_v2 import FROZEN_FRONTIER_SUPPORT, frontier_process
+        import selection_strategies as strategies
+
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(self.root), *args], text=True, stderr=subprocess.PIPE).strip()
+
+        def commit(paths, message):
+            git("add", "--", *paths)
+            git("-c", "user.name=FictionalRegression", "-c", "user.email=fictional@example.invalid",
+                "-c", "core.hooksPath=/dev/null", "commit", "-qm", message)
+            return git("rev-parse", "HEAD")
+
+        paths = tuple(dict.fromkeys(("output/app.js", "output/index.html", *strategies.SOURCE_PATHS)))
+        expected = {name: subprocess.check_output(["git", "-C", str(ROOT), "show", self.source + ":" + name]) for name in paths}
+        for name, raw in expected.items():
+            self.assertEqual((ROOT / name).read_bytes(), raw, "run only against the actual committed final source")
+            self.assertEqual((self.root / name).read_bytes(), raw)
+        old_identity = (self.root / "output/data/release-identity.json").read_bytes()
+        original_parent = git("rev-parse", "HEAD")
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            original_generation = phase2_capture.validate_generation(self.root)
+
+        # Harmless bytes still break the app/generation contract. This bad commit
+        # exists only inside this test's independent disposable Git checkout.
+        app = self.root / "output/app.js"
+        app.write_bytes(expected["output/app.js"] + b"\n// FICTIONAL deliberately incompatible recovery control\n")
+        bad_commit = commit(["output/app.js"], "Fictional bad source recovery control")
+        self.assertEqual(git("rev-parse", bad_commit + "^"), original_parent)
+        with patch.object(phase2_capture, "datetime", self.clock()), self.assertRaisesRegex(IntegrityError, "Publication generation content mismatch"):
+            phase2_capture.validate_generation(self.root)
+        self.assertEqual((self.root / "output/data/release-identity.json").read_bytes(), old_identity)
+
+        # Restore exact app/shell/helper bytes with another ordinary forward
+        # commit; no reset/revert to a legacy representation or receipt rewrite.
+        for name, raw in expected.items():
+            (self.root / name).write_bytes(raw)
+        recovery_commit = commit(list(paths), "Fictional exact current-source forward recovery")
+        self.assertEqual(git("rev-parse", recovery_commit + "^"), bad_commit)
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            self.assertEqual(phase2_capture.validate_generation(self.root), original_generation)
+        self.assertEqual((self.root / "output/data/release-identity.json").read_bytes(), old_identity)
+
+        # Real updater, generation qualification, complete public reconstruction,
+        # and Pages/archive checks. Only the retained fictional HTTP/clocks and
+        # public-transport lookup are substituted, exactly as in the seed.
+        script = FROZEN_FRONTIER_SUPPORT + r'''
+import os
+code,root=Path(sys.argv[1]),Path(sys.argv[2])
+m=bind(code)
+import selection_strategies as strategies
+provider=Provider(m,DIMENSIONS)
+m['_provider']=provider
+provider.at=START+timedelta(hours=53,seconds=15)
+class StrategyClock(datetime):
+    @classmethod
+    def now(cls,tz=None):return provider.at
+def git(*args):
+    return subprocess.check_output(['git','-C',str(root),*args],stderr=subprocess.PIPE).decode().strip()
+def public_tree(ref,tree):
+    if git('rev-parse',ref+'^{tree}')!=tree:raise RuntimeError('Fictional archive tree mismatch')
+def immutable():
+    files=list((root/'data').rglob('*.json.gz'))
+    base=root/'output/data/selection-grading'
+    files.extend(p for p in base.rglob('*') if p.is_file() and len(p.relative_to(base).parts)>1)
+    return {p.relative_to(root).as_posix():sha(p.read_bytes()) for p in files}
+def preserved(before):
+    for name,digest in before.items():
+        if not (root/name).is_file() or sha((root/name).read_bytes())!=digest:
+            raise RuntimeError('Recovery changed immutable evidence/asset: '+name)
+original_files=immutable()
+original_source={name:(root/name).read_bytes() for name in ('output/app.js','output/index.html',*strategies.SOURCE_PATHS)}
+original_config={p.relative_to(root).as_posix():p.read_bytes() for p in (root/'config').rglob('*') if p.is_file()}
+base=root/'output/data/selection-grading'
+original_manifest=m['rel'].load_json(base/'hosting.json')['latest']
+updates=[]
+with external(m,provider,root),patch.object(strategies,'datetime',StrategyClock),patch.object(m['capture'],'_public_archive_commit',side_effect=public_tree):
+    for step in range(2):
+        before=immutable()
+        provider.at=START+timedelta(hours=53,seconds=15+5*step)
+        provider.revision=1
+        actual_source=git('rev-parse','HEAD')
+        if 'GITHUB_SHA' in os.environ:raise RuntimeError('Do not override the actual disposable checkout source')
+        m['capture'].run_capture(root,build_first=True)
+        generation=m['capture'].validate_generation(root)
+        if generation['source_sha']!=actual_source:raise RuntimeError('Updater did not bind actual source HEAD')
+        pointer=m['rel'].load_json(base/'latest.json')
+        summary,rows,outcomes=m['publication'].publication_contents(base,pointer)
+        if summary['schema_version']!='selection-public-report-v6':raise RuntimeError('Recovery lost the current format')
+        if not any(row.get('cohort') in strategies.STRATEGIES and row['action']=='SELECT' for row in rows):raise RuntimeError('Recovery lost recorded strategies')
+        git('add','data','output/data')
+        git('-c','user.name=FictionalRegression','-c','user.email=fictional@example.invalid','-c','core.hooksPath=/dev/null','commit','-qm','Wholly fictional post-recovery update')
+        m['capture'].stage_pages(root,root.parent/('recovery-pages-'+str(step)))
+        m['capture'].validate_generation(root)
+        m['capture']._manifest(base,original_manifest,root=root)
+        preserved(before)
+        for name,raw in original_source.items():
+            if (root/name).read_bytes()!=raw:raise RuntimeError('Updater changed preserved source: '+name)
+        for name,raw in original_config.items():
+            if (root/name).read_bytes()!=raw:raise RuntimeError('Updater changed configuration: '+name)
+        updates.append(dict(source_sha=actual_source,data_commit=git('rev-parse','HEAD'),generation=generation,
+            row_count=len(rows),outcome_count=len(outcomes),retained_original_manifest=original_manifest))
+    preserved(original_files)
+m['rel'].atomic_json(root/'recovery-result.json',dict(updates=updates,immutable_original_count=len(original_files),
+    original_manifest=original_manifest,claim='CURRENT_FORMAT_FORWARD_RECOVERY_ONLY_NOT_OPERATING_QUALIFICATION'))
+'''
+        env = dict(os.environ)
+        env.pop("GITHUB_SHA", None)
+        frontier_process([sys.executable, "-c", script, str(self.root), str(self.root)], env=env)
+        result = load_json(self.root / "recovery-result.json")
+        self.assertEqual(len(result["updates"]), 2)
+        self.assertEqual(result["updates"][0]["source_sha"], recovery_commit)
+        self.assertEqual(result["updates"][1]["source_sha"], result["updates"][0]["data_commit"])
+        self.assertGreater(result["immutable_original_count"], 0)
+        self.assertNotEqual(result["updates"][0]["generation"]["generation_sha256"], result["updates"][1]["generation"]["generation_sha256"])
+        for name, raw in expected.items():
+            self.assertEqual((self.root / name).read_bytes(), raw)
+
     def test_actual_source_qualified_originals_and_completion_bindings_are_required(self):
         saved, completion = self.first()
         q = saved["qualification"]
@@ -2650,6 +2795,24 @@ class RankedStrategyConnectedPipelineTests(unittest.TestCase):
         self.assertFalse(any(row["action"] == "SELECT" and row["strategy_receipt_sha256"] == digest(saved) for row in rows))
         self.assertEqual(native_path.read_bytes(), original)
 
+
+
+    def test_actual_active_native_and_saved_consumers_require_runtime_registry(self):
+        import selection_strategies as strategies
+        saved, completion = self.first()
+        self.assertGreaterEqual(utc(saved["created_at"]), utc(strategies.policy()["registered_at"]))
+        originals = {p.relative_to(self.root): p.read_bytes() for p in (self.root / "data").rglob("*.json.gz")}
+        (self.root / strategies.POLICY_PATH).unlink()  # Isolated negative copy only.
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            # No source/validator/qualification mocks: the exact existing active
+            # native is freshly qualified before missing-registry rejection.
+            with self.assertRaises((IntegrityError, FileNotFoundError)):
+                strategies.record(self.root, saved["qualification"], saved["source_sha"], clock=lambda: self.at)
+            with self.assertRaises((IntegrityError, FileNotFoundError)):
+                strategies.read_completed(self.root, self.first_name, now=self.at)
+            with self.assertRaises((IntegrityError, FileNotFoundError)):
+                strategies.decisions([self.root], load_json(self.root / "config/timing-policy.json"), self.at)
+        for name, raw in originals.items(): self.assertEqual((self.root / name).read_bytes(), raw)
 
 
 if __name__ == "__main__":

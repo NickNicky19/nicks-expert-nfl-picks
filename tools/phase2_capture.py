@@ -437,14 +437,14 @@ def _run_capture(root=ROOT, mode="live", replay_at=None, *, source_sha=None, ini
         "checked_factors": verification["checked_factors"],
         "baseline_receipt": baseline_path.relative_to(root).as_posix(), "baseline_payload_sha256": digest(baseline),
         "scope": "LOCAL_ORIGINAL_INPUT_REPRODUCTION_PUBLICATION_AND_PROVIDER_ASOF_NOT_VERIFIED"})
-    if mode == "live" and (root / "tools/selection-strategies-v1.json").is_file():
+    if mode == "live":
         import selection_strategies
         selection_strategies.record(root, {
             "verification_mode": route, "board_sha256": digest(data), "proof": pointer,
             "matchup_check_receipt": check_path.relative_to(root).as_posix(),
             "native_receipt": baseline_path.relative_to(root).as_posix(), "native_payload_sha256": digest(baseline),
             "partial_completion_receipt": completion_path.relative_to(root).as_posix() if completion_path else None,
-            "partial_completion_payload_sha256": digest(read(completion_path)) if completion_path else None}, source_sha)
+            "partial_completion_payload_sha256": digest(read(completion_path)) if completion_path else None}, source_sha, clock=lambda: datetime.now(timezone.utc))
         # Reporting observes genuinely completed selections, not the earlier
         # native capture clock. Original input/native clocks stay unchanged.
         now = datetime.now(timezone.utc)

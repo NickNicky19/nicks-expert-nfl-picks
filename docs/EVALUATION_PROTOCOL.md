@@ -806,3 +806,68 @@ it cannot supply qualified public accuracy, promotion or complete-week claims.
 Both experimental recorders remain inactive. Reading existing original evidence,
 producing a new original observation, producing a corrected observation and
 operating the registered candidate are separate capabilities and permissions.
+
+
+## Reporting extension and retained boundaries (2026-10-22)
+
+The existing grading/reporting release includes category-specific recorded Top
+Overs/Unders and qualifying leans, weekly/cumulative periods, source/cohort
+contexts and distinct Chicago selection weekday, kickoff weekday and lead time.
+The new prospective ranked-selection cohorts have their exact rules in
+`tools/selection-strategies-v1.json` and timing/first-recording contract in
+`docs/TIMING_PROTOCOL.md`. A Biggest-lean or Projected-points display sort is not
+membership evidence. No earlier observation, unrecorded daily choice or lucky
+finished-game combination is added retrospectively. Exact joint results use the
+saved members of the joint group; marginal day/category percentages cannot
+establish category × side × weekday × strategy performance.
+
+The new `forecast-accuracy-public-v1` contract is a bounded aggregate projection
+of the existing descriptive evaluator. This explicitly extends the earlier
+local-only public-interface restriction for that aggregate when released; rich
+rows, original inputs, optional original-board bindings and detailed local
+provenance remain local. The existing registered three-target comparator is
+unchanged and separate. Selection filters do not redefine the cumulative
+forecast-accuracy population. The aggregate separates original/corrected model
+and engine cohorts and selected outcome provenance. It retains all ten numeric
+prop categories, offensive PPR and rushing/receiving anytime TD, with missing,
+pending, unresolved, DNP and identity exclusions visible rather than converted
+to zero or abstention.
+
+Paired raw/adjusted forecasts use the same supported original observation and
+outcome. Category-specific MAE, RMSE, signed bias, error sums, helps/hurts/ties,
+coverage and unique player/game/week sample context remain distinct; there is
+no mixed-unit accuracy score. Component-derived offensive PPR and an exactly
+bound saved direct-provider PPR forecast remain separate comparators. TD count
+is not probability. Originally saved and explicitly formula-rederived TD
+probabilities remain separate; Brier/log loss and fixed calibration bins retain
+the explicit positive-infinity state. There is no adjusted TD probability,
+calibrated individual-pick probability or predictive-improvement claim.
+
+The separate paper-first builder uses only supported saved reference legs and
+owner-device ticket revisions. Its 2–6-leg membership, category/side filters,
+source separation and leg/ticket statistical grading do not establish offered
+combinations, financial settlement or prospective independent timestamping.
+Push, confirmed DNP, pending and unresolved remain distinct; venue void rules
+are unavailable. Conventional all-legs paper results are not pick'em Flex
+settlement. There is no staking, wager execution, invented payout, ticket
+probability, EV or ROI. Future executable-product or confirmed-strategy claims
+require their own exact rules, evidence and authorization.
+
+The scoped original-archive review remains complete for its exact artifact;
+these extensions receive delta review and do not reopen or replace that review.
+Original receipts and reports, production frozen selections, separate genuine
+local observations, PR #2 and My Picks remain preserved. The old full-board
+Week 6 missing-proof result remains visible. Both experimental recorders stay
+inactive. Corrected observations do not enter the original registered comparator
+or rec-half experiment by changing labels/hashes; its formula, registration and
+Weeks 7–14 remain fixed. The direct shadow join remains
+`KNOWN_UNGUARDED_JOIN / NOT_CERTIFIED`, excluded from qualified public accuracy,
+promotion and complete-week claims.
+
+Source completion and public reporting completion remain different milestones.
+No hosted operating or season-long capacity result follows from these software
+tests or fictional outcomes. The retained 960.625703-second and
+1015.945480-second local observations exceed the unchanged 960-second planning
+target. The production job timeout remains 1,200 seconds. The final corrected
+source needs its own operating evidence, production-rooted artifact/content
+review and combined release/public-site/compatible-recovery authorization.

@@ -153,10 +153,18 @@ def record(root, qualification, source_sha, *, clock=None, _checked=None):
     """Create once per native+policy. Orphans never supply saved decisions."""
     from phase2_capture import _strategy_qualification
     clock = clock or (lambda: datetime.now(timezone.utc)); root = Path(root).resolve()
-    rules = policy(root); created = utc(clock())
+    # The installed registration is mandatory. A data-only legacy root may
+    # omit its copy only for a fully requalified pre-registration forecast;
+    # that observation is ineligible, never a strategy-enabled fallback.
+    rules = policy()
+    runtime_policy = root / POLICY_PATH
+    if runtime_policy.exists() or not qualification.get("native_receipt"):
+        rules = policy(root)
+    created = utc(clock())
     board, native = _strategy_qualification(root, qualification, created, _checked=_checked)
     if utc(native["forecast_generated_at"]) < utc(rules["registered_at"]):
         return None  # Existing history is never assigned a retrospective strategy.
+    rules = policy(root)  # Active observations must retain the exact registry.
     existing = []
     for path in sorted((root / "data" / COMPLETE_LANE).rglob("*.json.gz")):
         try:
@@ -266,7 +274,8 @@ def _records(snapshots, timing, at):
                 m = member(s, r, strategy) if s and r else None
                 excluded = next((e["reason"] for e in s["saved"]["ranked"]["exclusions"] if e["opportunity"] == list(identity(r))), None) if s and r else None
                 conflict = bool(r and utc(r["kickoff"]) != utc(original["kickoff"]))
-                action = "NOT_DUE" if reason == "checkpoint_not_yet_reached" else "EXCLUDED" if conflict else "SELECT" if m else "NO_ACTION"
+                unsupported = bool(reason) or excluded not in (None, "observed_no_side", "production_eligibility_not_met")
+                action = "NOT_DUE" if reason == "checkpoint_not_yet_reached" else "EXCLUDED" if conflict or unsupported else "SELECT" if m else "NO_ACTION"
                 record = _decision(template, s, r, strategy, checkpoint, timing, boundary=boundary, action=action,
                     reason="saved_schedule_conflict" if conflict else reason or excluded or ("prospectively_recorded_ranked_membership" if m else "not_selected_by_registered_strategy"), schedule_conflict=conflict)
                 saved = s["saved"] if s else None

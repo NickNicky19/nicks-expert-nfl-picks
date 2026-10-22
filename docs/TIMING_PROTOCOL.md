@@ -354,3 +354,55 @@ after this checkpoint's review. The full category-specific research roadmap
 remains in the accepted research proposal pending its single canonical
 registration in docs/EVALUATION_PROTOCOL.md under that later scope. No candidate
 is fitted, recorded prospectively, promoted or deployed by this integration.
+
+
+## Prospective ranked selections and exact joint groups (2026-10-22)
+
+This development extension retains the existing timing-policy bytes, checkpoints,
+maximum observation age and original clocks. It does not activate collection or
+supply observations at missed daily-refresh checkpoints. Selection weekday is
+computed from the actual recorded selection clock in America/Chicago; kickoff
+weekday and pregame lead-time buckets remain separate fields.
+
+`tools/selection-strategies-v1.json` is the separately versioned
+`ranked-selection-policy-v1` registration. The two cohorts are
+`ranked_biggest_lean_v1` and `ranked_projected_points_v1`. Eligible candidates must
+be supported production-eligible pregame props with qualified original native
+rows, a real saved DK/Sleeper reference source, known raw/adjusted values and
+line, an Over/Under lean, and a known direct saved player standard-Sleeper PPR
+projection. Missing required values are exclusions, not forced replacements.
+For each player and side, retain the eligible prop with greatest relative gap
+`abs(adjusted - line) / max(1, line)`. Biggest lean orders by this gap; Projected
+points orders by the exact saved direct player PPR projection, then gap. Stable
+ties use game/player/category/source/line ascending. Each strategy saves at most
+12 selections per side and does not force the population to reach that size.
+
+Only observations whose generation is on or after the registry clock can create
+these memberships. Actual creation, completed native qualification and durable
+completion must precede every selected game's kickoff. The first completed
+native/policy recording is retained; retries revalidate and reuse that recording.
+Interrupted or failed completions cannot supply selections. Saved consumption
+revalidates the exact pinned board/native/source/completion dependencies and
+reproduces membership; it never reranks old observations to invent history.
+The history view uses genuinely first-recorded strategy membership. Checkpoint
+views are explicitly offline checkpoint comparisons of those prospective saved
+observations under the unchanged latest-timely/60-minute rule. They are not proof
+that an owner visited the website at a checkpoint.
+
+`selection-report-v4` / `selection-public-report-v6` adds the exact joint
+category/side/selection-weekday/kickoff-weekday/lead-time dimension within the
+same model, engine, provenance, policy, cohort, checkpoint, period and source
+context. Weekly and cumulative groups retain their exact supporting row IDs.
+Joint rates are calculated from those saved rows; separate marginal percentages
+are never multiplied or combined into a purported joint result. Earlier readers
+and assets retain their previous contracts and explicit limitations. Observed
+weekday leaders are descriptive; later confirmation requires its own preserved
+prospective design and evidence. Related strategies, checkpoints and cohorts are
+not independent samples and must not be added together.
+
+The installed registry is mandatory. A fully requalified forecast generated
+before its registration remains ineligible for either new strategy, including
+when a historical data-only root has no registry copy. Active observations must
+retain the exact registry; a missing or invalid registry cannot disable the
+recorder or select a legacy strategy route. This does not activate Phase 2 on
+production, either experimental recorder, or a new provider path.

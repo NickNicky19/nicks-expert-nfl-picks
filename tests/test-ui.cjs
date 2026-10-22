@@ -33,6 +33,12 @@ const assert = require('node:assert/strict');
   check.match(a.paperTicketStatus([{status:'loss'},{status:'push'}]),/loss_present.*push/);check.equal(a.paperTicketStatus([{status:'win'},{status:'win'}]),'all_legs_won');
   state.data.players=[{id:l.player_id,name:l.name,game_id:l.game_id,team:l.team,injury:null,props:[{key:'rec',proj:5,adj:7,line:5.5,line_from:'dk',lean:'over'}]}];state.data.games=[{id:l.game_id,home:'AAA',away:'BBB',kickoff:l.kickoff,state:'pre'}];state.games[l.game_id]={...state.data.games[0]};
   check.equal(a.paperCandidates(Date.parse(ticket.saved_at)).length,1);state.games[l.game_id].kickoff='2026-10-26T17:00:00Z';check.equal(a.paperCandidates(Date.parse(ticket.saved_at)).length,0);state.games[l.game_id].kickoff=l.kickoff;state.data.players[0].injury='Out';check.equal(a.paperCandidates(Date.parse(ticket.saved_at)).length,0);
+  state.data.players[0].injury=null;const prop=state.data.players[0].props[0];prop.line_from='sleeper';state.paper.source='sleeper';
+  check.equal(a.paperCandidates(Date.parse(ticket.saved_at)).length,0,'unsupported missing Sleeper side is excluded');
+  prop.sleeper={line:5.5,over:1.8,under:null};check.equal(a.paperCandidates(Date.parse(ticket.saved_at)).length,1,'saved matching available side remains eligible');
+  prop.lean='under';check.equal(a.paperCandidates(Date.parse(ticket.saved_at)).length,0,'missing under side is not invented');
+  prop.sleeper.under=1.7;check.equal(a.paperCandidates(Date.parse(ticket.saved_at)).length,1);
+  prop.sleeper.line=6.5;check.equal(a.paperCandidates(Date.parse(ticket.saved_at)).length,0,'different offered threshold is not substituted');
   console.log(`Private paper contracts: ${checks} storage, identity, clock, correction and eligibility checks passed.`);
 }
 
@@ -395,3 +401,16 @@ const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8')
   console.log('Shared payload typed readers: 8 version/envelope/context/reuse checks passed.');
 
 })().catch(error => { console.error(error); process.exitCode = 1; });
+
+// Typed prospective rows cannot acquire membership through a legacy reader.
+{
+  const fs=require('node:fs'),vm=require('node:vm');
+  const source=fs.readFileSync(require('node:path').join(__dirname,'../output/app.js'),'utf8');
+  const context={HASH64:/^[a-f0-9]{64}$/};vm.createContext(context);
+  vm.runInContext(source.match(/function validateGradingRowContract\([^]*?\n\}/)[0]+';this.validate=validateGradingRowContract;',context);
+  const row={schema_version:'selection-decision-v2',strategy_version:'ranked-selection-policy-v1',strategy_policy_sha256:'80d9ab617f8c6b331dc879ff3e83a8304a934944a01d40514567e6933d251250',strategy_receipt_sha256:'a'.repeat(64),strategy_rank:1,cohort:'ranked_biggest_lean_v1',model_version:'original_sleeper_matchup_baseline',engine_sha256:'e8e8823f460e074485ee91a0dc1c1cfc43877146c4498ef074d15d2b5a735d07',provenance_class:'completed_prospective_ranked_selection',action:'SELECT',side:'over',line_from:'dk',selection_clock_basis:'LOCAL_COMPLETED_RANKED_SELECTION',forecast_generated_at:'2026-11-01T10:00:00Z',collected_at:'2026-11-01T10:01:00Z',original_selection_created_at:'2026-11-01T10:02:00Z',recorded_selection_at:'2026-11-01T10:02:00Z',kickoff:'2026-11-01T17:00:00Z'};
+  assert.doesNotThrow(()=>context.validate(row,'selection-public-report-v6'));
+  for(const change of [{schema_version:'unknown'},{schema_version:'selection-decision-v1'},{strategy_rank:0},{strategy_policy_sha256:'b'.repeat(64)},{engine_sha256:'c'.repeat(64)},{cohort:'unsupported'},{collected_at:'2026-11-01T10:03:00Z'},{original_selection_created_at:row.kickoff,recorded_selection_at:row.kickoff},{line_from:'ours'},{strategy_receipt_sha256:null}]) assert.throws(()=>context.validate({...row,...change},'selection-public-report-v6'));
+  assert.throws(()=>context.validate(row,'selection-public-report-v5'));
+  console.log('Prospective row reader: 12 schema, source, registration, membership and clock controls passed.');
+}

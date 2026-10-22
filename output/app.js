@@ -272,10 +272,10 @@ function renderParlay() {
   const opened = f.opened;
   $("#main").innerHTML = `<h2>Parlay Builder <small>Paper only</small></h2><div class="card note">Assemble 2–6 legs from one reference source. No accepted ticket, verified quote freshness, payout, probability, EV or ROI. Suggestions use the existing relative projection gap, not a win probability. Repeated players and same-game combinations are excluded; this does not prove independence. Saves stay on this device; its clock is not an independent pregame timestamp.</div>
     <section class="card" style="overflow-wrap:anywhere"><div class="gtool">
-    <label>Source <select data-paper-filter="source">${["dk", "sleeper"].map(s => `<option value="${s}" ${s === f.source ? "selected" : ""}>${LINE_FROM[s]} reference</option>`).join("")}</select></label>
-    <label>Side <select data-paper-filter="sides">${["mixed", "over", "under"].map(s => `<option ${s === f.sides ? "selected" : ""}>${s}</option>`).join("")}</select></label>
-    <label>Upcoming game <select data-paper-filter="game"><option value="">All</option>${Object.values(S.games).filter(g => g.state === "pre" && Date.parse(g.kickoff) > Date.now()).map(g => `<option value="${esc(g.id)}" ${g.id === f.game ? "selected" : ""}>${esc(g.away)}–${esc(g.home)}</option>`).join("")}</select></label>
-    <label>Suggestion size <select data-paper-filter="size">${[2,3,4,5,6].map(n => `<option ${n === +f.size ? "selected" : ""}>${n}</option>`).join("")}</select></label></div>
+    <label>Source <select class="tbtn" data-paper-filter="source">${["dk", "sleeper"].map(s => `<option value="${s}" ${s === f.source ? "selected" : ""}>${LINE_FROM[s]} reference</option>`).join("")}</select></label>
+    <label>Side <select class="tbtn" data-paper-filter="sides">${["mixed", "over", "under"].map(s => `<option ${s === f.sides ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+    <label>Upcoming game <select class="tbtn" data-paper-filter="game"><option value="">All</option>${Object.values(S.games).filter(g => g.state === "pre" && Date.parse(g.kickoff) > Date.now()).map(g => `<option value="${esc(g.id)}" ${g.id === f.game ? "selected" : ""}>${esc(g.away)}–${esc(g.home)}</option>`).join("")}</select></label>
+    <label>Suggestion size <select class="tbtn" data-paper-filter="size">${[2,3,4,5,6].map(n => `<option ${n === +f.size ? "selected" : ""}>${n}</option>`).join("")}</select></label></div>
     <fieldset><legend>Categories (none checked means all supported)</legend>${PAPER_CATEGORIES.map(c => `<label style="display:inline-block;margin:.3rem"><input type="checkbox" data-paper-category="${c}" ${f.categories.includes(c) ? "checked" : ""}> ${SHORT[c]}</label>`).join("")}</fieldset>
     <p class="note">Fantasy/PPR and anytime-TD offered legs are unavailable in this version. A missing Sleeper side is excluded. Saved multipliers do not verify paired thresholds, accepted product rules or executable prices; DK side availability is unverified. These remain paper reference legs.</p>
     <button class="tbtn" data-paper-suggest>Suggest up to ${+f.size}</button> <button class="tbtn" data-paper-new>New draft</button>
@@ -521,6 +521,31 @@ async function checkedGradingAsset(pointer, descriptor, type, partition = false)
   return data;
 }
 
+function validateGradingRowContract(row, version) {
+  const strategies = ['ranked_biggest_lean_v1', 'ranked_projected_points_v1'];
+  const fields = ['strategy_version', 'strategy_policy_sha256', 'strategy_receipt_sha256', 'strategy_rank'];
+  const extended = version === 'selection-public-report-v6', modern = row.schema_version === 'selection-decision-v2';
+  if (extended && !['selection-decision-v1', 'selection-decision-v2'].includes(row.schema_version)
+      || modern && !extended || !modern && (fields.some(key => Object.hasOwn(row, key)) || strategies.includes(row.cohort))) throw new Error('Unsupported grading row version');
+  if (!modern) return;
+  const engines = { original_sleeper_matchup_baseline: 'e8e8823f460e074485ee91a0dc1c1cfc43877146c4498ef074d15d2b5a735d07',
+    'sleeper-matchup-data-integrity-v2': '3909c7ac5470970182065576f057e8036f31ad30da13f1ef9999eb1108a183b4' };
+  if (!fields.every(key => Object.hasOwn(row, key)) || row.strategy_version !== 'ranked-selection-policy-v1'
+      || row.strategy_policy_sha256 !== '80d9ab617f8c6b331dc879ff3e83a8304a934944a01d40514567e6933d251250'
+      || !strategies.includes(row.cohort) || !Object.hasOwn(engines, row.model_version) || row.engine_sha256 !== engines[row.model_version]
+      || row.provenance_class !== 'completed_prospective_ranked_selection'
+      || row.strategy_rank !== null && (!Number.isInteger(row.strategy_rank) || row.strategy_rank < 1 || row.strategy_rank > 12)
+      || row.strategy_receipt_sha256 !== null && !HASH64.test(row.strategy_receipt_sha256)) throw new Error('Invalid prospective strategy identity');
+  if (row.action === 'SELECT') {
+    const [forecast, collection, created, kickoff] = ['forecast_generated_at', 'collected_at', 'original_selection_created_at', 'kickoff'].map(key => typeof row[key] === 'string' ? Date.parse(row[key]) : NaN);
+    if (!['over', 'under'].includes(row.side) || !['dk', 'sleeper'].includes(row.line_from)
+        || row.strategy_rank === null || row.strategy_receipt_sha256 === null
+        || row.selection_clock_basis !== 'LOCAL_COMPLETED_RANKED_SELECTION'
+        || row.recorded_selection_at !== row.original_selection_created_at
+        || ![forecast, collection, created, kickoff].every(Number.isFinite) || !(forecast <= collection && collection <= created && created < kickoff)) throw new Error('Invalid prospective strategy clocks or reference');
+  }
+}
+
 function validateGradingTables(pointer, tables, version) {
     if (!Array.isArray(tables)) throw new Error("Missing grading tables");
     const tableIds = new Set();
@@ -664,6 +689,7 @@ async function validateGradingIndexes(pointer, summary, outcomes) {
       || !Array.isArray(summary.summary_partitions) || Object.hasOwn(summary.summary || {}, "tables")
       || outcomes.schema_version !== (pointer.schema_version === "selection-publication-pointer-v4" ? "selection-final-outcome-index-v2" : "selection-final-outcome-index-v1") || !Array.isArray(outcomes.periods)
       || !Number.isInteger(outcomes.outcome_count) || outcomes.outcome_count < 0) throw new Error("Unsupported grading indexes");
+  if (!extended && Object.hasOwn(summary, 'forecast_accuracy')) throw new Error('Aggregate accuracy outside its explicit report contract');
   if (extended) {
     const fields=["schema_version","report_schema_version","report_id","row_count","source_sha","input_binding","input_content_sha256","summary","coverage","primary_raw_vs_adjusted","forecast_accuracy","uncertainty","limitations","contexts","summary_partitions"];
     if(JSON.stringify(Object.keys(summary).sort())!==JSON.stringify(fields.sort())||!/^[a-f0-9]{40}$/.test(summary.source_sha)||!HASH64.test(summary.input_content_sha256)||summary.input_binding!=="NOT_YET_GIT_COMMITTED")throw new Error("Unknown modern report fields or source binding");
@@ -754,6 +780,8 @@ async function loadGrading() {
     if (pointer.rows.slice(0, -1).some(chunk => chunk.count !== 250)
         || !Number.isInteger(pointer.row_count) || pointer.row_count !== pointer.rows.reduce((n, chunk) => n + chunk.count, 0)) throw new Error("Invalid grading row population");
     const [summary, finals] = await Promise.all([checkedGradingAsset(pointer, pointer.summary, "summary"), checkedGradingAsset(pointer, pointer.outcomes, "outcomes")]);
+    const modernAccuracy = summary.schema_version === 'selection-public-report-v6' && summary.report_schema_version === 'selection-report-v4' && pointer.schema_version === 'selection-publication-pointer-v4';
+    if (Object.hasOwn(summary, 'forecast_accuracy') && !modernAccuracy) throw new Error('Aggregate accuracy outside its explicit report contract');
     const grading = { pointer, summary, chunks: new Map(), partitioned, viewRevision: 0, parts: new Map() };
     let finalOutcomes;
     if (partitioned) {
@@ -3401,7 +3429,7 @@ function gradingReportHtml() {
     <div class="tbl-wrap"><table class="tbl" data-grading-summaries><thead><tr><th class="l">Group</th><th>Hit rate</th><th>Sample</th><th class="l">Results and coverage</th><th>Rows</th></tr></thead><tbody>${tables.map((table) => `<tr data-grading-summary="${table.summary_id}"><td class="l">${esc(gradingLabel(table.value))}</td><td>${table.hit_rate == null ? "Unavailable" : fmt(100 * table.hit_rate) + "%"}<br><small>W / (W + L)</small></td><td>${table.decided} decided<br>${table.decided_unique_players} players · ${table.decided_unique_games} games · ${table.decided_unique_weeks} weeks</td><td class="l">${esc(statusCounts(table))}<br>${table.selected} selected / ${table.rows} coverage rows<br>${esc(Object.entries(table.coverage_reason_counts || {}).map(([reason, count]) => `${reason}: ${count}`).join(" · "))}<br>${table.unique_players} players · ${table.unique_games} games · ${table.unique_weeks} archived/observed weeks</td><td><button class="tbtn" data-grading-group="${table.summary_id}">Inspect ${table.rows} rows</button></td></tr>`).join("")}</tbody></table></div>
     <p class="note">NO_ACTION reasons remain in the rows: observed abstention or non-Top membership differs from missing/stale observations, absent source rows and an unknown universe. Reference-only records are not executable offers. Inherited clocks stay unknown; saved-cache regrades remain separately labelled outcomes.</p>
     ${S.gradingGroup ? `<div class="card" data-grading-details>${gradingRowsHtml(S.gradingGroup)}</div>` : ""}
-    ${forecastAccuracyHtml(summary.forecast_accuracy)}<details class="card"><summary>Raw Sleeper versus unchanged adjusted point forecasts</summary><p>Separate registered three-target comparison, independent of the selection filters above. Same original observation and valid matched outcomes. Category-specific units; no mixed-unit accuracy claim. Descriptive comparisons do not prove improvement. ${summary.forecast_accuracy ? "The all-category descriptive extension is separate from the registered experiment." : "All-category numerical/PPR/TD evaluation remains local and opt-in for this legacy report."}</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Category</th><th>Matched n</th><th>Raw MAE / RMSE / bias</th><th>Adjusted MAE / RMSE / bias</th></tr></thead><tbody>${Object.entries(pointCategories).map(([key, item]) => { const raw = item.raw_sleeper || {}, adjusted = item.unchanged_clone || {}; return `<tr><td>${esc(SHORT[key] || key)}</td><td>${raw.n || 0}</td><td>${fmt(raw.mae, 3)} / ${fmt(raw.rmse, 3)} / ${fmt(raw.mean_error, 3)}</td><td>${fmt(adjusted.mae, 3)} / ${fmt(adjusted.rmse, 3)} / ${fmt(adjusted.mean_error, 3)}</td></tr>`; }).join("") || `<tr><td colspan="4">No matched point outcomes available.</td></tr>`}</tbody></table></div></details>
+    ${forecastAccuracyHtml(summary.schema_version === "selection-public-report-v6" && summary.report_schema_version === "selection-report-v4" ? summary.forecast_accuracy : null)}<details class="card"><summary>Raw Sleeper versus unchanged adjusted point forecasts</summary><p>Separate registered three-target comparison, independent of the selection filters above. Same original observation and valid matched outcomes. Category-specific units; no mixed-unit accuracy claim. Descriptive comparisons do not prove improvement. ${summary.forecast_accuracy ? "The all-category descriptive extension is separate from the registered experiment." : "All-category numerical/PPR/TD evaluation remains local and opt-in for this legacy report."}</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Category</th><th>Matched n</th><th>Raw MAE / RMSE / bias</th><th>Adjusted MAE / RMSE / bias</th></tr></thead><tbody>${Object.entries(pointCategories).map(([key, item]) => { const raw = item.raw_sleeper || {}, adjusted = item.unchanged_clone || {}; return `<tr><td>${esc(SHORT[key] || key)}</td><td>${raw.n || 0}</td><td>${fmt(raw.mae, 3)} / ${fmt(raw.rmse, 3)} / ${fmt(raw.mean_error, 3)}</td><td>${fmt(adjusted.mae, 3)} / ${fmt(adjusted.rmse, 3)} / ${fmt(adjusted.mean_error, 3)}</td></tr>`; }).join("") || `<tr><td colspan="4">No matched point outcomes available.</td></tr>`}</tbody></table></div></details>
     <details class="card"><summary>Coverage, limitations and report identity</summary><p>Report ${esc(pointer.report_id)} · ${esc(summary.report_schema_version)}. Source ${esc(summary.source_sha || "Unbound")}; generated input binding ${esc(summary.input_binding || "Unknown")}.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({ coverage: summary.coverage, limitations: summary.limitations, uncertainty: summary.uncertainty }, null, 2))}</pre></details></section>`;
 }
 async function loadGradingRows(id, more = false) {
@@ -3423,6 +3451,7 @@ async function loadGradingRows(id, more = false) {
         if (chunk.schema_version !== "selection-public-rows-v1" || !Array.isArray(chunk.rows) || chunk.rows.length !== descriptor.count
             || new Set(chunk.rows.map((row) => row.decision_sha256)).size !== chunk.rows.length
             || chunk.rows.some((row) => !HASH64.test(row.decision_sha256) || !GRADING_RESULTS.includes(row.result))) throw new Error("Invalid grading row chunk");
+        chunk.rows.forEach(row => validateGradingRowContract(row, grading.index?.schema_version || grading.summary.schema_version));
         grading.chunks.set(index, chunk);
       }
       if (S.grading !== grading || S.gradingGroup !== group) return;

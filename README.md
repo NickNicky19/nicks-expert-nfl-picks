@@ -174,3 +174,36 @@ secret (for "Sign in with Yahoo"; Yahoo's API doesn't allow requests from web pa
 3. Get a Gemini API key at https://aistudio.google.com/apikey.
 4. `npx wrangler secret put YAHOO_CLIENT_ID`, `YAHOO_CLIENT_SECRET` and `GEMINI_API_KEY`.
 5. Set `WORKER_URL` in `output/app.js` to the new Worker's address and publish that change. Keep all secrets out of Git.
+
+
+## Phase 2 reporting checkpoint (2026-10-22)
+
+The current public website and this development checkpoint are different releases.
+The public Phase 1 Props/Record/My Picks features and the daily scheduling change
+do not establish deployment of the Phase 2 grading/reporting upgrade. This local
+checkpoint is implemented but final combined checks, exact-source CI, source and
+artifact review, and release authorization are still pending.
+
+The proposed development report adds weekly/cumulative recorded Top Over/Under
+and qualifying-lean grading, exact category/side/source/timing groups, separately
+recorded Biggest-lean and Projected-points strategies, and an aggregate
+all-category forecast-accuracy section. Display sorts alone are not recorded
+strategies. Historical observations do not acquire new strategy membership.
+The rich all-category evaluation rows remain local; only the typed aggregate
+contract is prepared for the public report. Numerical accuracy, TD probability
+scores and selection hit rates remain separate measurements.
+
+The separate paper-first Parlay Builder implementation supports 2–6 saved legs,
+category and Over/Under/Mixed filters, immutable ticket revisions and separate
+leg/ticket statistical results. It uses one reference source per ticket, avoids
+repeated players and same-game combinations, and may return NO_ACTION. Local
+save time is an owner-device clock, not independently timestamped pregame proof.
+It provides no executable-offer, venue-settlement, ticket-probability, EV or ROI
+claim. Its source and public behavior require their own completed checks and
+release review; a development implementation is not a deployed feature.
+
+The release remains blocked on representative cloud preparation and operating
+validation, a coherent production-rooted artifact, exact public-content review,
+and the combined deployment/public Props/Record/cache/My Picks/recovery decision.
+The existing canonical requirements and research roadmap remain in
+`docs/EVALUATION_PROTOCOL.md`; no additional scheduler or roadmap is introduced.

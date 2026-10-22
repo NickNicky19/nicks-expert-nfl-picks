@@ -741,6 +741,295 @@ async function paperBuilderChecks(browser, origin) {
 }
 
 
+// Modern report transport controls. The aggregate is produced by the real
+// projector once from wholly fictional evaluator observations; this exercises
+// the actual browser reader/UI, not capture qualification or provider proof.
+function modernBrowserAccuracy() {
+  const script = String.raw`
+import json, sys
+from pathlib import Path
+sys.path[:0] = [str(Path.cwd() / 'tests'), str(Path.cwd() / 'tools'), str(Path.cwd() / 'pull')]
+from test_accuracy_publication import observation, evaluation
+from accuracy_publication import project_accuracy, validate_accuracy
+import data_integrity_v2 as corrected
+categories = ['pass_yd','pass_td','pass_cmp','pass_att','pass_int','rush_yd','rush_att','rec','rec_yd','rush_rec_yd','fpts']
+rows = [observation('fictional-browser-' + key, key, actual=0 if key != 'rush_yd' else -2, raw=2, adjusted=1) for key in categories]
+next(r for r in rows if r['category'] == 'fpts')['provider_ppr'] = 3
+rows.append(observation('fictional-browser-pending', status='pending'))
+rows.append(observation('fictional-browser-saved-cache', provenance='saved_cache_descriptive_regrade'))
+td0 = observation('fictional-browser-td-zero', 'anytime_td', actual=1, raw=.5, adjusted=None)
+td0.update(probability=0, probability_provenance='originally_recorded_probability')
+td1 = observation('fictional-browser-td-rederived', 'anytime_td', actual=0, raw=.2, adjusted=None)
+td1.update(probability=.25, probability_provenance='rederived_from_original_count_retained_formula')
+rows += [td0, td1]
+modern = observation('fictional-browser-corrected', model=corrected.MODEL)
+value = project_accuracy([evaluation(rows, td=[td0, td1]), evaluation([modern], model=corrected.MODEL)])
+validate_accuracy(value)
+print(json.dumps(value, sort_keys=True, separators=(',', ':')))
+`;
+  const aggregate = JSON.parse(cp.execFileSync(process.env.NFL_PYTHON_PATH || 'python3', ['-c', script], { cwd: repo, encoding: 'utf8', maxBuffer: 1024 * 1024 }));
+  const bytes = JSON.stringify(aggregate);
+  assert.doesNotMatch(bytes, /PRIVATE_CANARY|unapproved\/private|player_id|fictional-browser-/, 'public projection contains no rich player records or private evaluator canaries');
+  return aggregate;
+}
+
+function modernPublication(aggregate, mutation = null) {
+  const old = fictionalPublication('modern-browser');
+  // Exact membership is retained from this mock's saved rows. No marginal
+  // arithmetic supplies a joint result. Producer semantics are tested in Python.
+  for (const table of [...old.tables]) {
+    if (table.dimension !== 'category_side') continue;
+    const members = table.row_positions.map(position => old.rows[position]);
+    const value = JSON.stringify(['category', 'side', 'selection_weekday', 'kickoff_weekday', 'lead_time_bucket'].map(key => members[0][key]));
+    assert.equal(members.every(row => JSON.stringify(['category', 'side', 'selection_weekday', 'kickoff_weekday', 'lead_time_bucket'].map(key => row[key])) === value), true);
+    const joint = { ...table, dimension: 'category_side_selection_kickoff_lead', value };
+    delete joint.summary_id; joint.summary_id = sha(testCanonical(joint)); old.tables.push(joint);
+  }
+  const current = gzipPublication(partitionedPublication(old), 'modern-accuracy-' + (mutation || 'valid'));
+  const summary = JSON.parse(current.assets.get('/data/selection-grading/' + current.pointer.summary.path));
+  Object.assign(summary, { schema_version: 'selection-public-report-v6', report_schema_version: 'selection-report-v4',
+    input_content_sha256: sha('fictional-modern-input-binding'), forecast_accuracy: structuredClone(aggregate) });
+  if (mutation === 'unknown-index') summary.private_unrecognized_field = 'MUST_NOT_BE_ACCEPTED';
+  if (mutation === 'unknown-accuracy') summary.forecast_accuracy.extra = [];
+  if (mutation === 'bad-engine') summary.forecast_accuracy.cohorts[0].engine_sha256 = '0'.repeat(64);
+  if (mutation === 'bad-metric') summary.forecast_accuracy.cohorts.find(c => c.outcome_provenance === 'recorded_outcome_receipt' && c.model_version === 'original_sleeper_matchup_baseline').categories.rec.paired.raw.mae = 999;
+  if (mutation === 'wrong-source-version') summary.report_schema_version = 'selection-report-v3';
+  if (mutation === 'missing-input-binding') delete summary.input_content_sha256;
+  if (mutation === 'legacy-unvalidated-accuracy') { summary.schema_version = 'selection-public-report-v4'; summary.report_schema_version = 'selection-report-v3'; }
+  const bytes = encode(summary);
+  current.pointer.summary = { ...current.pointer.summary, sha256: sha(bytes), decoded_bytes: bytes.length };
+  current.assets.set('/data/selection-grading/' + current.pointer.summary.path, bytes);
+  current.assets.set('/data/selection-grading/latest.json', encode(current.pointer));
+  return current;
+}
+
+async function modernAccuracyChecks(browser, origin) {
+  if (arg('--root')) return { skipped: 'Saved-root checks use their existing immutable assets.' };
+  const savedFixture = fixture, savedWeek = week, savedVariant = variant;
+  const aggregate = modernBrowserAccuracy(), current = modernPublication(aggregate), output = [];
+  const failures = ['unknown-index', 'unknown-accuracy', 'bad-engine', 'bad-metric', 'wrong-source-version', 'missing-input-binding', 'legacy-unvalidated-accuracy'];
+  try {
+    for (const width of [1280, 390, 320]) {
+      fixture = current; week = fictionalWeek(); variant = 'valid';
+      const context = await browser.newContext({ viewport: { width, height: 900 } });
+      const external = [], errors = [];
+      await context.route('**/*', async route => {
+        const url = route.request().url();
+        if (url.startsWith(origin + '/')) return route.continue();
+        external.push(url);
+        return route.fulfill({ status: 200, contentType: 'application/json', body: url.includes('api.sleeper.app/stats') ? '[]' : '{"events":[]}' });
+      });
+      const page = await context.newPage(); page.on('pageerror', error => errors.push(error.message));
+      try {
+        await page.goto(origin + '/#/record');
+        await page.waitForSelector('[data-forecast-accuracy]');
+        await page.waitForFunction(() => S.grading && !S.grading.partLoading);
+        assert.equal(await page.evaluate(() => S.grading.index.schema_version), 'selection-public-report-v6');
+        assert.equal(await page.evaluate(() => S.grading.index.report_schema_version), 'selection-report-v4');
+        const accuracy = page.locator('[data-forecast-accuracy]');
+        const actual = await page.evaluate(() => S.grading.index.forecast_accuracy);
+        assert.deepEqual(actual, aggregate, 'browser uses the exact producer aggregate');
+        const identities = actual.cohorts.map(c => [c.model_version, c.outcome_provenance]);
+        assert.equal(new Set(identities.map(JSON.stringify)).size, 3, 'model and outcome provenance retain separate cohorts');
+        assert.ok(identities.some(([model]) => model === 'sleeper-matchup-data-integrity-v2'));
+        assert.ok(identities.some(([, provenance]) => provenance === 'saved_cache_descriptive_regrade'));
+        assert.ok(identities.some(([, provenance]) => provenance === 'recorded_outcome_receipt'));
+        const directCohorts = accuracy.locator(':scope > details').filter({ has: page.locator('table') });
+        assert.equal(await directCohorts.count(), 3);
+        for (let i = 0; i < 3; i++) {
+          await directCohorts.nth(i).locator(':scope > summary').click();
+          assert.equal(await directCohorts.nth(i).locator('tbody > tr').count(), 12, 'all ten numerical categories plus offensive PPR and anytime TD remain visible');
+        }
+        const allText = await accuracy.innerText();
+        assert.match(allText, /Positive infinity/); assert.match(allText, /Unavailable/);
+        assert.match(allText, /component-derived/); assert.match(allText, /Direct saved provider PPR comparator/);
+        assert.match(allText, /independent of selection filters/i);
+        assert.match(allText, /first-observation coverage and earliest-valid-pair coverage can differ/i);
+        assert.match(allText, /recorded probability|originally recorded probability/);
+        assert.match(allText, /rederived from original count retained formula/);
+        assert.doesNotMatch(allText, /PRIVATE_CANARY|unapproved\/private/);
+        const before = await accuracy.textContent();
+        await page.getByLabel('Line source', { exact: true }).selectOption('sleeper');
+        await page.waitForFunction(() => S.grading && !S.grading.partLoading && S.grading.summary.summary.tables.every(t => t.line_source_scope === 'sleeper'));
+        await page.getByLabel('Reporting period', { exact: true }).selectOption('2026-w06');
+        await page.waitForFunction(() => S.grading && !S.grading.partLoading && S.grading.summary.summary.tables.every(t => t.period === '2026-w06'));
+        await page.getByLabel('Supporting breakdown', { exact: true }).selectOption('category_side_selection_kickoff_lead');
+        assert.equal(await accuracy.textContent(), before, 'cumulative forecast accuracy is independent of selection-period/source filters');
+        const targetValue = JSON.stringify(['rec', 'under', 'Wednesday', 'Wednesday', '6-24h']);
+        const selected = await page.evaluate(value => S.grading.summary.summary.tables.find(t => t.dimension === 'category_side_selection_kickoff_lead' && t.value === value), targetValue);
+        assert.ok(selected, 'exact source/category/side/selection-day/kickoff-day/lead group exists');
+        assert.equal(selected.line_source_scope, 'sleeper'); assert.equal(selected.period, '2026-w06');
+        await page.locator('[data-grading-group="' + selected.summary_id + '"]').click();
+        await page.waitForFunction(() => S.gradingGroup && !S.gradingGroup.loading);
+        while (await page.locator('[data-grading-more]').count()) { await page.locator('[data-grading-more]').click(); await page.waitForFunction(() => !S.gradingGroup.loading); }
+        const expectedRows = current.rows.filter(row => row.line_from === 'sleeper' && row.category === 'rec' && row.side === 'under' && row.selection_weekday === 'Wednesday' && row.kickoff_weekday === 'Wednesday' && row.lead_time_bucket === '6-24h');
+        const ids = await page.locator('[data-grading-row]').evaluateAll(nodes => nodes.map(node => node.dataset.gradingRow));
+        assert.deepEqual(ids, expectedRows.map(row => row.decision_sha256), 'complete exact joint membership comes from saved rows');
+        assert.deepEqual(selected.row_positions, expectedRows.map(row => current.rows.indexOf(row)));
+        assert.equal(selected.decided, expectedRows.filter(row => ['win', 'loss'].includes(row.result)).length);
+        assert.equal(selected.win, expectedRows.filter(row => row.result === 'win').length);
+        assert.equal(selected.loss, expectedRows.filter(row => row.result === 'loss').length);
+        // Expand the full report, caveats, coverage and row evidence before the
+        // narrow-width overflow assertion; horizontal table wrappers may scroll.
+        await page.evaluate(() => document.querySelectorAll('#selection-grading details').forEach(node => { node.open = true; }));
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'entire expanded modern report has no page overflow at ' + width);
+        assert.ok(await page.evaluate(() => [...document.querySelectorAll('#selection-grading select, #selection-grading button')].every(node => { const r = node.getBoundingClientRect(); return r.left >= -1 && r.right <= innerWidth + 1 || !!node.closest('.tbl-wrap'); })), 'controls remain inside phone/desktop bounds at ' + width);
+        assert.deepEqual(errors, []);
+        if (evidence) await page.screenshot({ path: path.join(evidence, 'modern-accuracy-joint-' + width + '.png'), fullPage: true });
+        output.push({ width, cohorts: 3, categories_per_cohort: 12, exact_joint_rows: ids.length, no_page_overflow: true,
+          aggregate_sha256: sha(encode(aggregate)), source: 'FICTIONAL_BROWSER_TRANSPORT', capture_qualification_exercised: false,
+          intercepted_external_requests: external.length, provider_requests: 0, physical_device: false });
+        if (width === 1280) {
+          for (const failure of failures) {
+            fixture = modernPublication(aggregate, failure);
+            await page.reload(); await page.waitForFunction(() => !ticking);
+            assert.equal(await page.evaluate(() => S.grading), null, failure + ' rejects a self-consistently hashed malformed modern index');
+            assert.equal(await page.locator('[data-forecast-accuracy]').count(), 0, failure + ' does not retain fabricated or stale accuracy');
+            assert.equal(await page.locator('[data-performance-headline]').count(), 0, failure + ' cannot fall back to older accepted totals');
+            assert.match(await page.locator('#selection-grading').innerText(), /unavailable/i);
+          }
+          fixture = current;
+        }
+      } finally { await context.close(); }
+    }
+  } finally { fixture = savedFixture; week = savedWeek; variant = savedVariant; }
+  return { cases: output, strict_failure_controls: failures, transport: 'loopback plus intercepted provider responses', performance_claim: false };
+}
+
+
+// Focused Chromium rendering regression. Uses fictional transport and the actual
+// HTML/CSS/app. Computed contrast is not a physical Safari/device measurement.
+async function paperSelectReadabilityChecks(browser, origin) {
+  if (arg('--root')) return { skipped: 'Saved release roots are not replaced.' };
+  const savedFixture=fixture, savedWeek=week, savedVariant=variant, output=[];
+  try {
+    for (const width of [1280,390,320]) {
+      fixture=paperBrowserPublication('pre'); week=paperBrowserWeek(); variant='valid';
+      const context=await browser.newContext({viewport:{width,height:900}});
+      await context.route('**/*', route => route.request().url().startsWith(origin+'/') ? route.continue() : route.fulfill({status:200,contentType:'application/json',body:'{"events":[]}'}));
+      const page=await context.newPage(), measurements=[];
+      await page.clock.install({time:new Date(PAPER_TEST_START)});
+      try {
+        await page.goto(origin+'/#/parlay'); await page.waitForSelector('[data-paper-suggest]');
+        await page.waitForFunction(()=>S.grading&&!S.grading.partLoading&&!ticking);
+        async function inspect(expected, phase) {
+          const actual=await page.locator('select[data-paper-filter]').evaluateAll(elements=>{
+            const rgb=value=>{const v=value.match(/[\d.]+/g)?.map(Number);if(!v||v.length<3)throw Error('Unsupported computed color '+value);return [...v.slice(0,3),v.length>3?v[3]:1];};
+            const lum=rgb=>rgb.slice(0,3).map(x=>{x/=255;return x<=.04045?x/12.92:((x+.055)/1.055)**2.4;}).reduce((v,x,i)=>v+x*[.2126,.7152,.0722][i],0);
+            return elements.map(element=>{
+              const style=getComputedStyle(element),rect=element.getBoundingClientRect(),fg=rgb(style.color),bg=rgb(style.backgroundColor);
+              const light=lum(fg),dark=lum(bg),contrast=(Math.max(light,dark)+.05)/(Math.min(light,dark)+.05);
+              const option=element.selectedOptions[0],canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');ctx.font=style.font;
+              return {field:element.dataset.paperFilter,value:element.value,text:option?.textContent,foreground:style.color,background:style.backgroundColor,
+                contrast,opaque:fg[3]===1&&bg[3]===1,visible:style.display!=='none'&&style.visibility==='visible'&&+style.opacity===1,
+                left:rect.left,right:rect.right,width:rect.width,height:rect.height,clientWidth:element.clientWidth,
+                requiredTextWidth:ctx.measureText(option?.textContent||'').width+parseFloat(style.paddingLeft)+parseFloat(style.paddingRight)+18};
+            });
+          });
+          assert.deepEqual(actual.map(v=>v.field).sort(),['game','sides','size','source'],phase+' has all four select controls');
+          for(const control of actual){
+            assert.deepEqual([control.value,control.text],expected[control.field],phase+' exact selected '+control.field+' text/value');
+            assert.ok(control.visible&&control.width>0&&control.height>0,phase+' visible '+control.field);
+            assert.ok(control.opaque&&control.contrast>=4.5,phase+' '+control.field+' selected text contrast '+control.contrast.toFixed(3)+' '+control.foreground+'/'+control.background);
+            assert.ok(control.left>=0&&control.right<=width&&control.clientWidth+.5>=control.requiredTextWidth,phase+' readable selected '+control.field+' text fits the viewport/control');
+          }
+          measurements.push({phase,controls:actual});
+        }
+        await inspect({source:['dk','DraftKings reference'],sides:['mixed','mixed'],game:['','All'],size:['2','2']},'initial');
+        await page.locator('[data-paper-filter=source]').selectOption('sleeper');
+        await page.locator('[data-paper-filter=sides]').selectOption('under');
+        await page.locator('[data-paper-filter=game]').selectOption('paper-game-0');
+        await page.locator('[data-paper-filter=size]').selectOption('6');
+        await inspect({source:['sleeper','Sleeper Picks reference'],sides:['under','under'],game:['paper-game-0','BBB–AAA'],size:['6','6']},'changed-and-rerendered');
+        output.push({width,assertions:34,measurements,source:'FICTIONAL_BROWSER_TRANSPORT',physical_device:false});
+      } finally {await context.close();}
+    }
+  } finally {fixture=savedFixture;week=savedWeek;variant=savedVariant;}
+  return output;
+}
+
+// Separate from the existing 120 paper UI checks. Real saved-ticket handlers and
+// bounded asset reader run against fictional encoded HTTP outcome partitions.
+async function paperHistoricalAsyncChecks(browser, origin) {
+  if (arg('--root')) return {skipped:'Saved release roots are not replaced.'};
+  const previous={fixture,week,variant}, checks=[], requestsMade=[];
+  const publications=Object.fromEntries(['pre','final','correction'].map(stage=>[stage,paperBrowserPublication(stage)]));
+  const context=await browser.newContext({viewport:{width:390,height:900}});
+  let transport=null;
+  await context.route('**/*', async route=>{
+    const request=route.request(),url=request.url(); requestsMade.push({url,method:request.method()});
+    if(!url.startsWith(origin+'/'))return route.fulfill({status:200,contentType:'application/json',body:'{"events":[]}'});
+    const control=transport;
+    if(control&&new URL(url).pathname===control.pathname){
+      if(control.mode==='missing')return route.fulfill({status:404,contentType:'application/json',body:'{"fictional_missing_historical_partition":true}'});
+      if(control.mode==='delay'&&!control.caught){
+        control.caught=true;control.startedResolve();await control.gate;
+        // Freeze the exact old response bytes when the request starts, so a
+        // later publication cannot accidentally alter this delayed response.
+        return route.fulfill({status:200,contentType:'application/json',headers:{'Cache-Control':'no-store'},body:control.bytes});
+      }
+    }
+    return route.continue();
+  });
+  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const equal=(a,b,label)=>{assert.deepEqual(a,b,label);checks.push(label);};
+  const check=(value,label)=>{assert.ok(value,label);checks.push(label);};
+  const timeout=async promise=>{let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Historical transport control did not start')),5000);})]);}finally{clearTimeout(timer);}};
+  const hold=publication=>{
+    const descriptor=publication.periods.find(v=>v.season===2026&&v.week===6);
+    assert.ok(descriptor,'fictional historical Week6 partition exists');
+    const control={mode:'delay',caught:false,pathname:'/data/selection-grading/'+descriptor.path,bytes:Buffer.from(publication.assets.get('/data/selection-grading/'+descriptor.path))};
+    control.started=new Promise(resolve=>{control.startedResolve=resolve;});control.gate=new Promise(resolve=>{control.release=resolve;});transport=control;return control;
+  };
+  const open=async key=>page.locator('[data-paper-open]').evaluateAll((buttons,key)=>{const b=buttons.find(v=>v.dataset.paperOpen===key);if(!b)throw Error('Saved ticket missing');b.click();},key);
+  const records=()=>page.evaluate(()=>Object.fromEntries(Object.keys(localStorage).filter(k=>k.startsWith(PAPER_PREFIX)).sort().map(k=>[k,localStorage.getItem(k)])));
+  try{
+    fixture=publications.pre;week=paperBrowserWeek();variant='valid';
+    await page.clock.install({time:new Date(PAPER_TEST_START)});
+    await page.goto(origin+'/#/parlay');await page.waitForSelector('[data-paper-suggest]');await page.waitForFunction(()=>S.grading&&!ticking);
+    await page.locator('[data-paper-category=rec]').check();
+    const save=async ids=>{
+      await page.locator('[data-paper-new]').click();
+      for(const id of ids)await page.locator('[data-paper-add]').evaluateAll((buttons,id)=>{const b=buttons.find(v=>JSON.parse(v.dataset.paperAdd).player_id==='paper-player-'+id);if(!b)throw Error('Fictional candidate absent');b.click();},id);
+      await page.locator('[data-paper-save]').click();await page.waitForFunction(()=>S.paper.opened&&S.paper.error.includes('Saved and read back'));
+      return page.evaluate(()=>({key:PAPER_PREFIX+S.paper.opened.ticket_id+'.'+S.paper.opened.revision_id,ticket:S.paper.opened}));
+    };
+    const first=await save([0,1]),second=await save([2,3]),saved=await records();
+    fixture=publications.final;week=paperBrowserWeek();week.week=7;week.generated_at=PAPER_TEST_FINAL;week.games=week.games.map(g=>({...g,state:'post',detail:'Final'}));
+    await page.clock.setFixedTime(new Date(PAPER_TEST_FINAL));await page.reload();await page.waitForSelector('[data-paper-open]');
+    await page.waitForFunction(()=>S.grading&&S.finalOutcomes.size&&[...S.finalOutcomes.values()].every(row=>row.week===7));
+    await page.evaluate(()=>{const original=gradeOpenedPaper;window.paperAsyncJobs=[];gradeOpenedPaper=function(...args){const pending=original(...args);window.paperAsyncJobs.push(pending);return pending;};});
+    const oldSelection=hold(publications.final);await open(first.key);await timeout(oldSelection.started);
+    equal(await page.evaluate(()=>S.paper.results),null,'delayed historical partition has no invented interim grade');
+    await open(second.key);await page.waitForFunction(()=>S.paper.results?.[0]?.status==='push'&&S.paper.results?.[1]?.status==='dnp');
+    equal(await page.evaluate(()=>S.paper.opened.revision_id),second.ticket.revision_id,'newly opened ticket owns displayed results');
+    oldSelection.release();await page.evaluate(()=>Promise.all(window.paperAsyncJobs));
+    equal(await page.evaluate(()=>[S.paper.opened.revision_id,S.paper.results.map(r=>r.status)]),[second.ticket.revision_id,['push','dnp']],'old delayed ticket cannot overwrite newer open ticket');
+    equal(await page.evaluate(()=>[...S.finalOutcomes.values()].map(r=>r.actual).filter(v=>v!==null).every(v=>v===99)),true,'different current-week outcomes remain a negative join control');
+
+    const oldGeneration=hold(publications.final);await open(first.key);await timeout(oldGeneration.started);
+    fixture=publications.correction;await page.clock.setFixedTime(new Date(PAPER_TEST_CORRECTION));
+    await page.evaluate(()=>loadGrading());await page.waitForFunction(()=>S.paper.results?.[0]?.actual===3&&S.paper.results?.[1]?.actual===3);
+    equal(await page.evaluate(()=>[S.grading.pointer.report_id,S.paper.results.map(r=>[r.status,r.actual])]),[publications.correction.pointer.report_id,[['loss',3],['win',3]]],'new publication correction owns exact saved historical results');
+    oldGeneration.release();await page.evaluate(()=>Promise.all(window.paperAsyncJobs));
+    equal(await page.evaluate(()=>[S.grading.pointer.report_id,S.paper.results.map(r=>[r.status,r.actual])]),[publications.correction.pointer.report_id,[['loss',3],['win',3]]],'delayed older generation cannot undo current correction');
+
+    const historical=publications.correction.periods.find(v=>v.week===6);
+    transport={mode:'missing',pathname:'/data/selection-grading/'+historical.path};await open(first.key);await page.evaluate(()=>Promise.all(window.paperAsyncJobs));
+    equal(await page.evaluate(()=>S.paper.results),null,'missing historical bytes do not substitute zero DNP or prior results');
+    check((await page.locator('#main').innerText()).includes('Required saved outcome evidence is unavailable; no result was substituted.'),'required historical failure is visibly unavailable');
+    await page.locator('[data-paper-evaluate]').click();await page.waitForFunction(()=>S.paper.error.startsWith('Saved results unavailable:'));
+    equal(await page.evaluate(()=>S.paper.history),null,'required historical failure cannot produce partial saved-ticket totals');
+    equal(await records(),saved,'missing/delayed/corrected outcomes never mutate saved private selections');
+    equal(await page.evaluate(()=>S.data.week),7,'historical outcomes do not change current board period');
+    transport=null;await open(first.key);await page.evaluate(()=>Promise.all(window.paperAsyncJobs));
+    equal(await page.evaluate(()=>S.paper.results.map(r=>[r.status,r.actual])),[['loss',3],['win',3]],'explicit user reopen recovers from missing historical transport');
+    equal(requestsMade.filter(r=>r.method!=='GET').length,0,'all historical checks remain read-only network operations');
+    equal(errors,[],'no browser page errors during historical races/failures');
+    return {width:390,checks:checks.length,descriptions:checks,source:'FICTIONAL_ENCODED_HTTP_OUTCOME_TRANSPORT',provider_requests:0,capture_qualification_exercised:false,performance_claim:false};
+  }finally{if(transport?.release)transport.release();await context.close();fixture=previous.fixture;week=previous.week;variant=previous.variant;}
+}
+
 (async () => {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = 'http://127.0.0.1:' + server.address().port;
@@ -748,6 +1037,12 @@ async function paperBuilderChecks(browser, origin) {
   const measurements = [];
   const presentation = [];
   try {
+    const modern = ['--paper-only','--paper-readability-only','--paper-async-only'].some(flag=>args.includes(flag)) ? null : await modernAccuracyChecks(browser, origin);
+    if (args.includes('--modern-only')) { console.log(JSON.stringify({ modern, app_sha256: sha(fs.readFileSync(path.join(staticRoot, 'app.js'))), scope: 'FOCUSED_MODERN_ACCURACY_JOINT_UI_ONLY', performance_claim: false }, null, 2)); return; }
+    const paperReadability = args.includes('--paper-async-only') ? null : await paperSelectReadabilityChecks(browser, origin);
+    if (args.includes('--paper-readability-only')) { console.log(JSON.stringify({paperReadability,app_sha256:sha(fs.readFileSync(path.join(staticRoot,'app.js'))),scope:'FOCUSED_PAPER_SELECT_READABILITY_ONLY',performance_claim:false},null,2)); return; }
+    const paperAsync = await paperHistoricalAsyncChecks(browser, origin);
+    if (args.includes('--paper-async-only')) { console.log(JSON.stringify({paperAsync,app_sha256:sha(fs.readFileSync(path.join(staticRoot,'app.js'))),scope:'FOCUSED_PAPER_HISTORICAL_ASYNC_ONLY',performance_claim:false},null,2)); return; }
     const paper = await paperBuilderChecks(browser, origin);
     if (args.includes('--paper-only')) { console.log(JSON.stringify({ paper, app_sha256: sha(fs.readFileSync(path.join(staticRoot, 'app.js'))), scope: 'FOCUSED_PAPER_UI_ONLY', performance_claim: false }, null, 2)); return; }
     for (const width of [1280, 390, 320]) {
@@ -937,7 +1232,7 @@ async function paperBuilderChecks(browser, origin) {
       }
     }
     const hosting = !arg('--root') ? await archiveAndDecoderChecks(browser, origin) : null;
-    const result = { hosting, paper, fixture: arg('--root') ? 'AUTHORIZED_SAVED_DATA_ISOLATED_ROOT' : 'FICTIONAL_ONLY', public_deployment_test: false,
+    const result = { hosting, modern, paperReadability, paperAsync, paper, fixture: arg('--root') ? 'AUTHORIZED_SAVED_DATA_ISOLATED_ROOT' : 'FICTIONAL_ONLY', public_deployment_test: false,
       external_network_requests: 0, app_sha256: sha(fs.readFileSync(path.join(staticRoot, 'app.js'))),
       html_sha256: sha(fs.readFileSync(path.join(staticRoot, 'index.html'))), measurements, presentation, requests: [...new Set(requests)], assertions: 'passed' };
     if (evidence) fs.writeFileSync(path.join(evidence, 'grading-browser-results.json'), JSON.stringify(result, null, 2) + '\n');
