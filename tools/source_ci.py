@@ -368,7 +368,17 @@ def environment(root=None):
                 raise Rejected("Missing or symlink installed distribution file")
             if not path.resolve().is_relative_to(location):
                 if not any(path.resolve().is_relative_to(Path(prefix).resolve()) for prefix in (sys.prefix, sys.base_prefix)):
-                    raise Rejected("Installed script escaped the interpreter namespace")
+                    # Diagnose only the installed package's public-relative
+                    # inventory entry. Never disclose resolved private paths
+                    # or environment contents, and do not broaden acceptance.
+                    safe_name = (filename if len(filename) <= 256 and not Path(filename).is_absolute()
+                                 and all(32 <= ord(c) < 127 for c in filename)
+                                 else "sha256:" + sha(filename.encode()))
+                    scripts = Path(sysconfig.get_path("scripts")).resolve()
+                    detail = dict(distribution=normalized[:80], version=str(version)[:80],
+                                  record=safe_name, inside_scripts=path.resolve().is_relative_to(scripts),
+                                  parent_symlink=any(parent.is_symlink() for parent in path.parents))
+                    raise Rejected("External installed dependency is unsupported: " + canonical(detail).decode())
                 length, checksum = _file_hash(path)
                 outside.append(dict(distribution=normalized, path=filename, bytes=length, sha256=checksum))
                 if len(outside) > ENTRY_LIMIT or sum(item["bytes"] for item in outside) > ENV_LIMIT:

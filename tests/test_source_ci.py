@@ -411,6 +411,21 @@ class EnvironmentTests(unittest.TestCase):
         with patch.dict(os.environ, PYTHONPYCACHEPREFIX=""), self.assertRaises(ci.Rejected): ci.environment()
 
 
+    def test_external_dependency_diagnostic_is_bounded_relative_and_still_rejects(self):
+        outside = self.root.parent / (self.root.name + "-fictional-external")
+        outside.write_bytes(b"fictional external dependency")
+        self.addCleanup(outside.unlink)
+        name = os.path.relpath(outside, self.root)
+        (self.metadata / "RECORD").write_text(name + ",,\n")
+        with self.assertRaises(ci.Rejected) as rejected:
+            ci.environment()
+        message = str(rejected.exception)
+        self.assertIn('"distribution":"fictional-package"', message)
+        self.assertIn('"record":' + json.dumps(name), message)
+        self.assertNotIn(str(self.root), message)
+        self.assertNotIn(str(outside), message)
+        self.assertLess(len(message), 600)
+
     def test_interpreter_command_line_overrides_cannot_inherit_plain_checks(self):
         names = ("optimize", "debug", "no_site", "ignore_environment", "isolated", "safe_path")
         for changed in names:

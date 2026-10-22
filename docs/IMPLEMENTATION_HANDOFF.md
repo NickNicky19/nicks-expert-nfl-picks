@@ -1179,3 +1179,11 @@ authority through current gates, accepted artifacts and normal protections;
 no historical authorization is rewritten. Artifact storage/cost facts remain
 a distinct operation-specific prerequisite. No additional spending or new
 private-data publication is inferred.
+
+The first integrated `38ef48b` push CI rejected an installed dependency outside
+the helper's initially supported interpreter namespace before the suite ran.
+That failure remains recorded; it is not a model, data or operating-budget
+result. A bounded package-relative diagnostic identifies the actual layout
+without publishing resolved workspace paths or accepting unknown dependencies.
+Current-base PR regression execution and source-seal qualification remain
+distinct until the final combined source passes both.
