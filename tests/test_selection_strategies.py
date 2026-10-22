@@ -80,7 +80,7 @@ class StrategyTests(unittest.TestCase):
                 other = {"native_payload_sha256": digest(second)}
                 def qualify(_root, qualification, _cutoff, **_kwargs):
                     return board, native if qualification["native_payload_sha256"] == digest(native) else second
-                values = iter([NOW + timedelta(seconds=10), NOW + timedelta(hours=26), NOW + timedelta(hours=26), NOW + timedelta(hours=26)])
+                values = iter([NOW + timedelta(seconds=10), NOW + timedelta(hours=25, seconds=-2), NOW + timedelta(hours=25, seconds=-1), NOW + timedelta(hours=25), NOW + timedelta(hours=25)])
                 with patch("phase2_capture._strategy_qualification", side_effect=qualify):
                     with self.assertRaises(IntegrityError):
                         strategies.record(root, other, "a" * 40, clock=lambda: next(values))
@@ -348,6 +348,64 @@ class StrategyMissingRuntimeRegistryTests(unittest.TestCase):
                     strategies.record(target, qualification, "a" * 40, clock=lambda: NOW)
                 self.assertEqual(qualifier.call_count, 1)
             self.assertFalse(list(target.rglob("*.json.gz")))
+
+
+
+class StrategyInterruptedValidationTests(unittest.TestCase):
+    setup_root = StrategyPersistenceBoundaryTests.setup_root
+    def test_expensive_validation_finishes_before_canonical_completion_and_uses_actual_clock(self):
+        for outcome in ("kickoff", "reversed"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                root, board, native, qualification = self.setup_root(directory)
+                actual = [NOW]
+                original = strategies._validate_completed
+                def validate(*args, **kwargs):
+                    self.assertFalse(list((root / "data" / strategies.COMPLETE_LANE).rglob("*.json.gz")))
+                    result = original(*args, **kwargs)
+                    actual[0] = NOW + timedelta(hours=25) if outcome == "kickoff" else NOW - timedelta(seconds=1)
+                    return result
+                with patch("phase2_capture._strategy_qualification", return_value=(board, native)), \
+                        patch.object(strategies, "_source", return_value={"fixture": "mocked_source_transport"}), \
+                        patch.object(strategies, "_validate_completed", side_effect=validate):
+                    with self.assertRaises(IntegrityError):
+                        strategies.record(root, qualification, "a" * 40, clock=lambda: actual[0])
+                self.assertEqual(len(list((root / "data" / strategies.LANE).rglob("*.json.gz"))), 1)
+                self.assertFalse(list((root / "data" / strategies.COMPLETE_LANE).rglob("*.json.gz")))
+                self.assertFalse(list((root / "data" / strategies.FAILURE_LANE).rglob("*.json.gz")))
+
+    def test_hard_interruption_during_expensive_validation_cannot_supply_saved_decisions(self):
+        # Source transport and original qualification are explicitly mocked.
+        # The actual producer, immutable bytes, hard exit, independent saved
+        # consumer and decision discovery are exercised in fresh processes.
+        import json
+        import subprocess
+        script = r"""
+import json,os,sys
+from pathlib import Path
+from unittest.mock import patch
+from datetime import timedelta
+code,root,mode=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
+sys.path[:0]=[str(code/'tests'),str(code/'tools'),str(code/'pull')]
+from test_selection_strategies import StrategyPersistenceBoundaryTests,NOW
+from reliability import load_json
+import selection_strategies as s
+if mode=='interrupt':
+    root.mkdir()
+    root,board,native,q=StrategyPersistenceBoundaryTests().setup_root(root)
+    with patch('phase2_capture._strategy_qualification',return_value=(board,native)),patch.object(s,'_source',return_value={'fixture':'mocked_source_transport'}),patch.object(s,'_validate_completed',side_effect=lambda *args,**kwargs:os._exit(73)):
+        s.record(root,q,'a'*40,clock=lambda:NOW)
+    raise RuntimeError('Hard interruption was not reached')
+with patch('phase2_capture._strategy_qualification',side_effect=AssertionError('An orphan must not reach qualification')):
+    rows=s.decisions([root],load_json(code/'config/timing-policy.json'),NOW+timedelta(days=2))
+print(json.dumps(dict(rows=rows,observations=len(list((root/'data'/s.LANE).rglob('*.json.gz'))),completions=len(list((root/'data'/s.COMPLETE_LANE).rglob('*.json.gz'))),failures=len(list((root/'data'/s.FAILURE_LANE).rglob('*.json.gz'))))))
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "interrupted"
+            produced = subprocess.run([sys.executable, "-c", script, str(ROOT), str(target), "interrupt"], capture_output=True, text=True)
+            self.assertEqual(produced.returncode, 73, produced.stderr)
+            consumed = subprocess.run([sys.executable, "-c", script, str(ROOT), str(target), "consume"], capture_output=True, text=True)
+            self.assertEqual(consumed.returncode, 0, consumed.stderr)
+            self.assertEqual(json.loads(consumed.stdout), {"rows": [], "observations": 1, "completions": 0, "failures": 0})
 
 
 if __name__ == "__main__": unittest.main()

@@ -112,9 +112,16 @@ def rank(board, native, rules, at):
 def read_completed(root, name, *, now=None, _checked=None):
     """Revalidate the exact pinned original dependencies at their saved clocks."""
     import partial_week
+    root = Path(root).resolve()
+    completed = partial_week._saved(root, name, COMPLETE_LANE)
+    return _validate_completed(root, completed, now=now, _checked=_checked)
+
+
+def _validate_completed(root, completed, *, now=None, _checked=None):
+    """Full shared checks, including provisional producer payloads not issued yet."""
+    import partial_week
     from phase2_capture import _strategy_qualification
     root = Path(root).resolve(); now = utc(now or datetime.now(timezone.utc))
-    completed = partial_week._saved(root, name, COMPLETE_LANE)
     fields = {"schema_version", "season", "week", "observation_receipt", "observation_sha256", "completed_at"}
     if set(completed) != fields or completed["schema_version"] != COMPLETION:
         raise IntegrityError("Unsupported ranked completion")
@@ -179,16 +186,31 @@ def record(root, qualification, source_sha, *, clock=None, _checked=None):
              "source_sha": source_sha, "source_files": _source(root, source_sha), "created_at": stamp(created),
              "qualification": qualification, "ranked": ranked}
     path = write(root, LANE, saved)
-    # Expensive qualification and durable observation precede actual completion.
-    _strategy_qualification(root, qualification, created, _checked=_checked)
+    # No canonical completion exists while expensive validation runs. A hard
+    # interruption here preserves only an ineligible orphan observation.
+    prepared_at = utc(clock())
+    provisional = {"schema_version": COMPLETION, "season": board["season"], "week": board["week"],
+                   "observation_receipt": path.relative_to(root).as_posix(), "observation_sha256": digest(saved),
+                   "completed_at": stamp(prepared_at)}
+    _validate_completed(root, provisional, now=prepared_at, _checked=_checked)
     done = utc(clock())
-    completion = {"schema_version": COMPLETION, "season": board["season"], "week": board["week"],
-                  "observation_receipt": path.relative_to(root).as_posix(), "observation_sha256": digest(saved), "completed_at": stamp(done)}
+    selected = {m["row_sha256"] for rows in ranked["memberships"].values() for m in rows}
+    if done < prepared_at or done < created or any(done >= utc(c["row"]["kickoff"]) for c in ranked["candidates"] if digest(c["row"]) in selected):
+        raise IntegrityError("Ranked validation completion crossed kickoff or reversed clocks")
+    completion = dict(provisional, completed_at=stamp(done))
     try:
         completed_path = write(root, COMPLETE_LANE, completion)
-        read_completed(root, completed_path.relative_to(root).as_posix(), now=utc(clock()), _checked=_checked)
+        # Exact deterministic encoded bytes bound the read and need no second
+        # expensive qualification. Saved consumers still perform all checks.
+        import gzip
+        encoded = gzip.compress(canonical({"payload_sha256": digest(completion), "payload": completion}), mtime=0)
+        expected_path = root / "data" / COMPLETE_LANE / str(board["season"]) / f"w{board['week']:02d}" / (digest(completion) + ".json.gz")
+        if completed_path != expected_path or completed_path.is_symlink():
+            raise IntegrityError("Ranked completion readback path mismatch")
+        with completed_path.open("rb") as handle:
+            if handle.read(len(encoded) + 1) != encoded:
+                raise IntegrityError("Ranked completion bounded readback mismatch")
         final = utc(clock())
-        selected = {m["row_sha256"] for rows in ranked["memberships"].values() for m in rows}
         if final < done or any(final >= utc(c["row"]["kickoff"]) for c in ranked["candidates"] if digest(c["row"]) in selected):
             raise IntegrityError("Ranked final persistence crossed kickoff")
     except BaseException:

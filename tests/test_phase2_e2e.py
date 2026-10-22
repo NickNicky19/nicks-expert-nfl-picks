@@ -62,7 +62,7 @@ class ReplayClock(datetime):
 
 
 def prepare(root, source_unavailable=False, *, mode="replay", at=NOW, kickoff_hours=1, all_ten=False, week=5):
-    (root / "tools").mkdir(exist_ok=True)
+    (root / "tools").mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / "tools/selection-strategies-v1.json", root / "tools/selection-strategies-v1.json")
     for path in ENGINE_PATHS:
         target = root / path; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(corrected._legacy_blob(path, ROOT))

@@ -1062,3 +1062,14 @@ content approval, and separately approved deployment/public Props/Record/cache/
 phone/My Picks verification with format-compatible evidence-preserving recovery.
 No main integration, provider collection, real-data export, deployment or
 experimental activation is performed by this development checkpoint.
+
+The new ranked recorder's interrupted-process control initially exposed a
+completion-order defect in local intermediate source `257e93ad`: a canonical
+completion could exist before its last expensive validation. That source is not
+release-qualified. The correction validates the complete provisional payload
+before issuance, samples completion time afterward, and retains bounded exact
+readback plus the final persistence cutoff/failure marker. Saved consumption
+still performs full fresh validation. Hard-interrupted provisional work leaves
+only an ineligible orphan; a genuinely completed selection remains usable if a
+later report publication fails. This does not change the previously accepted
+frozen-origin helper, original evidence, forecasting engine or public formats.
