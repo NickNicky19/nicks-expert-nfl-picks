@@ -50,7 +50,7 @@ jobs:
         id: mode
         run: python tools/release_mode.py >> "$GITHUB_OUTPUT"
       - name: Install existing dependencies
-        run: PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-pip-pyc.XXXXXX")" pip install -r requirements.txt
+        run: PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-pip-pyc.XXXXXX")" pip install --no-compile -r requirements.txt
       - name: Verify qualified Phase 2 source CI before provider build
         id: source_ci
         if: steps.mode.outputs.phase2_enabled == 'true'

@@ -30,7 +30,7 @@ jobs:
         id: mode
         run: python tools/release_mode.py >> "$GITHUB_OUTPUT"
       - name: Install existing dependencies
-        run: PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-pip-pyc.XXXXXX")" pip install -r requirements.txt
+        run: PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-pip-pyc.XXXXXX")" pip install --no-compile -r requirements.txt
       - name: Fingerprint Phase 2 source checks
         if: steps.mode.outputs.mode == 'phase1' && steps.mode.outputs.phase2_enabled == 'true' && github.event_name != 'pull_request'
         run: |
