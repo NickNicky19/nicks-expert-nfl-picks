@@ -15,6 +15,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: read
   pages: write
   id-token: write
 
@@ -23,34 +24,59 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Initialize isolated Python bytecode path
+        run: |
+          set -euo pipefail
+          task_pycache_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-update-job-pyc.XXXXXX")"
+          printf 'PYTHONPYCACHEPREFIX=%s\n' "$task_pycache_prefix" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: Use latest main before building
         run: git pull --ff-only origin main
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
       - name: Read release mode
         id: mode
         run: python tools/release_mode.py >> "$GITHUB_OUTPUT"
       - name: Install existing dependencies
-        run: pip install -r requirements.txt
+        run: PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-pip-pyc.XXXXXX")" pip install -r requirements.txt
+      - name: Verify qualified Phase 2 source CI before provider build
+        id: source_ci
+        if: steps.mode.outputs.phase2_enabled == 'true'
+        run: |
+          set -euo pipefail
+          GH_TOKEN="${{ github.token }}" \
+            PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-source-ci-first-pyc.XXXXXX")" \
+            python tools/source_ci.py verify > "$RUNNER_TEMP/source-ci-verification.json"
+          PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-source-ci-output-pyc.XXXXXX")" \
+            python - "$RUNNER_TEMP/source-ci-verification.json" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding='utf-8') as stream:
+              result = json.load(stream)
+          run_id = result.get('run_id') if isinstance(result, dict) else None
+          if result.get('schema_version') != 'source-ci-verification-v1' or type(run_id) is not int or run_id < 1:
+              raise RuntimeError('Source CI verification did not return a supported integer run identity')
+          print('run_id=' + str(run_id))
+          PY
       - name: Required offline regression tests
         if: steps.mode.outputs.mode == 'phase1'
         run: |
           if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
-            python -m unittest discover -s tests -v
+            PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-compile-pyc.XXXXXX")" python -m compileall -q pull tools
           else
-            python -m unittest discover -s tests -p test_reliability.py -v
-            python -m unittest discover -s tests -p test_recovery.py -v
+            PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-legacy-suite-pyc.XXXXXX")" python -m unittest discover -s tests -p test_reliability.py -v
+            PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-recovery-suite-pyc.XXXXXX")" python -m unittest discover -s tests -p test_recovery.py -v
           fi
           node --check output/app.js
           node --check output/reliability-ui.js
@@ -107,6 +133,11 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || { echo "Main changed during build; refusing to merge generated evidence. Re-run on new main."; exit 1; }
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            GH_TOKEN="${{ github.token }}" \
+              PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-source-ci-commit-pyc.XXXXXX")" \
+              python tools/source_ci.py verify --run-id '${{ steps.source_ci.outputs.run_id }}' > "$RUNNER_TEMP/source-ci-before-data-commit.json"
+          fi
           git add output/data data/cache
           for dir in data/forward data/history data/verification data/shadow data/offers data/outcomes; do
             if [ -d "$dir" ]; then git add "$dir"; fi
@@ -122,6 +153,11 @@ jobs:
             python tools/phase2_capture.py --mode live --stage-pages "$RUNNER_TEMP/nfl-pages"
           else
             cp -a output "$RUNNER_TEMP/nfl-pages"
+          fi
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            GH_TOKEN="${{ github.token }}" \
+              PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-source-ci-stage-pyc.XXXXXX")" \
+              python tools/source_ci.py verify --run-id '${{ steps.source_ci.outputs.run_id }}' > "$RUNNER_TEMP/source-ci-after-pages-stage.json"
           fi
       - uses: actions/upload-pages-artifact@v3
         id: artifact

@@ -3,38 +3,59 @@ on:
   pull_request:
   push:
     branches: ['upgrade/**']
+  workflow_dispatch: {}
 permissions:
   contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - name: Initialize isolated Python bytecode path
+        run: |
+          set -euo pipefail
+          task_pycache_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-ci-job-pyc.XXXXXX")"
+          printf 'PYTHONPYCACHEPREFIX=%s\n' "$task_pycache_prefix" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
       - name: Select explicit release mode
         id: mode
         run: python tools/release_mode.py >> "$GITHUB_OUTPUT"
       - name: Install existing dependencies
-        run: pip install -r requirements.txt
+        run: PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-pip-pyc.XXXXXX")" pip install -r requirements.txt
+      - name: Fingerprint Phase 2 source checks
+        if: steps.mode.outputs.mode == 'phase1' && steps.mode.outputs.phase2_enabled == 'true' && github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-source-ci-fingerprint-pyc.XXXXXX")" \
+            python tools/source_ci.py fingerprint > "$RUNNER_TEMP/source-ci-initial.json"
       - name: Retained baseline and Phase 2 regression suites
         if: steps.mode.outputs.mode == 'phase1'
         run: |
           if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
-            python -m unittest discover -s tests -v
+            PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-suite-pyc.XXXXXX")" python -m unittest discover -s tests -v
           else
-            python -m unittest discover -s tests -p test_reliability.py -v
-            python -m unittest discover -s tests -p test_recovery.py -v
+            PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-legacy-suite-pyc.XXXXXX")" python -m unittest discover -s tests -p test_reliability.py -v
+            PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-recovery-suite-pyc.XXXXXX")" python -m unittest discover -s tests -p test_recovery.py -v
           fi
       - name: Python syntax
-        run: python -m compileall -q pull tools
-      - run: node --check output/app.js && node --check output/reliability-ui.js && node tests/test-ui.cjs
+        run: PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-compile-pyc.XXXXXX")" python -m compileall -q pull tools
+      - name: JavaScript and UI checks
+        run: node --check output/app.js && node --check output/reliability-ui.js && node tests/test-ui.cjs
       - name: About comparison states
         if: steps.mode.outputs.phase2_enabled == 'true'
         run: node tests/test-about.cjs
+      - name: Seal complete Phase 2 source checks
+        if: steps.mode.outputs.mode == 'phase1' && steps.mode.outputs.phase2_enabled == 'true' && github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-source-ci-seal-pyc.XXXXXX")" \
+            python tools/source_ci.py seal --initial "$RUNNER_TEMP/source-ci-initial.json"
