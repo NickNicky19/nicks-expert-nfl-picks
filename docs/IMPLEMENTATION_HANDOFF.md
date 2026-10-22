@@ -1013,63 +1013,97 @@ compatible-recovery decision remain separate. PR #2 and its owner-reported limit
 phone/My Picks confirmation remain preserved. Physical Safari was not retested.
 
 
+
 ## Connected reporting and paper-builder checkpoint — 2026-10-22
 
-Status: implemented locally; focused checks completed; final combined suite and
-exact-source push/PR test-merge CI pending; operating qualification unresolved;
-Phase 2 deployment not performed. Local source checkpoint
-`0eb74e248ea75e9eb1afa9153f4dbd927ef1fbb8` has not been published. The current
-owned ordinary operation has a 19-path scope; its completion requires the actual
-final source, scope/preservation checks, CI identities and normal closure.
+Status: implemented and locally checked; exact final push/PR test-merge status is
+recorded in the checkpoint result; operating-qualified: no; Phase 2 deployed: no.
+This is the sole owned nineteen-ordinary-path development operation. Public
+Phase 1 and the separate daily-cadence checkpoint are not the new report release.
 
-Public Phase 1 Props/Record/My Picks features and the separate daily-cadence
-checkpoint must not be described as deployment of the new report. The local
-report includes weekly/cumulative Top Over/Under and qualifying-lean grading,
-category/side/source and exact joint timing groups, newly prospective recorded
-Biggest-lean/Projected-points cohorts, and the typed all-category descriptive
-accuracy aggregate. Their implementation does not create historical strategy
-records or validate an unperformed public release. The source-defined rules and
-compatibility boundaries are appended to `TIMING_PROTOCOL.md` and
-`EVALUATION_PROTOCOL.md`; historical document sections above remain unchanged.
 
-The current targeted evidence is 11 strategy checks, three actual connected
-strategy integrations, nine aggregate-accuracy checks and 120 paper-builder
-browser checks. These counts identify focused local evidence, not a completed
-final suite, GitHub CI, physical iPhone/Safari verification or hosted operating
-measurement. The final result must retain intermediate failures, name any mock
-boundaries, and report actual final checkouts and preservation/recovery results.
-The paper builder is a separate feature in the same website, using private
-immutable 2–6-leg ticket revisions and statistical outcomes. It is not an
-executable offer, verified venue settlement, ticket probability or ROI feature.
+The new source/report contracts are `selection-report-v4` and
+`selection-public-report-v6`; pointer-v4 shared application-gzip storage and its
+existing caps remain unchanged. Legacy public readers remain explicit; unknown,
+mixed or corrupt modern evidence cannot fall back to a legacy reader. Exact
+category/side/source/strategy/selection-day/kickoff-day/lead-time comparisons use
+their saved joint memberships, never products of marginal percentages. The two
+new ranked cohorts are prospective under their separate registry; existing
+Biggest-lean/Projected-points display sorts do not become historical selections.
 
-The completed original-artifact review remains complete for its exact archive.
-Original/derived packages and production frozen contracts stay separate; proof
-is attached only to the exact contract it validates. Neither a new publication
-format nor a later observation supplies missing original proof. Existing legacy
-readers remain supported; the new report/public versions have explicit dispatch.
-My Picks bytes and saved personal lines remain preserved; pending, unresolved,
-push, confirmed DNP, reversible live progress and supported final corrections
-retain their distinct states.
+The aggregate accuracy contract covers the ten numerical categories, offensive
+PPR and anytime TD, split by actual model/engine/outcome provenance. Paired
+numerical MAE/RMSE/bias and TD Brier/log-loss/descriptive bins remain separate
+from selection hit rates. Coverage, unavailable values and rederived probability
+provenance are explicit. Rich evaluation rows remain outside the public aggregate;
+software-test outcomes do not establish predictive improvement or a best day.
 
-No full admitted representative seed or hosted operating qualification is
-established by this checkpoint. The historical local planning observations
-960.625703 seconds and 1015.945480 seconds remain misses against 960 seconds;
-the existing job timeout remains 1,200 seconds. Changed report/source bytes do
-not inherit an earlier runtime or memory result. Remaining release work is the
-bounded cloud preparation and operating-validation decision, current-main
-integration and exact production-rooted artifact review, actual GitHub/Pages
-content approval, and separately approved deployment/public Props/Record/cache/
-phone/My Picks verification with format-compatible evidence-preserving recovery.
-No main integration, provider collection, real-data export, deployment or
-experimental activation is performed by this development checkpoint.
+Local Chromium checks completed at 320, 390 and 1280 CSS pixels: 120 paper-ticket
+checks, 102 control-readability checks, 14 historical asynchronous-state controls,
+seven invalid modern/legacy accuracy cases, and 368 presentation-preservation
+checks. My Picks bytes, personal lines/scoring, rankings and saved historical
+identities were retained. Fictional HTTP/clocks and controlled transport are
+explicit test boundaries; no physical iPhone/Safari or new public release was
+tested. An unsupported gzip decoder gives an unavailable report state. Paper
+tickets remain private by default and statistical only, with distinct leg/ticket
+states and immutable revisions; no accepted venue payout, probability, EV or ROI
+is inferred.
 
-The new ranked recorder's interrupted-process control initially exposed a
-completion-order defect in local intermediate source `257e93ad`: a canonical
-completion could exist before its last expensive validation. That source is not
-release-qualified. The correction validates the complete provisional payload
-before issuance, samples completion time afterward, and retains bounded exact
-readback plus the final persistence cutoff/failure marker. Saved consumption
-still performs full fresh validation. Hard-interrupted provisional work leaves
-only an ineligible orphan; a genuinely completed selection remains usable if a
-later report publication fails. This does not change the previously accepted
-frozen-origin helper, original evidence, forecasting engine or public formats.
+A fixed 36-load Chromium comparison used 4 Mbps down, 1 Mbps up and 150 ms
+latency, no CPU throttling, consistent HTTP gzip and the same legacy fixture.
+The new app increased cold HTTP body transfer from 141,683 to 154,025 bytes
+(+12,342, 8.71%); the modern fictional aggregate/joint fixture used 157,010 bytes.
+Those totals include required static/board/health assets, pointer, both indexes,
+selected summary and initial outcome partitions, not just index size. Returning
+network bodies were about 6.5 KB while logical cached content remained counted.
+Useful first-render ranges were 2.415–2.434 seconds for the baseline,
+2.437–2.445 for the matched new app and 2.436–2.464 for the modern fixture.
+Fifty-four filter changes and eighteen complete 305-row drill-downs reconciled;
+complete drill-downs took 0.856–0.971 seconds. These small controlled results do
+not qualify real-sized provider/updater, hosted, physical-device or season-long
+performance, and the increased bytes are not described as an improvement.
+
+The retained full local run at `115c89fd` executed 624 Python tests in
+1,950.694 seconds, with one failure and three errors. Tracebacks identified
+legacy fixture clocks crossing the new registry, data-only fixture Git heads
+being mistaken for executed application source, and one missing fixture parent
+directory. The fixture corrections preserve old assertions and use explicit
+pre-registration clocks plus the actual executed checkout identity. The four corrected cases then passed in a focused run with the original
+assertions retained. Active strategy proof/registry checks remain independently
+strict. All five active
+strategy integrations in that run, including current-format forward recovery
+and two later mocked updater/staging runs, passed. Earlier failed/interrupted
+runs remain evidence; exact final-source suite/CI outcomes are recorded in the
+checkpoint result, not attributed to an earlier or different checkout.
+
+The local suite is retained check cost, not an updater or hosted operating
+measurement. Its per-child high-water maximum was 979,184 KiB; this is not an
+attributable aggregate process-tree peak. Existing 960-second planning and
+1,200-second job limits and prior misses stay unchanged. No full admitted
+representative seed or final-source hosted operating qualification exists.
+Compatible recovery requires a source that reads/generates public-v6 and current
+ranked evidence; restoring an older reader is not a functioning rollback. The
+local forward rehearsal preserves evidence but does not establish a twenty-minute
+operational recovery or remote transport.
+
+Remaining release gates are current-main integration, the supported finite
+operating envelope, production-rooted artifact and exact public-content review,
+and the combined approved deployment/public Props/Record/cache/phone/My Picks/
+compatible-recovery verification. The independently reviewed original archive
+remains complete for its exact bytes; later artifact deltas have their own review.
+No provider capture, historical strategy backfill, production contract overwrite,
+new real-data publication, model promotion or experiment activation is performed.
+
+An interrupted-process negative control exposed canonical ranked-completion
+issuance before expensive validation in local intermediate `257e93ad`. The
+finished helper validates the complete provisional payload before issuance,
+samples actual completion time afterward, and retains bounded exact readback
+plus the final persistence cutoff/failure marker. All 17 ranked unit checks
+passed, including hard interruption and kickoff crossing during validation.
+Saved consumption still validates fresh original/source/policy/clock evidence.
+Interrupted provisional work leaves an ineligible orphan; genuinely completed
+work remains usable if only later report publication fails. The initial probe
+mocked original/source qualification while exercising actual immutable writes,
+hard exit and fresh decisions; it is not original-capture authentication.
+No accepted frozen-origin helper, engine, original receipt or public physical
+format is changed by this completion-order correction.
