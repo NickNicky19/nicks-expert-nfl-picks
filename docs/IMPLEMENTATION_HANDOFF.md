@@ -1107,3 +1107,75 @@ mocked original/source qualification while exercising actual immutable writes,
 hard exit and fresh decisions; it is not original-capture authentication.
 No accepted frozen-origin helper, engine, original receipt or public physical
 format is changed by this completion-order correction.
+
+
+## Source-CI and integration completion boundary — 2026-10-22
+
+The accepted application/reporting source at `7f403b1` remains the baseline.
+Its exact-source CI passed 624 Python tests plus syntax, 187 UI and 15 About
+checks. The retained suite step took 1,132 seconds and the whole CI job 1,146
+seconds; these overlap and are not added. This is below 1,200 seconds but the
+suite alone exceeds the 960-second planning target, before updater dataflow.
+The earlier 960.625703-second and 1015.945480-second observations remain separate
+historical misses. No operating qualification follows from correctness CI.
+
+The execution-boundary correction keeps the complete regression suite in
+Reliability tests. A completed successful source-check run must bind the actual
+code, tests, workflows, configuration, static assets and dependency inputs, plus
+the retained data fixture directly consumed by the tests. The updater freshly
+reads the actual tracked path/mode/blob/content inventory and installed runtime
+bytes; changed, missing, untracked or corrupt source, helpers, fixtures or
+dependencies cannot inherit a previous result. A requirements-file checksum,
+commit name, mtime, pathname or stored PASS is insufficient.
+
+A final CI seal is emitted only after the complete mandatory checks. Reuse
+requires authenticated repository/workflow/run/job/attempt identity, actual
+source ancestry and byte-equivalent inputs, successful ordered steps, an intact
+bounded log seal and matching installed toolchain/dependencies. Normal merges
+with identical verified source inputs are supported; unrelated source is not.
+The helper hashes installed package files, Python standard/dynamic modules,
+the shared interpreter and executable toolchains. Fresh, empty per-invocation
+bytecode namespaces and closed import/loader overrides prevent unchecked
+bytecode from inheriting source trust. Sourceless bytecode and executable files
+inside data directories cannot hide as mutable data. The complete workflow-run
+inventory is bounded at 1,000; overflow or unavailable logs fail closed. Latest
+attempt execution, including a later failed rerun of an older run, takes
+precedence over an earlier success. Changes require renewed full source CI.
+
+The source-check evidence qualifies static source checks only. It does not
+qualify a generation, authenticate an original capture, establish freshness, or
+provide an operating-budget result. Missing, expired, failed or incompatible
+CI evidence makes the source gate unavailable; it never enables a legacy
+qualification fallback. Runtime changes require renewed full source checks.
+
+Every Phase 2 update still performs the actual recorded build and explicit
+verification route, source/input/native/clock/scope/completion checks, exact
+report reconciliation, coherent-generation verification and independently
+checked Pages staging. Source is freshly checked again at publication
+boundaries. Phase 1 and explicit recovery retain their existing routes. No
+forecasting formula, original validator, policy, experiment, daily cadence,
+concurrency protection or 20-minute updater timeout is weakened.
+
+Source-change CI, source-evidence retrieval/verification, ordinary updater
+dataflow and final publication each retain their real clocks and costs. The
+full suite has moved to a source-change acceptance boundary; its work is not
+described as eliminated or hidden outside total source-change release cost.
+Later operating samples must include their actual setup, evidence retrieval,
+restoration, fresh validation, one update, packaging and cleanup. The former
+full-suite measurement is not reused as a changed-source runtime qualification.
+
+Current-main integration must retain every already-public main data file and
+all development evidence. The seed-workflow add/add conflict is resolved by
+retaining the full guarded manual-only installed workflow, not by dispatching
+it. The exact inherited data and protected workflow scope are recorded outside
+the ordinary writer lease; the ordinary controller does not validate that
+protected operation. Ticker remains retired and the daily Chicago schedule
+remains unchanged. Actual current-base integration CI is required.
+
+Completion status is kept in the single existing handoff: IMPLEMENTED,
+INTEGRATION-TESTED, OPERATING-VERIFIED and PUBLICLY VERIFIED are separate.
+Source integration and deployment proceed under the owner's completion
+authority through current gates, accepted artifacts and normal protections;
+no historical authorization is rewritten. Artifact storage/cost facts remain
+a distinct operation-specific prerequisite. No additional spending or new
+private-data publication is inferred.

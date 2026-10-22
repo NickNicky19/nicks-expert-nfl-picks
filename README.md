@@ -207,3 +207,16 @@ validation, a coherent production-rooted artifact, exact public-content review,
 and the combined deployment/public Props/Record/cache/My Picks/recovery decision.
 The existing canonical requirements and research roadmap remain in
 `docs/EVALUATION_PROTOCOL.md`; no additional scheduler or roadmap is introduced.
+
+
+## Validated source and current-data checks
+
+The development execution contract keeps complete regression coverage in source
+CI and verifies its exact code/test/workflow/configuration, retained fixture and
+installed-dependency bindings before a Phase 2 update. Current data is freshly
+validated every run through the unchanged generation and Pages checks; a green
+source run cannot qualify missing or corrupt evidence. Source/runtime changes
+without matching passed checks fail closed. See the current
+[implementation handoff](docs/IMPLEMENTATION_HANDOFF.md) for source versus
+operating costs, integration status and release verification. Daily scheduling,
+manual recovery and Ticker retirement remain unchanged.

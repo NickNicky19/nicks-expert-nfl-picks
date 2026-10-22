@@ -88,3 +88,26 @@ Offline tests cover both recovery modes, backup/history retention, wrong hashes,
 uncommitted files and refusal of a production-model switch. A disposable
 repository rollback rehearsal is part of the Phase 2 integration validation;
 production recovery is not run while preparing this unmerged PR.
+
+
+## Current report-format and source-check recovery
+
+Public-v6/shared-gzip reports and ranked-selection evidence require a compatible
+reader and publisher. Preserve all prior/current report assets, original inputs,
+receipts and My Picks; a blind restore of an older reader is not complete report
+recovery. Before release, retain a current pre-release backup containing PR #2
+and the actual production data. Use normal forward commits and the existing
+serialized updater; verify subsequent updates and public results, not merely
+file survival. A limited Phase 1 fallback must state the loss of Phase 2 report
+capability and honest reporting status.
+
+The Phase 2 source gate also applies to recovered code. Exactly restored,
+previously tested source may reuse its actual matching CI evidence only after
+fresh input and installed-runtime checks and valid ancestry. Changed source,
+missing CI logs, different dependencies or incompatible workflows require new
+complete source CI before that route can run. This does not make old receipts
+newly qualified or allow a restored PASS flag to override current data checks.
+Existing explicit Phase 1/original recovery routes retain their checks and
+evidence preservation. The historical operating misses and unchanged 960-second
+target/1,200-second updater timeout remain visible; recovery capability must be
+measured against its actual source and workload.

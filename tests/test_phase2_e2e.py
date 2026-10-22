@@ -1525,6 +1525,30 @@ class PartialOperationalPipelineTests(unittest.TestCase):
             self.assertEqual(set(aggregate["categories"]), {"rec", "rush_att", "pass_yd"})
             self.assertNotIn("rows", aggregate)
 
+    def test_source_check_equivalence_does_not_qualify_changed_generation_data(self):
+        """Real source manifest and generation validators; no GitHub CI claim."""
+        import source_ci
+        # These static source bytes are checked independently of the fictional
+        # generation. API/runtime attestation is tested in test_source_ci.
+        before_source = source_ci.source(ROOT)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.configure(root)
+            _, health = self.run_partial(root)
+            phase2_capture.validate_generation(root)
+            previous = (root / "output/data/selection-grading/latest.json").read_bytes()
+            native = root / health["receipt"]
+            original = native.read_bytes()
+            native.write_bytes(b"FICTIONAL corrupt required native bytes")
+            # Identical passing source checks never substitute for current
+            # original/native/scope/completion/generation integrity checks.
+            self.assertEqual(source_ci.source(ROOT), before_source)
+            with self.assertRaises((IntegrityError, OSError, EOFError)):
+                phase2_capture.validate_generation(root)
+            self.assertEqual((root / "output/data/selection-grading/latest.json").read_bytes(), previous)
+            native.write_bytes(original)
+            phase2_capture.validate_generation(root)
+
     def test_live_invalid_ranked_registry_fails_and_preserves_publication(self):
         import selection_strategies as strategies
         for variant in ("unknown_schema",):
