@@ -1196,3 +1196,12 @@ reader continues to reject unknown external dependencies. A tiny fictional
 local wheel exercises actual default-pip compilation and the no-compilation
 control without an index or network. This is runtime packaging compatibility,
 not a forecast, data-validation or operating-performance improvement.
+
+Independent review separately reproduced `SOURCE-CI-STDLIB-NATIVE-01`: a native
+extension directly in an allowed standard-library directory could execute while
+being omitted from its inventory. The correction includes the interpreter's
+actual supported extension suffixes there, retaining the same size/inventory
+limits. A copied public native module and isolated child processes exercise
+addition plus same-size/restored-mtime observable mutation. Flat bytecode was
+already included and its separate suspected omission was disproved. The earlier
+package/RECORD finding and its attempt history are preserved independently.

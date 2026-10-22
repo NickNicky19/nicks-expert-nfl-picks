@@ -15,6 +15,7 @@ import types
 import unittest
 from unittest.mock import patch
 
+REAL_PYTHON = sys.executable
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import source_ci as ci
@@ -399,6 +400,44 @@ class EnvironmentTests(unittest.TestCase):
                 path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:]); os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
                 self.assertNotEqual(before["standard_files_sha256"], ci.environment()["standard_files_sha256"])
                 path.write_bytes(raw)
+
+    def test_flat_standard_native_extension_addition_and_restored_mtime_mutation_are_fresh(self):
+        """Real public native module/children; other runtime fixtures are mocked."""
+        # The managed local interpreter links _queue statically. Prefer the
+        # actual test interpreter; use the existing system interpreter only
+        # for this copied-public-extension control when necessary. No install.
+        control = None
+        for binary in dict.fromkeys((REAL_PYTHON, "/usr/bin/python3")):
+            if not Path(binary).is_file(): continue
+            description = json.loads(subprocess.check_output([binary, "-S", "-c",
+                "import _queue,json;print(json.dumps(dict(file=getattr(_queue,'__file__',None),doc=_queue.__doc__)))"],
+                env=dict(os.environ), stderr=subprocess.PIPE, text=True, timeout=10))
+            if description["file"]:
+                control = (binary, Path(description["file"]), description["doc"].encode()); break
+        self.assertIsNotNone(control, "A real native-extension test backend is required")
+        binary, extension, original_doc = control
+        before = ci.environment()
+        target = self.standard / "_queue.so"
+        raw = extension.read_bytes()
+        self.assertTrue(any(target.name.endswith(suffix) for suffix in ci.importlib.machinery.EXTENSION_SUFFIXES))
+        self.assertEqual(raw.count(original_doc), 1)
+        target.write_bytes(raw)
+        added = ci.environment()
+        self.assertNotEqual(before["standard_files_sha256"], added["standard_files_sha256"])
+        script = "import sys;sys.path[:]=[" + repr(str(self.standard)) + "];import _queue;print(_queue.__doc__)"
+        def observed():
+            return subprocess.check_output([binary, "-S", "-c", script], env=dict(os.environ),
+                                           stderr=subprocess.PIPE, text=True, timeout=10).strip()
+        self.assertEqual(observed(), original_doc.decode().strip())
+        info = target.stat()
+        changed_doc = bytes([original_doc[0] ^ 1]) + original_doc[1:]
+        target.write_bytes(raw.replace(original_doc, changed_doc, 1))
+        os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+        self.assertEqual(target.stat().st_size, len(raw))
+        self.assertNotEqual(observed(), original_doc.decode().strip())
+        self.assertNotEqual(added["standard_files_sha256"], ci.environment()["standard_files_sha256"])
+        target.unlink()
+        self.assertEqual(before, ci.environment())
 
     def test_runtime_loader_overrides_unknown_import_roots_and_stale_pycache_reject(self):
         for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONOPTIMIZE", "PYTHONINSPECT", "NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "BASH_ENV"):

@@ -8,6 +8,7 @@ import csv
 from datetime import datetime, timezone
 import hashlib
 import importlib.metadata
+import importlib.machinery
 import json
 import os
 from pathlib import Path
@@ -458,7 +459,9 @@ def environment(root=None):
                     if entry.is_symlink(): raise Rejected("Symlink standard runtime dependency")
                     if entry.is_dir(follow_symlinks=False): pending.append(path)
                     elif entry.is_file(follow_symlinks=False):
-                        if path.suffix not in (".py", ".pyc") and not path.is_relative_to(dynamic): continue
+                        if (path.suffix not in (".py", ".pyc") and not path.is_relative_to(dynamic)
+                                and not any(path.name.endswith(suffix) for suffix in importlib.machinery.EXTENSION_SUFFIXES)):
+                            continue
                         length, checksum = _file_hash(path); total += length
                         if total > ENV_LIMIT or len(inventory) + len(standard_files) + len(outside) >= ENTRY_LIMIT:
                             raise Rejected("Complete runtime closure exceeds its bound")
