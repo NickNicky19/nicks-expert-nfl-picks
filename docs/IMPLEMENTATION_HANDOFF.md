@@ -1394,3 +1394,45 @@ including finite website and outgoing-snapshot failure controls. The initial
 test invocation missing the required tools import path is retained separately;
 the corrected invocation ran the complete focused suite. No live data, credit,
 storage, hosted operating or release qualification follows from these checks.
+
+## 2026-10-22 release continuation: daily-refresh explanation
+
+The actual About renderer still described hourly and additional game-day builds
+after the daily-cadence checkpoint. That stale description was reproduced and
+corrected: one scheduled refresh targets 8:06 a.m. America/Chicago; deliberate
+manual and code-change runs may also occur. Daily operation can miss registered
+timing checkpoints. Later observations cannot fill those gaps. This change does
+not alter the updater, concurrency, timing policy, forecasts or selections.
+The app cache identity advances from v58 to v59; previously qualified release
+identities are not reused for changed application bytes.
+
+The actual-renderer regressions now include the daily schedule, the separate
+manual/code-change route and the missing-checkpoint caveat. Local JavaScript
+syntax, 18 About assertions, 187 UI checks and Python compilation passed.
+Required exact-source CI and browser results are recorded separately on PR #1;
+earlier passing CI does not certify this changed source or a later main tree.
+
+Independent read-only release review also confirmed a production configuration
+dependency: the checked-in original-model selector cannot qualify the accepted
+corrected engine. Its unchanged source guard rejects that mismatch before
+provider requests. A fresh production-rooted corrected plan/configuration and
+verified generated artifact are still required. The old Week 6 plan is not a
+corrected Week 7 authorization. No such plan is applied by this documentation
+or UI correction. Existing production records and separately reviewed local
+observations remain distinct, with proof attached only to matching contracts.
+
+The repository cleanup assessment is closed without deletion. Its dated
+9.21 MiB artifact inventory establishes neither account exhaustion nor a need
+to purchase storage. Existing retention and source/evidence/CI/recovery records
+remain unchanged. Assess the 136 MiB odds reservation separately from the seed;
+the seed's 2 GiB upload ceiling is not its measured retained size. Use observable
+account usage and spending controls; no owner attestation of hidden allocations
+is required. No-cost storage remains unverified, not proven insufficient.
+Odds acquisition and research are not website-release prerequisites.
+
+Expanded grading, exact saved-row comparisons, accuracy and private paper
+tickets remain development features pending their connected acceptance and
+actual public-site verification. Missing-report controls establish safe
+unavailable states, not an accepted split release. Full operating qualification,
+the production-rooted artifact, public contents and compatible recovery remain
+release requirements; this small correction does not complete the Goal.
