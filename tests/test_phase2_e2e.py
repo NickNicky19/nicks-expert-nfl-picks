@@ -377,7 +377,10 @@ class PipelineTests(unittest.TestCase):
 
 
 class PublicSelectionPipelineTests(unittest.TestCase):
-    AT = datetime(2026, 10, 24, 11, tzinfo=timezone.utc)
+    # Existing publisher/checkpoint fixtures deliberately precede registration
+    # of the prospective ranked strategies. Post-registration qualification,
+    # native loss and source closure are exercised by the connected class below.
+    AT = datetime(2026, 10, 17, 11, tzinfo=timezone.utc)
 
     def run_live(self, root, at=None, *, registered_policy=None):
         at = at or self.AT
@@ -389,8 +392,16 @@ class PublicSelectionPipelineTests(unittest.TestCase):
             @classmethod
             def now(cls, tz=None):
                 return at
-        with patch.object(phase2_capture, "datetime", Clock), patch("requests.sessions.Session.request", side_effect=AssertionError("No live HTTP")):
-            return run_capture(root, mode="live")
+        # ROOT supplies the executed application; this fixture may initialize
+        # an independent data-only Git history during its staging checks. That
+        # data HEAD is not the application source identity, including in CI.
+        actual_source = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+        with patch.dict(os.environ, {"GITHUB_SHA": actual_source}), patch.object(phase2_capture, "datetime", Clock), patch("requests.sessions.Session.request", side_effect=AssertionError("No live HTTP")):
+            result = run_capture(root, mode="live")
+        import selection_strategies as strategies
+        self.assertLess(at, utc(strategies.policy()["registered_at"]))
+        self.assertFalse(list((root / "data" / strategies.COMPLETE_LANE).rglob("*.json.gz")), "legacy fixture must not create retrospective ranked membership")
+        return result
 
     def assert_saved_matchup_check(self, root, health):
         name = health["phase2"]["matchup_verification_receipt"]
@@ -1450,7 +1461,7 @@ class CandidateRecordingPipelineTests(unittest.TestCase):
 
 class PartialOperationalPipelineTests(unittest.TestCase):
     def configure(self, root):
-        (root / "tools").mkdir(exist_ok=True)
+        (root / "tools").mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / "tools/selection-strategies-v1.json", root / "tools/selection-strategies-v1.json")
         from test_partial_week import fixture
         data, proof, spec, registration = fixture(root)
