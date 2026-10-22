@@ -154,8 +154,12 @@ class StrategySavedDecisionTests(unittest.TestCase):
         board, _ = fixture()
         board["players"][0]["props"][0]["line_from"] = "ours"
         board["players"][1]["props"][0]["lean"] = None
-        board["games"][2]["state"] = "in"
         native = make_payload(board, NOW, corrected.legacy_engine_hashes(), "live")
+        # Preserve the fictional native row before marking the game started;
+        # make_payload deliberately omits newly started opportunities. This is
+        # a pure rank/decision control, not an original-evidence qualification.
+        board["games"][2]["state"] = "in"
+        native["input_sha256"] = digest(board)
         unknown = self.snapshot(created=NOW)
         from scorecard import identity
         unknown["rows"] = {identity(r): dict(r, observation_row_sha256=digest(r)) for r in native["rows"]}
