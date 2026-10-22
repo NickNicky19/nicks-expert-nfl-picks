@@ -287,6 +287,10 @@ def _runtime_guard(root, standard, sites):
     command separately, with bytecode writes disabled. A post-startup check
     cannot undo a malicious startup; it refuses to certify one.
     """
+    if (any(getattr(sys.flags, name) for name in
+            ("optimize", "debug", "no_site", "ignore_environment", "isolated", "safe_path"))
+            or sys._xoptions):
+        raise Rejected("Unsupported interpreter command-line override")
     allowed = {"PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED", "LD_LIBRARY_PATH"}
     for name, value in os.environ.items():
         if value and ((name.startswith(("PYTHON", "NODE_", "LD_", "DYLD_")) and name not in allowed)
@@ -457,7 +461,10 @@ def environment(root=None):
             raise Rejected("Required runtime tool unavailable")
         version = globals()["command"](command, limit=4096)[0].decode().strip()
         return dict(version=version, binary_sha256=_file_hash(Path(path).resolve())[1])
-    return dict(python=dict(version=sys.version, implementation=sys.implementation.cache_tag,
+    flags = {name: getattr(sys.flags, name) for name in
+             ("optimize", "debug", "no_site", "ignore_environment", "isolated", "safe_path",
+              "dev_mode", "utf8_mode", "hash_randomization")}
+    return dict(python=dict(version=sys.version, implementation=sys.implementation.cache_tag, flags=flags,
                            soabi=sysconfig.get_config_var("SOABI"), shared_library=shared, binary_sha256=_file_hash(Path(sys.executable).resolve())[1]),
                 node=tool("node", ["node", "--version"]), git=tool("git", ["git", "--version"]),
                 image=dict(os=os.environ.get("ImageOS"), version=os.environ.get("ImageVersion"), architecture=platform.machine()),
