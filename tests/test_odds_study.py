@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest import mock
 import urllib.error
@@ -228,6 +229,47 @@ class StudyTests(unittest.TestCase):
         self.assertEqual(len(s.parse(raw, node_limit=s.REPORT_NODES)), s.ENTITY_NODES)
         with self.assertRaisesRegex(s.Stop, "JSON_STRUCTURE_LIMIT"):
             s.parse(s.canonical([0] * s.REPORT_NODES), node_limit=s.REPORT_NODES)
+
+    def test_actual_retained_public_board_uses_website_role_without_exporting_rows(self):
+        # Already-public immutable Git inputs, not a refetch, new capture, Pages
+        # observation or fixture upload. Full-history checkout is required.
+        commit = "c8120e3cb26a908b8d5a99329b0f28ae49473ea1"
+        raw = subprocess.check_output(["git", "-C", str(Path(__file__).resolve().parents[1]),
+                                       "show", commit + ":output/data/week.json"])
+        meta = subprocess.check_output(["git", "-C", str(Path(__file__).resolve().parents[1]),
+                                        "show", commit + ":output/data/meta.json"])
+        self.assertEqual(s.sha(raw), "9bfa446bcad0c0f677773e6326231c0dd1b7af94ceab626465d26845aa2b1a2e")
+        self.assertEqual(s.sha(meta), "e6345b66f4e19db8168f9853c76665ac9b29725b80937b1d58a7bc975f48c573")
+        with self.assertRaisesRegex(s.Stop, "JSON_STRUCTURE_LIMIT"):
+            s.parse(raw, 8 * s.MIB)  # provider-entity structure remains unchanged
+        value = s.make_snapshot(raw, meta, {"commit": commit,
+            "tree": "dc72044651865333819e78908b499bd4382fdf3c", "pages_bytes_match_git": True,
+            "claim": "OFFLINE_MOCKED_PAGES_PRECONDITION_SAVED_GIT_ONLY_NOT_CAPTURE"}, T)
+        self.assertEqual(len(value["rows"]), 1963)
+        self.assertEqual(len(value["games"]), 14)
+        self.assertEqual(sum(r["top_over"] for r in value["rows"]), 12)
+        self.assertEqual(sum(r["top_under"] for r in value["rows"]), 12)
+        encoded = s.canonical(value)
+        restored = s.parse(encoded, 16 * s.MIB, node_limit=s.SNAPSHOT_NODES)
+        # Do not put real player rows in an assertion failure/public CI log.
+        self.assertEqual(s.sha(s.canonical(restored)), s.sha(encoded))
+        self.assertEqual(value["forecast_generated_at"], "2026-10-22T01:30:46Z")
+
+    def test_snapshot_producer_rejects_outgoing_complexity_before_capture_write(self):
+        # Deliberately impossible player count is a parser-bound attack control,
+        # not synthetic football coverage, an admitted fixture or a benchmark.
+        b, m, _ = dense_fixture(players=4000, books=0)
+        self.assertLess(len(s.canonical(b)), 8 * s.MIB)
+        s.parse(s.canonical(b), 8 * s.MIB, node_limit=s.WEBSITE_NODES)
+        with self.assertRaisesRegex(s.Stop, "JSON_STRUCTURE_LIMIT"):
+            snapshot(b, m)
+
+    def test_website_role_itself_remains_finite(self):
+        b, m = fixture(); b["unsupported_excess"] = [0] * s.WEBSITE_NODES
+        raw = s.canonical(b)
+        self.assertLess(len(raw), 8 * s.MIB)
+        with self.assertRaisesRegex(s.Stop, "JSON_STRUCTURE_LIMIT"):
+            snapshot(b, m)
 
     def test_fabricated_derived_complexity_failure_is_not_a_saved_pass(self):
         report = self.run_batch(); report["status"] = "FAILED_SAFE"

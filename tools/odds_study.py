@@ -35,6 +35,7 @@ BODY_LIMIT, BUNDLE_LIMIT = 4 * MIB, 128 * MIB
 # it is not one provider entity. Keep both roles finite and keep all byte caps.
 ENTITY_NODES, REPORT_NODES = 150000, 500000
 DERIVED_NODES = REPORT_NODES - 20000  # fixed <=16-event envelope has ample reserve
+WEBSITE_NODES, SNAPSHOT_NODES = 500000, 150000
 MARKETS = {
     "player_pass_yds": "pass_yd", "player_pass_tds": "pass_td",
     "player_pass_completions": "pass_cmp", "player_pass_attempts": "pass_att",
@@ -191,7 +192,7 @@ def write_file(root, name, raw, secrets=()):
 
 
 def make_snapshot(board_raw, meta_raw, binding, observed):
-    board, meta = parse(board_raw, 8 * MIB), parse(meta_raw, MIB)
+    board, meta = parse(board_raw, 8 * MIB, node_limit=WEBSITE_NODES), parse(meta_raw, MIB)
     require(type(board) is dict and type(meta) is dict, "INVALID_SNAPSHOT")
     require(COMMIT.fullmatch(binding.get("commit", "")) and COMMIT.fullmatch(binding.get("tree", "")),
             "SNAPSHOT_SOURCE_REQUIRED")
@@ -240,12 +241,18 @@ def make_snapshot(board_raw, meta_raw, binding, observed):
                 row["top_" + side] = exact
                 row["top_contract_status"][side] = "EXACT" if exact else "DIFFERENT_OR_UNSUPPORTED_CONTRACT" if pick else "NOT_SELECTED"
             row["id"] = sha(canonical(row)); rows.append(row)
-    return {"schema_version": "odds-website-snapshot-v1", "source": binding,
+    value = {"schema_version": "odds-website-snapshot-v1", "source": binding,
             "board_sha256": sha(board_raw), "meta_sha256": sha(meta_raw),
             "forecast_generated_at": board["generated_at"], "frozen_at": stamp(observed),
             "season": board["season"], "week": board["week"], "games": list(games.values()),
             "rows": rows, "original_top_contracts": board.get("picks", {}),
             "selection_claim": "SAVED_WEBSITE_SNAPSHOT_NOT_FIRST_SELECTION_PROOF"}
+    # Validate the complete outgoing normalized snapshot before freeze can write
+    # it. A website that expands beyond the supported snapshot fails pre-charge;
+    # no rows are dropped to manufacture an accepted smaller representation.
+    structure(value, SNAPSHOT_NODES)
+    require(len(canonical(value)) <= 16 * MIB, "SNAPSHOT_SIZE_LIMIT")
+    return value
 
 
 def choose_events(events, cutoff):
@@ -762,7 +769,7 @@ def verify_bundle(directory, expected_manifest_sha256=None):
         total += len(raw)
     require(total <= BUNDLE_LIMIT - MIB and {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()} == expected,
             "BUNDLE_INVENTORY_MISMATCH")
-    snapshot = parse(read_file(root / "SNAPSHOT.json"), 16 * MIB)
+    snapshot = parse(read_file(root / "SNAPSHOT.json"), 16 * MIB, node_limit=SNAPSHOT_NODES)
     b, m = read_file(root / "forecast/week.json"), read_file(root / "forecast/meta.json")
     rebuilt = make_snapshot(b, m, snapshot["source"], instant(snapshot["frozen_at"]))
     require(rebuilt == snapshot, "SAVED_SNAPSHOT_MISMATCH")
@@ -949,7 +956,7 @@ def collect(directory, code_sha, storage_comment_id):
     import source_ci
     source_api = source_ci.GitHub(); source_api.token = token
     source_proof = source_ci.verify(Path.cwd(), api=source_api)
-    snapshot = parse(read_file(Path(directory) / "SNAPSHOT.json"), 16 * MIB)
+    snapshot = parse(read_file(Path(directory) / "SNAPSHOT.json"), 16 * MIB, node_limit=SNAPSHOT_NODES)
     rebuilt = make_snapshot(read_file(Path(directory) / "forecast/week.json"),
         read_file(Path(directory) / "forecast/meta.json"), snapshot["source"], instant(snapshot["frozen_at"]))
     require(snapshot == rebuilt, "CHANGED_SNAPSHOT")

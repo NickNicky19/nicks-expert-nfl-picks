@@ -1376,3 +1376,21 @@ trusting its reason label. The2,400-quote case now round-trips without lost
 contracts, and a separate6,000-quote case exercises the real complexity-failure
 bound below32MiB. All63 focused tests passed locally; these are finite correctness
 controls, not a live coverage, resource or operating-performance qualification.
+
+A separate saved-input check then found that the retained public website board
+exceeded the generic provider-entity complexity limit:157,103 nodes despite
+remaining below the existing8MiB website-input byte cap. That failure is retained
+separately from the report-reader defect. The adapter now gives the complete
+website input an explicit finite500,000-node role while preserving the150,000-node
+provider-entity limit. Before writing a frozen snapshot, the producer validates
+all normalized rows against the unchanged150,000-node and16MiB saved-snapshot
+reader bounds; unsupported expansion fails before acquisition rather than
+dropping rows. The actual immutable saved Git board produces1,963 study rows,
+fourteen game identities and twelve matching Top selections per side, retaining
+its original forecast clock. This is an offline Git-input regression with the
+Pages-match precondition explicitly mocked, not a new website observation,
+capture or authenticated publication claim. All66 focused tests passed locally,
+including finite website and outgoing-snapshot failure controls. The initial
+test invocation missing the required tools import path is retained separately;
+the corrected invocation ran the complete focused suite. No live data, credit,
+storage, hosted operating or release qualification follows from these checks.
