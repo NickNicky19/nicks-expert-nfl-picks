@@ -1265,3 +1265,96 @@ child/grandchild network-denial controls execute real subprocesses. The full
 split-path positive integration remains pending a genuinely admitted full seed;
 an unadmitted small seed is rejected. None of these local checks establishes
 hosted resource capability or an operating budget.
+
+## Separate one-time paper odds study — 2026-10-22
+
+This owner-authorized study is independent of the grading/builder release and
+of diagnostic seed preparation. The accepted application, original forecasts,
+saved selections, outcomes, source-CI boundary, completed reviews, daily cadence,
+retired Ticker and inactive registrations are unchanged. A separate research
+session does not become another website writer or receive the API credential.
+
+`tools/odds_study.py` implements the bounded offline collection/normalization/
+comparison and saved-bundle path. The ten existing numerical prop categories
+map to their documented standard NFL markets; the eleventh study market is
+`player_anytime_td`. That adapter is study-only, not new production parser
+support. PPR is outside the requested bookmaker market set. Anytime TD remains
+unvalued when its offered event differs from the saved rush-plus-receiving-TD
+definition, its player identity is unresolved or a complementary side is absent.
+
+The fixed one-time identity is `NFL-WEB-ODDS-ONCE-20261022`. At most sixteen
+earliest future games within eight days are selected before prices, with one
+region (`us`) and the exact eleven markets. Documented uncharged event discovery
+provides quota evidence; no separately charged market-discovery request is used.
+Before each event request, the collector refreshes that uncharged evidence and
+authenticates a durable PR #1 reservation for eleven worst-case credits. Total
+reservations cannot exceed176 or the initial verified remaining allowance;
+later quota increases do not expand the ceiling. Counter disagreement, ambiguous
+request completion, missing quota, HTTP failure or unsupported response encoding
+stops the batch without a chargeable retry or replacement game. Reservations
+are never refunded automatically. Duplicate claims and prior invocations fail.
+
+The manual workflow is prepared locally and is **not installed or dispatched**
+by this ordinary source operation. Its future collection step alone receives
+`ODDS_API_KEY`; no browser, ordinary build, research repository or other step
+receives it. Official API authentication uses a private HTTPS query parameter;
+the collector never logs or serializes that URL, an arbitrary exception,
+unrestricted headers or a request object. Nonidentity response encodings are
+withheld before retention. Credential-bearing originals block the bundle seal;
+original bodies are not edited and misrepresented as unchanged. There is no
+key access or provider request in offline tests.
+
+Before collection, freeze actual public website board/meta bytes only when they
+match one pinned main commit. Retain those original files, source/tree identity,
+original generation cutoff and separate retrieval/freeze clocks. A new odds
+observation does not refresh an older forecast. Snapshot Top membership binds
+line, side, source and both forecasts; differing saved Top contracts remain
+preserved and explicitly unmatched rather than being silently attached to a
+different displayed prop. Game/team/kickoff and unique within-game player joins
+are required. Quote identities retain threshold, side, book, market, period,
+source-body hash and retrieval/provider clocks. No historical selection is
+invented and no model forecast is changed.
+
+Supported reference arithmetic proportionally removes the two-sided margin
+within each other book at the exact same player/game/statistic/period/threshold,
+then excludes the offering book from its reference. Missing pairs, integer-push
+uncertainty, unsupported clocks, unresolved identities or incompatible action/
+void/statistic rules remain unvalued. The live v1 collector authenticates no
+venue-rule registry, so its EV fields remain unavailable. Explicit fictional
+rule controls exercise the supported arithmetic without certifying real rules.
+Any later supported estimate is market-derived paper analysis, not a calibrated
+model win probability, proven edge, executable offer, financial ROI or parlay
+valuation. Projection gaps and display rankings are not probabilities.
+
+The proposed output is one artifact for seven days, at most128MiB for both the
+pre-upload bundle and decoded allowlisted members; each original event entity
+is bounded to4MiB. Reserve136MiB of verified no-cost account headroom for that
+artifact and overhead, after existing/pending shared allocations. This project
+budget is not a provider hard cap or a public-artifact exemption. Actual account
+storage and the applicable paid-usage hard-stop evidence remain unresolved;
+**acquisition is held**. The larger diagnostic seed is not required for this
+study, and its separate storage prerequisite is not waived. Public-repository
+artifacts must not be described as private. No new destination or spending is
+authorized. The existing cloud recipient must actually download, rehash, extract
+and freshly verify the bundle before its seven-day expiration; a path or digest
+alone is not completed delivery.
+
+Saved verification rehashes the full allowlist and reconstructs the frozen
+snapshot, selected population, quota/reservation accounting, normalized quotes
+and comparisons from original retained bodies and receipts. A secret-cleared
+failed batch may be integrity-valid while remaining `FAILED_SAFE`; it is never
+a successful complete study. Manifest identity must also match the externally
+retained completion record during retrieval. Unknown files, changed bytes,
+symlinks, missing originals and unsupported bounds reject export. The summary
+is a closed numerical projection rather than raw player/provider data.
+
+Focused acceptance:59 wholly fictional tests passed, including a real
+collector-wrapper/ledger/saved-reader integration with external HTTP/GitHub,
+source-CI proof and execution context explicitly mocked. This is offline code
+evidence, not a provider, subscription, quota, storage, hosted or predictive PASS.
+An independent bounded source review reran the same59 tests successfully; its
+API, context and source-CI boundaries remained mocked. Key rotation is not
+performed: after the batch the owner can replace the same
+repository Actions secret through Settings > Secrets and variables > Actions;
+no browser or research credential migration is required. A replacement key's
+validity is not claimed without a separately permitted check.

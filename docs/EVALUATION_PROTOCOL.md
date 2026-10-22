@@ -871,3 +871,29 @@ tests or fictional outcomes. The retained 960.625703-second and
 target. The production job timeout remains 1,200 seconds. The final corrected
 source needs its own operating evidence, production-rooted artifact/content
 review and combined release/public-site/compatible-recovery authorization.
+
+
+## One-time odds study remains separate from release qualification
+
+The owner-authorized NFL paper-odds batch uses a frozen current website snapshot,
+not new forecasts, a new experiment or retrospectively invented offers. It has
+a fixed sixteen-game/eleven-market/one-region/176-credit ceiling and no recurring
+collector. Offline fixtures and source checks precede acquisition. The account
+no-additional-cost storage/retrieval prerequisite remains unresolved. This study
+is neither a new grading/builder release prerequisite nor a substitute for the
+existing seed, finite operating, production-artifact and public-site checks.
+
+Saved Top contracts, qualifying leans and any recorded strategies retain their
+actual source and timing context. Price/line differences do not replace historical
+selections. Market-reference arithmetic excludes the offering book and requires
+matching two-sided contracts; missing sides, uncertain pushes or rules, unknown
+quote clocks and unsupported probabilities remain unvalued. Any supported EV
+estimate is explicitly market-derived paper evidence, not a proven model edge.
+The live initial implementation has no authenticated venue-rule registry, so
+financial value remains unavailable. There is no parlay financial valuation,
+wagering, promotion or change to the fixed receptions registration/Weeks7–14.
+
+Status: offline implementation and fictional tests; acquisition held on actual
+account facts. Full requirements and preservation limits remain in the existing
+implementation handoff. Original-archive review and accepted application evidence
+remain complete within their original scope.
