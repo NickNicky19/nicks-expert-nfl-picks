@@ -1,0 +1,33 @@
+name: One-time fictional diagnostic seed preparation
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Exact separately approved one-time preparation identifier
+        required: true
+        type: choice
+        default: CANCEL
+        options:
+          - CANCEL
+          - NFL-WEB-CLOUD-SEED-PREP-20261021-045638Z
+      storage_approved:
+        description: Repeat the preparation identifier after output-content and available-storage approval
+        required: true
+        type: string
+      installed_source:
+        description: Exact approved installed development commit, not an application-source override
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  registration_only:
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Inert default-branch dispatch registration
+        run: exit 1
