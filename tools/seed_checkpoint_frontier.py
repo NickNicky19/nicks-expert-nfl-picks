@@ -5,6 +5,7 @@ Progress, independent saved reconstruction, and permission to continue are
 different facts. No original input, plan, receipt, clock or helper is rewritten.
 """
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
@@ -62,6 +63,23 @@ def phase(name):
         raise ValueError('Unknown inspection diagnostic phase')
     DIAGNOSTIC_PHASE = name
     print('CHECKPOINT_FRONTIER_PHASE=' + name, flush=True)
+
+
+@contextmanager
+def retained_source_environment():
+    """Let retained readers resolve their actual Git root, never the installer.
+
+    This matches the existing frozen preparation stage boundary: no old SHA is
+    invented or injected. The caller retains its real source identity and gets
+    the original environment back on success and failure.
+    """
+    installer = os.environ.pop('GITHUB_SHA', None)
+    try:
+        yield
+    finally:
+        os.environ.pop('GITHUB_SHA', None)
+        if installer is not None:
+            os.environ['GITHUB_SHA'] = installer
 
 
 def failure_report(error):
@@ -318,7 +336,7 @@ def check_saved(work):
     before = tree_inventory(root); m = h.bind(root)
     at = h.START + timedelta(hours=h.SEED_HOUR, seconds=5 * n)
     provider = h.Provider(m, h.FULL, at)
-    with h.external(m, provider, root), h.patch.object(m['capture'], '_public_archive_commit',
+    with retained_source_environment(), h.external(m, provider, root), h.patch.object(m['capture'], '_public_archive_commit',
             side_effect=lambda ref, tree: h.assert_local_tree(root, ref, tree)):
         phase('latest_saved_validation')
         generation = m['capture'].validate_generation(root)
@@ -338,6 +356,7 @@ def check_saved(work):
         rows=metrics['rows'], groups=metrics['groups'], outcomes=metrics['outcomes'], native=metrics['native'],
         source_and_original_clocks_preserved=True, raw_checkpoint_preserved=True,
         normalized_tar_mode='0600; committed checkout modes independently recovered from verified Git objects',
+        retained_execution_source='Actual retained Git root; installer GITHUB_SHA absent only during saved-reader calls and restored afterward',
         archive_transport='actual local Git objects, public-commit transport replaced by exact local tree comparison',
         full_seed_admitted=False, continuation_authorized=False, current_checkpoint_qualified=False,
         residual_completion_or_revocation_not_adjudicated=True,

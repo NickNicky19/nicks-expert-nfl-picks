@@ -270,4 +270,54 @@ class SafeDiagnostics(unittest.TestCase):
         self.assertNotIn('DO_NOT_PRINT', json.dumps(report))
 
 
+class RetainedSourceNamespace(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(); cls.root = Path(cls.temp.name)/'actual-retained-source'
+        cls.root.mkdir()
+        rows = subprocess.check_output(['git','-C',str(CODE),'ls-tree','-r','-z',f.BASE,'--','pull','tools','config'])
+        total = 0
+        for row in rows.split(b'\0'):
+            if not row: continue
+            left, name = row.split(b'\t',1); mode, kind, blob = left.decode().split()
+            if kind != 'blob' or mode != '100644': raise AssertionError('Unexpected retained public source role')
+            raw = subprocess.check_output(['git','-C',str(CODE),'cat-file','blob',blob]); total += len(raw)
+            if total > 2*1024**2: raise AssertionError('Bounded public source probe exceeded')
+            target = cls.root/name.decode(); target.parent.mkdir(parents=True,exist_ok=True); target.write_bytes(raw)
+        f.git(cls.root,'init','-q')
+        f.git(cls.root,'-c','user.name=FictionalNamespaceControl','-c','user.email=fictional@example.invalid','add','.')
+        f.git(cls.root,'-c','user.name=FictionalNamespaceControl','-c','user.email=fictional@example.invalid',
+              '-c','commit.gpgsign=false','commit','-qm','Actual retained source bytes; isolated software-test commit')
+        cls.head=f.git(cls.root,'rev-parse','HEAD').decode().strip()
+        cls.installer=subprocess.check_output(['git','-C',str(CODE),'rev-parse','HEAD'],text=True).strip()
+        cls.program=("import json,subprocess,sys;sys.path[:0]=['tools','pull'];import data_integrity_v2 as d\n"
+            "try: result={'actual_source':d.recording_source()}\n"
+            "except subprocess.CalledProcessError as e: result={'subprocess_rejected':True,'returncode':e.returncode}\n"
+            "print(json.dumps(result,sort_keys=True))\n")
+
+    @classmethod
+    def tearDownClass(cls): cls.temp.cleanup()
+
+    def actual_reader(self):
+        # Real retained helper/engine/Git reads in a fresh process, not a mock.
+        return json.loads(subprocess.check_output([sys.executable,'-B','-c',self.program],cwd=self.root,stderr=subprocess.PIPE))
+
+    def test_actual_old_source_rejects_installer_then_resolves_its_own_git(self):
+        with patch.dict(os.environ,{'GITHUB_SHA':self.installer}):
+            self.assertEqual(self.actual_reader(),{'subprocess_rejected':True,'returncode':128})
+            with f.retained_source_environment():
+                self.assertNotIn('GITHUB_SHA',os.environ)
+                self.assertEqual(self.actual_reader(),{'actual_source':self.head})
+            self.assertEqual(os.environ['GITHUB_SHA'],self.installer)
+        self.assertFalse((self.root/'.git/objects/info/alternates').exists())
+
+    def test_installer_environment_is_restored_on_validation_failure(self):
+        with patch.dict(os.environ,{'GITHUB_SHA':self.installer}):
+            with self.assertRaisesRegex(RuntimeError,'control'):
+                with f.retained_source_environment():
+                    self.assertNotIn('GITHUB_SHA',os.environ)
+                    raise RuntimeError('control failure remains failure')
+            self.assertEqual(os.environ['GITHUB_SHA'],self.installer)
+
+
 if __name__ == '__main__': unittest.main()
