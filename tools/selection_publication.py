@@ -250,7 +250,9 @@ def _record_fields(record):
             if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
                 raise IntegrityError("Malformed public reason/clock list")
         elif key == "engine_files":
-            if not isinstance(value, dict) or set(value) - set(ENGINE_PATHS):
+            corrected_engine = (record.get("model_version") == corrected.MODEL
+                                and value == corrected.V2_SOURCE_SHA256)
+            if not isinstance(value, dict) or set(value) - set(ENGINE_PATHS) and not corrected_engine:
                 raise IntegrityError("Unrecognized engine hash mapping")
             for reference in value.values():
                 _hash(reference)
@@ -1118,6 +1120,8 @@ def _ledger(payload, policy, hashes, observed_at):
         raise IntegrityError("Frozen decision envelope is from the future")
     rules = {rule["id"]: rule for rule in policy["checkpoints"]}
     for row in payload["rows"]:
+        expected_engine = (hashes if row.get("model_version") == policy["model"] else
+                           corrected.V2_SOURCE_SHA256 if row.get("model_version") == corrected.MODEL else None)
         if set(row) - DECISION_FIELDS:
             raise IntegrityError("Nonpublic field in persistent decision ledger")
         _safe_value(row)
@@ -1128,8 +1132,8 @@ def _ledger(payload, policy, hashes, observed_at):
         if (row.get("schema_version") != "selection-decision-v1"
                 or row.get("policy_version") != policy["version"]
                 or row.get("policy_sha256") != digest(policy)
-                or row.get("model_version") != policy["model"]
-                or row.get("engine_files") != hashes or row.get("engine_sha256") != digest(hashes)
+                or expected_engine is None
+                or row.get("engine_files") != expected_engine or row.get("engine_sha256") != digest(expected_engine)
                 or row.get("provenance_class") != "local_pregame_membership_observation"
                 or row.get("category") not in policy["categories"]
                 or (row.get("season"), row.get("week")) != (payload["season"], payload["week"])

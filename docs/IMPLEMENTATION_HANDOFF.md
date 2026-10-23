@@ -1523,6 +1523,14 @@ receipts, final original-byte checks and complete public validation remain.
 The default offline API retains its original complete exports and return values.
 No public format, asset cap, freshness rule or forecasting policy changes.
 
+A connected due-checkpoint control also exposed the persistent ledger's original
+seven-file-engine-only guard. Corrected checkpoints now dispatch explicitly to
+the already closed corrected model/eight-file engine. Original-model dispatch
+stays unchanged; unknown models, crossed labels and changed engine maps fail.
+This does not repin or admit corrected observations to the original registered
+comparison. Saved checkpoint decisions retain their exact identities on retry;
+genuinely later outcome derivations retain their own clocks and report identities.
+
 Saved ranked observations and pinned decision ledgers from source
 `e2dd96a31690baad04c8660302933f45f77d72e7` use actual retained source and dependencies,
 with typed commit/tree/blob verification before execution and fresh checks after

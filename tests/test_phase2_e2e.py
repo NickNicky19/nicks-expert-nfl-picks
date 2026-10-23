@@ -2985,6 +2985,75 @@ print(digest(rows))
             strategies.decisions([clean], load_json(clean / "config/timing-policy.json"), self.at, ledger_root=clean)
 
 
+class CorrectedCheckpointPersistenceTests(unittest.TestCase):
+    def test_actual_due_corrected_checkpoint_publishes_and_reloads_without_repinning_original(self):
+        from test_data_integrity_v2 import corrected_fixture, DI_NOW
+        from test_partial_week import status
+        from scorecard import paired_forecasts
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"; root.mkdir()
+            data, proof, spec, registration, _ = corrected_fixture(root)
+            native, _, complete, _ = corrected.record_bundle(root, data, proof, status(data, DI_NOW), spec,
+                registration, clock=lambda: DI_NOW)
+            originals = {p.relative_to(root): p.read_bytes() for p in (root / "data").rglob("*.json.gz")}
+            at = DI_NOW + timedelta(minutes=31)  # Genuine fictional 90m checkpoint, no rewritten capture.
+            pointer = publish_selection_report(root, at)
+            _, rows, _ = selection_publication.publication_contents(root / "output/data/selection-grading", pointer)
+            due = [r for r in rows if r["model_version"] == corrected.MODEL and r["checkpoint"] == "90m"]
+            self.assertTrue(due)
+            self.assertTrue(all(r["engine_sha256"] == digest(corrected.V2_SOURCE_SHA256) for r in due))
+            ledgers = list((root / "data/verification/selection-grading/decisions").rglob("*.json.gz"))
+            self.assertTrue(ledgers)
+            for p in ledgers:
+                value = read(p)
+                self.assertEqual(selection_publication._ledger(value, load_json(root / "config/timing-policy.json"),
+                    corrected.legacy_engine_hashes(), at), value)
+            again = publish_selection_report(root, at)
+            self.assertEqual(again["report_id"], pointer["report_id"])
+            ledger_bytes = {p.relative_to(root): p.read_bytes() for p in ledgers}
+            # A later derivation may produce new outcome observation clocks;
+            # retain those identities rather than forcing report equality.
+            later = publish_selection_report(root, at + timedelta(seconds=1))
+            _, later_rows, _ = selection_publication.publication_contents(root / "output/data/selection-grading", later)
+            self.assertEqual([r["decision_sha256"] for r in later_rows if r["checkpoint"] == "90m"],
+                             [r["decision_sha256"] for r in rows if r["checkpoint"] == "90m"])
+            for name, raw in ledger_bytes.items(): self.assertEqual((root / name).read_bytes(), raw)
+            clean = root.parent / "clean"; shutil.copytree(root, clean)
+            repeated = publish_selection_report(clean, at + timedelta(seconds=1))
+            _, copied, _ = selection_publication.publication_contents(clean / "output/data/selection-grading", repeated)
+            self.assertEqual([r for r in copied if r["checkpoint"] == "90m"], [r for r in later_rows if r["checkpoint"] == "90m"])
+            for name, raw in originals.items(): self.assertEqual((root / name).read_bytes(), raw)
+            policy = load_json(root / "config/evaluation-policy.json")
+            pairs, coverage = paired_forecasts([read(native)], policy, corrected.legacy_engine_hashes())
+            self.assertFalse(pairs)
+            self.assertEqual(coverage["excluded"]["corrected_model_outside_registered_experiment"], len(read(native)["rows"]))
+
+    def test_corrected_checkpoint_rejects_unknown_or_crossed_engine_identity(self):
+        from test_data_integrity_v2 import corrected_fixture, DI_NOW
+        from test_partial_week import status
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"; root.mkdir()
+            data, proof, spec, registration, _ = corrected_fixture(root)
+            corrected.record_bundle(root, data, proof, status(data, DI_NOW), spec, registration, clock=lambda: DI_NOW)
+            analysis = root.parent / "analysis"; at = DI_NOW + timedelta(minutes=31)
+            run_report([root], analysis, now=at, expected_hashes=corrected.legacy_engine_hashes(), diagnostic_exports=False)
+            payload = read(next((analysis / "data/selection_decisions").rglob("*.json.gz")))
+            payload["rows"] = [r for r in payload["rows"] if r["checkpoint"] != "history"]
+            self.assertTrue(payload["rows"])
+            timing = load_json(root / "config/timing-policy.json")
+            selection_publication._ledger(payload, timing, corrected.legacy_engine_hashes(), at)
+            for model, engines in (("unknown-model", corrected.V2_SOURCE_SHA256),
+                    (corrected.MODEL, corrected.legacy_engine_hashes()),
+                    (timing["model"], corrected.V2_SOURCE_SHA256),
+                    (corrected.MODEL, dict(corrected.V2_SOURCE_SHA256, **{"pull/grade.py": "0" * 64}))):
+                bad = copy.deepcopy(payload)
+                for row in bad["rows"]:
+                    row.update(model_version=model, engine_files=engines, engine_sha256=digest(engines))
+                    row.pop("decision_sha256"); row["decision_sha256"] = digest(row)
+                with self.subTest(model=model, engine=digest(engines)), self.assertRaises(IntegrityError):
+                    selection_publication._ledger(bad, timing, corrected.legacy_engine_hashes(), at)
+
+
 class RetainedRankedTreeTests(unittest.TestCase):
     def test_corrupt_root_or_nested_tree_never_supplies_retained_executable_bytes(self):
         import selection_strategies as strategies
