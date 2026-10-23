@@ -972,6 +972,13 @@ if phase=='legacy':
         original_completion=completion.relative_to(root).as_posix(),updates=[]))
 else:
     provider.at=START+timedelta(hours=53)
+    # New fictional roster observations at T1: two post-kickoff discoveries
+    # must stay outside the old frozen contract; the pregame WR stays usable.
+    for pid, position, team, espn in (("fictional-new-late-rb","RB","F00","9900001"),
+                                     ("fictional-new-late-k","K","F00","9900002"),
+                                     ("fictional-new-pregame-wr","WR","F02","9900003")):
+        provider.roster[pid]=dict(full_name="Fictional population regression "+position,
+            team=team,position=position,active=True,depth_chart_order=1,espn_id=espn,injury_status=None)
     board=m['rel'].load_json(root/'output/data/week.json')
     spec=plan(m,root,board,provider.at,True)
     def git(*args):
@@ -1006,6 +1013,59 @@ else:
         pointer=m['rel'].load_json(root/'output/data/selection-grading/latest.json')
         m['publication'].publication_contents(root/'output/data/selection-grading',pointer)
 '''
+
+
+class FrozenForecastPopulationTests(unittest.TestCase):
+    def test_exact_existing_contract_and_unrelated_population_survive(self):
+        import partial_week
+        data, _, _ = setup()
+        prior = copy.deepcopy(data)
+        gid = data["games"][0]["id"]
+        old = copy.deepcopy(data["players"][0])
+        game = data["games"][0]
+        old.setdefault("opp", game["away"] if old["team"] == game["home"] else game["home"])
+        old["late"] = True
+        prior["players"] = [old]
+        new = dict(copy.deepcopy(old), id="new-postkickoff", late=True)
+        pre = dict(copy.deepcopy(old), id="new-pregame", game_id="other-pregame", late=False)
+        first_seen_game = dict(copy.deepcopy(old), id="new-unfrozen-game", game_id="not-in-prior", late=True)
+        entries = [old, new, pre, first_seen_game]
+        before = copy.deepcopy(entries), copy.deepcopy(prior)
+        result = phase2_capture._frozen_forecast_population(entries, prior, {gid, "not-in-prior"})
+        self.assertEqual(result, [old, pre, first_seen_game])
+        current = dict(prior, players=result)
+        self.assertEqual(partial_week.game_contract(current, gid), partial_week.game_contract(prior, gid))
+        self.assertEqual((entries, prior), before)
+        changed = copy.deepcopy(result)
+        changed[0]["props"][0]["line"] += 1
+        self.assertNotEqual(partial_week.game_contract(dict(prior, players=changed), gid),
+                            partial_week.game_contract(prior, gid))
+
+    def test_unknown_or_cross_game_addition_is_rejected(self):
+        prior = {"games":[{"id":"frozen"}], "players":[{"id":"existing","game_id":"another"}]}
+        for entry in ({"id":"new","game_id":"frozen","late":False},
+                      {"id":"new","game_id":"frozen","late":"true"},
+                      {"id":"existing","game_id":"frozen","late":True}):
+            with self.subTest(entry=entry), self.assertRaises(reliability.IntegrityError):
+                phase2_capture._frozen_forecast_population([entry], prior, {"frozen"})
+
+    def test_assembly_wrappers_preserve_picks_and_restore_after_failure(self):
+        import types
+        prior = {"games":[{"id":"frozen"}],"players":[{"id":"old","game_id":"frozen"}]}
+        entries = [dict(prior["players"][0]), {"id":"new","game_id":"frozen","late":True}]
+        picks = {"over":[{"player_id":"old","game_id":"frozen"}],"under":[]}
+        def assemble(previous, started): return entries, picks
+        def kdef(previous, started): return entries
+        api = types.SimpleNamespace(assemble=assemble, kdef_entries=kdef)
+        with self.assertRaisesRegex(RuntimeError, "fictional interruption"):
+            with phase2_capture._recorded_frozen_population(api):
+                kept, actual_picks = api.assemble(prior, {"frozen"})
+                self.assertEqual(kept, entries[:1])
+                self.assertIs(actual_picks, picks)
+                self.assertEqual(api.kdef_entries(previous=prior, started={"frozen"}), entries[:1])
+                raise RuntimeError("fictional interruption")
+        self.assertIs(api.assemble, assemble)
+        self.assertIs(api.kdef_entries, kdef)
 
 
 class FrozenCompletionDiscoveryTests(unittest.TestCase):
@@ -1120,6 +1180,13 @@ class FrozenCompletionConnectedTests(unittest.TestCase):
             result=self.replay(item['completion'])
             frozen=next(p for p in result[1]['game_population'] if p['classification']=='frozen_original_inputs_verified')
             self.assertEqual(frozen['completed_origin_receipt'],self.origin)
+            inputs=read(self.root/result[1]['proof']['latest_inputs'])
+            ids={p['id'] for p in inputs['week_data']['players']}
+            self.assertIn('fictional-new-pregame-wr',ids)
+            for pid in ('fictional-new-late-rb','fictional-new-late-k'):
+                self.assertNotIn(pid,ids)
+                self.assertIn(pid,inputs['projection_input_components'])
+            self.assertIn('fictional-new-late-rb',inputs['positions'])
         self.assertEqual(before,{p.relative_to(self.root):p.read_bytes() for p in (self.root/'data').rglob('*.json.gz')})
         final_at=reliability.utc(self.state['updates'][-1]['at'])
         class Clock(datetime):

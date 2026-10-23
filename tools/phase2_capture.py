@@ -5,8 +5,10 @@ No branch update, website deployment or production-model promotion occurs here.
 """
 import argparse
 import copy
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
+import inspect
 import os
 from pathlib import Path
 import re
@@ -1177,6 +1179,45 @@ def _promote(stage, root, *, packaging=False, _checked=None):
         raise
 
 
+def _frozen_forecast_population(entries, previous, started):
+    """New post-kickoff discoveries cannot enlarge a saved frozen contract.
+
+    Their source inputs remain recorded. This affects only a new board before
+    its input receipt is written; no saved board/receipt or prior player changes.
+    Existing contract/clock checks still reject changed or missing originals.
+    """
+    frozen = {game["id"] for game in previous.get("games", []) if game["id"] in started}
+    members = {(player["game_id"], player["id"]) for player in previous.get("players", [])}
+    prior_ids = {player["id"] for player in previous.get("players", [])}
+    result = []
+    for entry in entries:
+        if entry["game_id"] in frozen and (entry["game_id"], entry["id"]) not in members:
+            if entry.get("late") is not True or entry["id"] in prior_ids:
+                raise IntegrityError("Unsupported change to a frozen forecast population")
+            continue
+        result.append(entry)
+    return result
+
+
+@contextmanager
+def _recorded_frozen_population(build):
+    """Apply the frozen population contract at the recorded build boundary."""
+    original_assemble, original_kdef = build.assemble, build.kdef_entries
+    assemble_signature, kdef_signature = inspect.signature(original_assemble), inspect.signature(original_kdef)
+    def assemble(*args, **kwargs):
+        bound = assemble_signature.bind(*args, **kwargs).arguments
+        entries, picks = original_assemble(*args, **kwargs)
+        return _frozen_forecast_population(entries, bound["previous"], bound["started"]), picks
+    def kdef(*args, **kwargs):
+        bound = kdef_signature.bind(*args, **kwargs).arguments
+        return _frozen_forecast_population(original_kdef(*args, **kwargs), bound["previous"], bound["started"])
+    build.assemble, build.kdef_entries = assemble, kdef
+    try:
+        yield
+    finally:
+        build.assemble, build.kdef_entries = original_assemble, original_kdef
+
+
 def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
     _checked = {}
     root = Path(root).resolve()
@@ -1243,7 +1284,10 @@ def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
                     build.books.ATHLETES = build.CACHE / "espn_athletes.json"
                     if selected_state is not None:
                         build.sources.nfl_state = lambda: copy.deepcopy(selected_state)
-                    build_recorded.record_build(stage, mode="live", model=config.get("production_model", point_challenger.BASELINE_MODEL))
+                    population = (_recorded_frozen_population(build)
+                        if config.get("production_model") == corrected.MODEL else nullcontext())
+                    with population:
+                        build_recorded.record_build(stage, mode="live", model=config.get("production_model", point_challenger.BASELINE_MODEL))
                 finally:
                     for key, value in saved.items():
                         setattr(build, key, value)

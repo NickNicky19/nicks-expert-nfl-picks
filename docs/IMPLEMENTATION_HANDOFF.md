@@ -1487,3 +1487,20 @@ The new helper requires its actual configuration/registration binding before a
 new live attempt. Source correctness, completed real-package acceptance, operating
 qualification and public deployment remain separate requirements; the historical
 960-second planning misses and 1,200-second updater timeout remain unchanged.
+# Frozen forecast population at recorded build — 2026-10-23
+
+The next genuine build completed its recorded-builder work, then correctly failed
+the fixed contract guard: 17 newly discovered explicitly late players enlarged an
+already-started game's 38-player population. Every original player contract and
+saved pick was unchanged. No completed capture/report/Pages generation advanced.
+The failed original-input and failure evidence are retained without qualification.
+
+The corrected-route integration now keeps new post-kickoff discoveries outside an
+existing frozen forecast population before recording the new board. Their actual
+source positions/components remain retained. It does not edit an old board,
+receipt, fingerprint or clock, change forecasting/selection rules, or loosen the
+validator. Changed/missing original contracts still fail. Original-version builds
+retain their existing route, and temporary assembly wrappers restore on failure.
+This integration correction requires its own actual-source tests/CI and genuine
+build/report/staging acceptance; the failed 20.448-second attempt is not a passing
+updater or operating measurement.
