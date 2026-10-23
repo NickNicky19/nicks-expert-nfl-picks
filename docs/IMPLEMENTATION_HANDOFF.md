@@ -1565,3 +1565,73 @@ has no complete dependency closure. This does not alter public formats, report
 memberships, source qualification, caps, engine or scoring rules. A later actual
 report/updater result is required; removing redundant reads alone is not an
 operating or deployment PASS.
+
+### Saved-plan and diagnostic source transition — 2026-10-23
+
+The genuine current-production-rooted corrected-engine build/report/validation/
+Pages/tar path at 04519b54 completed locally in 920.071674 seconds. The actual
+56,918 rows, 24,295 exact-membership groups and 4,830 outcomes reconciled; the
+601-file Pages working set is 38,020,230 bytes and its uploader tar is 39,147,520
+bytes. Controlled Chromium checks at 320/390/1280 and independent compatible
+Git/data restoration passed. This is accepted local artifact evidence, not a
+whole-hosted-job, aggregate-memory, physical-device or public-deployment result.
+Both exact-source push and current-main test-merge CI passed 862 tests for that
+source. All earlier unfavorable timing results and failed attempts remain.
+
+Saved hosting snapshots now resolve their exact completion, scope and original
+registration before full bundle verification. A later root configuration cannot
+replace that pinned plan. The current non-snapshot generation still must match
+current configuration. Missing, corrupted, late, failed or incompatible pinned
+evidence fails without discovery of a convenient alternative. The wrapper does
+not change any clock, source, native, model, scope or completion algorithm.
+
+Saved ranked observations and decision ledgers have two closed retained readers:
+e2dd96a31690baad04c8660302933f45f77d72e7/tree
+d02544420316557ddf1451a0753c2321e3d2a245, and
+04519b54dfb76dcca7916fe6bf75d7e1711793b6/tree
+10a5cc1539c51c8089fb7ff077447b6d17c4e13e. Each executes its actual bounded,
+freshly checked old source rather than current helpers under an old label.
+Shared engine, policy and qualification dependencies stay exact. New recording
+remains strict to current installed source. Unknown source/helper combinations
+have no fallback. Existing original records, selections and timestamps remain.
+
+The existing diagnostic coordinator keeps the immutable B3 seed and frozen input
+contract. On a separately derived copy it installs the actual candidate source,
+repackages the saved generation, then creates a new fictional plan/registration
+at the fixed +77h+130s clock before the unchanged +135s material-correction
+sample. Its internal source-marker-v3 binds the original seed/configuration and
+Git roles, current candidate configuration/source/helper, new fictional plan and
+actual registration. Marker-v2 stays readable but grants no transition privilege.
+The original fourteen games, nine legacy fingerprints, five verified games,
+expiry, engine, offers, clocks and inactive experiments stay unchanged. This
+fictional adaptation never edits the production plan or requalifies an old
+receipt. Every retry freshly checks the saved graph and aliases; changed
+registration/configuration/source dependencies invalidate reuse. Failed mutable
+state rolls back separately from retained create-only evidence.
+
+No full 24-generation/277-observation seed, three cold hosted samples or aggregate
+resource qualification is claimed here. A SMALL correctness fixture is not full
+admission. The 960-second planning target and 1,200-second updater timeout are
+unchanged. Storage remains an account-evidence prerequisite, not presumed
+exhaustion: shorter artifact retention can reduce cost exposure but cannot prove
+no additional cost. An old source that merely reads the format is not certified
+routine operational recovery. Existing daily cadence, retired Ticker, PR #2,
+My Picks and original-archive review remain preserved. The expanded grading,
+accuracy and private paper builder remain unreleased pending the remaining
+operating and public-release acceptance.
+
+Targeted local acceptance for this change: three actual closed-reader catalog
+controls PASS0.397s; four actual corrected builder/native/report/hosting saved-plan
+controls PASS17.018s; six actual e2d/045 source/ledger/cold-process/corruption
+controls PASS392.473s; 59 coordinator controls PASS1.426s plus four additional
+fresh-retry/alias/index controls PASS0.319s. Source-CI transport/resource records
+in the coordinator unit controls are mocks, not hosted qualification. Separately,
+the unchanged F607 dispatcher reproduced a pinned B3 origin and prospective
+nine-legacy/five-verified scope in71.880s; no completed new bundle or full seed
+was inferred. The initial negative test incorrectly expected a second bundle to
+remain globally usable after corrupting an inventoried registration; the full
+inventory correctly rejected it. Its corrected test retains the rejection and
+checks the untouched alternative bytes. Another synthetic assessor fixture had
+20s for21 declared stages; its accounting was corrected without altering any
+real timing limit. Both initial logs remain. Combined wrapper replay and final
+exact-source CI are pending at this implementation commit.

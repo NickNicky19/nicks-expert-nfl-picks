@@ -509,7 +509,9 @@ def _source_marker(root):
     marker=_load(root/'DIAGNOSTIC_EXECUTION_SOURCE.json')
     keys={'schema_version','fixture_construction_source','prior_fixture_commit','candidate_commit','candidate_tree',
         'files','config_files','fictional_phase2_sha256','candidate_phase2_sha256','retained_evidence_inventory_sha256','saved_seed_manifest_sha256','packaging_pending'}
-    if (set(marker)!=keys or marker['schema_version']!='diagnostic-execution-source-v2'
+    version=marker.get('schema_version')
+    if version=='diagnostic-execution-source-v3':keys=keys|{'phase2_transition'}
+    if (set(marker)!=keys or version not in ('diagnostic-execution-source-v2','diagnostic-execution-source-v3')
             or marker['fixture_construction_source']!=BASE or marker['packaging_pending'] is not True
             or any(not _hex(marker[k],HEX40) for k in ('prior_fixture_commit','candidate_commit','candidate_tree'))
             or any(not _hex(marker[k],HEX64) for k in ('fictional_phase2_sha256','candidate_phase2_sha256','retained_evidence_inventory_sha256','saved_seed_manifest_sha256'))
@@ -524,10 +526,16 @@ def _source_marker(root):
             raise RuntimeError('Invalid execution file descriptor')
     for name,digest in marker['config_files'].items():
         if type(name) is not str or not name.startswith('config/') or '..' in Path(name).parts or not _hex(digest,HEX64):raise RuntimeError('Invalid configuration descriptor')
+    if version=='diagnostic-execution-source-v3' and marker['phase2_transition'] is not None:
+        descriptor=marker['phase2_transition']
+        if (type(descriptor) is not dict or set(descriptor)!={'path','sha256','bytes'}
+                or descriptor['path']!=TRANSITION_PATH or not _hex(descriptor['sha256'],HEX64)
+                or type(descriptor['bytes']) is not int or not 0<descriptor['bytes']<=JSON_LIMIT):
+            raise RuntimeError('Unsupported fictional transition descriptor')
     return marker
 
 
-def execution_identity(code,root,*,packaged=True):
+def _execution_base_identity(code,root,*,packaged=True):
     """Final candidate bytes and separately preserved fictional inputs."""
     marker=_source_marker(root)
     _,seed_config=_frozen_seed_manifest(root)
@@ -551,9 +559,296 @@ def execution_identity(code,root,*,packaged=True):
         if (p.is_symlink() or not p.is_file() or p.stat().st_size!=d['bytes'] or _hash_file(p)!=d['sha256']
                 or ('100755' if p.stat().st_mode&0o100 else '100644')!=d['mode']):
             raise RuntimeError('Derived execution source bytes differ from candidate: '+name)
-    if _hash_file(root/'config/phase2.json')!=marker['fictional_phase2_sha256']:
-        raise RuntimeError('Fictional activation configuration changed')
     return marker
+
+
+def execution_identity(code,root,*,packaged=True):
+    marker=_execution_base_identity(code,root,packaged=packaged)
+    descriptor=marker.get('phase2_transition')
+    if descriptor is None:
+        if _hash_file(root/'config/phase2.json')!=marker['fictional_phase2_sha256']:
+            raise RuntimeError('Fictional activation configuration changed')
+    else:
+        raw=_bounded_file(root/TRANSITION_PATH,JSON_LIMIT)
+        if len(raw)!=descriptor['bytes'] or sha(raw)!=descriptor['sha256']:
+            raise RuntimeError('Fictional transition bytes changed')
+        target,_,_=_transition_binding(root,marker)
+        if _bounded_file(root/'config/phase2.json')!=encoded(target):
+            raise RuntimeError('Derived fictional activation configuration changed')
+    return marker
+
+
+TRANSITION_SECONDS=130
+TRANSITION_PATH='DIAGNOSTIC_PLAN_TRANSITION.json'
+
+
+def _transition_clock():
+    if (SEED_HOUR!=77 or seed_v1.FULL.get('generations')!=24
+            or seed_v1.SAMPLE_SECONDS!=135 or not 5*24<TRANSITION_SECONDS<seed_v1.SAMPLE_SECONDS):
+        raise RuntimeError('Changed fixed fictional transition/sample clock')
+    return START+timedelta(hours=SEED_HOUR,seconds=TRANSITION_SECONDS)
+
+
+def _atomic_private_bytes(path,raw):
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent,delete=False) as handle:
+        handle.write(raw);handle.flush();os.fsync(handle.fileno());temporary=Path(handle.name)
+    try:os.replace(temporary,path)
+    finally:temporary.unlink(missing_ok=True)
+
+
+def _seed_json(root,marker,name):
+    """Read an approved original role through freshly hashed Git objects."""
+    import source_ci
+    if name not in ('config/phase2.json','output/data/week.json'):
+        raise RuntimeError('Unsupported original seed role')
+    manifest,_=_frozen_seed_manifest(root)
+    prior=marker['prior_fixture_commit']
+    if manifest.get('roots',{}).get('fictional_head')!=prior:
+        raise RuntimeError('Original fixture commit differs from approved seed')
+    expected=manifest['files'].get(name)
+    if (type(expected) is not dict or set(expected)!={'sha256','bytes','mode'}
+            or not _hex(expected['sha256'],HEX64) or type(expected['bytes']) is not int
+            or not 0<expected['bytes']<=SOURCE_FILE_LIMIT or expected['mode'] not in (0o644,0o755)):
+        raise RuntimeError('Missing bounded original seed role')
+    def obj(kind,oid):
+        if not _hex(oid,HEX40):raise RuntimeError('Invalid original Git object identity')
+        raw,_=source_ci.command(['git','--no-replace-objects','-c','core.hooksPath=/dev/null','-C',str(root),
+            'cat-file',kind,oid],limit=SOURCE_FILE_LIMIT,env=source_ci._git_environment())
+        if hashlib.sha1(kind.encode()+b' '+str(len(raw)).encode()+b'\0'+raw).hexdigest()!=oid:
+            raise RuntimeError('Corrupt original Git object')
+        return raw
+    commit=obj('commit',prior);first=commit.splitlines()[0]
+    if not re.fullmatch(b'tree [0-9a-f]{40}',first):raise RuntimeError('Invalid original commit tree')
+    oid=first[5:].decode();parts=name.split('/')
+    for number,part in enumerate(parts):
+        raw=obj('tree',oid);offset=0;entries={}
+        while offset<len(raw):
+            end=raw.find(b'\0',offset)
+            if end<0 or end+21>len(raw):raise RuntimeError('Malformed original tree')
+            header=raw[offset:end].split(b' ',1)
+            if len(header)!=2:raise RuntimeError('Malformed original tree entry')
+            mode,entry=header;entry=entry.decode();child=raw[end+1:end+21].hex();offset=end+21
+            if entry in entries or not entry or entry in ('.','..') or '/' in entry or '\\' in entry:
+                raise RuntimeError('Unsupported original tree entry')
+            entries[entry]=(mode,child)
+        if part not in entries:raise RuntimeError('Original seed role is absent from Git')
+        mode,oid=entries[part]
+        if number<len(parts)-1:
+            if mode!=b'40000':raise RuntimeError('Non-directory original seed path')
+        elif mode not in (b'100644',b'100755') or (0o755 if mode==b'100755' else 0o644)!=expected['mode']:
+            raise RuntimeError('Unsupported original seed mode')
+    raw=obj('blob',oid)
+    if len(raw)!=expected['bytes'] or sha(raw)!=expected['sha256']:
+        raise RuntimeError('Original seed bytes differ from approved manifest')
+    return _decoded(raw),raw
+
+
+def _transition_spec(original,board,status,source_sha):
+    """Closed fictional transformation; this pure value builder grants no trust."""
+    import data_integrity_v2 as api
+    import partial_week
+    import reliability
+    from source_evidence import verified_status
+    at=_transition_clock()
+    if (not _hex(source_sha,HEX40) or original.get('capture_enabled') is not True
+            or original.get('production_model')!=api.MODEL
+            or original.get('verification_mode')!=api.VALIDATOR
+            or original.get('challenger_production_enabled') is not False
+            or original.get('experimental_recording_enabled') is not False):
+        raise RuntimeError('Unsupported original fictional configuration')
+    old=original['partial_week'];plan=old['plan']
+    if (old.get('validator_sha256')!=api.RETAINED_CORRECTED_HELPERS['tools/data_integrity_v2.py']
+            or reliability.digest(plan)!=old.get('plan_sha256') or plan.get('engine_files')!=api.V2_SOURCE_SHA256
+            or (plan.get('season'),plan.get('week'))!=(2026,6)
+            or (board.get('season'),board.get('week'))!=(2026,6)
+            or len(board.get('games',[]))!=14
+            or not reliability.utc(plan['effective_not_before'])<at<reliability.utc(plan['expires_at'])
+            or reliability.utc(board['generated_at'])>=at
+            or not at<START+timedelta(hours=SEED_HOUR,seconds=seed_v1.SAMPLE_SECONDS)<reliability.utc(plan['expires_at'])):
+        raise RuntimeError('Unsupported fixed fictional predecessor or clock')
+    games={g['id']:g for g in board['games']}
+    old_games={g['id']:g for g in plan['games']}
+    exemptions=plan['legacy_exemptions'];legacy={g['game_id']:g for g in exemptions}
+    if (len(games)!=14 or len(old_games)!=14 or len(exemptions)!=9 or len(legacy)!=9
+            or set(games)!=set(old_games) or not set(legacy)<=set(games)):
+        raise RuntimeError('Changed fixed fictional game/exemption population')
+    for gid,game in games.items():
+        if any((reliability.utc(game[k])!=reliability.utc(old_games[gid][k]) if k=='kickoff'
+                else game[k]!=old_games[gid][k]) for k in ('home','away','kickoff')):
+            raise RuntimeError('Changed fictional schedule')
+        if gid in legacy:
+            if (reliability.utc(game['kickoff'])>=at or not legacy[gid].get('reason')
+                    or reliability.digest(partial_week.game_contract(board,gid))!=legacy[gid]['forecast_contract_sha256']):
+                raise RuntimeError('Changed original fictional legacy contract')
+        elif reliability.utc(game['kickoff'])<=at:
+            raise RuntimeError('Additional started fictional game needs a separate decision')
+    observed=verified_status(status,2026,6,'live',at)
+    if (status.get('collected_at')!=reliability.stamp(at) or set(observed)!=set(games)
+            or {state:sum(g['state']==state for g in observed.values()) for state in ('post','in','pre')}
+                !={'post':2,'in':7,'pre':5}):
+        raise RuntimeError('Changed fixed fictional status population/clock')
+    for gid,value in observed.items():
+        kickoff=reliability.utc(games[gid]['kickoff'])
+        expected='post' if at>=kickoff+timedelta(hours=4) else 'in' if at>=kickoff else 'pre'
+        if (reliability.utc(value['kickoff'])!=kickoff or value['state']!=expected
+                or value['completed']!=(expected=='post')):
+            raise RuntimeError('Changed fictional status schedule/finality')
+    updated=copy.deepcopy(plan)
+    updated.update(plan_id='FICTIONAL_DERIVED_EXECUTION_'+source_sha+'_'+old['plan_sha256'],
+        plan_prepared_at=reliability.stamp(at),effective_not_before=reliability.stamp(at),
+        initial_complete_board_sha256=reliability.digest(board),source_start=source_sha,
+        previous_plan_sha256=old['plan_sha256'],
+        fixture_transition='DERIVED_FICTIONAL_ONLY_ORIGINAL_B3_EVIDENCE_RETAINED',
+        schedule_status_payload_sha256=reliability.digest(status),schedule_status_observed_at=status['collected_at'])
+    board_payload=dict(schema_version='partial-plan-board-v1',season=2026,week=6,board=board)
+    board_name='data/verification/partial-plan-boards/2026/w06/'+reliability.digest(board_payload)+'.json.gz'
+    spec=dict(plan=updated,plan_sha256=reliability.digest(updated),validator_sha256=api.code_sha256(),
+        owner_authorization='FICTIONAL_ONLY_DERIVED_SOURCE_TRANSITION_NOT_REAL_ACTIVATION',initial_board_receipt=board_name)
+    result=copy.deepcopy(original);result['partial_week']=spec
+    api.validate_plan(spec,board,at)
+    return result,board_payload
+
+
+def _transition_material(root,marker):
+    """Actual copied helper/source and original seed, never production config."""
+    m=bind(root)
+    import data_integrity_v2 as api
+    if (Path(api.__file__).resolve()!=root/'tools/data_integrity_v2.py'
+            or Path(m['rel'].__file__).resolve()!=root/'tools/reliability.py'
+            or Path(m['source'].__file__).resolve()!=root/'tools/source_evidence.py'):
+        raise RuntimeError('Derived transition must execute actual copied helpers')
+    helper=_hash_file(root/'tools/data_integrity_v2.py')
+    if helper!=m['rel'].V2_HELPER_SHA256 or helper!=marker['files']['tools/data_integrity_v2.py']['sha256']:
+        raise RuntimeError('Derived transition helper binding changed')
+    api.recording_source(marker['candidate_commit'],repository=root)
+    original,original_raw=_seed_json(root,marker,'config/phase2.json')
+    board,_=_seed_json(root,marker,'output/data/week.json')
+    notice=_load(root/'FICTIONAL_ONLY.json')
+    if (notice.get('notice')!=NOTICE or notice.get('campaign')!=CAMPAIGN
+            or notice.get('reviewed_source')!=BASE or notice.get('construction_code')!=BASE
+            or notice.get('dimensions') not in (seed_v1.FULL,seed_v1.SMALL)):
+        raise RuntimeError('Unsupported fictional transition lineage')
+    provider=Provider(m,notice['dimensions'],_transition_clock())
+    status=m['source'].record_scoreboard(provider.scoreboard(2026,6),dict(dates=2026,week=6,seasontype=2),_transition_clock())
+    target,board_payload=_transition_spec(original,board,status,marker['candidate_commit'])
+    return m,api,original_raw,board,target,board_payload,status
+
+
+def _transition_binding(root,marker,*,issue=False):
+    """Recompute complete expected values and freshly validate every saved edge."""
+    m,api,original_raw,board,target,board_payload,status=_transition_material(root,marker)
+    spec=target['partial_week'];at=_transition_clock();ev=m['ev'];rel=m['rel'];partial=m['partial']
+    if _bounded_file(root/'config/phase2.json') not in (original_raw,encoded(target)):
+        raise RuntimeError('Changed fictional configuration is not a supported transition state')
+    status_payload=dict(schema_version='partial-schedule-baseline-v1',season=2026,week=6,status=status)
+    status_name='data/verification/partial-schedule-baselines/2026/w06/'+rel.digest(status_payload)+'.json.gz'
+    if issue:
+        if ev.write(root,'verification/partial-schedule-baselines',status_payload).relative_to(root).as_posix()!=status_name:
+            raise RuntimeError('Derived status identity differs')
+        if ev.write(root,'verification/partial-plan-boards',board_payload).relative_to(root).as_posix()!=spec['initial_board_receipt']:
+            raise RuntimeError('Derived initial board identity differs')
+        reg_path,_=api.register_plan(root,spec,at,source_sha=marker['candidate_commit'],initial_board=board)
+        reg_name=reg_path.relative_to(root).as_posix()
+    else:
+        stored=_load(root/TRANSITION_PATH)
+        reg_name=stored.get('registration_receipt')
+    if (partial._saved(root,status_name,'verification/partial-schedule-baselines')!=status_payload
+            or partial._saved(root,spec['initial_board_receipt'],'verification/partial-plan-boards')!=board_payload):
+        raise RuntimeError('Derived plan original dependencies changed')
+    saved=api.registration(root,reg_name,spec,at)
+    if (saved['source_sha']!=marker['candidate_commit'] or saved['registered_at']!=at.isoformat()
+            or saved['schedule_status_receipt']!=status_name or saved['initial_board']!=board):
+        raise RuntimeError('Derived registration source/clock/dependencies changed')
+    binding=dict(schema_version='diagnostic-fictional-plan-transition-v1',fixture_construction_source=BASE,
+        saved_seed_manifest_sha256=marker['saved_seed_manifest_sha256'],prior_fixture_commit=marker['prior_fixture_commit'],
+        candidate_commit=marker['candidate_commit'],candidate_tree=marker['candidate_tree'],
+        original_phase2_sha256=sha(original_raw),candidate_phase2_sha256=marker['candidate_phase2_sha256'],
+        derived_phase2_sha256=sha(encoded(target)),helper_sha256=api.code_sha256(),
+        original_plan_sha256=_decoded(original_raw)['partial_week']['plan_sha256'],plan_sha256=spec['plan_sha256'],
+        transition_at=at.isoformat(),sample_at=(START+timedelta(hours=SEED_HOUR,seconds=seed_v1.SAMPLE_SECONDS)).isoformat(),
+        initial_board_receipt=spec['initial_board_receipt'],schedule_status_receipt=status_name,
+        registration_receipt=reg_name,registration_payload_sha256=rel.digest(saved))
+    if not issue and stored!=binding:raise RuntimeError('Derived transition record differs from actual dependencies')
+    return target,original_raw,binding
+
+
+def _saved_packaging_identity(root,m,packaging):
+    """Fresh old-generation validation, including interrupted-transition retries.
+
+    Only the saved snapshot's own registration qualifies that old observation.
+    This does not qualify it as a new current-plan capture.
+    """
+    capture=m['capture'];base=root/'output/data/selection-grading'
+    working=_decoded(_bounded_file(base/'hosting.json',MIB),MIB);checked={}
+    capture._registry(base,working,_checked=checked)
+    manifest,snapshots=capture._manifest(base,working['latest'],root=root,_checked=checked)
+    if manifest['generation_sha256']!=packaging['generation']:
+        raise RuntimeError('Changed saved packaging before fictional transition')
+    if any(not capture._same_generation_snapshot(name,_bounded_file(root/'output'/name),snapshots[name])
+            for name in capture.HOST_SNAPSHOTS):
+        raise RuntimeError('Saved packaging aliases changed before fictional transition')
+
+
+def transition_execution_plan(code,root):
+    """Idempotent diagnostic-only plan migration after saved packaging."""
+    require_offline();marker=_execution_base_identity(code,root)
+    if marker['schema_version']!='diagnostic-execution-source-v3':
+        raise RuntimeError('Legacy execution marker cannot acquire a new plan')
+    packaging=_load(root/'DIAGNOSTIC_EXECUTION_PACKAGING.json')
+    if (set(packaging)!={'schema_version','fixture_construction_source','candidate_commit','generation','original_capture_preserved'}
+            or packaging['schema_version']!='diagnostic-execution-packaging-v2'
+            or packaging['fixture_construction_source']!=BASE or packaging['candidate_commit']!=marker['candidate_commit']
+            or packaging['original_capture_preserved'] is not True or not _hex(packaging['generation'],HEX64)):
+        raise RuntimeError('Saved packaging must precede the fictional plan transition')
+    before=_evidence_inventory(root);old_marker=_bounded_file(root/'DIAGNOSTIC_EXECUTION_SOURCE.json')
+    config_path=root/'config/phase2.json';old_config=_bounded_file(config_path)
+    if git(root,'diff','--cached','--name-only'):
+        raise RuntimeError('Unrelated staged work before fictional transition')
+    try:
+        m=bind(root);notice=_load(root/'FICTIONAL_ONLY.json')
+        provider=Provider(m,notice['dimensions'],_transition_clock())
+        with external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
+            _saved_packaging_identity(root,m,packaging)
+        # Failed/interrupted invocations retain deterministic new receipts. A retry
+        # recomputes them, never inherits a PASS record or changes their identity.
+        target,original_raw,binding=_transition_binding(root,marker,issue=not (root/TRANSITION_PATH).exists())
+        if old_config not in (original_raw,encoded(target)):
+            raise RuntimeError('Changed fictional configuration is not a supported transition state')
+        if (root/TRANSITION_PATH).exists() and _load(root/TRANSITION_PATH)!=binding:
+            raise RuntimeError('Existing transition is not this exact source/plan')
+        _atomic_private_bytes(root/TRANSITION_PATH,encoded(binding))
+        raw=_bounded_file(root/TRANSITION_PATH)
+        descriptor=dict(path=TRANSITION_PATH,sha256=sha(raw),bytes=len(raw))
+        if marker['phase2_transition'] not in (None,descriptor):raise RuntimeError('Conflicting fictional transition marker')
+        after=_evidence_inventory(root)
+        if any(after.get(name)!=digest for name,digest in before.items()):
+            raise RuntimeError('Transition changed retained data/report/evidence')
+        _atomic_private_bytes(config_path,encoded(target))
+        updated=copy.deepcopy(marker);updated['phase2_transition']=descriptor
+        _atomic_private_bytes(root/'DIAGNOSTIC_EXECUTION_SOURCE.json',encoded(updated))
+        execution_identity(code,root)
+        git(root,'add','--','config/phase2.json',TRANSITION_PATH,'DIAGNOSTIC_EXECUTION_SOURCE.json')
+        changed=subprocess.run(['git','-C',str(root),'diff','--cached','--quiet']).returncode
+        if changed not in (0,1):raise RuntimeError('Cannot inspect fictional transition commit')
+        if changed:
+            git(root,'commit','-qm','Fictional derived source/plan; B3 originals retained')
+        return binding
+    except BaseException as original_error:
+        # Mutable diagnostic state rolls back; all create-only receipts/failure
+        # evidence remain. Original seed bytes live in their independent root.
+        cleanup_error=None
+        try:
+            staged=git(root,'diff','--cached','--name-only').splitlines()
+            owned={'config/phase2.json',TRANSITION_PATH,'DIAGNOSTIC_EXECUTION_SOURCE.json'}
+            if not set(staged)<=owned:raise RuntimeError('Unrelated staged work during transition failure')
+            if staged:git(root,'restore','--staged','--',*staged)
+        except BaseException as error:cleanup_error=error
+        _atomic_private_bytes(config_path,old_config)
+        _atomic_private_bytes(root/'DIAGNOSTIC_EXECUTION_SOURCE.json',old_marker)
+        if cleanup_error is not None:
+            raise RuntimeError('Fictional transition failed; owned index cleanup also failed: '+type(cleanup_error).__name__) from original_error
+        raise
 
 
 def install_execution_source(code,root):
@@ -590,7 +885,7 @@ def install_execution_source(code,root):
         (root/name).chmod(0o755 if d['mode']=='100755' else 0o644)
     if before!=_evidence_inventory(root):raise RuntimeError('Source installation changed retained evidence')
     git(root,'fetch','--quiet',str(code),current['commit']);git(root,'update-ref','refs/diagnostic/execution-source',current['commit'])
-    put(root/'DIAGNOSTIC_EXECUTION_SOURCE.json',dict(schema_version='diagnostic-execution-source-v2',
+    put(root/'DIAGNOSTIC_EXECUTION_SOURCE.json',dict(schema_version='diagnostic-execution-source-v3',phase2_transition=None,
         fixture_construction_source=BASE,prior_fixture_commit=git(root,'rev-parse','HEAD'),
         candidate_commit=current['commit'],candidate_tree=current['tree'],files=files,
         config_files={f['path']:f['sha256'] for f in current['files'] if f['path'].startswith('config/') and f['path']!='config/phase2.json'},
@@ -658,6 +953,7 @@ def job(code,root,result,sample_number,*,_operation=None):
             raise RuntimeError('Fixture not admitted; no timed sample substitution')
         stage('execution_source_install',[sys.executable,__file__,'install-source','--code',str(code),'--root',str(root)])
         stage('execution_saved_packaging',[sys.executable,__file__,'package-source','--code',str(code),'--root',str(root)])
+        stage('execution_fictional_plan_transition',[sys.executable,__file__,'transition-plan','--code',str(code),'--root',str(root)])
         stage('retained_cheap_checks',[sys.executable,__file__,'checks','--code',str(code),'--root',str(root)])
         stage('capture_and_advisories',[sys.executable,__file__,'capture-stage','--code',str(code),'--root',str(root),'--result',str(result.parent/'dataflow.json')])
         for boundary,action,stage_name in (('before_data_commit','commit-stage','local_commit_and_pages_stage'),('after_pages_stage','tar-stage','uploader_tar')):
@@ -1024,7 +1320,7 @@ def assess(metadata,result,*,api=None):
     samples=[];intervals=[];seen=set()
     stages={'resource_capability','transport_allocation_admission','restoration_allocation_admission','seed_retrieval','source_ci_online','source_ci_private_binding','network_isolation',
         'source_ci_isolated_entry','seed_restoration','workload_admission','execution_source_install',
-        'execution_saved_packaging','retained_cheap_checks','capture_and_advisories','source_ci_before_data_commit','local_commit_and_pages_stage',
+        'execution_saved_packaging','execution_fictional_plan_transition','retained_cheap_checks','capture_and_advisories','source_ci_before_data_commit','local_commit_and_pages_stage',
             'source_ci_after_pages_stage','uploader_tar','source_ci_isolated_final','cleanup'}
     for job in inventory['jobs']:
         match=re.fullmatch(r'Operating sample ([123])',job.get('name',''))
@@ -1171,7 +1467,10 @@ def _advisories(root,m,provider):
 
 def sample_capture(code,root,result):
     """P5 capture/preservation sequence, stopped at the real pre-commit gate."""
-    require_offline();execution_identity(code,root);m,provider=_sample_context(root)
+    require_offline();identity=execution_identity(code,root)
+    if identity.get('schema_version')!='diagnostic-execution-source-v3' or identity.get('phase2_transition') is None:
+        raise RuntimeError('Completed fictional source/plan transition required before connected update')
+    m,provider=_sample_context(root)
     r=dict(notice=NOTICE,stages={},status='CAPTURE_RUNNING')
     def step(name,action):
         tick=time.monotonic()
@@ -1218,7 +1517,7 @@ def sample_tar(code,root,result):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=('job','critical','project','restore','admit','install-source','package-source','checks','capture-stage','commit-stage','tar-stage','assess'))
+    p.add_argument('action',choices=('job','critical','project','restore','admit','install-source','package-source','transition-plan','checks','capture-stage','commit-stage','tar-stage','assess'))
     p.add_argument('--code',type=Path,required=True);p.add_argument('--root',type=Path,required=True)
     p.add_argument('--result',type=Path);p.add_argument('--sample-number',type=int);p.add_argument('--metadata',type=Path)
     a=p.parse_args();code=a.code.resolve();root=a.root.resolve()
@@ -1231,6 +1530,7 @@ def main():
         if seed_v1.admit(root,root,a.result,small=False)['status']!='ADMITTED':raise SystemExit(3)
     elif a.action=='install-source':install_execution_source(code,root)
     elif a.action=='package-source':package_execution_source(code,root)
+    elif a.action=='transition-plan':transition_execution_plan(code,root)
     elif a.action=='checks':cheap_checks(code)
     elif a.action=='capture-stage':sample_capture(code,root,a.result)
     elif a.action=='commit-stage':sample_commit(code,root,a.result)

@@ -33,15 +33,22 @@ SOURCE_PATHS = ("tools/selection_strategies.py", POLICY_PATH, "tools/phase2_capt
                 "pull/build.py", "pull/scoring.py")
 RETAINED_SOURCE = "e2dd96a31690baad04c8660302933f45f77d72e7"
 RETAINED_TREE = "d02544420316557ddf1451a0753c2321e3d2a245"
+RETAINED_SOURCES = {
+    RETAINED_SOURCE: RETAINED_TREE,
+    "04519b54dfb76dcca7916fe6bf75d7e1711793b6": "10a5cc1539c51c8089fb7ff077447b6d17c4e13e",
+}
 
 
 @contextmanager
-def _retained_source():
+def _retained_source(source_sha=RETAINED_SOURCE):
     """Actual closed prior source, never current code wearing an old label."""
+    if source_sha not in RETAINED_SOURCES:
+        raise IntegrityError("Unsupported retained ranked source identity")
+    source_tree = RETAINED_SOURCES[source_sha]
     git = lambda *args: corrected._git(ROOT, *args)
-    commit = git("cat-file", "commit", RETAINED_SOURCE)
-    if (hashlib.sha1(b"commit " + str(len(commit)).encode() + b"\0" + commit).hexdigest() != RETAINED_SOURCE
-            or commit.splitlines()[0] != b"tree " + RETAINED_TREE.encode()):
+    commit = git("cat-file", "commit", source_sha)
+    if (hashlib.sha1(b"commit " + str(len(commit)).encode() + b"\0" + commit).hexdigest() != source_sha
+            or commit.splitlines()[0] != b"tree " + source_tree.encode()):
         raise IntegrityError("Retained ranked commit/tree identity mismatch")
     entries, trees = [], {}
     def tree(oid, prefix=""):
@@ -73,13 +80,14 @@ def _retained_source():
             if len(body) != size or hashlib.sha1(b"blob " + str(len(body)).encode() + b"\0" + body).hexdigest() != child:
                 raise IntegrityError("Retained ranked source blob is corrupt")
             entries.append((path, child, body))
-    tree(RETAINED_TREE)
+    tree(source_tree)
     if not entries or len(entries) > 512 or sum(len(raw) for _, _, raw in entries) > 16 * 1024**2:
         raise IntegrityError("Retained ranked source exceeds supported closure")
-    # The only changed imported algorithms are the dispatcher and optional
-    # report exporter. All qualification, engine and policy dependencies stay
-    # exact. The child imports the actual old versions of all three files.
-    changed = {"tools/selection_strategies.py", "tools/selection_report.py", "tools/selection_publication.py"}
+    # Replay the actual previous dispatcher/report/wrapper together. The saved
+    # snapshot plan selector changed; native, scope, engine, clocks and policy
+    # still require the exact shared qualification dependencies below.
+    changed = {"tools/selection_strategies.py", "tools/selection_report.py", "tools/selection_publication.py",
+               "tools/phase2_capture.py"}
     from reliability import ENGINE_PATHS
     shared = (set(SOURCE_PATHS) | set(ENGINE_PATHS)) - changed
     for name, _, raw in entries:
@@ -94,7 +102,7 @@ def _retained_source():
         git_dir = git("rev-parse", "--absolute-git-dir").decode().strip()
         (source / ".git").write_text("gitdir: " + git_dir + "\n")
         yield source
-        if git("cat-file", "commit", RETAINED_SOURCE) != commit:
+        if git("cat-file", "commit", source_sha) != commit:
             raise IntegrityError("Retained ranked commit changed during validation")
         if any(git("cat-file", "tree", oid) != raw for oid, raw in trees.items()):
             raise IntegrityError("Retained ranked tree changed during validation")
@@ -104,7 +112,7 @@ def _retained_source():
                 raise IntegrityError("Retained ranked source changed during validation")
 
 
-def _retained_call(root, operation, payload, at):
+def _retained_call(root, operation, payload, at, *, source_sha=RETAINED_SOURCE):
     """Fresh actual-source replay. No durable or cross-root PASS cache."""
     import phase2_capture
     from phase2_capture import _dependency_closure
@@ -146,7 +154,7 @@ except Exception as error:
                          "validation_now": stamp(phase2_capture.datetime.now(timezone.utc))})
     if len(request) > 128 * 1024**2:
         raise IntegrityError("Retained ranked replay request exceeds supported bound")
-    with _retained_source() as source:
+    with _retained_source(source_sha) as source:
         output = source / "retained-result.json"
         result = subprocess.run([sys.executable, "-c", program, str(output)], cwd=source, env=env,
                                 input=request, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
@@ -251,8 +259,9 @@ def read_completed(root, name, *, now=None, _checked=None):
     root = Path(root).resolve()
     completed = partial_week._saved(root, name, COMPLETE_LANE)
     saved = partial_week._saved(root, completed["observation_receipt"], LANE)
-    if saved.get("source_sha") == RETAINED_SOURCE:
-        result = _retained_call(root, "completed", {"name": name}, utc(now or datetime.now(timezone.utc)))
+    if saved.get("source_sha") in RETAINED_SOURCES:
+        result = _retained_call(root, "completed", {"name": name}, utc(now or datetime.now(timezone.utc)),
+                                source_sha=saved["source_sha"])
         if not isinstance(result, list) or len(result) != 2:
             raise IntegrityError("Unsupported retained ranked completion result")
         return tuple(result)
@@ -483,14 +492,20 @@ def _freeze(root, records, snapshots, timing, at):
         if payload["helper_files"] == helper:
             reproduced = _records(pinned, timing, utc(payload["derived_at"]))
         else:
-            with _retained_source() as retained:
-                old_helper = {name: hashlib.sha256((retained / name).read_bytes()).hexdigest() for name in helper}
-            if payload["helper_files"] != old_helper:
+            selected_source = None
+            for source_sha in RETAINED_SOURCES:
+                with _retained_source(source_sha) as retained:
+                    old_helper = {name: hashlib.sha256((retained / name).read_bytes()).hexdigest() for name in helper}
+                if payload["helper_files"] == old_helper:
+                    selected_source = source_sha
+                    break
+            if selected_source is None:
                 raise IntegrityError("Unsupported ranked ledger helper identity")
             # Pinned witnesses were freshly qualified above. Reproduce their
             # old decision algorithm and its actual _decision dependency.
             encoded = [{**s, "rows": list(s["rows"].values())} for s in pinned]
-            reproduced = _retained_call(root, "records", {"snapshots": encoded, "timing": timing}, utc(payload["derived_at"]))
+            reproduced = _retained_call(root, "records", {"snapshots": encoded, "timing": timing}, utc(payload["derived_at"]),
+                                        source_sha=selected_source)
         expected = {r["decision_key"]: r for r in reproduced}
         for row in payload["rows"]:
             if ((row["season"], row["week"]) != (payload["season"], payload["week"])

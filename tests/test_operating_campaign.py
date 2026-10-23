@@ -1,5 +1,7 @@
 """LOCAL proposal unit controls; all CI responses are mocks, never qualification."""
 import importlib.util
+import copy
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -104,6 +106,7 @@ class Campaign(unittest.TestCase):
             (root/'pull/build.py').write_text('# identical fictional arithmetic\n')
             (root/'config/unchanged.json').write_text('{"same":true}\n')
             (root/'config/phase2.json').write_text('{"fictional":true}\n' if root==self.root else '{"production":true}\n')
+            if root==self.root:(root/'output/data/week.json').write_text('{"unit":"original fictional role"}\n')
             (root/'tools/old.py').write_text('# candidate\n' if root==self.code else '# retained old\n')
             (root/'output/app.js').write_text('// candidate\n' if root==self.code else '// retained old\n')
             (root/'output/index.html').write_text('<html>same</html>\n')
@@ -118,7 +121,9 @@ class Campaign(unittest.TestCase):
                 raw=p.read_bytes();fp['files'].append(dict(path=p.relative_to(self.code).as_posix(),mode='100644',bytes=len(raw),sha256=c.sha(raw),blob=c.git(self.code,'hash-object',str(p))))
         seed=self.root.parent/'retrieved-seed';seed.mkdir()
         raw=c.encoded(dict(schema_version='fictional-operating-seed-v1',full_admitted=True,application_source=c.BASE,
-            harness_sha256=c.SEED_HARNESS_SHA256,files={'config/phase2.json':dict(sha256=c._hash_file(self.root/'config/phase2.json'),bytes=(self.root/'config/phase2.json').stat().st_size,mode=0o644)}))
+            harness_sha256=c.SEED_HARNESS_SHA256,roots={'fictional_head':c.git(self.root,'rev-parse','HEAD')},
+            files={name:dict(sha256=c._hash_file(self.root/name),bytes=(self.root/name).stat().st_size,mode=0o644)
+                for name in ('config/phase2.json','output/data/week.json')}))
         (seed/'SEED_MANIFEST.json').write_bytes(raw)
         self.fixture_env=patch.dict(os.environ,{'SEED_MANIFEST_SHA256':c.sha(raw)});self.fixture_env.start()
         return fp
@@ -154,6 +159,140 @@ class Campaign(unittest.TestCase):
         with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
             c.install_execution_source(self.code,self.root);(self.root/'config/unchanged.json').write_text('{"same":false}\n')
             with self.assertRaisesRegex(RuntimeError,'configuration bytes'):c.execution_identity(self.code,self.root,packaged=False)
+    def test_v3_marker_preserves_exact_original_git_roles(self):
+        fp=self.fixture();original=(self.root/'config/phase2.json').read_bytes()
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
+            c.install_execution_source(self.code,self.root)
+            marker=c._source_marker(self.root)
+            self.assertEqual(marker['schema_version'],'diagnostic-execution-source-v3')
+            self.assertIsNone(marker['phase2_transition'])
+            _,raw=c._seed_json(self.root,marker,'config/phase2.json')
+            self.assertEqual(raw,original)
+            # The original role is read from the pinned Git closure, even when
+            # the later derived configuration is different.
+            (self.root/'config/phase2.json').write_text('{"derived":true}\n')
+            self.assertEqual(c._seed_json(self.root,marker,'config/phase2.json')[1],original)
+            with self.assertRaisesRegex(RuntimeError,'Unsupported original seed role'):
+                c._seed_json(self.root,marker,'data/unrelated.json')
+            marker['prior_fixture_commit']=fp['commit']
+            with self.assertRaisesRegex(RuntimeError,'differs from approved seed'):
+                c._seed_json(self.root,marker,'config/phase2.json')
+    def test_strict_v2_marker_reader_is_retained(self):
+        fp=self.fixture()
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
+            c.install_execution_source(self.code,self.root)
+            marker=c._source_marker(self.root);marker.pop('phase2_transition')
+            marker['schema_version']='diagnostic-execution-source-v2'
+            c.put(self.root/'DIAGNOSTIC_EXECUTION_SOURCE.json',marker)
+            self.assertEqual(c.execution_identity(self.code,self.root,packaged=False),marker)
+            marker['phase2_transition']=None;c.put(self.root/'DIAGNOSTIC_EXECUTION_SOURCE.json',marker)
+            with self.assertRaisesRegex(RuntimeError,'Invalid versioned execution marker'):c._source_marker(self.root)
+    def test_pending_plan_transition_stops_before_build(self):
+        fp=self.fixture()
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
+            c.install_execution_source(self.code,self.root)
+            (self.root/'output/app.js').write_bytes((self.code/'output/app.js').read_bytes())
+            with self.assertRaisesRegex(RuntimeError,'transition required'):c.sample_capture(self.code,self.root,self.result)
+    def test_unsupported_transition_descriptor_is_rejected(self):
+        fp=self.fixture()
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
+            c.install_execution_source(self.code,self.root)
+        marker=c._source_marker(self.root)
+        for descriptor in ({'path':'other.json','bytes':1,'sha256':'a'*64},
+                {'path':c.TRANSITION_PATH,'bytes':True,'sha256':'a'*64},
+                {'path':c.TRANSITION_PATH,'bytes':1,'sha256':'a'*64,'pass':True}):
+            marker['phase2_transition']=descriptor;c.put(self.root/'DIAGNOSTIC_EXECUTION_SOURCE.json',marker)
+            with self.subTest(descriptor=descriptor),self.assertRaises(RuntimeError):c._source_marker(self.root)
+
+    def _retry_control(self,completed=False):
+        """Unit ordering scaffold; it does not qualify a real generation."""
+        fp=self.fixture()
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
+            c.install_execution_source(self.code,self.root)
+        (self.root/'output/app.js').write_bytes((self.code/'output/app.js').read_bytes())
+        packaging=dict(schema_version='diagnostic-execution-packaging-v2',fixture_construction_source=c.BASE,
+            candidate_commit=fp['commit'],generation='d'*64,original_capture_preserved=True)
+        c.put(self.root/'DIAGNOSTIC_EXECUTION_PACKAGING.json',packaging)
+        c.put(self.root/c.TRANSITION_PATH,{'unit':'retained transition bytes, not a qualification'})
+        if completed:
+            marker=c._source_marker(self.root);raw=(self.root/c.TRANSITION_PATH).read_bytes()
+            marker['phase2_transition']={'path':c.TRANSITION_PATH,'sha256':c.sha(raw),'bytes':len(raw)}
+            c.put(self.root/'DIAGNOSTIC_EXECUTION_SOURCE.json',marker)
+            c.put(self.root/'config/phase2.json',{'unit':'derived configuration'})
+        capture=SimpleNamespace(_public_archive_commit=lambda *args:None)
+        return fp,packaging,{'capture':capture}
+
+    def test_saved_packaging_helper_freshly_checks_generation_and_every_alias(self):
+        import phase2_capture
+        base=self.root/'output/data/selection-grading';base.mkdir(parents=True)
+        c.put(base/'hosting.json',{'latest':{'unit':'saved descriptor'}})
+        snapshots={name:(b'{}' if name.endswith('.json') else b'fictional static bytes')
+            for name in phase2_capture.HOST_SNAPSHOTS}
+        for name,raw in snapshots.items():
+            path=self.root/'output'/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(raw)
+        events=[];contexts=[];manifest={'generation_sha256':'d'*64}
+        def registry(base,working,*,_checked):events.append('registry');contexts.append(_checked)
+        def read(base,descriptor,*,root,_checked):
+            self.assertIs(_checked,contexts[-1]);events.append('manifest');return manifest,snapshots
+        capture=SimpleNamespace(_registry=registry,_manifest=read,HOST_SNAPSHOTS=phase2_capture.HOST_SNAPSHOTS,
+            _same_generation_snapshot=phase2_capture._same_generation_snapshot)
+        c._saved_packaging_identity(self.root,{'capture':capture},{'generation':'d'*64})
+        for name in phase2_capture.HOST_SNAPSHOTS:
+            path=self.root/'output'/name;path.write_bytes(b'{"changed":true}' if name.endswith('.json') else b'corrupt')
+            with self.subTest(alias=name),self.assertRaisesRegex(RuntimeError,'aliases changed'):
+                c._saved_packaging_identity(self.root,{'capture':capture},{'generation':'d'*64})
+            path.write_bytes(snapshots[name])
+        manifest['generation_sha256']='e'*64
+        with self.assertRaisesRegex(RuntimeError,'Changed saved packaging'):
+            c._saved_packaging_identity(self.root,{'capture':capture},{'generation':'d'*64})
+        self.assertEqual(events,['registry','manifest']*(len(phase2_capture.HOST_SNAPSHOTS)+2))
+        self.assertEqual(len({id(value) for value in contexts}),len(contexts))
+
+    def _reject_corrupt_retry(self,completed):
+        fp,_,m=self._retry_control(completed)
+        base=self.root/'output/data/selection-grading';base.mkdir(parents=True)
+        (base/'hosting.json').write_bytes(b'{"latest":')
+        names=('config/phase2.json','DIAGNOSTIC_EXECUTION_SOURCE.json',c.TRANSITION_PATH,'data/original.json')
+        before={name:(self.root/name).read_bytes() for name in names}
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp), \
+                patch.object(c,'bind',return_value=m),patch.object(c,'external',return_value=contextlib.nullcontext()), \
+                patch.object(c,'_transition_binding') as plan:
+            with self.assertRaises(RuntimeError):c.transition_execution_plan(self.code,self.root)
+            plan.assert_not_called()
+        self.assertEqual({name:(self.root/name).read_bytes() for name in names},before)
+        self.assertEqual(c.git(self.root,'diff','--cached','--name-only'),'')
+        self.assertEqual(list((self.root/'data').rglob('*')), [self.root/'data/original.json'])
+
+    def test_interrupted_transition_retry_rejects_corrupt_hosting_before_plan_writes(self):
+        self._reject_corrupt_retry(False)
+
+    def test_completed_transition_retry_rejects_corrupt_hosting_before_plan_writes(self):
+        self._reject_corrupt_retry(True)
+
+    def test_transition_commit_failure_restores_config_marker_and_only_owned_index(self):
+        fp,_,m=self._retry_control(False)
+        names=('config/phase2.json','DIAGNOSTIC_EXECUTION_SOURCE.json',c.TRANSITION_PATH,'data/original.json')
+        before={name:(self.root/name).read_bytes() for name in names}
+        target={'unit':'new derived configuration'}
+        # Qualification is deliberately controlled here: this is an index and
+        # file transaction test, never evidence of source/bundle acceptance.
+        binding=c._decoded(before[c.TRANSITION_PATH]);actual_git=c.git
+        def fail_commit(root,*args):
+            if args and args[0]=='commit':
+                staged=set(actual_git(root,'diff','--cached','--name-only').splitlines())
+                self.assertTrue(staged)
+                self.assertTrue(staged<={'config/phase2.json','DIAGNOSTIC_EXECUTION_SOURCE.json',c.TRANSITION_PATH})
+                raise RuntimeError('intentional unit commit failure after staging')
+            return actual_git(root,*args)
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp), \
+                patch.object(c,'bind',return_value=m),patch.object(c,'external',return_value=contextlib.nullcontext()), \
+                patch.object(c,'_saved_packaging_identity'),patch.object(c,'execution_identity'), \
+                patch.object(c,'_transition_binding',return_value=(target,before['config/phase2.json'],binding)), \
+                patch.object(c,'git',side_effect=fail_commit):
+            with self.assertRaisesRegex(RuntimeError,'intentional unit commit failure'):
+                c.transition_execution_plan(self.code,self.root)
+        self.assertEqual({name:(self.root/name).read_bytes() for name in names},before)
+        self.assertEqual(c.git(self.root,'diff','--cached','--name-only'),'')
     def test_legacy_builder_dependency_is_unchanged(self):
         self.assertEqual(c.sha((DEPENDENCY_ROOT/'tools/operating_diagnostic.py').read_bytes()),c.SEED_HARNESS_SHA256)
         integrity=json.loads((DEPENDENCY_ROOT/'tools/cloud-seed-integrity.json').read_bytes())
@@ -335,7 +474,7 @@ class Campaign(unittest.TestCase):
         import copy
         measured,outer,report,fp=self.measurement_fixture();facts=c._measurements(measured)
         stage_names={'resource_capability','transport_allocation_admission','restoration_allocation_admission','seed_retrieval','source_ci_online','source_ci_private_binding','network_isolation',
-            'source_ci_isolated_entry','seed_restoration','workload_admission','execution_source_install','execution_saved_packaging',
+            'source_ci_isolated_entry','seed_restoration','workload_admission','execution_source_install','execution_saved_packaging','execution_fictional_plan_transition',
             'retained_cheap_checks','capture_and_advisories','source_ci_before_data_commit','local_commit_and_pages_stage',
             'source_ci_after_pages_stage','uploader_tar','source_ci_isolated_final','cleanup'}
         stages={k:{'start':i,'end':i+.5,'seconds':.5} for i,k in enumerate(sorted(stage_names))}
@@ -352,7 +491,7 @@ class Campaign(unittest.TestCase):
             projection=dict(schema_version='operating-measurement-projection-v1',claim='DERIVED_MEASUREMENTS_NOT_ORIGINAL_RECORD_BYTES',run_id=123,run_attempt=1,sample=n,source='1'*40,source_tree='2'*40,
                 status=report['status'],source_ci=proof,source_ci_boundary_count=3,environment_sha256=proof['environment_sha256'],seed_manifest_sha256='b'*64,
                 wrapper_sha256='a'*64,dependency_hashes=report['dependency_hashes'],source_manifest_sha256='3'*64,
-                fixture_harness_sha256=c.SEED_HARNESS_SHA256,fixture_construction_source=c.BASE,harness_wall_seconds=20,stages=stages,
+                fixture_harness_sha256=c.SEED_HARNESS_SHA256,fixture_construction_source=c.BASE,harness_wall_seconds=len(stage_names),stages=stages,
                 workload_evidence=self.evidence(),checks={k:True for k in ('fresh_source_ci_binding','root_record_source_bytes','root_execution_and_resource_binding','protected_original_records','resource_measurements_recomputed')},resource_measurements=facts)
             logs[n]=b'2026-10-22T00:00:01Z NFL_OPERATING_MEASUREMENT '+c.encoded(projection)+b'\n'
         inventory={'total_count':3,'jobs':jobs}
@@ -381,6 +520,80 @@ class Campaign(unittest.TestCase):
         self.assertEqual(value['resources'],'NOT_RUN_CAPABILITY_ONLY');self.assertFalse(value['capability']['privilege_drop_tested'])
         outer['seed_manifest_sha256']='a'*64
         with self.assertRaises(RuntimeError):c._capability_projection(measured,outer,fp,123,1)
+
+class TransitionValues(unittest.TestCase):
+    """Actual value validators; not a full fixture, registration or admission."""
+    def setUp(self):
+        import data_integrity_v2 as api
+        import partial_week
+        import reliability as rel
+        import source_evidence
+        self.api,self.rel=api,rel
+        self.at=c._transition_clock();self.source='0'*40
+        provider=c.Provider({},c.seed_v1.SMALL,self.at)
+        games=[dict(id=f'99202606{index:02}',home=f'F{index*2:02}',away=f'F{index*2+1:02}',
+            kickoff=rel.stamp(provider.kick(2026,6,index))) for index in range(14)]
+        self.board=dict(season=2026,week=6,generated_at=rel.stamp(c.START+c.timedelta(hours=c.SEED_HOUR,seconds=120)),
+            games=games,players=[],picks={'over':[],'under':[]})
+        plan=dict(schema_version=api.PLAN,plan_id='FICTIONAL_DIAGNOSTIC_V2',model=api.MODEL,season=2026,week=6,
+            plan_prepared_at=rel.stamp(c.START+c.timedelta(hours=c.SEED_HOUR)),
+            effective_not_before=rel.stamp(c.START+c.timedelta(hours=c.SEED_HOUR)),
+            expires_at=rel.stamp(c.START+c.timedelta(hours=c.SEED_HOUR,days=3)),
+            validator_contract=api.VALIDATOR,engine_files=copy.deepcopy(api.V2_SOURCE_SHA256),
+            initial_complete_board_sha256=rel.digest(self.board),games=copy.deepcopy(games),
+            legacy_exemptions=[dict(game_id=g['id'],forecast_contract_sha256=rel.digest(partial_week.game_contract(self.board,g['id'])),
+                reason='FICTIONAL_UNRECORDED_LEGACY_NOT_REAL_EXEMPTION') for g in games[:9]],
+            completion_status_max_age_seconds=60,full_board_verified=False,complete_week_qualified=False,experimental_recording_enabled=False)
+        self.original=dict(capture_enabled=True,challenger_production_enabled=False,experimental_recording_enabled=False,
+            production_model=api.MODEL,verification_mode=api.VALIDATOR,partial_week=dict(plan=plan,plan_sha256=rel.digest(plan),
+            validator_sha256=api.RETAINED_CORRECTED_HELPERS['tools/data_integrity_v2.py'],
+            owner_authorization='FICTIONAL_ONLY_NOT_A_REAL_ACTIVATION'))
+        self.status=source_evidence.record_scoreboard(provider.scoreboard(2026,6),dict(dates=2026,week=6,seasontype=2),self.at)
+    def derive(self):return c._transition_spec(self.original,self.board,self.status,self.source)[0]
+    def rehash(self):self.original['partial_week']['plan_sha256']=self.rel.digest(self.original['partial_week']['plan'])
+    def test_fixed_clocks_and_preserved_predecessor_fields(self):
+        before=copy.deepcopy(self.original);result=self.derive();old=before['partial_week'];new=result['partial_week']
+        self.assertEqual(self.original,before)
+        for name in ('expires_at','games','legacy_exemptions','engine_files','model','validator_contract'):
+            self.assertEqual(new['plan'][name],old['plan'][name])
+        self.assertEqual(new['validator_sha256'],self.api.code_sha256())
+        self.assertNotEqual(new['plan_sha256'],old['plan_sha256'])
+        self.assertEqual(new['plan']['previous_plan_sha256'],old['plan_sha256'])
+        self.assertEqual(new['plan']['source_start'],self.source)
+        self.assertEqual(self.rel.utc(new['plan']['effective_not_before']),self.at)
+        self.assertEqual((c.START+c.timedelta(hours=77,seconds=c.seed_v1.SAMPLE_SECONDS))-self.at,c.timedelta(seconds=5))
+    def test_deterministic_new_plan_and_exact_control_population(self):
+        self.assertEqual(self.derive(),self.derive())
+        value=self.derive();self.assertEqual(len(value['partial_week']['plan']['games']),14)
+        self.assertEqual(len(value['partial_week']['plan']['legacy_exemptions']),9)
+        self.assertEqual({s:sum(g['state']==s for g in self.status['games'].values()) for s in ('post','in','pre')},
+            {'post':2,'in':7,'pre':5})
+    def test_unknown_original_helper_and_source_rejected(self):
+        self.original['partial_week']['validator_sha256']='f'*64
+        with self.assertRaises(RuntimeError):self.derive()
+        with self.assertRaises(RuntimeError):c._transition_spec({},self.board,self.status,'not-a-source')
+    def test_changed_engine_and_experiment_rejected(self):
+        self.original['partial_week']['plan']['engine_files']={};self.rehash()
+        with self.assertRaises(RuntimeError):self.derive()
+        self.setUp();self.original['experimental_recording_enabled']=True
+        with self.assertRaises(RuntimeError):self.derive()
+    def test_missing_or_changed_legacy_fingerprint_rejected(self):
+        self.original['partial_week']['plan']['legacy_exemptions'].pop();self.rehash()
+        with self.assertRaises(RuntimeError):self.derive()
+        self.setUp();self.original['partial_week']['plan']['legacy_exemptions'][0]['forecast_contract_sha256']='f'*64;self.rehash()
+        with self.assertRaises(RuntimeError):self.derive()
+    def test_expired_and_reclocked_board_rejected(self):
+        self.original['partial_week']['plan']['expires_at']=self.rel.stamp(self.at);self.rehash()
+        with self.assertRaises(RuntimeError):self.derive()
+        self.setUp();self.board['generated_at']=self.rel.stamp(self.at)
+        with self.assertRaises(RuntimeError):self.derive()
+    def test_changed_status_clock_schedule_and_population_rejected(self):
+        self.status['collected_at']=self.rel.stamp(self.at-c.timedelta(seconds=1))
+        with self.assertRaises(RuntimeError):self.derive()
+        self.setUp();self.status['games'].pop(next(iter(self.status['games'])))
+        with self.assertRaises(self.rel.IntegrityError):self.derive()
+    def test_fixed_transition_clock_cannot_be_slid(self):
+        with patch.object(c,'TRANSITION_SECONDS',135),self.assertRaises(RuntimeError):c._transition_clock()
 
 class AllocationTests(unittest.TestCase):
  def seed(self):

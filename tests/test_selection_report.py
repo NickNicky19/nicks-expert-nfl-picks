@@ -91,6 +91,32 @@ def core_snapshots(*, include_after=True):
     return snapshots
 
 
+class ClosedRankedReaderCatalogTests(unittest.TestCase):
+    def test_unknown_reader_rejects_before_git_or_source_execution(self):
+        import selection_strategies as strategies
+        with patch.object(corrected, "_git") as git:
+            with self.assertRaisesRegex(IntegrityError, "Unsupported retained ranked source"):
+                with strategies._retained_source("0" * 40):
+                    self.fail("Unknown source yielded executable code")
+            git.assert_not_called()
+
+    def test_accepted_previous_reader_uses_its_actual_complete_source(self):
+        import selection_strategies as strategies
+        previous = "04519b54dfb76dcca7916fe6bf75d7e1711793b6"
+        self.assertEqual(strategies.RETAINED_SOURCES[previous], "10a5cc1539c51c8089fb7ff077447b6d17c4e13e")
+        with strategies._retained_source(previous) as source:
+            for name in strategies.SOURCE_PATHS:
+                self.assertEqual((source / name).read_bytes(), corrected._git(ROOT, "show", previous + ":" + name))
+            self.assertNotEqual((source / "tools/phase2_capture.py").read_bytes(),
+                                (ROOT / "tools/phase2_capture.py").read_bytes())
+
+    def test_retained_reader_never_qualifies_a_new_old_labelled_recording(self):
+        import selection_strategies as strategies
+        for source in strategies.RETAINED_SOURCES:
+            with self.subTest(source=source), self.assertRaisesRegex(IntegrityError, "source/helper bytes differ"):
+                strategies._source(ROOT, source)
+
+
 class SelectionTimingAcceptance(unittest.TestCase):
     def build(self, snapshots, *, at=None, policy=None):
         return build_decisions(snapshots, policy or timing_policy(),

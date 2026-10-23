@@ -3065,6 +3065,222 @@ print(digest(rows))
             strategies.decisions([clean], load_json(clean / "config/timing-policy.json"), self.at, ledger_root=clean)
 
 
+class SavedGenerationPlanTransitionTests(unittest.TestCase):
+    """Saved generations pin original plans; current aliases use current config.
+
+    Tiny actual corrected builder/native/report/hosting fixture. Only fictional
+    HTTP responses and clocks are substituted; no qualification or publisher
+    algorithm is mocked. Independent matching alternatives qualify before fault
+    injection and never replace the saved edge. A corrupt registration also
+    correctly invalidates the complete source-dependency inventory.
+    """
+    @classmethod
+    def setUpClass(cls):
+        from test_data_integrity_v2 import corrected_fixture, DI_NOW
+        from test_partial_week import status
+        cls.at = DI_NOW
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.base = Path(cls.temporary.name) / "saved-generation"
+        cls.base.mkdir()
+        data, proof, spec, registration, _ = corrected_fixture(cls.base)
+        cls.spec, cls.data = spec, data
+        # A separate fictional lineage shares exact recorded inputs, but gets
+        # its own actual registration. Do not rewrite the first registration.
+        alternative = cls.base.parent / "alternative-first-recording"
+        def exclude_registration(path, names):
+            return names if Path(path).name == "partial-registrations" else []
+        shutil.copytree(cls.base, alternative, ignore=exclude_registration)
+        alternative_source = corrected.recording_source("e2dd96a31690baad04c8660302933f45f77d72e7")
+        alternative_registration, _ = corrected.register_plan(alternative, spec,
+            cls.at, source_sha=alternative_source, initial_board=data)
+        class Clock(datetime):
+            @classmethod
+            def now(clock_cls, tz=None): return cls.at
+        with patch.object(phase2_capture, "datetime", Clock), \
+                patch.object(phase2_capture, "_closing_status", return_value=status(data, cls.at)), \
+                patch.object(phase2_capture, "run_point_candidate", side_effect=AssertionError("Inactive candidate")), \
+                patch.object(phase2_capture, "make_shadow", side_effect=AssertionError("Inactive shadow")):
+            _, health = run_capture(cls.base)
+            cls.generation = phase2_capture.validate_generation(cls.base)
+        cls.completion = health["phase2"]["partial_completion_receipt"]
+        cls.scope = read(cls.base / cls.completion)["scope_receipt"]
+        cls.registration = registration
+        cls.native = health["receipt"]
+        _, _, other_complete, _ = corrected.record_bundle(alternative, data, proof,
+            status(data, cls.at), spec, alternative_registration.relative_to(alternative).as_posix(),
+            clock=lambda: cls.at)
+        cls.alternative_completion = other_complete.relative_to(alternative).as_posix()
+        if cls.alternative_completion == cls.completion:
+            raise AssertionError("Independent valid registrations did not produce distinct pinned completions")
+        for path in (alternative / "data").rglob("*.json.gz"):
+            target = cls.base / path.relative_to(alternative)
+            if target.exists():
+                if target.read_bytes() != path.read_bytes():
+                    raise AssertionError("Alternative attempted to overwrite original evidence")
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, target)
+        # This is a separately identified valid prospective config/registration,
+        # not an amendment to either already-completed fictional generation.
+        config = load_json(cls.base / "config/phase2.json")
+        next_spec = copy.deepcopy(spec)
+        next_spec["plan"]["plan_id"] += "_NEXT_CONFIG"
+        next_spec["plan_sha256"] = digest(next_spec["plan"])
+        next_spec["owner_authorization"] = "FICTIONAL_NEXT_PLAN_ONLY"
+        next_registration, _ = corrected.register_plan(cls.base, next_spec, cls.at,
+            source_sha=corrected.recording_source(), initial_board=data)
+        cls.next_registration = next_registration.relative_to(cls.base).as_posix()
+        config["partial_week"] = next_spec
+        atomic_json(cls.base / "config/phase2.json", config)
+        cls.snapshots = {name: (cls.base / "output" / name).read_bytes() for name in phase2_capture.HOST_SNAPSHOTS}
+        cls.proof = proof
+        cls.manifest = load_json(cls.base / "output/data/selection-grading/hosting.json")["latest"]
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "independent-copy"
+        shutil.copytree(self.base, self.root)
+        at = self.at
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None): return at
+        clock = patch.object(phase2_capture, "datetime", Clock)
+        clock.start(); self.addCleanup(clock.stop)
+
+    def saved(self, root=None, snapshots=None):
+        return phase2_capture._validate_generation(root or self.root,
+            self.snapshots if snapshots is None else snapshots, legacy_proof=self.proof)
+
+    def assert_valid_alternative(self, root):
+        value = phase2_capture._qualified_bundle(root, self.alternative_completion, self.spec, {})
+        self.assertEqual(value[0]["baseline_receipt"], self.native)
+        self.assertNotEqual(value[0]["scope_receipt"], self.scope)
+
+    def test_saved_snapshot_uses_exact_own_plan_while_current_alias_rejects_next_plan(self):
+        before = {p.relative_to(self.root): p.read_bytes() for p in (self.root / "data").rglob("*.json.gz")}
+        self.assert_valid_alternative(self.root)
+        self.assertEqual(self.saved(), self.generation)
+        manifest, snapshots = phase2_capture._manifest(self.root / "output/data/selection-grading", self.manifest, root=self.root)
+        self.assertEqual(manifest["generation_sha256"], self.generation["generation_sha256"])
+        self.assertEqual(snapshots, self.snapshots)
+        with self.assertRaises(IntegrityError): phase2_capture.validate_generation(self.root)
+        for name, raw in before.items(): self.assertEqual((self.root / name).read_bytes(), raw)
+
+    def test_missing_or_corrupt_exact_edge_never_uses_valid_matching_alternative(self):
+        original_latest = (self.root / "output/data/selection-grading/latest.json").read_bytes()
+        for name in (self.completion, self.scope, self.registration):
+            for corrupt in (False, True):
+                with self.subTest(dependency=name, corrupt=corrupt), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory) / "case"; shutil.copytree(self.root, root)
+                    self.assert_valid_alternative(root)
+                    alternative = (root / self.alternative_completion).read_bytes()
+                    path = root / name
+                    if corrupt:
+                        info = path.stat(); raw = path.read_bytes()
+                        path.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))
+                        os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+                    else: path.unlink()  # Intentional defect in this disposable copy only.
+                    self.assertEqual((root / self.alternative_completion).read_bytes(), alternative)
+                    # Corrupt registrations are part of the full dependency
+                    # inventory even when checking the matching alternative.
+                    if not (name == self.registration and corrupt):
+                        self.assert_valid_alternative(root)
+                    with self.assertRaises((IntegrityError, OSError, EOFError)):
+                        self.saved(root)
+                    self.assertEqual((root / "output/data/selection-grading/latest.json").read_bytes(), original_latest)
+
+    def test_wrong_pinned_registration_fails_with_valid_original_and_alternative_present(self):
+        scope = copy.deepcopy(read(self.root / self.scope))
+        scope["registration_receipt"] = self.next_registration
+        scope_path = write(self.root, "verification/partial-scopes", scope)
+        completion = copy.deepcopy(read(self.root / self.completion))
+        completion.update(scope_receipt=scope_path.relative_to(self.root).as_posix(), scope_payload_sha256=digest(scope))
+        completion_path = write(self.root, "verification/partial-completions", completion)
+        snapshots = dict(self.snapshots)
+        public = corrected.public_scope(scope, completion)
+        snapshots["data/verification-scope.json"] = selection_publication.canonical(public) + b"\n"
+        health = json.loads(snapshots["data/health.json"])
+        health["phase2"]["partial_completion_receipt"] = completion_path.relative_to(self.root).as_posix()
+        generation = json.loads(snapshots["data/release-identity.json"])
+        generation["bindings"]["data/verification-scope.json"] = hashlib.sha256(snapshots["data/verification-scope.json"]).hexdigest()
+        generation.pop("generation_sha256")
+        identity = digest(generation); generation["generation_sha256"] = identity; health["generation_sha256"] = identity
+        snapshots["data/release-identity.json"] = selection_publication.canonical(generation) + b"\n"
+        snapshots["data/health.json"] = selection_publication.canonical(health) + b"\n"
+        self.assert_valid_alternative(self.root)
+        self.assertEqual(self.saved(), self.generation)
+        with self.assertRaisesRegex(IntegrityError, "completion/plan|registration"):
+            self.saved(snapshots=snapshots)
+
+    def test_saved_original_still_rejects_future_or_explicitly_failed_completion(self):
+        earlier = self.at - timedelta(microseconds=1)
+        class Earlier(datetime):
+            @classmethod
+            def now(cls, tz=None): return earlier
+        with patch.object(phase2_capture, "datetime", Earlier), self.assertRaises(IntegrityError):
+            self.saved()
+        complete = read(self.root / self.completion)
+        write(self.root, "verification/partial-failures", {"schema_version": "completion-failure-data-integrity-v2",
+            "season": complete["season"], "week": complete["week"], "completion_sha256": digest(complete),
+            "failed_at": stamp(self.at), "reason": "FINAL_COMPLETION_BOUNDARY_FAILED"})
+        self.assert_valid_alternative(self.root)
+        with self.assertRaises(IntegrityError): self.saved()
+
+
+class Retained045RankedSourcePipelineTests(unittest.TestCase):
+    """Three targeted checks for actual045 source; retain the separate e2d tests."""
+    SOURCE = "04519b54dfb76dcca7916fe6bf75d7e1711793b6"
+
+    @classmethod
+    def setUpClass(cls):
+        import selection_strategies as strategies
+        cls.retained = strategies._retained_source(cls.SOURCE)
+        cls.source_code = cls.retained.__enter__()
+        cls.addClassCleanup(cls.retained.__exit__, None, None, None)
+        cls.source_commit = cls.SOURCE
+        (cls.source_code / "output").mkdir()
+        for path in (ROOT / "output").iterdir():
+            if path.is_file():
+                (cls.source_code / "output" / path.name).write_bytes(corrected._git(ROOT, "show", cls.SOURCE + ":output/" + path.name))
+        RankedStrategyConnectedPipelineTests.setUpClass.__func__(cls)
+
+    setUp = RankedStrategyConnectedPipelineTests.setUp
+    clock = RankedStrategyConnectedPipelineTests.clock
+    test_retained_failure_markers_and_same_size_corruption_are_not_cached = RetainedRankedSourcePipelineTests.test_retained_failure_markers_and_same_size_corruption_are_not_cached
+    test_unknown_source_and_unknown_ledger_helpers_fail_without_fallback = RetainedRankedSourcePipelineTests.test_unknown_source_and_unknown_ledger_helpers_fail_without_fallback
+
+    def test_actual045_saved_observation_ledger_and_independent_cold_replay(self):
+        import selection_strategies as strategies
+        before = {p.relative_to(self.root): p.read_bytes() for p in (self.root / "data").rglob("*.json.gz")}
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            saved, _ = strategies.read_completed(self.root, self.first_name, now=self.at)
+            rows = strategies.decisions([self.root], load_json(self.root / "config/timing-policy.json"), self.at, ledger_root=self.root)
+        self.assertEqual(saved["source_sha"], self.SOURCE)
+        self.assertEqual([r for r in rows if r["checkpoint"] == "history" and r["action"] == "SELECT"],
+                         self.state["updates"][-1]["selected"])
+        for name, raw in before.items(): self.assertEqual((self.root / name).read_bytes(), raw)
+        with self.assertRaises(IntegrityError): strategies._source(self.root, self.SOURCE)
+        clean = self.root.parent / "independent045-cold-copy"; shutil.copytree(self.root, clean)
+        program = '''import sys
+from pathlib import Path
+sys.path[:0]=[str(Path(sys.argv[1])/'tools'),str(Path(sys.argv[1])/'pull')]
+from datetime import datetime
+import phase2_capture,selection_strategies as s
+from reliability import utc,load_json,digest
+at=utc(sys.argv[3])
+class Clock(datetime):
+ @classmethod
+ def now(cls,tz=None):return at
+phase2_capture.datetime=Clock
+rows=s.decisions([Path(sys.argv[2])],load_json(Path(sys.argv[2])/'config/timing-policy.json'),at,ledger_root=Path(sys.argv[2]))
+print(digest(rows))
+'''
+        actual = subprocess.check_output([sys.executable, "-c", program, str(ROOT), str(clean), stamp(self.at)], text=True).strip().splitlines()[-1]
+        self.assertEqual(actual, digest(rows))
+
+
 class CorrectedCheckpointPersistenceTests(unittest.TestCase):
     def test_actual_due_corrected_checkpoint_publishes_and_reloads_without_repinning_original(self):
         from test_data_integrity_v2 import corrected_fixture, DI_NOW

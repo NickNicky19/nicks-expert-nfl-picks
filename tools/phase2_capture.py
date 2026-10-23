@@ -1347,7 +1347,15 @@ def _validate_generation(root, snapshots=None, *, legacy_proof=None, _checked=No
         raise IntegrityError("Generation/report identity mismatch")
     completion = health["phase2"].get("partial_completion_receipt")
     if completion:
-        completed, scope, native = _qualified_bundle(root, completion, load_json(root / "config/phase2.json")["partial_week"], _checked)
+        if snapshots is not None:
+            # Immutable hosting snapshots carry their own completion/registration.
+            # A later approved plan must not relabel their original qualification.
+            pinned = partial_week._saved(root, completion, partial_week.COMPLETION_LANE)
+            saved_scope = partial_week._saved(root, pinned["scope_receipt"], "verification/partial-scopes")
+            spec = corrected._saved_spec(root, saved_scope)
+        else:
+            spec = load_json(root / "config/phase2.json")["partial_week"]
+        completed, scope, native = _qualified_bundle(root, completion, spec, _checked)
         if scope["output_sha256"] != digest(board) or digest(native) != digest(baseline):
             raise IntegrityError("Generation scope/native binding mismatch")
         public_scope = corrected.public_scope if scope.get("validator_contract") == corrected.VALIDATOR else partial_week.public_scope
