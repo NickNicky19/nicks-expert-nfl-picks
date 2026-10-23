@@ -36,6 +36,12 @@ SEED_NAMES = {'cloud-seed-requirements.txt', 'cloud_seed_prepare.py',
               'cloud_seed_resource_bootstrap.py', 'coverage_gate.py',
               'diagnostic-seed-inputs.json', 'diagnostic_network_guard.py',
               'diagnostic_resources.py', 'diagnostic_seed.py', 'operating_diagnostic.py'}
+CONTINUED_SEED_INTEGRITY = 'ed5b6773c3d4e642bf4346aa2b9de89a2b580a1f34e97bddc6172b068a388611'
+SEED_CONTRACTS = {
+    SEED_INTEGRITY: frozenset(SEED_NAMES),
+    CONTINUED_SEED_INTEGRITY: frozenset(SEED_NAMES | {
+        'seed_checkpoint_frontier.py', 'source_ci.py', 'operating_seed_transport.py'}),
+}
 
 
 def canonical(value):
@@ -150,13 +156,14 @@ def closure(code):
     if Path(__file__).resolve() != code / 'tools/operating_resource_bootstrap.py':
         raise RuntimeError('Bootstrap must execute the actual installed source path')
     manifest_raw = regular_bytes(code / 'tools/cloud-seed-integrity.json')
-    if sha(manifest_raw) != SEED_INTEGRITY:
+    seed_names = SEED_CONTRACTS.get(sha(manifest_raw))
+    if seed_names is None:
         raise RuntimeError('Immutable seed integrity manifest changed')
     manifest = json.loads(manifest_raw)
     if (manifest.get('schema_version') != 'cloud-seed-code-integrity-v1'
-            or set(manifest.get('files', {})) != SEED_NAMES):
+            or set(manifest.get('files', {})) != seed_names):
         raise RuntimeError('Unsupported immutable seed dependency inventory')
-    names = sorted(set(FILES) | {'tools/' + name for name in SEED_NAMES})
+    names = sorted(set(FILES) | {'tools/' + name for name in seed_names})
     values = {}
     for name in names:
         path = code / name

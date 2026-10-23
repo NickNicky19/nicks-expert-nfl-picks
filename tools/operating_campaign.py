@@ -1254,7 +1254,7 @@ def project(code,root,result,sample_number):
                 or report.get('fixture_construction_source')!=BASE or report.get('seed_manifest_sha256')!=os.environ.get('SEED_MANIFEST_SHA256')):
             raise RuntimeError('Actual runtime/source/seed differs from recorded sample')
         allowed_stages={'resource_capability','transport_allocation_admission','restoration_allocation_admission','seed_retrieval','source_ci_online','source_ci_private_binding','network_isolation',
-            'source_ci_isolated_entry','seed_restoration','workload_admission','execution_source_install','execution_saved_packaging',
+            'source_ci_isolated_entry','seed_restoration','workload_admission','execution_source_install','execution_saved_packaging','execution_fictional_plan_transition',
             'retained_cheap_checks','capture_and_advisories','source_ci_before_data_commit','local_commit_and_pages_stage',
             'source_ci_after_pages_stage','uploader_tar','source_ci_isolated_final','cleanup'}
         if type(report.get('stages')) is not dict or not set(report['stages'])<=allowed_stages:raise RuntimeError('Unsupported stage projection')

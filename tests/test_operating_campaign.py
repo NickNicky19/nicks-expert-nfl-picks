@@ -465,6 +465,41 @@ class Campaign(unittest.TestCase):
         self.assertEqual(projection['resources'],'PASS');self.assertTrue(all(projection['checks'].values()))
         self.assertNotIn('/private/path',c.encoded(projection).decode());self.assertNotIn('/sys/fs/cgroup',c.encoded(projection).decode())
         self.assertEqual(projection['claim'],'DERIVED_MEASUREMENTS_NOT_ORIGINAL_RECORD_BYTES')
+    def project_stage_control(self,stages):
+        # Actual projector with controlled source/root measurement inputs;
+        # never evidence that a resource backend or hosted workload ran.
+        measured,outer,report,fp=self.measurement_fixture()
+        work=self.base/'nfl-operating-1';work.mkdir()
+        root=work/'fixture';result=work/'RESULT.json'
+        report['stages']=stages;result.write_bytes(c.encoded(report))
+        records=[(measured,{'sha256':c.sha(c.encoded(measured)),'bytes':len(c.encoded(measured))}),
+                 (outer,{'sha256':'d'*64,'bytes':100})]
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.base),'GITHUB_RUN_ID':'123',
+                'GITHUB_SHA':'1'*40,'GITHUB_RUN_ATTEMPT':'1','GITHUB_EVENT_NAME':'workflow_dispatch',
+                'SEED_MANIFEST_SHA256':'b'*64}),patch.object(c,'_protected_report',side_effect=records), \
+                patch.object(c,'_evidence_aggregates',return_value=self.evidence()), \
+                patch.object(c,'_source_ci_cli',return_value=fp),patch.object(c,'_hash_file',return_value='a'*64):
+            return c.project(self.code,root,result,1)
+    def test_complete_declared_job_stages_project_including_plan_transition(self):
+        names=('resource_capability','transport_allocation_admission','restoration_allocation_admission',
+            'seed_retrieval','source_ci_online','source_ci_private_binding','network_isolation',
+            'source_ci_isolated_entry','seed_restoration','workload_admission','execution_source_install',
+            'execution_saved_packaging','execution_fictional_plan_transition','retained_cheap_checks',
+            'capture_and_advisories','source_ci_before_data_commit','local_commit_and_pages_stage',
+            'source_ci_after_pages_stage','uploader_tar','source_ci_isolated_final','cleanup')
+        stages={n:dict(start=i,end=i+.5,seconds=.5) for i,n in enumerate(names)}
+        value=self.project_stage_control(stages)
+        self.assertEqual(value['status'],'LOCAL_BOUNDARY_COMPLETE_EXTERNAL_JOB_TIMESTAMPS_PENDING')
+        self.assertEqual(value['stages'],stages)
+        self.assertTrue(all(value['checks'].values()))
+    def test_unknown_stage_is_not_accepted_as_supported_transition(self):
+        value=self.project_stage_control({'unapproved_plan_transition':dict(start=0,end=1,seconds=1)})
+        self.assertEqual(value['status'],'PROJECTION_INCOMPLETE')
+        self.assertEqual(value['resources'],'UNKNOWN')
+    def test_supported_transition_cannot_project_malformed_measurements(self):
+        value=self.project_stage_control({'execution_fictional_plan_transition':dict(start=0,end=1,seconds='1')})
+        self.assertEqual(value['status'],'PROJECTION_INCOMPLETE')
+        self.assertEqual(value['resources'],'UNKNOWN')
     def test_changed_root_binding_cannot_project_resource_pass(self):
         measured,outer,report,fp=self.measurement_fixture();outer['worker_argv_sha256']='0'*64
         self.assertFalse(c._resource_binding(measured,outer,report,123,1,'1'*40))

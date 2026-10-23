@@ -112,7 +112,8 @@ class SourceClosure(unittest.TestCase):
     def setUp(self):
         self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup)
         self.code=Path(self.directory.name)
-        names=set(b.FILES)|{'tools/'+n for n in b.SEED_NAMES}
+        manifest=json.loads((SOURCE/'tools/cloud-seed-integrity.json').read_bytes())
+        names=set(b.FILES)|{'tools/'+n for n in manifest['files']}
         for name in names:
             path=self.code/name;path.parent.mkdir(parents=True,exist_ok=True)
             actual=SOURCE/name
@@ -129,11 +130,45 @@ class SourceClosure(unittest.TestCase):
         with patch.object(b,'__file__',str(self.code/'tools/operating_resource_bootstrap.py')), \
              patch.object(b,'git',side_effect=self.git),patch.dict(os.environ,GITHUB_SHA='1'*40):
             return b.closure(self.code)
-    def test_exact_closure_and_immutable_nine_helpers(self):
+    def test_exact_continued_closure_and_all_twelve_helpers(self):
         closure=self.check();self.assertEqual(closure['commit'],'1'*40)
         self.assertEqual(closure['files']['tools/operating_diagnostic.py']['sha256'],b.P5)
         self.assertEqual(closure['files']['tools/diagnostic_resources.py']['sha256'],b.RESOURCE)
         self.assertIn('tools/operating_campaign.py',closure['files'])
+        for name in b.SEED_CONTRACTS[b.CONTINUED_SEED_INTEGRITY]:
+            self.assertIn('tools/'+name,closure['files'])
+        self.assertEqual(len(b.SEED_CONTRACTS[b.CONTINUED_SEED_INTEGRITY]),12)
+    def test_exact_retained_original_nine_file_contract(self):
+        # Read actual public historical bytes, not today's driver wearing its
+        # original schema name. Git access here is local and unmocked.
+        old='1b592af659cec56fe87440cf679d69d7fc41590e'
+        for name in b.SEED_NAMES|{'cloud-seed-integrity.json'}:
+            raw=subprocess.check_output(['git','-C',str(SOURCE),'show',old+':tools/'+name])
+            (self.code/'tools'/name).write_bytes(raw);self.objects['tools/'+name]=raw
+        value=self.check()
+        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.SEED_INTEGRITY)
+        self.assertEqual(len(b.SEED_CONTRACTS[b.SEED_INTEGRITY]),9)
+    def test_only_two_exact_contracts_are_recognized(self):
+        self.assertEqual(set(b.SEED_CONTRACTS),{
+            'bfb48f36d1db5b2980235238e1b869efb183f23095ff72cee33c1d88e84a3b26',
+            'ed5b6773c3d4e642bf4346aa2b9de89a2b580a1f34e97bddc6172b068a388611'})
+        self.assertTrue(all(isinstance(v,frozenset) for v in b.SEED_CONTRACTS.values()))
+    def test_newly_required_frontier_same_size_mutation_rejected(self):
+        path=self.code/'tools/seed_checkpoint_frontier.py';raw=path.read_bytes();old=path.stat()
+        path.write_bytes(bytes([raw[0]^1])+raw[1:]);os.utime(path,ns=(old.st_atime_ns,old.st_mtime_ns))
+        with self.assertRaisesRegex(RuntimeError,'differs from committed'):self.check()
+    def test_newly_required_frontier_missing_rejected(self):
+        (self.code/'tools/seed_checkpoint_frontier.py').unlink()
+        with self.assertRaises(FileNotFoundError):self.check()
+    def test_self_consistent_new_helper_revision_not_accepted_under_old_manifest(self):
+        name='tools/seed_checkpoint_frontier.py';raw=self.objects[name];changed=bytes([raw[0]^1])+raw[1:]
+        (self.code/name).write_bytes(changed);self.objects[name]=changed
+        with self.assertRaisesRegex(RuntimeError,'Immutable seed dependency changed'):self.check()
+    def test_self_consistent_unknown_manifest_not_accepted(self):
+        path=self.code/'tools/cloud-seed-integrity.json';value=json.loads(path.read_bytes())
+        value['files']['extra.py']='a'*64;raw=json.dumps(value,sort_keys=True).encode()
+        path.write_bytes(raw);self.objects['tools/cloud-seed-integrity.json']=raw
+        with self.assertRaisesRegex(RuntimeError,'integrity manifest changed'):self.check()
     def test_same_size_wrapper_mutation_rejected(self):
         path=self.code/'tools/operating_campaign.py';raw=path.read_bytes()
         path.write_bytes(bytes([raw[0]^1])+raw[1:])
