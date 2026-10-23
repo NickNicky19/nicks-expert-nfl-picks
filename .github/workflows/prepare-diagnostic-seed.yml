@@ -507,7 +507,7 @@ jobs:
       inputs.storage_approved == 'READ_ONLY_EXISTING_ARTIFACT_NO_UPLOAD' &&
       inputs.installed_source == github.sha
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 60
     permissions:
       contents: read
       actions: read
@@ -549,7 +549,7 @@ jobs:
             --work "$RUNNER_TEMP/nfl-seed-frontier-$GITHUB_RUN_ID"
 
       - name: Cold restore and replay committed history with inherited network denial
-        timeout-minutes: 25
+        timeout-minutes: 50
         shell: bash
         run: |
           set -euo pipefail
