@@ -568,6 +568,23 @@ class TransitionValues(unittest.TestCase):
         self.assertEqual(len(value['partial_week']['plan']['legacy_exemptions']),9)
         self.assertEqual({s:sum(g['state']==s for g in self.status['games'].values()) for s in ('post','in','pre')},
             {'post':2,'in':7,'pre':5})
+    def test_packaging_clock_follows_full_seed_without_rewriting_original_times(self):
+        packaged=c._packaging_clock()
+        self.assertEqual(packaged,c.START+c.timedelta(hours=77,seconds=125))
+        for generations in (2,24):
+            self.assertGreater(packaged,c.START+c.timedelta(hours=77,seconds=5*generations))
+        self.assertLess(packaged,self.at)
+        self.assertLess(self.at,c.START+c.timedelta(hours=77,seconds=c.seed_v1.SAMPLE_SECONDS))
+    def test_packaging_rejects_equal_or_later_saved_publication_before_provider_setup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);c.put(root/'FICTIONAL_ONLY.json',{'dimensions':{}})
+            for delta in (0,1):
+                c.put(root/'output/data/selection-grading/latest.json',{'generated_at':self.rel.stamp(c._packaging_clock()+c.timedelta(seconds=delta))})
+                with patch.object(c,'require_offline'),patch.object(c,'execution_identity'), \
+                        patch.object(c,'bind',return_value={'rel':self.rel}), \
+                        patch.object(c,'Provider',side_effect=AssertionError('Late packaging must stop before provider setup')):
+                    with self.assertRaisesRegex(RuntimeError,'fixed packaging clock'):
+                        c.package_execution_source(root,root)
     def test_unknown_original_helper_and_source_rejected(self):
         self.original['partial_week']['validator_sha256']='f'*64
         with self.assertRaises(RuntimeError):self.derive()

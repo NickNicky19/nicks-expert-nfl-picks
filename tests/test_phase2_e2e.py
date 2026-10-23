@@ -2129,6 +2129,98 @@ class EncodedHostingTests(unittest.TestCase):
         phase2_capture.validate_generation(root)
         return pointer
 
+    def test_saved_packaging_uses_restored_git_namespace_and_rejects_wrong_original_assets(self):
+        import zlib
+        import selection_report
+        with tempfile.TemporaryDirectory() as directory:
+            area = Path(directory)
+            root, candidate = area / "restored", area / "new-packaging-source"
+            paths = ("tools", "pull", "config", "output/app.js", "output/index.html", "output/style.css",
+                     "output/reliability-ui.js", "output/recovery.html")
+            # No checkout of historical data or duplication of the object pack.
+            # Both disposable repos can read public source objects; only root
+            # owns the new fictional capture commit and its changed app blob.
+            for repository in (root, candidate):
+                self.git(ROOT, "clone", "--quiet", "--shared", "--no-checkout", str(ROOT), str(repository))
+                self.git(repository, "read-tree", "HEAD")
+                self.git(repository, "checkout", "--", *(paths if repository == candidate else paths[3:]))
+            original_app = (root / "output/app.js").read_bytes() + b"\n// Fictional retained-only capture namespace control.\n"
+            (root / "output/app.js").write_bytes(original_app)
+            self.git(root, "add", "output/app.js")
+            self.git(root, "-c", "user.name=FictionalPackagingTest", "-c", "user.email=fixture@example.invalid",
+                     "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fictional capture source only in restored namespace")
+            capture_source = self.git(root, "rev-parse", "HEAD")
+            packaging_source = self.git(candidate, "rev-parse", "HEAD")
+            missing = subprocess.run(["git", "-C", str(candidate), "cat-file", "-e", capture_source + "^{commit}"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertNotEqual(missing.returncode, 0, "new source must not accidentally own the capture commit")
+            self.assertEqual(self.git(root, "rev-parse", capture_source + "^{commit}"), capture_source)
+
+            def original_capture(runtime, at=None):
+                at = at or self.AT
+                prepare(runtime, mode="live", at=at, kickoff_hours=25, all_ten=True)
+                (runtime / "output/app.js").write_bytes(original_app)
+                class Clock(datetime):
+                    @classmethod
+                    def now(cls, tz=None): return at
+                with patch.dict(os.environ, {"GITHUB_SHA": capture_source}), \
+                        patch.object(phase2_capture, "ROOT", root), patch.object(phase2_capture, "datetime", Clock), \
+                        patch("requests.sessions.Session.request", side_effect=AssertionError("No provider collection")):
+                    result = run_capture(runtime, mode="live")
+                # The real report consumer verifies tracked input bytes against
+                # HEAD. Record this new fictional board as a normal forward data
+                # commit; its capture source remains the earlier exact source.
+                inputs = sorted({p.relative_to(runtime).as_posix() for pattern in selection_report.PATTERNS
+                                 for p in runtime.glob(pattern) if p.is_file()})
+                self.git(runtime, "add", "--", *inputs)
+                self.git(runtime, "-c", "user.name=FictionalPackagingTest", "-c", "user.email=fixture@example.invalid",
+                         "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Retain fictional board input")
+                return result
+
+            # Existing supported legacy producer creates a distinctly identified
+            # plain fixture; every original model/native clock remains intact.
+            with patch.object(self, "run_live", side_effect=original_capture):
+                old_pointer = self.plain_original(root)
+            original = load_json(root / "output/data/release-identity.json")
+            self.assertEqual(original["source_sha"], capture_source)
+            frozen = {p.relative_to(root): p.read_bytes() for p in (root / "data").rglob("*.gz")}
+            bad = area / "bad-restored"; shutil.copytree(root, bad)
+
+            # This is the actual public STAGED packaging wrapper, not a direct
+            # _source_assets unit check. ROOT is the coordinator's restored Git
+            # namespace; source_root is the separate newer source checkout.
+            with patch.object(phase2_capture, "ROOT", root), \
+                    patch("requests.sessions.Session.request", side_effect=AssertionError("Packaging cannot collect")):
+                packaged = phase2_capture.repackage_generation(root, source_root=candidate)
+                self.assertEqual(phase2_capture.validate_generation(root), packaged)
+                self.assertEqual(phase2_capture.repackage_generation(root, source_root=candidate), packaged)
+            self.assertEqual(packaged["capture_source_sha"], capture_source)
+            self.assertEqual(packaged["source_sha"], packaging_source)
+            self.assertEqual(packaged["capture_generation_sha256"], original["generation_sha256"])
+            for name, raw in frozen.items(): self.assertEqual((root / name).read_bytes(), raw)
+            working = load_json(root / "output/data/selection-grading/hosting.json")
+            with patch.object(phase2_capture, "ROOT", root):
+                previous, _ = phase2_capture._manifest(root / "output/data/selection-grading", working["previous"], root=root)
+            self.assertEqual(previous["pointer"], old_pointer)
+
+            # Corrupt ONLY an object owned by the disposable negative checkout.
+            # Shared source objects/alternates and all original receipts remain
+            # untouched. The commit still names the old blob, so the real
+            # asset comparison must reject rather than accept any Git success.
+            oid = self.git(bad, "rev-parse", capture_source + ":output/app.js")
+            loose = bad / ".git/objects" / oid[:2] / oid[2:]
+            self.assertTrue(loose.is_file(), "never mutate a shared Git object")
+            wrong = original_app + b"\n// Deliberately wrong retained source bytes.\n"
+            loose.chmod(0o600)
+            loose.write_bytes(zlib.compress(b"blob " + str(len(wrong)).encode() + b"\0" + wrong))
+            before = {p.relative_to(bad): p.read_bytes() for p in bad.rglob("*") if p.is_file()}
+            with patch.object(phase2_capture, "ROOT", bad), \
+                    patch("requests.sessions.Session.request", side_effect=AssertionError("Packaging cannot collect")):
+                with self.assertRaisesRegex(IntegrityError, "app/shell differs|app/shell mismatch"):
+                    phase2_capture.repackage_generation(bad, source_root=candidate)
+            for name, raw in before.items(): self.assertEqual((bad / name).read_bytes(), raw)
+
+
     def test_saved_packaging_retains_original_clocks_complete_previous_and_exact_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)/'copy';root.mkdir();old_pointer=self.plain_original(root)

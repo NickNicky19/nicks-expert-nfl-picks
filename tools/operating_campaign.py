@@ -898,10 +898,20 @@ def install_execution_source(code,root):
     execution_identity(code,root,packaged=False)
 
 
+def _packaging_clock():
+    # The full seed ends at +120s; packaging is a new operation, before the
+    # separately registered +130s transition and unchanged +135s sample.
+    return _transition_clock()-timedelta(seconds=5)
+
+
 def package_execution_source(code,root):
     require_offline();execution_identity(code,root,packaged=False)
     m=bind(root);marker=_load(root/'FICTIONAL_ONLY.json')
-    provider=Provider(m,marker['dimensions'],START+timedelta(hours=SEED_HOUR,seconds=5*marker['dimensions']['generations']))
+    at=_packaging_clock()
+    pointer=_load(root/'output/data/selection-grading/latest.json')
+    if m['rel'].utc(pointer['generated_at'])>=at:
+        raise RuntimeError('Saved publication does not precede the fixed packaging clock')
+    provider=Provider(m,marker['dimensions'],at)
     with external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
         generation=m['capture'].repackage_generation(root,source_root=code)
     execution_identity(code,root)

@@ -1635,3 +1635,19 @@ checks the untouched alternative bytes. Another synthetic assessor fixture had
 20s for21 declared stages; its accounting was corrected without altering any
 real timing limit. Both initial logs remain. Combined wrapper replay and final
 exact-source CI are pending at this implementation commit.
+
+The connected SMALL wrapper subsequently found two packaging defects. Retained
+capture commits were looked up only in the newer code checkout; packaging now
+uses the existing strict retained-source asset verifier in the evidence
+repository. An actual staged-wrapper regression passed in39.084s, including
+exact retry, previous-generation/original-byte preservation and rejection of a
+corrupted retained app object. Five test-fixture setup failures remain recorded;
+neither qualification nor packaging validators were mocked. A second replay
+then correctly rejected an immutable-manifest collision: the coordinator had
+reused the seed's last publication clock. New derived packaging now has the
+fixed +125s clock, after the full seed's +120s final generation and before the
+unchanged +130s plan transition and +135s material sample. Equal/later saved
+publication clocks fail before setup. Original capture and observation clocks
+are untouched. This correction changes no publication format, retained seed,
+forecast, source qualification or production setting. The subsequent connected
+replay and final-source CI remain separate required acceptance results.
