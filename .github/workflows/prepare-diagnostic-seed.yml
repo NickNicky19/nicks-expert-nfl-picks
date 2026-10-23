@@ -850,5 +850,26 @@ jobs:
               raise RuntimeError('Preparation service or ancestor-integrity boundary failed')
           if manifest['operating_qualification']!='NOT_RUN':
               raise RuntimeError('Preparation must not claim hosted operating qualification')
+          # Technical parents only: enough to bind independent cloud retrieval;
+          # never print the seed records, source pack or raw worker logs.
+          import hashlib, re
+          names=('working.tar.gz','fictional.pack','public-source.pack','SEED_MANIFEST.json')
+          facts=dict(schema_version='cloud-seed-success-transport-facts-v1',
+              run_id=int(os.environ['GITHUB_RUN_ID']),artifact_id=int(os.environ['ACTUAL_ARTIFACT_ID']),
+              installer={k:manifest['installer'][k] for k in ('head','tree')},
+              integrity_sha256=manifest['integrity_sha256'],
+              files={name:{k:manifest['files'][name][k] for k in ('bytes','sha256')} for name in names},
+              operating_qualification='NOT_RUN',recipient_retrieval='NOT_YET_VERIFIED')
+          parents=facts['files'].values()
+          if any(type(v['bytes']) is not int or not 0<v['bytes']<=2*1024**3 or
+                  type(v['sha256']) is not str or not re.fullmatch('[0-9a-f]{64}',v['sha256']) for v in parents):
+              raise RuntimeError('Unsupported technical parent descriptor')
+          if sum(v['bytes'] for v in parents)>2*1024**3 or any(type(v) is not str or
+                  not re.fullmatch('[0-9a-f]{40}',v) for v in facts['installer'].values()) or not re.fullmatch('[0-9a-f]{64}',facts['integrity_sha256']):
+              raise RuntimeError('Unsupported bounded transport identities')
+          raw=json.dumps(facts,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          if len(raw)>4096:raise RuntimeError('Technical transport projection exceeds bound')
+          print('SEED_TRANSPORT_FACTS_JSON='+raw.decode())
+          print('SEED_TRANSPORT_FACTS_SHA256='+hashlib.sha256(raw).hexdigest())
           print('ONE_TIME_CONTINUATION_COMPLETE; OPERATING_CAMPAIGN_NOT_RUN')
           PY
