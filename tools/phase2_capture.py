@@ -1025,10 +1025,9 @@ def _repackage_generation(root, *, source_root=ROOT, _checked=None):
         raise IntegrityError("Missing flat root capture origin")
     previous_assets = {name: (root / "output" / name).read_text() for name in ("app.js", "index.html")}
     for source, assets in ((captured["source_sha"], origin["source_assets"]), (original["source_sha"], previous_assets)):
-        for name, raw in assets.items():
-            saved = subprocess.check_output(["git", "-C", str(source_root), "show", source + ":output/" + name], stderr=subprocess.PIPE)
-            if saved != raw.encode():
-                raise IntegrityError("Saved source app/shell mismatch")
+        # Capture commits belong to the retained evidence repository; a later
+        # packaging checkout need not contain fictional or data-only commits.
+        _source_assets(root, source, assets, _checked)
     transition = write(root, "verification/hosting-capture-originals", {
         "schema_version": "hosting-packaging-transition-v1", "season": origin["season"], "week": origin["week"],
         "root_capture_original_receipt": receipt.relative_to(root).as_posix(),
