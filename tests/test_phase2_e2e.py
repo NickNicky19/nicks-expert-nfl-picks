@@ -2747,7 +2747,7 @@ class RankedStrategyConnectedPipelineTests(unittest.TestCase):
     def test_ranked_projection_rechecks_batch_context_and_preserves_latest(self):
         base = self.root / "output/data/selection-grading"
         latest = (base / "latest.json").read_bytes()
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, patch.object(phase2_capture, "datetime", self.clock()):
             report, _ = run_report([self.root], Path(directory), now=self.at,
                                    report_version="selection-report-v4", diagnostic_exports=False)
         context = selection_publication._strategy_row_context()
