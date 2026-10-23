@@ -11,6 +11,7 @@ on:
         options:
           - CANCEL
           - NFL-WEB-CLOUD-SEED-PREP-20261021-045638Z
+          - NFL-WEB-CHECKPOINT-READBACK-12509203616-20261023
       storage_approved:
         description: Repeat the preparation identifier after output-content and available-storage approval
         required: true
@@ -270,4 +271,227 @@ jobs:
           if manifest['operating_qualification']!='NOT_RUN':
               raise RuntimeError('Preparation must not claim hosted operating qualification')
           print('ONE_TIME_PREPARATION_COMPLETE; OPERATING_CAMPAIGN_NOT_RUN')
+          PY
+
+  inspect-retained-failure:
+    if: >-
+      github.repository == 'NickNicky19/nicks-expert-nfl-picks' &&
+      github.actor_id == '208912933' &&
+      github.ref == 'refs/heads/upgrade/phase2-reproducible-comparison' &&
+      github.run_attempt == 1 &&
+      inputs.confirmation == 'NFL-WEB-CHECKPOINT-READBACK-12509203616-20261023' &&
+      inputs.storage_approved == 'READ_ONLY_EXISTING_ARTIFACT_NO_UPLOAD' &&
+      inputs.installed_source == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Retrieve exact readback source without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up declared readback Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12.15'
+          check-latest: false
+      - name: Verify the one retained failed checkpoint and report bounded technical results
+        timeout-minutes: 5
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          """One fixed failed fictional artifact: inspect bytes, never qualify a seed."""
+          import gzip
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import stat
+          import subprocess
+          import sys
+          import tarfile
+          import tempfile
+          import time
+          import zipfile
+          
+          sys.path.insert(0, str(Path(os.environ.get('GITHUB_WORKSPACE', '.')) / 'tools'))
+          import source_ci
+          import operating_seed_transport as transport
+          
+          RUN = 39940028362
+          ARTIFACT = 12509203616
+          HEAD = '1b592af659cec56fe87440cf679d69d7fc41590e'
+          TREE = '49ddc936c1ba3f47bb038c7250eb82c6e0a91393'
+          BASE = 'b3de2fbd88ba3247b407a856972285ad10527b99'
+          SIZE = 998031473
+          DIGEST = 'e9a1be3a3580d01a51b39375d7d908ba37300b02e83ab6ccf2e2732540b9876c'
+          EXPIRES = '2026-10-30T14:45:09Z'
+          EXTRA = {'INCOMPLETE_CHECKPOINT.tar.gz', 'INCOMPLETE_SOURCE_CLOSURE.bundle', 'INCOMPLETE_MANIFEST.json'}
+          ALLOWED = transport.SEED_FILES | transport.JSON_FILES | EXTRA
+          CHUNK = 1024 ** 2
+          
+          
+          def require(condition, message):
+              if not condition: raise ValueError(message)
+          
+          
+          def matches(record, expected):
+              return all(type(record.get(k)) is type(v) and record[k] == v for k, v in expected.items())
+          
+          
+          def identity(api):
+              repo = api.get('')
+              require((repo.get('id'), repo.get('full_name'), repo.get('private')) ==
+                      (1411185749, source_ci.REPOSITORY, False), 'Repository identity')
+              for path in (f'/actions/runs/{RUN}', f'/actions/runs/{RUN}/attempts/1'):
+                  run = api.get(path)
+                  expected = dict(id=RUN, run_attempt=1, head_sha=HEAD, workflow_id=392359637,
+                                  path='.github/workflows/prepare-diagnostic-seed.yml', event='workflow_dispatch',
+                                  head_branch='upgrade/phase2-reproducible-comparison', status='completed', conclusion='failure')
+                  require(matches(run, expected) and
+                          (run.get('actor') or {}).get('id') == 208912933 and
+                          (run.get('repository') or {}).get('id') == 1411185749 and
+                          (run.get('head_repository') or {}).get('id') == 1411185749, 'Failed first-attempt identity')
+              artifact = api.get(f'/actions/artifacts/{ARTIFACT}')
+              expected = dict(id=ARTIFACT, name=f'fictional-seed-preparation-{RUN}', size_in_bytes=SIZE,
+                              digest='sha256:' + DIGEST, expired=False, expires_at=EXPIRES)
+              require(matches(artifact, expected), 'Artifact identity')
+              link = artifact.get('workflow_run') or {}
+              require(all(link.get(k) == v for k, v in dict(id=RUN, head_sha=HEAD,
+                      repository_id=1411185749, head_repository_id=1411185749).items()), 'Artifact origin')
+              require(transport._stamp(EXPIRES).timestamp() > time.time(), 'Expired artifact')
+              return artifact
+          
+          
+          def contents(path, deadline):
+              count = transport._zip_inventory(path)
+              inventory, metadata = {}, {}
+              total = json_bytes = 0
+              progress = None
+              with zipfile.ZipFile(path) as zipped:
+                  require(len(zipped.infolist()) == count, 'ZIP count')
+                  for item in zipped.infolist():
+                      transport._check(deadline)
+                      name = item.filename
+                      require(item.orig_filename == name and name in ALLOWED and name not in inventory and
+                              not item.is_dir() and item.external_attr >> 16 & 0o170000 in (0, stat.S_IFREG) and
+                              not item.flag_bits & 1 and item.compress_type in (0, 8), 'Unsafe artifact member')
+                      require(0 <= item.file_size <= transport.LIMIT and total + item.file_size <= transport.LIMIT, 'Decoded bound')
+                      is_json = name.endswith('.json')
+                      require(not is_json or json_bytes + item.file_size <= transport.JSON_LIMIT, 'Aggregate JSON bound')
+                      digest, length, parts = hashlib.sha256(), 0, []
+                      with zipped.open(item) as source:
+                          while True:
+                              transport._check(deadline)
+                              raw = source.read(min(CHUNK, item.file_size + 1 - length))
+                              transport._check(deadline)
+                              if not raw: break
+                              length += len(raw)
+                              require(length <= item.file_size, 'Grown member')
+                              digest.update(raw)
+                              if is_json: parts.append(raw)
+                      require(length == item.file_size, 'Truncated member')
+                      inventory[name] = dict(bytes=length, sha256=digest.hexdigest())
+                      total += length
+                      if is_json:
+                          metadata[name] = source_ci.decoded(b''.join(parts), transport.JSON_LIMIT)
+                          require(isinstance(metadata[name], dict), 'Technical JSON object')
+                          json_bytes += length
+                  require({'ARTIFACT_MANIFEST.json', 'PREPARATION_RESULT.json', 'RESOURCE.json', 'PREFLIGHT.json'} <= metadata.keys(), 'Required technical results')
+                  envelope = metadata['ARTIFACT_MANIFEST.json']
+                  require(envelope.get('schema_version') == 'cloud-seed-artifact-envelope-v1' and
+                          envelope.get('files') == {k: v for k, v in inventory.items() if k != 'ARTIFACT_MANIFEST.json'}, 'Complete actual inventory')
+                  require((envelope.get('application_source'), envelope.get('installer'), envelope.get('operating_qualification')) ==
+                          (BASE, dict(head=HEAD, tree=TREE), 'NOT_RUN'), 'Producer source/qualification')
+                  require(envelope.get('integrity_sha256') == 'bfb48f36d1db5b2980235238e1b869efb183f23095ff72cee33c1d88e84a3b26' and
+                          metadata['PREFLIGHT.json'].get('installer') == dict(head=HEAD, tree=TREE), 'Actual original installer')
+                  result = metadata['PREPARATION_RESULT.json']
+                  require(result.get('application_source') == BASE and result.get('status') == 'PREPARATION_FAILED' and
+                          result.get('application_tree') == 'c0d0d818f8e1266f55851c8c220d44cd94797c78' and
+                          result.get('harness_sha256') == '441f0ccaa1b274708419643d993896b5ff6f2c4118e0016719c80a1746289328' and
+                          result.get('input_contract_sha256') == '56c10c8c7e26a4ffd18c5838115c587f7bce7930a6bd078e49527dc2f0bc1cad' and
+                          envelope.get('preparation_status') == result['status'], 'Failure inspection only')
+                  if 'INCOMPLETE_MANIFEST.json' in metadata:
+                      checkpoint = metadata['INCOMPLETE_MANIFEST.json']
+                      require(checkpoint.get('status') == 'INCOMPLETE_NOT_ADMITTED_NOT_RESUME_AUTHORIZED' and
+                              checkpoint.get('application_source') == BASE, 'Explicit incomplete checkpoint')
+                      require(inventory.get('INCOMPLETE_CHECKPOINT.tar.gz') ==
+                              dict(bytes=checkpoint.get('archive_bytes'), sha256=checkpoint.get('archive_sha256')), 'Checkpoint bytes')
+                      bundle = checkpoint.get('git_bundle')
+                      if bundle:
+                          require(inventory.get(bundle.get('name')) == {k: bundle.get(k) for k in ('bytes', 'sha256')}, 'Bundle bytes')
+                      descriptor = (checkpoint.get('files') or {}).get('CONSTRUCTION_PROGRESS.json')
+                      if descriptor:
+                          with zipped.open('INCOMPLETE_CHECKPOINT.tar.gz') as source, gzip.GzipFile(fileobj=source) as tar:
+                              info = tarfile.TarInfo.frombuf(tar.read(512), 'utf-8', 'strict')
+                              require(info.name == 'CONSTRUCTION_PROGRESS.json' and info.isreg() and 0 <= info.size <= CHUNK, 'Bounded progress role')
+                              raw = tar.read(info.size)
+                              require(len(raw) == info.size and dict(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()) == descriptor, 'Progress actual bytes')
+                              progress = source_ci.decoded(raw, CHUNK)
+                              require(isinstance(progress, dict) and set(progress) == {'generation', 'target', 'wall_clock'} and
+                                      type(progress['generation']) is int and type(progress['target']) is int and
+                                      0 <= progress['generation'] <= progress['target'] == 24, 'Typed recorded progress')
+              return metadata, inventory, progress
+          
+          
+          def main():
+              started = time.monotonic()
+              deadline = started + 240
+              require(os.environ.get('GITHUB_REPOSITORY_ID') == '1411185749' and
+                      os.environ.get('GITHUB_ACTOR_ID') == '208912933' and
+                      os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch' and
+                      os.environ.get('GITHUB_RUN_ATTEMPT') == '1' and
+                      os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted' and
+                      os.environ.get('GITHUB_REF') == 'refs/heads/upgrade/phase2-reproducible-comparison', 'Trusted readback context')
+              actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+              require(actual == os.environ['GITHUB_SHA'], 'Actual readback source')
+              location = Path(os.environ['RUNNER_TEMP'])
+              fs = os.statvfs(location)
+              require(fs.f_bavail * fs.f_frsize - SIZE - transport.JSON_LIMIT >=
+                      max(2 * 1024 ** 3, .2 * fs.f_blocks * fs.f_frsize), 'Temporary readback disk headroom')
+              api = source_ci.GitHub()
+              before = identity(api)
+              with tempfile.TemporaryDirectory(prefix='nfl-failure-readback-', dir=location) as temp:
+                  archive = Path(temp) / 'artifact.zip'
+                  # Byte/hash transport only. Never call successful-seed retrieve(),
+                  # restore a checkpoint, run builders or claim preparation qualification.
+                  transport._download(dict(artifact_id=ARTIFACT, archive_bytes=SIZE, archive_sha256=DIGEST), archive, deadline=deadline)
+                  metadata, inventory, progress = contents(archive, deadline)
+                  require(identity(api) == before and transport._hash(archive, deadline) == dict(bytes=SIZE, sha256=DIGEST), 'Final actual identity/bytes')
+                  preparation, resource = metadata['PREPARATION_RESULT.json'], metadata['RESOURCE.json']
+                  report = dict(schema_version='fictional-seed-failure-readback-v1', status='READBACK_INTEGRITY_PASS_PREPARATION_FAILED',
+                                readback_source=actual, preparation_source=HEAD, application_source=BASE,
+                                preparation_run=RUN, artifact_id=ARTIFACT, artifact_bytes=SIZE, artifact_sha256=DIGEST,
+                                expires_at=EXPIRES, preparation_status=preparation['status'], failure=preparation.get('failure'),
+                                stages=preparation.get('stages'), progress=progress, member_inventory=inventory,
+                                preservation_status=(preparation.get('preservation') or {}).get('status'),
+                                preserved_file_count=len((metadata.get('INCOMPLETE_MANIFEST.json') or {}).get('files') or {}),
+                                resource={k: resource.get(k) for k in ('status', 'resource_verdict', 'complete_tree', 'supervisor_seconds',
+                                    'failures', 'returncode', 'attributable_scope', 'peak_reset_verified', 'scope_closure_verified', 'privilege_drop_verified')},
+                                kernel_peaks=list((resource.get('kernel_peaks') or {}).values()),
+                                event_deltas=list((resource.get('event_deltas') or {}).values()),
+                                filesystem_minima=[{k: v.get(k) for k in ('total', 'free')} for v in (resource.get('filesystem_minima') or {}).values()],
+                                operating_qualification='NOT_RUN', full_seed='NOT_ADMITTED', application_or_evidence_writes=False,
+                                new_artifact_upload=False)
+              report['cleanup_complete'] = True
+              report['readback_seconds'] = time.monotonic() - started
+              raw = source_ci.canonical(report)
+              require(len(raw) <= 128 * 1024, 'Bounded technical result')
+              print('CHECKPOINT_READBACK_JSON=' + raw.decode())
+              print('CHECKPOINT_READBACK_SHA256=' + hashlib.sha256(raw).hexdigest())
+          
+          
+          if __name__ == '__main__':
+              try: main()
+              except BaseException as error:
+                  # Never expose signed URLs, credentials, response bodies or raw logs.
+                  print('CHECKPOINT_READBACK_REJECTED=' + type(error).__name__, file=sys.stderr)
+                  raise SystemExit(1) from None
           PY
