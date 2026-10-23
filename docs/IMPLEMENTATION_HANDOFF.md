@@ -1436,3 +1436,28 @@ actual public-site verification. Missing-report controls establish safe
 unavailable states, not an accepted split release. Full operating qualification,
 the production-rooted artifact, public contents and compatible recovery remain
 release requirements; this small correction does not complete the Goal.
+
+## 2026-10-23 production configuration transition
+
+The owner-authorized release continues through the existing corrected-model
+dispatch. Operational configuration may select only the explicitly supported
+`sleeper-matchup-data-integrity-v2` model with its own
+`partial-week-data-integrity-v2` plan, closed source hashes and actual clocks.
+This does not repin the original experiment or qualify old receipts under a new
+identity. Both research recorders remain inactive. Original source, registrations,
+frozen selections and all retained evidence remain preserved.
+
+The configuration regression now distinguishes exact retained original settings
+from a separately identified corrected operational plan. It retains the original
+recovery-mode bytes and CLI controls, and checks the complete corrected plan,
+initial-board identity, engine closure and inactive flags. A self-consistently
+rehashed wrong-engine plan must still reject. No validator or engine guard is
+weakened. The protected configuration operation is recorded separately after the
+ordinary test/documentation lease closes; the ordinary gate does not authorize it.
+
+This source preparation is not deployment or operating qualification. Actual
+production-rooted build, report reconstruction, Pages staging, paper-ticket
+verification and compatible recovery must pass before release. The former
+seven-day uploaded diagnostic seed is an execution arrangement, not a product
+feature; any revised arrangement must retain the intended workload, reproducible
+evidence, resource limits and honest measurement boundaries without spending.

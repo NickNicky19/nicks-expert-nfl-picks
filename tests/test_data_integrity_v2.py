@@ -262,10 +262,28 @@ class SelectorContractTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     release_mode.read_phase2(root)
 
-    def test_cli_recovery_output_and_checked_in_configuration_remain_original(self):
-        for path in ("config/phase2.json", "config/release-mode.json"):
-            self.assertEqual((ROOT / path).read_bytes(), corrected._legacy_blob(path))
-        self.assertIs(reliability.load_json(ROOT / "config/phase2.json")["experimental_recording_enabled"], False)
+    def assert_operating_configuration(self, root):
+        config = reliability.load_json(root / "config/phase2.json")
+        self.assertIs(config["capture_enabled"], True)
+        self.assertIs(config["experimental_recording_enabled"], False)
+        self.assertIs(config["challenger_production_enabled"], False)
+        self.assertIs(release_mode.read_phase2(root), True)
+        if config["production_model"] == "original_sleeper_matchup_baseline":
+            self.assertEqual((root / "config/phase2.json").read_bytes(),
+                             corrected._legacy_blob("config/phase2.json"))
+        else:
+            self.assertEqual(config["production_model"], corrected.MODEL)
+            self.assertEqual(config["verification_mode"], corrected.VALIDATOR)
+            spec = config["partial_week"]
+            initial = phase2_capture._initial_board(root, spec)
+            plan = corrected.validate_plan(spec, initial, spec["plan"]["effective_not_before"])
+            self.assertEqual(plan["engine_files"], corrected.engine_files(root))
+            self.assertEqual(plan["initial_complete_board_sha256"], reliability.digest(initial))
+
+    def test_cli_recovery_output_and_explicit_operating_configuration(self):
+        self.assertEqual((ROOT / "config/release-mode.json").read_bytes(),
+                         corrected._legacy_blob("config/release-mode.json"))
+        self.assert_operating_configuration(ROOT)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "tools").mkdir()
@@ -276,6 +294,18 @@ class SelectorContractTests(unittest.TestCase):
                     "production_model": "original_sleeper_matchup_baseline", "challenger_production_enabled": False})
                 result = subprocess.check_output([sys.executable, "-B", str(root / "tools/release_mode.py")], text=True)
                 self.assertEqual(result, f"mode={mode}\nphase2_enabled={enabled}\n")
+
+    def test_corrected_operating_configuration_uses_its_own_closed_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            corrected_fixture(root)
+            self.assert_operating_configuration(root)
+            config = reliability.load_json(root / "config/phase2.json")
+            config["partial_week"]["plan"]["engine_files"]["pull/build.py"] = "0" * 64
+            config["partial_week"]["plan_sha256"] = reliability.digest(config["partial_week"]["plan"])
+            reliability.atomic_json(root / "config/phase2.json", config)
+            with self.assertRaises(reliability.IntegrityError):
+                self.assert_operating_configuration(root)
 
     def test_invalid_optional_component_keeps_independent_observation(self):
         for invalid in (True, "bad", float("inf"), float("nan")):
