@@ -138,7 +138,7 @@
       "previous_plan_preservation": "original_configuration_git_history_and_original_evidence_remain_unchanged"
     },
     "plan_sha256": "434ec66659f80ad3bd924c64f250169becb2f436dc77ab4e5d663f345951b966",
-    "validator_sha256": "7fb3ed03ff5b22dbe1aa9a0db4ae830fe540ace732e0a0199b0e82c93533cf49",
-    "owner_authorization": "NFL-WEB-PRODUCTION-TRANSITION-20261023-000418Z-PROTECTED"
+    "validator_sha256": "f60798eca7071525727bd883e6bd230fdb5422297efb6a7748a3457a212ab3e7",
+    "owner_authorization": "NFL-WEB-RECORDER-RESPONSE-HASH-20261023-004402Z-CONFIG"
   }
 }
