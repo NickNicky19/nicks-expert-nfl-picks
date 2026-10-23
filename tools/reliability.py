@@ -77,7 +77,7 @@ def finite(value, label, optional=True):
         raise IntegrityError(f"{label} is not a finite number")
 
 
-V2_HELPER_SHA256 = '7fb3ed03ff5b22dbe1aa9a0db4ae830fe540ace732e0a0199b0e82c93533cf49'
+V2_HELPER_SHA256 = 'f60798eca7071525727bd883e6bd230fdb5422297efb6a7748a3457a212ab3e7'
 
 
 def engine_hashes(root: Path, *, version="original_sleeper_matchup_baseline") -> dict[str, str]:

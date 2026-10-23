@@ -569,7 +569,7 @@ def _dependency_closure(root):
     """
     root = Path(root).resolve()
     corrected.dispatcher_identity()
-    members = [("retained-approved-source-objects", digest(corrected.legacy_dependency_inventory()))]
+    members = [("retained-approved-source-objects", digest(corrected.legacy_dependency_inventory(evidence_root=root)))]
     for lane in ("pull", "tools", "config", "data"):
         base = root / lane
         if not base.exists():

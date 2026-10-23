@@ -1461,3 +1461,29 @@ verification and compatible recovery must pass before release. The former
 seven-day uploaded diagnostic seed is an execution arrangement, not a product
 feature; any revised arrangement must retain the intended workload, reproducible
 evidence, resource limits and honest measurement boundaries without spending.
+# Recorded projection-response hashing and saved-source compatibility — 2026-10-23
+
+The first genuine corrected-engine build at the production-rooted configuration
+transition exceeded its unchanged 1,200-second local artifact boundary before
+completed capture, report publication or Pages staging. This is a coding-path
+failure, not evidence of account-storage exhaustion or a successful update.
+The failed attempt and original evidence remain preserved.
+
+The recorder now computes the same typed model-input response hash once per
+request and reuses that request-local value in its retained player components.
+It preserves observation clocks, all actual component values, independent request
+identities and the first current-week projection mapping. No forecasting formula,
+selection threshold, closed engine identity or experimental registration changes.
+
+Saved corrected receipts with the accepted B3 helper association are read using
+the actual retained B3 validator and its verified source/Git dependencies in an
+independent temporary root. Existing original-version validation remains separate.
+The new recorder cannot write evidence under the old helper identity. Complete
+source/evidence inventories are freshly checked before and after delegation,
+including copied Git objects, failure markers and saved frozen dependencies.
+No durable PASS shortcut or permissive unknown-helper fallback is introduced.
+
+The new helper requires its actual configuration/registration binding before a
+new live attempt. Source correctness, completed real-package acceptance, operating
+qualification and public deployment remain separate requirements; the historical
+960-second planning misses and 1,200-second updater timeout remain unchanged.

@@ -33,6 +33,12 @@ PLAN = "partial-week-data-integrity-plan-v2"
 MODEL_INPUT_HASH = "typed-model-input-json-v1"
 LEGACY_SOURCE = "bf3ec09129e918b73641a65af5f05ecd5559139a"
 LEGACY_TREE = "a7fa1863483d38fbda3eac4f6edbdbe26acfaccf"
+RETAINED_CORRECTED_SOURCE = "b3de2fbd88ba3247b407a856972285ad10527b99"
+RETAINED_CORRECTED_TREE = "c0d0d818f8e1266f55851c8c220d44cd94797c78"
+RETAINED_CORRECTED_HELPERS = {
+    "tools/data_integrity_v2.py": "7fb3ed03ff5b22dbe1aa9a0db4ae830fe540ace732e0a0199b0e82c93533cf49",
+    "tools/build_recorded.py": "9c3106332cf522068c0d861e4288370b4bd0bb2acb69eaec440b5b1f37919c87",
+    "tools/reliability.py": "a8bd3eced472598330ed3d4db0e9fb9c2715206c44254ce6af983b5afc0faf3b"}
 V2_PATHS = ENGINE_PATHS + ("pull/grade.py",)
 # Filled from the actual completed implementation, never from a caller/receipt.
 V2_SOURCE_SHA256 = {'pull/build.py': 'd8a1094af872c84e0fe092662a1241afc0eceaca8c27f7bea687e6a1be2f576c', 'pull/matchup.py': 'eaf627730041060ad16dd9930accfe54a54cf5fb49bb42d18680b5c572ddd7a5', 'pull/scoring.py': '473e8fa2601d75eab8a223edda53555c51ce145c6426e570df9ae918c3f9eee0', 'pull/books.py': '0b89744960136a4f2e594b61e6df754d357706d8c66a8ae359d8eb02bbfa53f8', 'pull/gamemodel.py': '2a2519a12ad4993da02ae6bdcdb6c86f2b5a6554ce93a702b550ecde17fb7d1f', 'pull/sources.py': '36555cdbc55d73ba632d5adae1130288f4f532073857c642ac3ebc7e626b0061', 'pull/news.py': '17ce1b3b6b72694e6b543bd767e287c26a9d1f6dd5dba2de6c873543036842e9', 'pull/grade.py': 'cf4bccf4fd960d5cc896d5e8bbef216a7d84cd20ca938ce1c60ca7942c307d2f'}
@@ -71,15 +77,17 @@ def _legacy_blob(name, repository=ROOT):
     return raw
 
 
-def _legacy_graph(repository=ROOT):
+def _legacy_graph(repository=ROOT, *, source=LEGACY_SOURCE, tree=LEGACY_TREE, objects_out=None):
     """Fresh bounded commit/tree/blob closure, including all retained helpers."""
     dispatcher_identity()
-    commit = _git(repository, "cat-file", "commit", LEGACY_SOURCE)
-    if (hashlib.sha1(b"commit " + str(len(commit)).encode() + b"\0" + commit).hexdigest() != LEGACY_SOURCE
-            or commit.splitlines()[0] != ("tree " + LEGACY_TREE).encode()):
+    commit = _git(repository, "cat-file", "commit", source)
+    if tree is None:
+        tree = commit.splitlines()[0].decode().removeprefix("tree ")
+    if (hashlib.sha1(b"commit " + str(len(commit)).encode() + b"\0" + commit).hexdigest() != source
+            or commit.splitlines()[0] != ("tree " + tree).encode()):
         raise IntegrityError("Retained original commit/tree identity mismatch")
-    entries, objects = [], {LEGACY_TREE: "tree"}
-    for item in _git(repository, "ls-tree", "-r", "-t", "-z", LEGACY_SOURCE, "--", "pull", "tools", "config").split(b"\0"):
+    entries, objects = [], {tree: "tree"}
+    for item in _git(repository, "ls-tree", "-r", "-t", "-z", source, "--", "pull", "tools", "config").split(b"\0"):
         if not item:
             continue
         metadata, name = item.split(b"\t", 1)
@@ -121,13 +129,138 @@ def _legacy_graph(repository=ROOT):
         content[oid] = value
     if stream.read(1):
         raise IntegrityError("Unexpected retained source graph bytes")
+    if objects_out is not None:
+        objects_out[source] = ("commit", commit)
+        objects_out.update({oid: (objects[oid], value) for oid, value in content.items()})
     return [(name, oid, content[oid]) for name, oid in entries], [
         (oid, objects[oid], hashlib.sha256(value).hexdigest()) for oid, value in content.items()]
 
 
-def legacy_dependency_inventory(repository=ROOT):
+def legacy_dependency_inventory(repository=ROOT, *, evidence_root=None, _objects=None):
     _, inventory = _legacy_graph(repository)
-    return {"commit": LEGACY_SOURCE, "tree": LEGACY_TREE, "objects": inventory}
+    entries, retained = _legacy_graph(repository, source=RETAINED_CORRECTED_SOURCE,
+                                    tree=RETAINED_CORRECTED_TREE, objects_out=_objects)
+    values = {name: hashlib.sha256(raw).hexdigest() for name, _, raw in entries}
+    if any(values.get(name) != expected for name, expected in
+           {**V2_SOURCE_SHA256, **RETAINED_CORRECTED_HELPERS}.items()):
+        raise IntegrityError("Retained corrected source/helper identity mismatch")
+    if _objects is not None:
+        _legacy_graph(repository, objects_out=_objects)
+    sources = {}
+    if evidence_root is not None:
+        from evidence import read
+        verification = Path(evidence_root) / "data/verification"
+        paths = list(verification.glob("*/w*/*.json.gz")) + list(
+            (verification / "partial-registrations").glob("*/w*/*.json.gz"))
+        if len(paths) > 16384:
+            raise IntegrityError("Retained source observation inventory exceeds bound")
+        for path in sorted(paths):
+            if path.is_symlink():
+                raise IntegrityError("Symlink source observation")
+            payload = read(path)
+            if payload.get("schema_version") not in (INPUTS, "partial-registration-data-integrity-v2"):
+                continue
+            commit = payload.get("code_commit") if payload.get("schema_version") == INPUTS else payload.get("source_sha")
+            if not isinstance(commit, str) or len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
+                raise IntegrityError("Invalid saved corrected source commit")
+            if commit not in sources:
+                _, source_inventory = _legacy_graph(repository, source=commit, tree=None, objects_out=_objects)
+                sources[commit] = source_inventory
+    return {"commit": LEGACY_SOURCE, "tree": LEGACY_TREE, "objects": inventory,
+            "retained_corrected": {"commit": RETAINED_CORRECTED_SOURCE,
+                "tree": RETAINED_CORRECTED_TREE, "objects": retained}, "receipt_sources": sources}
+
+
+def _retained_corrected_commit(commit):
+    """Closed old helper family; new writes still use strict recording_source."""
+    if not isinstance(commit, str) or len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
+        raise IntegrityError("Invalid corrected source commit")
+    old = True
+    for name, expected in {**V2_SOURCE_SHA256, **RETAINED_CORRECTED_HELPERS}.items():
+        raw = _git(ROOT, "cat-file", "blob", commit + ":" + name)
+        if hashlib.sha256(raw).hexdigest() != expected:
+            old = False
+    if not old:
+        recording_source(commit)
+    return old
+
+
+def _retained_corrected_read(root, operation, request):
+    """Read saved evidence with actual B3 code and a minimal verified Git store.
+
+    No remote, alternates, old-source recording or durable trust. Source objects,
+    original evidence, negative evidence and independent destination are checked
+    at both boundaries. The old validator retains all identity/clock checks.
+    """
+    import sys
+    root = Path(root).resolve()
+    def evidence_inventory(base):
+        result = {}
+        for lane in ("data", "output/data"):
+            directory = Path(base) / lane
+            if directory.is_symlink():
+                raise IntegrityError("Symlink retained evidence")
+            for path in sorted(directory.rglob("*")):
+                if path.is_symlink():
+                    raise IntegrityError("Symlink retained evidence")
+                if path.is_file():
+                    h = hashlib.sha256()
+                    with path.open("rb") as stream:
+                        for chunk in iter(lambda: stream.read(65536), b""):
+                            h.update(chunk)
+                    result[path.relative_to(base).as_posix()] = h.hexdigest()
+        return result
+    objects = {}
+    source_before = legacy_dependency_inventory(evidence_root=root, _objects=objects)
+    before = evidence_inventory(root)
+    entries, _ = _legacy_graph(source=RETAINED_CORRECTED_SOURCE, tree=RETAINED_CORRECTED_TREE)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_") and key != "GITHUB_SHA"}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_LAZY_FETCH="1", PYTHONDONTWRITEBYTECODE="1")
+    with tempfile.TemporaryDirectory(prefix="nfl-retained-corrected-") as directory:
+        source = Path(directory)
+        for name, _, raw in entries:
+            target = source / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        subprocess.run(["git", "init", "-q", str(source)], check=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        for oid, (kind, raw) in objects.items():
+            saved = subprocess.check_output(["git", "-C", str(source), "hash-object", "-t", kind, "-w", "--stdin"], input=raw, env=env).decode().strip()
+            if saved != oid:
+                raise IntegrityError("Copied retained Git object identity changed")
+        (source / ".git/HEAD").write_text(RETAINED_CORRECTED_SOURCE + "\n")
+        for lane in ("data", "output/data"):
+            if (root / lane).exists():
+                shutil.copytree(root / lane, source / lane)
+        if (evidence_inventory(source) != before or evidence_inventory(root) != before
+                or legacy_dependency_inventory(repository=source, evidence_root=source) != source_before):
+            raise IntegrityError("Copied retained corrected evidence changed")
+        program = """import json,sys
+from pathlib import Path
+sys.path[:0]=[str(Path.cwd()/'tools'),str(Path.cwd()/'pull')]
+import data_integrity_v2 as d
+r=json.load(sys.stdin)
+if r['operation']=='inputs':
+ result=d.recorded_inputs(Path.cwd(),**r['request'])
+elif r['operation']=='bundle':
+ result=d.read_bundle(Path.cwd(),**r['request'])
+else: raise RuntimeError('Unsupported retained operation')
+print(json.dumps(result,allow_nan=False))
+"""
+        # A temporary file bounds IPC memory even on a failing child.
+        with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+            process = subprocess.run([sys.executable, "-B", "-c", program], cwd=source, env=env,
+                input=json.dumps({"operation": operation, "request": request}).encode(),
+                stdout=output, stderr=errors, timeout=180)
+            output.seek(0); raw = output.read(256 * 1024 * 1024 + 1)
+            if process.returncode or len(raw) > 256 * 1024 * 1024:
+                errors.seek(0); reason = errors.read(65536).decode(errors="replace").splitlines()
+                raise IntegrityError("Retained corrected validation failed: " + (reason[-1] if reason else "invalid output"))
+        if (evidence_inventory(source) != before or evidence_inventory(root) != before
+                or legacy_dependency_inventory(evidence_root=root) != source_before
+                or legacy_dependency_inventory(repository=source, evidence_root=source) != source_before
+                or any((source / name).read_bytes() != value for name, _, value in entries)):
+            raise IntegrityError("Retained corrected dependencies changed during validation")
+    return json.loads(raw.splitlines()[-1])
 
 
 def legacy_engine_hashes(repository=ROOT):
@@ -233,6 +366,12 @@ def recorded_inputs(root, name, season, week, *, mode=None, observed_at=None):
     if name != expected or inputs.get("schema_version") != INPUTS or inputs.get("model") != MODEL:
         raise IntegrityError("Unsupported corrected input identity/schema/model")
     hashes = engine_files(root)
+    if _retained_corrected_commit(inputs.get("code_commit")):
+        result = _retained_corrected_read(root, "inputs", {"name": name, "season": season, "week": week,
+            "mode": mode, "observed_at": utc(observed_at).isoformat() if observed_at is not None else None})
+        if result != inputs:
+            raise IntegrityError("Retained corrected input return changed")
+        return result
     recording_source(inputs.get("code_commit"))
     if inputs.get("presence_contract") != PRESENCE or inputs.get("engine_files") != hashes:
         raise IntegrityError("Corrected input source/presence mismatch")
@@ -711,6 +850,12 @@ def read_bundle(root, name, spec, *, now, _seen=None):
         raise IntegrityError("Cyclic corrected frozen evidence")
     seen.add(name)
     completion = original._saved(root, name, "verification/partial-completions")
+    if completion.get("validator_sha256") == RETAINED_CORRECTED_HELPERS["tools/data_integrity_v2.py"]:
+        if completion.get("schema_version") != "partial-completion-data-integrity-v2":
+            raise IntegrityError("Unsupported retained corrected completion version")
+        engine_files(root)
+        return tuple(_retained_corrected_read(root, "bundle", {"name": name, "spec": spec,
+            "now": utc(now).isoformat(), "_seen": list(_seen or ())}))
     for path in (Path(root) / "data/verification/partial-failures").rglob("*.json.gz"):
         failure = original._saved(root, path.relative_to(root).as_posix(), "verification/partial-failures")
         if failure.get("completion_sha256") == digest(completion):

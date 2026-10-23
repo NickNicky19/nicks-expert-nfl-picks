@@ -361,6 +361,102 @@ class CrossRecordTests(unittest.TestCase):
 
 
 class SourceVersionTests(unittest.TestCase):
+    def test_actual_retained_corrected_inputs_bundle_and_failure_marker(self):
+        """Construct new fictional controls with actual retained B3 source."""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source, runtime = base / "source", base / "fixture"
+            source.mkdir(); runtime.mkdir()
+            objects = {}
+            corrected.legacy_dependency_inventory(_objects=objects)
+            paths = ["pull", "tools", "config"] + ["tests/"+name for name in
+                ("test_data_integrity_v2.py", "test_partial_week.py", "test_source_evidence.py",
+                 "test_scorecard.py", "test_reliability.py")] + ["output/"+name for name in
+                ("app.js", "index.html", "style.css", "reliability-ui.js", "recovery.html")]
+            listing = corrected._git(ROOT, "ls-tree", "-r", "-z", corrected.RETAINED_CORRECTED_SOURCE, "--", *paths)
+            for item in listing.split(b"\0"):
+                if not item:
+                    continue
+                metadata, name = item.split(b"\t", 1)
+                mode, kind, oid = metadata.decode().split()
+                self.assertEqual((mode, kind), ("100644", "blob"))
+                raw = corrected._git(ROOT, "cat-file", "blob", oid)
+                self.assertEqual(hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest(), oid)
+                target = source / name.decode()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(raw)
+            subprocess.run(["git", "init", "-q", str(source)], check=True)
+            for oid, (kind, raw) in objects.items():
+                copied = subprocess.check_output(["git", "-C", str(source), "hash-object", "-t", kind, "-w", "--stdin"], input=raw).decode().strip()
+                self.assertEqual(copied, oid)
+            (source / ".git/HEAD").write_text(corrected.RETAINED_CORRECTED_SOURCE+"\n")
+            program = """import json,sys
+from pathlib import Path
+sys.path[:0]=[str(Path.cwd()/'tests'),str(Path.cwd()/'tools'),str(Path.cwd()/'pull')]
+from test_data_integrity_v2 import corrected_fixture,DI_NOW
+from test_partial_week import status
+import data_integrity_v2 as d
+root=Path(sys.argv[1]);data,proof,spec,registration,inputs=corrected_fixture(root)
+native,health,completion,scope=d.record_bundle(root,data,proof,status(data,DI_NOW),spec,registration,clock=lambda:DI_NOW)
+print(json.dumps(dict(inputs=inputs.relative_to(root).as_posix(),completion=completion.relative_to(root).as_posix(),spec=spec,at=DI_NOW.isoformat())))
+"""
+            env = {key:value for key,value in os.environ.items() if not key.startswith("GIT_")}
+            env.update(GITHUB_SHA=corrected.RETAINED_CORRECTED_SOURCE, PYTHONDONTWRITEBYTECODE="1")
+            result = subprocess.check_output([sys.executable, "-B", "-c", program, str(runtime)],
+                cwd=source, env=env, stderr=subprocess.PIPE, timeout=60)
+            index = json.loads(result.splitlines()[-1])
+            before = {p.relative_to(runtime):p.read_bytes() for p in runtime.rglob("*") if p.is_file()}
+            inputs = corrected.recorded_inputs(runtime, index["inputs"], 2026, 6, mode="live", observed_at=index["at"])
+            self.assertEqual(inputs, read(runtime / index["inputs"]))
+            completion, scope, native = corrected.read_bundle(runtime, index["completion"], index["spec"], now=index["at"])
+            self.assertEqual(completion, read(runtime / index["completion"]))
+            self.assertEqual(scope, read(runtime / completion["scope_receipt"]))
+            self.assertEqual(native, read(runtime / completion["baseline_receipt"]))
+            self.assertEqual(before, {p.relative_to(runtime):p.read_bytes() for p in runtime.rglob("*") if p.is_file()})
+            with self.assertRaises(reliability.IntegrityError):
+                corrected.read_bundle(runtime, index["completion"], index["spec"], now=index["at"], _seen={index["completion"]})
+            write(runtime, "verification/partial-failures", {"schema_version":"completion-failure-data-integrity-v2",
+                "season":2026,"week":6,"completion_sha256":reliability.digest(completion),
+                "failed_at":index["at"],"reason":"FICTIONAL_NEGATIVE_CONTROL"})
+            with self.assertRaises(reliability.IntegrityError):
+                corrected.read_bundle(runtime, index["completion"], index["spec"], now=index["at"])
+
+    def test_request_local_projection_hash_is_once_per_response_and_restored_on_failure(self):
+        class StopAfterInstrumentation(Exception):
+            pass
+        for count in (2, 4):
+            with self.subTest(rows=count), tempfile.TemporaryDirectory() as directory:
+                response = [{"player_id": "fictional-"+str(i), "stats": {"rec": 0, "rec_yd": -2,
+                    "rush_yd": None}} for i in range(count)]
+                later = [{"player_id": "later", "stats": {"rec": 3}}]
+                getter = build.sources.get_json
+                matchups = build.Matchups
+                actual_hash = corrected.model_input_hash
+                with patch.object(build_recorded, "engine_hashes", return_value=corrected.V2_SOURCE_SHA256), \
+                        patch.object(build.sources, "get_json", side_effect=[response, later]), \
+                        patch.object(corrected, "model_input_hash", wraps=actual_hash) as hashes:
+                    def run():
+                        self.assertIs(build.sources.get_json("https://api.sleeper.app/projections/nfl/2026/6"), response)
+                        self.assertIs(build.sources.get_json("https://api.sleeper.app/projections/nfl/2026/7"), later)
+                        raise StopAfterInstrumentation()
+                    with self.assertRaises(StopAfterInstrumentation):
+                        build_recorded.record_build(Path(directory), run=run, model=corrected.MODEL)
+                    self.assertEqual(hashes.call_count, 2)
+                    self.assertIs(hashes.call_args_list[0].args[0], response)
+                    self.assertIs(hashes.call_args_list[1].args[0], later)
+                self.assertIs(build.sources.get_json, getter)
+                self.assertIs(build.Matchups, matchups)
+                self.assertFalse(list(Path(directory).rglob("*.json.gz")))
+
+    def test_retained_corrected_family_is_closed_and_new_writes_cannot_wear_old_source(self):
+        self.assertTrue(corrected._retained_corrected_commit(corrected.RETAINED_CORRECTED_SOURCE))
+        self.assertTrue(corrected._retained_corrected_commit("e7308bca4e9fce2b45aa3539603b6ebe9901a607"))
+        for source in ("a30d464035eed734ed1bd1452c73ef6419ac1724", "0" * 40, "unknown"):
+            with self.subTest(source=source), self.assertRaises((reliability.IntegrityError, subprocess.CalledProcessError)):
+                corrected._retained_corrected_commit(source)
+        with self.assertRaises(reliability.IntegrityError):
+            corrected.recording_source(corrected.RETAINED_CORRECTED_SOURCE)
+
     def test_amended_names_and_original_validator_bytes_are_distinct(self):
         self.assertEqual(corrected.INPUTS, "matchup-inputs-v3")
         for name in ("tools/verify.py", "tools/partial_week.py", "tools/point_challenger.py", "tools/rec_half_registration_v1.json"):
@@ -447,6 +543,11 @@ class CorrectedOperationalTests(unittest.TestCase):
         inputs = corrected.recorded_inputs(self.root, self.original.relative_to(self.root).as_posix(), 2026, 6, mode="live", observed_at=DI_NOW)
         self.assertEqual(inputs["schema_version"], "matchup-inputs-v3")
         self.assertEqual(inputs["projection_input_components"]["fictional-1"]["stats"]["rec"], 4.876)
+        component = inputs["projection_input_components"]["fictional-1"]
+        matching = [item for item in inputs["source_requests"] if item["url"] == component["source"]]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(component["source_response_sha256"], matching[0]["response_sha256"])
+        self.assertEqual(component["collected_at"], matching[0]["collected_at"])
         native, _, completion, scope = self.record()
         captured = phase2_capture.read_native_baseline(native, self.root, now=DI_NOW)
         first, pairs, _ = scorecard.descriptive_forecasts([captured], corrected.V2_SOURCE_SHA256, DI_NOW, model_version=corrected.MODEL)

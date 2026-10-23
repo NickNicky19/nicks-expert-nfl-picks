@@ -53,11 +53,16 @@ def record_build(root=ROOT, run=None, *, mode="live", model="original_sleeper_ma
                                    error=type(err).__name__)
             raise
         collected = datetime.now(timezone.utc)
+        response_hash = None
         if (url.endswith("/v1/players/nfl") or "/stats/nfl/" in url
                 or "/projections/nfl/" in url):
+            # This response is unchanged while its retained components are
+            # copied below. Hash its actual bytes once per request, never once
+            # per player or through a shared/concurrent request's list entry.
+            response_hash = corrected.model_input_hash(response) if modern else digest(response)
             source_requests.append({"url": url, "params": copy.deepcopy(params),
                                     "collected_at": stamp(collected),
-                                    "response_sha256": corrected.model_input_hash(response) if modern else digest(response),
+                                    "response_sha256": response_hash,
                                     "response_hash_format": corrected.MODEL_INPUT_HASH if modern else HASH_FORMAT})
         if url == SOURCE:
             # Retain exact rows in the permitted NFL/three-statistic scope. The
@@ -84,7 +89,7 @@ def record_build(root=ROOT, run=None, *, mode="live", model="original_sleeper_ma
                             "stats": {key: build.scoring.retained_value(copy.deepcopy(value)) for key, value in (row.get("stats") or {}).items()
                                       if key in build.scoring.STAT_KEYS},
                             "collected_at": stamp(collected),
-                            "source": url, "source_response_sha256": corrected.model_input_hash(response),
+                            "source": url, "source_response_sha256": response_hash,
                             "claim": "RETAINED_MODEL_INPUT_COMPONENTS_NOT_INDEPENDENT_PROVIDER_AUTHENTICATION"}
         if url == build.sources.ESPN + "/scoreboard" and isinstance(response, dict) and isinstance(params, dict):
             key = f"{params.get('dates')}_{int(params.get('week', 0)):02d}"

@@ -55,6 +55,42 @@ def replace_fixture_part(base, descriptor, filename, payload):
         descriptor.update(encoded_sha256=physical, encoded_bytes=len(stored))
 
 
+class RetainedCorrectedDependencyTests(unittest.TestCase):
+    def test_actual_receipt_source_commit_is_freshly_hashed_after_warm_inventory(self):
+        # Inventory control only: this minimal source observation is not a
+        # qualified forecast or a substitute for a completed-bundle fixture.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            commit = "e7308bca4e9fce2b45aa3539603b6ebe9901a607"
+            write(root, "verification", {"schema_version":corrected.INPUTS,
+                "season":2026,"week":7,"code_commit":commit})
+            first = phase2_capture._dependency_closure(root)
+            self.assertEqual(first, phase2_capture._dependency_closure(root))
+            actual_git = corrected._git
+            def changed_object(repository, *args):
+                raw = actual_git(repository, *args)
+                if args == ("cat-file", "commit", commit):
+                    return raw[:-1] + (b"x" if raw[-1:] != b"x" else b"y")
+                return raw
+            with patch.object(corrected, "_git", side_effect=changed_object):
+                with self.assertRaisesRegex(IntegrityError, "commit/tree identity mismatch"):
+                    phase2_capture._dependency_closure(root)
+
+    def test_capture_closure_passes_actual_evidence_root_to_source_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventories = []
+            def inventory(*, evidence_root):
+                self.assertEqual(evidence_root, root.resolve())
+                inventories.append(evidence_root)
+                return {"fresh_actual_object_closure": len(inventories)}
+            with patch.object(corrected, "legacy_dependency_inventory", side_effect=inventory):
+                first = phase2_capture._dependency_closure(root)
+                second = phase2_capture._dependency_closure(root)
+            self.assertEqual(len(inventories), 2)
+            self.assertNotEqual(first, second)
+
+
 class ReplayClock(datetime):
     @classmethod
     def now(cls, tz=None):
