@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import traceback
 import zipfile
 
 import source_ci as ci
@@ -48,6 +49,66 @@ GIB = 1024 ** 3
 DECODED_LIMIT = 8 * GIB
 FILE_LIMIT = 64 * 1024 ** 2
 FILE_COUNT = 20000
+PHASES = ('entry', 'source_binding', 'retrieval', 'parent_integrity', 'raw_restore',
+    'committed_git_restore', 'lineage_binding', 'latest_saved_validation',
+    'retained_history_validation', 'final_integrity', 'final_source_binding')
+DIAGNOSTIC_PHASE = 'entry'
+
+
+def phase(name):
+    """Constant diagnostic labels, never fixture fields or validation authority."""
+    global DIAGNOSTIC_PHASE
+    if name not in PHASES:
+        raise ValueError('Unknown inspection diagnostic phase')
+    DIAGNOSTIC_PHASE = name
+    print('CHECKPOINT_FRONTIER_PHASE=' + name, flush=True)
+
+
+def failure_report(error):
+    """Identify a failing operation without printing raw command/error payloads."""
+    classes = {'CalledProcessError', 'TimeoutExpired', 'IntegrityError', 'Rejected',
+        'ValueError', 'OSError', 'EOFError', 'BadGzipFile', 'AssertionError',
+        'FileNotFoundError', 'PermissionError', 'RuntimeError', 'KeyboardInterrupt'}
+    result = dict(schema_version='checkpoint-inspection-failure-v1',
+        phase=DIAGNOSTIC_PHASE if DIAGNOSTIC_PHASE in PHASES else 'entry',
+        error_class=type(error).__name__ if type(error).__name__ in classes else 'OTHER_ERROR',
+        raw_exception_and_arguments_omitted=True)
+    if isinstance(error, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+        command = error.cmd
+        role = 'subprocess'; verb = None
+        if isinstance(command, (tuple, list)) and command and isinstance(command[0], str):
+            executable = Path(command[0]).name
+            if executable == 'git':
+                role = 'git'
+                verbs = {'bundle', 'fetch', 'fsck', 'ls-tree', 'cat-file', 'rev-parse',
+                    'status', 'show', 'init', 'symbolic-ref', 'checkout', 'remote',
+                    'count-objects', 'config', 'hash-object', 'clone', 'gc'}
+                verb = next((x for x in command[1:] if isinstance(x, str) and x in verbs), None)
+            elif re.fullmatch(r'python(?:[0-9]+(?:\.[0-9]+)*)?', executable):
+                role = 'python'
+        returncode = error.returncode if isinstance(error, subprocess.CalledProcessError) else None
+        result.update(command_role=role, command_verb=verb,
+            returncode=returncode if type(returncode) is int and abs(returncode) <= 2147483647 else None)
+        stderr = getattr(error, 'stderr', None)
+        prefix = (stderr[:8192].encode(errors='replace') if isinstance(stderr, str)
+            else stderr[:8192] if isinstance(stderr, bytes) else b'').lower()
+        classifiers = (
+            ('GIT_OBJECT_UNAVAILABLE', (b'bad object', b'not a valid object', b'unknown revision',
+                b'bad revision', b'invalid object name', b'could not get object info')),
+            ('GIT_OWNERSHIP_REJECTED', (b'dubious ownership', b'safe.directory')),
+            ('GIT_LOCK_REJECTED', (b'index.lock', b'cannot lock ref')),
+            ('NETWORK_PERMISSION_DENIED', (b'operation not permitted', b'could not resolve host')),
+            ('RESOURCE_UNAVAILABLE', (b'cannot allocate memory', b'resource temporarily unavailable', b'no space left')),
+        )
+        result['stderr_class'] = next((label for label, patterns in classifiers
+            if any(p in prefix for p in patterns)), 'UNCLASSIFIED_OR_NOT_CAPTURED')
+    public_files = {'seed_checkpoint_frontier.py', 'operating_diagnostic.py',
+        'phase2_capture.py', 'data_integrity_v2.py', 'partial_week.py', 'reliability.py',
+        'verify.py', 'selection_publication.py', 'scorecard.py', 'source_evidence.py'}
+    result['public_call_frames'] = [dict(file=Path(f.filename).name, function=f.name, line=f.lineno)
+        for f in traceback.extract_tb(error.__traceback__, limit=12)
+        if Path(f.filename).name in public_files and re.fullmatch(r'[A-Za-z0-9_<>]{1,80}', f.name)]
+    return result
 
 
 def require(condition, message):
@@ -179,7 +240,7 @@ def git(root, *arguments, data=None, timeout=120):
         and k not in ('GH_TOKEN', 'GITHUB_TOKEN', 'ODDS_API_KEY')}
     env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_TERMINAL_PROMPT='0', GIT_NO_REPLACE_OBJECTS='1')
     return subprocess.check_output(['git', '-c', 'core.hooksPath=/dev/null', '-c', 'gc.auto=0',
-        '-C', str(root), *arguments], input=data, stderr=subprocess.DEVNULL, env=env, timeout=timeout)
+        '-C', str(root), *arguments], input=data, stderr=subprocess.PIPE, env=env, timeout=timeout)
 
 
 def tracked(root, ref='HEAD'):
@@ -241,11 +302,14 @@ def check_saved(work):
     here = Path(__file__).resolve().parent
     require(hashlib.sha256((here / 'operating_diagnostic.py').read_bytes()).hexdigest() == HARNESS
         and hashlib.sha256((here / 'diagnostic-seed-inputs.json').read_bytes()).hexdigest() == INPUTS, 'Frozen lineage changed')
-    verify_parents(work)
+    phase('parent_integrity'); verify_parents(work)
     value = decoded(work / MANIFEST); raw = work / 'raw-checkpoint'
+    phase('raw_restore')
     files = unpack_checkpoint(work / CHECKPOINT, raw, value)
     n = progress(decoded(raw / 'CONSTRUCTION_PROGRESS.json'))
+    phase('committed_git_restore')
     root, heads, residual = restore_committed(work, raw, files)
+    phase('lineage_binding')
     marker = decoded(root / 'FICTIONAL_ONLY.json')
     require(marker.get('reviewed_source') == BASE and marker.get('dimensions') == h.FULL, 'Full original fictional lineage')
     phases = decoded(root / 'FICTIONAL_PHASES.json')
@@ -256,8 +320,11 @@ def check_saved(work):
     provider = h.Provider(m, h.FULL, at)
     with h.external(m, provider, root), h.patch.object(m['capture'], '_public_archive_commit',
             side_effect=lambda ref, tree: h.assert_local_tree(root, ref, tree)):
+        phase('latest_saved_validation')
         generation = m['capture'].validate_generation(root)
+        phase('retained_history_validation')
         metrics = h.workload(root, m)
+    phase('final_integrity')
     require(metrics['complete_generations'] == n, 'Registry/committed frontier disagreement')
     require(tree_inventory(root) == before and not git(root, 'status', '--porcelain'), 'Saved reconstruction changed evidence')
     require(all(descriptor(raw / name) == d for name, d in files.items()), 'Raw partial checkpoint changed')
@@ -359,12 +426,16 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('action', choices=('retrieve', 'verify')); p.add_argument('--work', type=Path, required=True)
     args = p.parse_args(); start = time.monotonic(); work = args.work.absolute()
+    phase('source_binding')
     code = hosted(work, args.action); identity = ci.source(code)
     if args.action == 'retrieve':
+        phase('retrieval')
         retrieve(work)
+        phase('final_source_binding')
         require(ci.source(code) == identity, 'Inspection source changed during retrieval')
         return
     result = check_saved(work)
+    phase('final_source_binding')
     require(ci.source(code) == identity, 'Inspection source changed during saved reconstruction')
     result.update(inspection_source=os.environ['GITHUB_SHA'], artifact_id=ARTIFACT, artifact_sha256=DIGEST,
         inspection_tree=identity['tree'], inspection_source_manifest_sha256=identity['source_manifest_sha256'],
@@ -379,5 +450,7 @@ if __name__ == '__main__':
     try: main()
     except BaseException as error:
         # No signed URLs, provider responses, environment or raw fixture records.
-        print('CHECKPOINT_FRONTIER_REJECTED=' + type(error).__name__, file=sys.stderr)
+        report = failure_report(error)
+        print('CHECKPOINT_FRONTIER_REJECTED=' + report['error_class'], file=sys.stderr)
+        print('CHECKPOINT_FRONTIER_FAILURE_JSON=' + ci.canonical(report).decode(), file=sys.stderr)
         raise SystemExit(1) from None

@@ -223,4 +223,51 @@ class GitFrontier(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'missing'): self.restore()
 
 
+class SafeDiagnostics(unittest.TestCase):
+    def test_nested_git_failure_identifies_role_without_raw_payload(self):
+        private = 'https://example.invalid/?token=DO_NOT_PRINT'
+        error = subprocess.CalledProcessError(128,
+            ['/usr/bin/git', '-C', '/private/owner-path', 'cat-file', 'blob', private],
+            output=b'PRIVATE_OUTPUT', stderr=b'fatal: Not a valid object name '+private.encode())
+        with patch.object(f, 'DIAGNOSTIC_PHASE', 'latest_saved_validation'):
+            report = f.failure_report(error)
+        self.assertEqual((report['phase'], report['command_role'], report['command_verb'], report['returncode']),
+                         ('latest_saved_validation', 'git', 'cat-file', 128))
+        self.assertEqual(report['stderr_class'], 'GIT_OBJECT_UNAVAILABLE')
+        raw = json.dumps(report)
+        for value in (private, 'DO_NOT_PRINT', '/private', 'PRIVATE_OUTPUT', 'fatal:'):
+            self.assertNotIn(value, raw)
+
+    def test_string_command_and_unknown_exception_cannot_be_logged(self):
+        secret = 'https://example.invalid/private-owner-data'
+        error = subprocess.CalledProcessError(2, secret, stderr=secret.encode())
+        report = f.failure_report(error)
+        self.assertEqual(report['command_role'], 'subprocess')
+        self.assertIsNone(report['command_verb'])
+        self.assertNotIn(secret, json.dumps(report))
+        invented = type('PrivateOwnerSecret', (Exception,), {})(secret)
+        self.assertEqual(f.failure_report(invented)['error_class'], 'OTHER_ERROR')
+        self.assertNotIn('PrivateOwnerSecret', json.dumps(f.failure_report(invented)))
+
+    def test_phase_is_closed_and_does_not_change_failure_semantics(self):
+        with patch.object(f, 'DIAGNOSTIC_PHASE', 'entry'), contextlib.redirect_stdout(io.StringIO()):
+            f.phase('retained_history_validation')
+            self.assertEqual(f.DIAGNOSTIC_PHASE, 'retained_history_validation')
+            with self.assertRaises(ValueError): f.phase('https://invalid/private')
+            self.assertEqual(f.DIAGNOSTIC_PHASE, 'retained_history_validation')
+        error = subprocess.TimeoutExpired(['/usr/bin/python3.12', '-c', 'private code'], 3)
+        report = f.failure_report(error)
+        self.assertEqual(report['command_role'], 'python')
+        self.assertIsNone(report['returncode'])
+        self.assertNotIn('private code', json.dumps(report))
+
+    def test_unknown_traceback_paths_and_error_messages_are_excluded(self):
+        try:
+            raise ValueError('/private/path?credential=DO_NOT_PRINT')
+        except ValueError as error:
+            report = f.failure_report(error)
+        self.assertEqual(report['public_call_frames'], [])
+        self.assertNotIn('DO_NOT_PRINT', json.dumps(report))
+
+
 if __name__ == '__main__': unittest.main()
