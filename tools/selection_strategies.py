@@ -7,8 +7,13 @@ from datetime import datetime, timezone
 from datetime import timedelta
 from collections import defaultdict
 import hashlib
+import json
+import os
 from pathlib import Path
 import subprocess
+import sys
+import tempfile
+from contextlib import contextmanager
 
 from evidence import read, write
 from reliability import IntegrityError, canonical, digest, load_json, stamp, utc
@@ -26,6 +31,137 @@ SOURCE_PATHS = ("tools/selection_strategies.py", POLICY_PATH, "tools/phase2_capt
                 "tools/reliability.py", "tools/partial_week.py", "tools/data_integrity_v2.py",
                 "tools/verify.py", "tools/scorecard.py", "tools/selection_report.py", "tools/evidence.py",
                 "pull/build.py", "pull/scoring.py")
+RETAINED_SOURCE = "e2dd96a31690baad04c8660302933f45f77d72e7"
+RETAINED_TREE = "d02544420316557ddf1451a0753c2321e3d2a245"
+
+
+@contextmanager
+def _retained_source():
+    """Actual closed prior source, never current code wearing an old label."""
+    git = lambda *args: corrected._git(ROOT, *args)
+    commit = git("cat-file", "commit", RETAINED_SOURCE)
+    if (hashlib.sha1(b"commit " + str(len(commit)).encode() + b"\0" + commit).hexdigest() != RETAINED_SOURCE
+            or commit.splitlines()[0] != b"tree " + RETAINED_TREE.encode()):
+        raise IntegrityError("Retained ranked commit/tree identity mismatch")
+    entries, trees = [], {}
+    def tree(oid, prefix=""):
+        if len(trees) + len(entries) >= 512 or int(git("cat-file", "-s", oid)) > 4 * 1024**2:
+            raise IntegrityError("Retained ranked tree exceeds supported closure")
+        raw = git("cat-file", "tree", oid)
+        if hashlib.sha1(b"tree " + str(len(raw)).encode() + b"\0" + raw).hexdigest() != oid:
+            raise IntegrityError("Retained ranked tree is corrupt")
+        trees[oid] = raw
+        offset, names = 0, set()
+        while offset < len(raw):
+            end = raw.index(b"\0", offset)
+            mode, encoded_name = raw[offset:end].split(b" ", 1)
+            name = encoded_name.decode(); child = raw[end + 1:end + 21]
+            if (len(child) != 20 or name in names or not name or name in (".", "..") or "/" in name or "\\" in name):
+                raise IntegrityError("Unsupported retained ranked tree entry")
+            names.add(name); offset = end + 21
+            if not prefix and name not in ("tools", "pull", "config"): continue
+            path = prefix + name; child = child.hex()
+            if mode == b"40000":
+                tree(child, path + "/"); continue
+            if mode not in (b"100644", b"100755") or not prefix:
+                raise IntegrityError("Unsupported retained ranked source entry")
+            size = int(git("cat-file", "-s", child))
+            if (size > 4 * 1024**2 or len(trees) + len(entries) >= 512
+                    or sum(len(v) for _, _, v in entries) + size > 16 * 1024**2):
+                raise IntegrityError("Retained ranked source exceeds supported closure")
+            body = git("cat-file", "blob", child)
+            if len(body) != size or hashlib.sha1(b"blob " + str(len(body)).encode() + b"\0" + body).hexdigest() != child:
+                raise IntegrityError("Retained ranked source blob is corrupt")
+            entries.append((path, child, body))
+    tree(RETAINED_TREE)
+    if not entries or len(entries) > 512 or sum(len(raw) for _, _, raw in entries) > 16 * 1024**2:
+        raise IntegrityError("Retained ranked source exceeds supported closure")
+    # The only changed imported algorithms are the dispatcher and optional
+    # report exporter. All qualification, engine and policy dependencies stay
+    # exact. The child imports the actual old versions of all three files.
+    changed = {"tools/selection_strategies.py", "tools/selection_report.py", "tools/selection_publication.py"}
+    from reliability import ENGINE_PATHS
+    shared = (set(SOURCE_PATHS) | set(ENGINE_PATHS)) - changed
+    for name, _, raw in entries:
+        if name in shared and (ROOT / name).read_bytes() != raw:
+            raise IntegrityError("Retained ranked qualification dependency changed")
+    with tempfile.TemporaryDirectory(prefix="nfl-retained-ranked-") as directory:
+        source = Path(directory)
+        for name, _, raw in entries:
+            target = source / name; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(raw)
+        # Read-only access to the already retained actual Git objects. No
+        # alternates, ref mutation, network retrieval or copied private history.
+        git_dir = git("rev-parse", "--absolute-git-dir").decode().strip()
+        (source / ".git").write_text("gitdir: " + git_dir + "\n")
+        yield source
+        if git("cat-file", "commit", RETAINED_SOURCE) != commit:
+            raise IntegrityError("Retained ranked commit changed during validation")
+        if any(git("cat-file", "tree", oid) != raw for oid, raw in trees.items()):
+            raise IntegrityError("Retained ranked tree changed during validation")
+        for name, oid, raw in entries:
+            if (git("cat-file", "blob", oid) != raw or (source / name).read_bytes() != raw
+                    or name in shared and (ROOT / name).read_bytes() != raw):
+                raise IntegrityError("Retained ranked source changed during validation")
+
+
+def _retained_call(root, operation, payload, at):
+    """Fresh actual-source replay. No durable or cross-root PASS cache."""
+    import phase2_capture
+    from phase2_capture import _dependency_closure
+    from writer_gate import strict_json
+    root = Path(root).resolve()
+    before = _dependency_closure(root)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") and k != "GITHUB_SHA"}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_LAZY_FETCH="1",
+               GIT_OPTIONAL_LOCKS="0", PYTHONDONTWRITEBYTECODE="1")
+    program = """import json,sys,resource
+resource.setrlimit(resource.RLIMIT_FSIZE,(128*1024**2,128*1024**2))
+from pathlib import Path
+sys.path[:0]=[str(Path.cwd()/'tools'),str(Path.cwd()/'pull')]
+import selection_strategies as s
+from reliability import utc
+from scorecard import identity
+p=json.load(sys.stdin)
+import phase2_capture
+from datetime import datetime
+class ValidationClock(datetime):
+ @classmethod
+ def now(cls,tz=None):return utc(p['validation_now'])
+phase2_capture.datetime=ValidationClock
+try:
+ if p['operation']=='completed':
+  value=s.read_completed(Path(p['root']),p['payload']['name'],now=utc(p['at']))
+ elif p['operation']=='records':
+  snapshots=p['payload']['snapshots']
+  for snapshot in snapshots:
+   rows=snapshot['rows']; snapshot['rows']={identity(row):row for row in rows}
+   if len(rows)!=len(snapshot['rows']):raise ValueError('Duplicate pinned ranked rows')
+  value=s._records(snapshots,p['payload']['timing'],utc(p['at']))
+ else:raise ValueError('Unsupported retained operation')
+ Path(sys.argv[1]).write_text(json.dumps({'value':value},allow_nan=False,separators=(',',':')))
+except Exception as error:
+ Path(sys.argv[1]).write_text(json.dumps({'error':type(error).__name__,'detail':str(error)[:400]}));sys.exit(2)
+"""
+    request = canonical({"root": str(root), "operation": operation, "payload": payload, "at": stamp(at),
+                         "validation_now": stamp(phase2_capture.datetime.now(timezone.utc))})
+    if len(request) > 128 * 1024**2:
+        raise IntegrityError("Retained ranked replay request exceeds supported bound")
+    with _retained_source() as source:
+        output = source / "retained-result.json"
+        result = subprocess.run([sys.executable, "-c", program, str(output)], cwd=source, env=env,
+                                input=request, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
+        if not output.is_file():
+            raise IntegrityError("Retained ranked child did not produce a supported result")
+        with output.open("rb") as handle: raw = handle.read(128 * 1024**2 + 1)
+        if len(raw) > 128 * 1024**2 or _dependency_closure(root) != before:
+            raise IntegrityError("Retained ranked replay exceeded bound or dependencies changed")
+        value = strict_json(raw.decode())
+        if result.returncode:
+            error = UnqualifiedStrategy if value.get("error") == "UnqualifiedStrategy" else IntegrityError
+            raise error("Retained ranked validation rejected: " + value.get("detail", "unsupported result"))
+        if set(value) != {"value"}:
+            raise IntegrityError("Unsupported retained ranked replay result")
+        return value["value"]
 
 class UnqualifiedStrategy(IntegrityError):
     """A preserved, explicitly failed completion never supplies decisions."""
@@ -114,6 +250,12 @@ def read_completed(root, name, *, now=None, _checked=None):
     import partial_week
     root = Path(root).resolve()
     completed = partial_week._saved(root, name, COMPLETE_LANE)
+    saved = partial_week._saved(root, completed["observation_receipt"], LANE)
+    if saved.get("source_sha") == RETAINED_SOURCE:
+        result = _retained_call(root, "completed", {"name": name}, utc(now or datetime.now(timezone.utc)))
+        if not isinstance(result, list) or len(result) != 2:
+            raise IntegrityError("Unsupported retained ranked completion result")
+        return tuple(result)
     return _validate_completed(root, completed, now=now, _checked=_checked)
 
 
@@ -329,7 +471,7 @@ def _freeze(root, records, snapshots, timing, at):
         fields = {"schema_version", "season", "week", "derived_at", "policy_sha256", "timing_policy_sha256", "helper_files", "witnesses", "rows"}
         if (set(payload) != fields or payload["schema_version"] != "ranked-selection-decision-ledger-v1"
                 or payload["policy_sha256"] != digest(policy()) or payload["timing_policy_sha256"] != digest(timing)
-                or payload["helper_files"] != helper or utc(payload["derived_at"]) > at
+                or utc(payload["derived_at"]) > at
                 or not isinstance(payload["rows"], list) or not isinstance(payload["witnesses"], list)
                 or payload["witnesses"] != sorted(set(payload["witnesses"]))):
             raise IntegrityError("Unsupported ranked decision ledger")
@@ -338,7 +480,18 @@ def _freeze(root, records, snapshots, timing, at):
         pinned = [witnesses[ref] for ref in payload["witnesses"]]
         if any(utc(s["completed"]["completed_at"]) > utc(payload["derived_at"]) for s in pinned):
             raise IntegrityError("Ranked ledger borrows a later completion")
-        expected = {r["decision_key"]: r for r in _records(pinned, timing, utc(payload["derived_at"]))}
+        if payload["helper_files"] == helper:
+            reproduced = _records(pinned, timing, utc(payload["derived_at"]))
+        else:
+            with _retained_source() as retained:
+                old_helper = {name: hashlib.sha256((retained / name).read_bytes()).hexdigest() for name in helper}
+            if payload["helper_files"] != old_helper:
+                raise IntegrityError("Unsupported ranked ledger helper identity")
+            # Pinned witnesses were freshly qualified above. Reproduce their
+            # old decision algorithm and its actual _decision dependency.
+            encoded = [{**s, "rows": list(s["rows"].values())} for s in pinned]
+            reproduced = _retained_call(root, "records", {"snapshots": encoded, "timing": timing}, utc(payload["derived_at"]))
+        expected = {r["decision_key"]: r for r in reproduced}
         for row in payload["rows"]:
             if ((row["season"], row["week"]) != (payload["season"], payload["week"])
                     or row["checkpoint"] == "history" and row["action"] != "SELECT" or row["action"] == "NOT_DUE"

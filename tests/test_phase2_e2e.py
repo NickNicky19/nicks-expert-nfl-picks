@@ -418,6 +418,19 @@ class PublicSelectionPipelineTests(unittest.TestCase):
     # native loss and source closure are exercised by the connected class below.
     AT = datetime(2026, 10, 17, 11, tzinfo=timezone.utc)
 
+    def test_real_updater_requests_machine_only_report_without_skipping_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(selection_publication, "run_report", wraps=run_report) as analysis:
+                self.run_live(root)
+            self.assertEqual(analysis.call_count, 1)
+            self.assertIs(analysis.call_args.kwargs["diagnostic_exports"], False)
+            pointer = load_json(root / "output/data/selection-grading/latest.json")
+            summary, rows, outcomes = selection_publication.publication_contents(root / "output/data/selection-grading", pointer)
+            self.assertEqual(summary["row_count"], len(rows))
+            self.assertTrue(rows)
+            phase2_capture.validate_generation(root)
+
     def run_live(self, root, at=None, *, registered_policy=None):
         at = at or self.AT
         kickoff_hours = (self.AT + timedelta(hours=25) - at).total_seconds() / 3600
@@ -2656,17 +2669,18 @@ class RankedStrategyConnectedPipelineTests(unittest.TestCase):
         cls.base.mkdir()
         namespace = {}
         exec(FROZEN_FRONTIER_SUPPORT, namespace)
+        code = getattr(cls, "source_code", ROOT)
         legacy_env = dict(os.environ)
         legacy_env.pop("GITHUB_SHA", None)
         with corrected.legacy_source() as retained:
             namespace["copy_source"](retained, cls.base)
             frontier_process([sys.executable, "-c", FROZEN_FRONTIER_SUPPORT + FROZEN_FRONTIER_SEED,
                               str(retained), str(cls.base), "legacy"], env=legacy_env)
-        namespace["copy_source"](ROOT, cls.base)
+        namespace["copy_source"](code, cls.base)
         subprocess.run(["git", "init", "-q", str(cls.base)], check=True)
         objects = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-path", "objects"], text=True).strip()
         (cls.base / ".git/objects/info/alternates").write_text(objects + "\n")
-        cls.source = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+        cls.source = getattr(cls, "source_commit", subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip())
         subprocess.run(["git", "-C", str(cls.base), "update-ref", "refs/fixture/source", cls.source], check=True)
         subprocess.run(["git", "-C", str(cls.base), "remote", "add", "origin", "https://github.com/NickNicky19/nicks-expert-nfl-picks"], check=True)
         subprocess.run(["git", "-C", str(cls.base), "add", "."], check=True)
@@ -2884,6 +2898,106 @@ m['rel'].atomic_json(root/'recovery-result.json',dict(updates=updates,immutable_
             with self.assertRaises((IntegrityError, FileNotFoundError)):
                 strategies.decisions([self.root], load_json(self.root / "config/timing-policy.json"), self.at)
         for name, raw in originals.items(): self.assertEqual((self.root / name).read_bytes(), raw)
+
+
+class RetainedRankedSourcePipelineTests(unittest.TestCase):
+    """Actual e2d fictional lineage replayed by the changed current reader."""
+    @classmethod
+    def setUpClass(cls):
+        import selection_strategies as strategies
+        cls.retained = strategies._retained_source()
+        cls.source_code = cls.retained.__enter__()
+        cls.addClassCleanup(cls.retained.__exit__, None, None, None)
+        cls.source_commit = strategies.RETAINED_SOURCE
+        (cls.source_code / "output").mkdir()
+        for path in (ROOT / "output").iterdir():
+            if path.is_file():
+                raw = corrected._git(ROOT, "show", cls.source_commit + ":output/" + path.name)
+                (cls.source_code / "output" / path.name).write_bytes(raw)
+        RankedStrategyConnectedPipelineTests.setUpClass.__func__(cls)
+
+    setUp = RankedStrategyConnectedPipelineTests.setUp
+    clock = RankedStrategyConnectedPipelineTests.clock
+
+    def test_closed_original_source_and_pinned_ledger_replay_and_cold_process(self):
+        import selection_strategies as strategies
+        before = {p.relative_to(self.root): p.read_bytes() for p in (self.root / "data").rglob("*.json.gz")}
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            saved, _ = strategies.read_completed(self.root, self.first_name, now=self.at)
+            rows = strategies.decisions([self.root], load_json(self.root / "config/timing-policy.json"), self.at, ledger_root=self.root)
+        self.assertEqual(saved["source_sha"], strategies.RETAINED_SOURCE)
+        self.assertEqual([r for r in rows if r["checkpoint"] == "history" and r["action"] == "SELECT"],
+                         self.state["updates"][-1]["selected"])
+        for name, raw in before.items(): self.assertEqual((self.root / name).read_bytes(), raw)
+        # The old source never qualifies a NEW recording under current bytes.
+        with self.assertRaises(IntegrityError): strategies._source(self.root, strategies.RETAINED_SOURCE)
+        clean = self.root.parent / "independent-cold-copy"
+        shutil.copytree(self.root, clean)
+        program = '''import sys
+from pathlib import Path
+sys.path[:0]=[str(Path(sys.argv[1])/'tools'),str(Path(sys.argv[1])/'pull')]
+from datetime import datetime
+import phase2_capture,selection_strategies as s
+from reliability import utc,load_json,digest
+at=utc(sys.argv[3])
+class Clock(datetime):
+ @classmethod
+ def now(cls,tz=None):return at
+phase2_capture.datetime=Clock
+rows=s.decisions([Path(sys.argv[2])],load_json(Path(sys.argv[2])/'config/timing-policy.json'),at,ledger_root=Path(sys.argv[2]))
+print(digest(rows))
+'''
+        actual = subprocess.check_output([sys.executable, "-c", program, str(ROOT), str(clean), stamp(self.at)], text=True).strip().splitlines()[-1]
+        self.assertEqual(actual, digest(rows))
+
+    def test_retained_failure_markers_and_same_size_corruption_are_not_cached(self):
+        import selection_strategies as strategies
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            saved, completed = strategies.read_completed(self.root, self.first_name, now=self.at)
+            write(self.root, strategies.FAILURE_LANE, {"schema_version": "ranked-selection-failure-v1", "season": saved["season"],
+                "week": saved["week"], "completion_sha256": digest(completed), "failed_at": stamp(self.at)})
+            with self.assertRaises(strategies.UnqualifiedStrategy):
+                strategies.read_completed(self.root, self.first_name, now=self.at)
+        clean = self.root.parent / "corrupt-copy"
+        shutil.copytree(self.base, clean)
+        native = clean / saved["qualification"]["native_receipt"]
+        state = native.stat(); raw = native.read_bytes()
+        native.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1])); os.utime(native, ns=(state.st_atime_ns, state.st_mtime_ns))
+        with patch.object(phase2_capture, "datetime", self.clock()), self.assertRaises(IntegrityError):
+            strategies.read_completed(clean, self.first_name, now=self.at)
+
+    def test_unknown_source_and_unknown_ledger_helpers_fail_without_fallback(self):
+        import selection_strategies as strategies
+        completed = read(self.root / self.first_name)
+        saved = read(self.root / completed["observation_receipt"])
+        saved["source_sha"] = "0" * 40
+        altered = write(self.root, strategies.LANE, saved)
+        completed.update(observation_receipt=altered.relative_to(self.root).as_posix(), observation_sha256=digest(saved))
+        altered = write(self.root, strategies.COMPLETE_LANE, completed)
+        with patch.object(phase2_capture, "datetime", self.clock()), self.assertRaises(IntegrityError):
+            strategies.read_completed(self.root, altered.relative_to(self.root).as_posix(), now=self.at)
+        clean = self.root.parent / "bad-ledger-copy"; shutil.copytree(self.base, clean)
+        ledger = next((clean / "data/ranked_selection_decisions").rglob("*.json.gz"))
+        payload = read(ledger); payload["helper_files"]["tools/selection_report.py"] = "0" * 64
+        # New defective content-addressed control, never rewritten history.
+        write(clean, "ranked_selection_decisions", payload)
+        with patch.object(phase2_capture, "datetime", self.clock()), self.assertRaisesRegex(IntegrityError, "helper identity"):
+            strategies.decisions([clean], load_json(clean / "config/timing-policy.json"), self.at, ledger_root=clean)
+
+
+class RetainedRankedTreeTests(unittest.TestCase):
+    def test_corrupt_root_or_nested_tree_never_supplies_retained_executable_bytes(self):
+        import selection_strategies as strategies
+        actual = corrected._git
+        tools_tree = actual(ROOT, "rev-parse", strategies.RETAINED_SOURCE + ":tools").decode().strip()
+        for oid in (strategies.RETAINED_TREE, tools_tree):
+            def corrupt(repository, *args):
+                raw = actual(repository, *args)
+                if args == ("cat-file", "tree", oid): return raw[:-1] + bytes([raw[-1] ^ 1])
+                return raw
+            with self.subTest(tree=oid), patch.object(corrected, "_git", side_effect=corrupt):
+                with self.assertRaisesRegex(IntegrityError, "tree is corrupt"):
+                    with strategies._retained_source(): self.fail("Corrupt tree supplied executable source")
 
 
 if __name__ == "__main__":

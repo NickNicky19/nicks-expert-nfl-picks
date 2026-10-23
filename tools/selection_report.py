@@ -794,7 +794,9 @@ def render_html(report, group=None):
 
 def run_report(input_roots, output_root, *, now=None, expected_hashes=None, policy=None, input_pins=None,
                include_descriptive=False, original_board_paths=(), report_version=VERSION,
-               descriptive_model="original_sleeper_matchup_baseline"):
+               descriptive_model="original_sleeper_matchup_baseline", diagnostic_exports=True):
+    if type(diagnostic_exports) is not bool:
+        raise IntegrityError("Diagnostic export selection must be an explicit boolean")
     if report_version not in (VERSION, LEGACY_VERSION, EXTENDED_VERSION):
         raise IntegrityError("Unsupported selection-report contract")
     now = utc(now or datetime.now(timezone.utc))
@@ -903,9 +905,25 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
     # Outputs are content-addressed; operational clocks live in a separate run receipt.
     report_id = digest(report)
     directory = output / "reports" / report_id
+    if diagnostic_exports:
+        _export_report(report, directory, include_descriptive,
+                       {"inputs": manifest, "code": code, "policy": policy})
+    run = {"schema_version": "selection-report-run-v1", "season": 0, "week": 0,
+           "generated_at": stamp(now), "report_sha256": report_id, "input_manifest_sha256": digest(manifest)}
+    write(output, "selection_report_runs", run)
+    # Machine-only publication retains the complete final source-byte check.
+    for item in manifest:
+        if hashlib.sha256((Path(item["root"]) / item["path"]).read_bytes()).hexdigest() != item["sha256"]:
+            raise IntegrityError("Original input changed during report")
+    return report, directory
+
+
+def _export_report(report, directory, include_descriptive, manifest):
+    """Optional reproducible local files; never a qualification boundary."""
+    rows, summary = report["rows"], report["summary"]
     _create_file(directory / "rows.json", canonical(rows) + b"\n")
     _create_file(directory / "summary.json", canonical({k: v for k, v in report.items() if k != "rows"}) + b"\n")
-    _create_file(directory / "manifest.json", canonical({"inputs": manifest, "code": code, "policy": policy}) + b"\n")
+    _create_file(directory / "manifest.json", canonical(manifest) + b"\n")
     columns = sorted({key for row in rows for key in row})
     stream = io.StringIO(newline="")
     writer = csv.DictWriter(stream, fieldnames=columns)
@@ -927,14 +945,6 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
     _create_file(directory / "index.html", render_html(report))
     for group in summary["tables"]:
         _create_file(directory / "groups" / (group["summary_id"] + ".html"), render_html(report, group))
-    run = {"schema_version": "selection-report-run-v1", "season": 0, "week": 0,
-           "generated_at": stamp(now), "report_sha256": report_id, "input_manifest_sha256": digest(manifest)}
-    write(output, "selection_report_runs", run)
-    # Verify every original byte again after the complete pipeline.
-    for item in manifest:
-        if hashlib.sha256((Path(item["root"]) / item["path"]).read_bytes()).hexdigest() != item["sha256"]:
-            raise IntegrityError("Original input changed during report")
-    return report, directory
 
 
 def main():

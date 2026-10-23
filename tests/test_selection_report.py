@@ -213,6 +213,49 @@ class SelectionReportIntegration(unittest.TestCase):
         return run_report([root], output, now=at or KICKOFF + timedelta(days=1),
                           expected_hashes=ENGINE, policy=timing_policy())
 
+    def test_machine_only_report_preserves_all_semantics_and_persistent_evidence(self):
+        root, output = self.fixture()
+        saved_forecast(root, receipt(BOUNDARY - timedelta(minutes=15), [row(top=True), row("fixture-B", side="under")]))
+        saved_sources(root, {"fixture-A": {"team": "AAA", "stats": {"gp": 1, "rec": 0}},
+                             "fixture-B": {"team": "AAA", "stats": {"gp": 1, "rec": 8}}})
+        full, directory = self.report(root, output)
+        lean = output.parent / "machine-only"
+        with patch("selection_report._export_report", side_effect=AssertionError("Unexpected private exports")):
+            actual, returned = run_report([root], lean, now=KICKOFF + timedelta(days=1),
+                expected_hashes=ENGINE, policy=timing_policy(), diagnostic_exports=False)
+        self.assertEqual(actual, full)
+        self.assertEqual(returned.name, directory.name)
+        self.assertFalse((lean / "reports").exists())
+        for lane in ("selection_decisions", "outcomes_derived", "selection_report_runs"):
+            expected = {p.relative_to(output / "data" / lane): read(p) for p in (output / "data" / lane).rglob("*.json.gz")}
+            retained = {p.relative_to(lean / "data" / lane): read(p) for p in (lean / "data" / lane).rglob("*.json.gz")}
+            self.assertEqual(retained, expected)
+        self.assertTrue((directory / "manifest.json").is_file())
+        self.assertTrue((directory / "rows.csv").is_file())
+        self.assertEqual(len(list((directory / "groups").glob("*.html"))), len(full["summary"]["tables"]))
+
+    def test_machine_only_report_still_rejects_final_boundary_input_mutation(self):
+        import selection_report as module
+        root, output = self.fixture()
+        saved_forecast(root, receipt(BOUNDARY - timedelta(minutes=15), [row(top=True)]))
+        native = next((root / "data/forward").rglob("*.json.gz"))
+        actual_write = module.write
+        def race(destination, lane, payload):
+            result = actual_write(destination, lane, payload)
+            if lane == "selection_report_runs":
+                raw = native.read_bytes(); native.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))
+            return result
+        with patch.object(module, "write", side_effect=race):
+            with self.assertRaisesRegex(IntegrityError, "Original input changed during report"):
+                run_report([root], output, now=KICKOFF + timedelta(days=1),
+                    expected_hashes=ENGINE, policy=timing_policy(), diagnostic_exports=False)
+
+    def test_diagnostic_export_selection_requires_an_actual_boolean(self):
+        root, output = self.fixture()
+        for value in (None, 0, 1, "false"):
+            with self.subTest(value=value), self.assertRaisesRegex(IntegrityError, "explicit boolean"):
+                run_report([root], output, diagnostic_exports=value)
+
     def test_actual_pipeline_all_ten_categories_and_immutable_rows_reconcile(self):
         root, output = self.fixture()
         policy = timing_policy()

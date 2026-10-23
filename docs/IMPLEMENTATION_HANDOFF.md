@@ -1504,3 +1504,40 @@ retain their existing route, and temporary assembly wrappers restore on failure.
 This integration correction requires its own actual-source tests/CI and genuine
 build/report/staging acceptance; the failed 20.448-second attempt is not a passing
 updater or operating measurement.
+# 2026-10-23 report-finalization correction (release still pending)
+
+The production-rooted corrected build completed its original-input/native/scope
+bundle for thirteen pregame games, retaining one started game's original-proof
+limitation. Its later report path exceeded the unchanged 1,200-second local
+boundary (1,200.068540 seconds); neither latest nor Pages advanced. The genuine
+capture and all failed attempts remain preserved separately. This is not a
+successful updater, hosted operating qualification or deployment.
+
+The actual report contained 56,918 rows and 24,291 groups. Reproducible private
+group HTML occupied 1,047,441,052 bytes. Its first/last file timestamps span
+156.723 seconds; that interval is not exclusive CPU attribution or a promised
+runtime saving. The updater now requests `run_report(diagnostic_exports=False)`.
+Only diagnostic JSON/CSV/HTML exports are optional. Complete semantic report
+construction, exact memberships, derived outcomes, persistent ledgers, report-run
+receipts, final original-byte checks and complete public validation remain.
+The default offline API retains its original complete exports and return values.
+No public format, asset cap, freshness rule or forecasting policy changes.
+
+Saved ranked observations and pinned decision ledgers from source
+`e2dd96a31690baad04c8660302933f45f77d72e7` use actual retained source and dependencies,
+with typed commit/tree/blob verification before execution and fresh checks after
+replay. A separate bounded child performs original qualification or pinned-ledger
+reproduction. Its validation clock is genuinely sampled by the invoking reader;
+it does not create observations or change original clocks. Unknown sources,
+changed shared qualification dependencies, corruption and failed completions
+remain rejected. New recording still requires exact current source bytes. This
+is closed compatibility for that retained source, not arbitrary old-source trust.
+The public publisher's existing helper inventory covers the changed report and
+strategy reader. No durable PASS shortcut or cross-root validation trust is added.
+
+Source acceptance, complete generated-artifact/browser review and a supported
+finite operating budget remain separate release requirements. Existing 960-second
+planning misses, the 960-second target and 1,200-second updater timeout remain
+visible. No source-only test or report-finalization retry establishes full hosted
+operation. Research recording remains inactive; odds/research are separate from
+the website release.

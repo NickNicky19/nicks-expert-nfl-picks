@@ -1287,7 +1287,7 @@ def publish_selection_report(root, observed_at=None, *, source_sha=None, _checke
             write(analysis, "ranked_selection_decisions", payload)
         report, _ = run_report([stage], analysis, now=observed_at,
                               policy=policy, expected_hashes=hashes, report_version="selection-report-v4",
-                              original_board_paths=board_paths)
+                              original_board_paths=board_paths, diagnostic_exports=False)
         summary, rows, outcomes, chunks, public_id = _projection(report, source_sha=source_sha,
                                                                input_digest=input_digest)
         base = root / "output/data/selection-grading"
