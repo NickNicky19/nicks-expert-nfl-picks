@@ -2415,6 +2415,18 @@ class PreparedPublicationTests(unittest.TestCase):
         for options in ({"partitioned": False}, {}, {"encoding": "gzip"}, {"encoding": "gzip", "shared": True}):
             yield selection_publication.prepare_publication(base, *values[:4], self.AT, **options)
 
+    def test_legacy_reader_stays_uncached_without_ranked_dependency_closure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "legacy-no-ranked-git"
+            with patch.object(selection_publication, "_strategy_row_context", side_effect=IntegrityError("Unavailable retained Git")):
+                for pointer in self.layouts(base, values):
+                    checked = {}
+                    summary, rows, outcomes = selection_publication.publication_contents(base, pointer, _checked=checked)
+                    self.assertEqual(rows, values[1])
+                    self.assertEqual(outcomes, sorted(values[2], key=selection_publication.identity))
+                    self.assertNotIn(("publisher-context",), checked)
+                    self.assertEqual(summary["report_id"], pointer["report_id"])
+
     def test_all_readers_prepare_once_return_isolated_exact_values_and_hash_plain_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             root, values = self.projection(directory); base = root / "prepared"
@@ -2709,6 +2721,74 @@ class RankedStrategyConnectedPipelineTests(unittest.TestCase):
         import selection_strategies as strategies
         with patch.object(phase2_capture, "datetime", self.clock()):
             return strategies.read_completed(self.root, self.first_name, now=self.at)
+
+    def test_ranked_public_rows_share_only_fresh_batch_dependencies(self):
+        base = self.root / "output/data/selection-grading"
+        pointer = load_json(base / "latest.json")
+        expected = selection_publication.publication_contents(base, pointer)
+        self.assertGreater(len(expected[1]), 2)
+        with patch.object(corrected, "legacy_engine_hashes", wraps=corrected.legacy_engine_hashes) as hashes:
+            actual = selection_publication.publication_contents(base, pointer, _checked={})
+        self.assertEqual(actual, expected)
+        self.assertLess(hashes.call_count, len(expected[1]))
+        modern = [row for row in expected[1] if row.get("schema_version") == "selection-decision-v2"]
+        self.assertTrue(modern)
+        with patch.object(corrected, "legacy_engine_hashes", wraps=corrected.legacy_engine_hashes) as hashes:
+            for row in modern[:2]: self.assertEqual(selection_publication._row(row, extended=True), row)
+        self.assertEqual(hashes.call_count, len(modern[:2]), "standalone rows still verify fresh dependencies")
+        context = selection_publication._strategy_row_context()
+        for field, value in (("engine_sha256", "0" * 64), ("strategy_policy_sha256", "0" * 64),
+                             ("model_version", "unknown-model"), ("schema_version", "unknown-schema")):
+            with self.subTest(field=field), self.assertRaises(IntegrityError):
+                selection_publication._row(dict(modern[0], **{field: value}), extended=True, _strategy_context=context)
+        with patch.object(selection_publication, "_strategy_row_context", side_effect=IntegrityError("Unavailable retained Git")):
+            with self.assertRaises(IntegrityError): validate_publication(base, pointer, _checked={})
+
+    def test_ranked_projection_rechecks_batch_context_and_preserves_latest(self):
+        base = self.root / "output/data/selection-grading"
+        latest = (base / "latest.json").read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            report, _ = run_report([self.root], Path(directory), now=self.at,
+                                   report_version="selection-report-v4", diagnostic_exports=False)
+        context = selection_publication._strategy_row_context()
+        with patch.object(selection_publication, "_strategy_row_context", return_value=context) as reads:
+            expected = selection_publication._projection(report, source_sha=self.source, input_digest="1" * 64)
+        self.assertEqual(reads.call_count, 2)
+        self.assertEqual(len(expected[1]), len(report["rows"]))
+        changed = ("0" * 64, *context[1:])
+        with patch.object(selection_publication, "_strategy_row_context", side_effect=[context, changed]):
+            with self.assertRaisesRegex(IntegrityError, "dependencies changed during projection"):
+                selection_publication._projection(report, source_sha=self.source, input_digest="1" * 64)
+        self.assertEqual((base / "latest.json").read_bytes(), latest)
+
+    def test_warm_ranked_publication_rechecks_actual_git_at_cache_return(self):
+        base = self.root / "output/data/selection-grading"
+        pointer = load_json(base / "latest.json"); latest = (base / "latest.json").read_bytes()
+        checked = {}; state = {"corrupt": False, "race": False}
+        actual_git = corrected._git
+        actual_get = selection_publication._PreparedPublications.get
+        def git(repository, *args):
+            raw = actual_git(repository, *args)
+            if state["corrupt"] and args == ("cat-file", "commit", corrected.LEGACY_SOURCE):
+                return raw[:-1] + bytes([raw[-1] ^ 1])
+            return raw
+        def get(memo, key):
+            value = actual_get(memo, key)
+            if value is not None and state["race"]: state["corrupt"] = True
+            return value
+        # Only the read boundary is controlled. Actual fixture/source/row/
+        # semantic validators run; shared Git objects are never overwritten.
+        with patch.object(corrected, "_git", side_effect=git), patch.object(selection_publication._PreparedPublications, "get", get):
+            expected = validate_publication(base, pointer, _checked=checked)
+            self.assertEqual(validate_publication(base, pointer, _checked=checked), expected)
+            state["race"] = True
+            with self.assertRaisesRegex(IntegrityError, "helper changed during prepared reuse"):
+                validate_publication(base, pointer, _checked=checked)
+            state.update(corrupt=True, race=False)
+            with self.assertRaises(IntegrityError): validate_publication(base, pointer, _checked=checked)
+            state["corrupt"] = False
+            self.assertEqual(validate_publication(base, pointer, _checked=checked), expected)
+        self.assertEqual((base / "latest.json").read_bytes(), latest)
 
     def test_actual_mixed_updater_retry_complete_publication_and_clean_copy(self):
         import selection_strategies as strategies

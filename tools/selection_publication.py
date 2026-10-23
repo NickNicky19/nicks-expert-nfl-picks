@@ -156,6 +156,12 @@ def _publication_helpers():
         parts.append((str(registry), hashlib.sha256(registry.read_bytes()).hexdigest()))
     except OSError:
         return None
+    try:
+        # Reuse also depends on the actual retained Git bytes and installed
+        # strategy policy. A pathname/previous engine digest is not fresh trust.
+        parts.append(("strategy-row-context", _strategy_row_context()))
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return None  # Unsupported memo closure; complete validation still runs.
     for name in (__name__, "selection_report", "selection_strategies", "accuracy_publication", "scorecard", "reliability", "evidence", "data_integrity_v2", "grade", "scoring"):
         module = sys.modules.get(name)
         try:
@@ -262,7 +268,13 @@ def _record_fields(record):
             _hash(value)
 
 
-def _row(row, *, extended=False):
+def _strategy_row_context():
+    """Private immutable values, freshly derived once per bounded row batch."""
+    return (digest(corrected.legacy_engine_hashes()), digest(corrected.V2_SOURCE_SHA256),
+            digest(selection_strategies.policy()))
+
+
+def _row(row, *, extended=False, _strategy_context=None):
     modern = extended and row.get("schema_version") == "selection-decision-v2"
     if extended and row.get("schema_version") not in ("selection-decision-v1", "selection-decision-v2"):
         raise IntegrityError("Unknown modern decision schema")
@@ -272,8 +284,10 @@ def _row(row, *, extended=False):
         raise IntegrityError("Strategy row outside its explicit enclosing contract")
     result = _project(row, ROW_FIELDS | STRATEGY_FIELDS if modern else ROW_FIELDS)
     if modern:
-        engines = {"original_sleeper_matchup_baseline": digest(corrected.legacy_engine_hashes()), corrected.MODEL: digest(corrected.V2_SOURCE_SHA256)}
-        if (result.get("strategy_version") != "ranked-selection-policy-v1" or result.get("strategy_policy_sha256") != digest(selection_strategies.policy())
+        legacy_engine, corrected_engine, strategy_policy = (_strategy_row_context()
+            if _strategy_context is None else _strategy_context)
+        engines = {"original_sleeper_matchup_baseline": legacy_engine, corrected.MODEL: corrected_engine}
+        if (result.get("strategy_version") != "ranked-selection-policy-v1" or result.get("strategy_policy_sha256") != strategy_policy
                 or result.get("cohort") not in selection_strategies.STRATEGIES
                 or result.get("model_version") not in engines or result.get("engine_sha256") != engines[result["model_version"]]
                 or result.get("provenance_class") != "completed_prospective_ranked_selection"
@@ -362,6 +376,7 @@ def _projection(report, *, source_sha, input_digest):
     if contract not in REPORT_CONTRACTS:
         raise IntegrityError("Unsupported source selection report")
     fields = TABLE_FIELDS_V2 if contract != "selection-report-v2" else TABLE_FIELDS
+    strategy_context = _strategy_row_context() if contract == "selection-report-v4" else None
     if contract != "selection-report-v2":
         for row in report["rows"]:
             if (row.get("line_from") not in (None, "dk", "sleeper", "ours", "unknown")
@@ -369,7 +384,7 @@ def _projection(report, *, source_sha, input_digest):
                     or not HEX.fullmatch(row.get("policy_sha256") or "")):
                 raise IntegrityError("Unsupported public-v2 source or policy identity")
     # Physical locality only; recommendation membership and ranking stay recorded.
-    rows = sorted((_row(row, extended=contract == "selection-report-v4") for row in report["rows"]), key=lambda row: (
+    rows = sorted((_row(row, extended=contract == "selection-report-v4", _strategy_context=strategy_context) for row in report["rows"]), key=lambda row: (
         row["provenance_class"], row["model_version"], row.get("engine_sha256") or "",
         row["season"], row["week"], row["cohort"], row["checkpoint"],
         row["category"], row.get("side") or "", row["decision_sha256"]))
@@ -425,6 +440,8 @@ def _projection(report, *, source_sha, input_digest):
         summary["forecast_accuracy"] = copy.deepcopy(accuracy_publication.validate_accuracy(report["forecast_accuracy"]))
         summary["limitations"][3] = "Scoped original-model-input archive review completed; different or later artifacts need delta review."
     public_id = digest({"summary": summary, "rows": rows, "outcomes": outcomes})
+    if strategy_context is not None and _strategy_row_context() != strategy_context:
+        raise IntegrityError("Ranked row dependencies changed during projection")
     return summary, rows, outcomes, chunks, public_id
 
 
@@ -466,6 +483,7 @@ def _validate_legacy_publication(base, pointer, *, _partitioned=None, _row_reade
     if set(summary) != expected_summary_fields:
         raise IntegrityError("Unknown public summary fields")
     contract = summary.get("report_schema_version")
+    strategy_context = _strategy_row_context() if contract == "selection-report-v4" else None
     if contract == "selection-report-v4" and (_partitioned is None or _layout != SHARED_LAYOUT_VERSION):
         raise IntegrityError("Extended report requires shared gzip partition validation")
     if (contract not in REPORT_CONTRACTS or summary.get("schema_version") != REPORT_CONTRACTS[contract]
@@ -495,7 +513,7 @@ def _validate_legacy_publication(base, pointer, *, _partitioned=None, _row_reade
                 or index < len(pointer["rows"]) - 1 and len(payload["rows"]) != CHUNK_SIZE):
             raise IntegrityError("Invalid public row chunk size")
         for row in payload["rows"]:
-            if _row(row, extended=contract == "selection-report-v4") != row:
+            if _row(row, extended=contract == "selection-report-v4", _strategy_context=strategy_context) != row:
                 raise IntegrityError("Nonpublic field in row chunk")
             if row["decision_sha256"] in locations:
                 raise IntegrityError("Duplicate public row identity")
@@ -576,6 +594,8 @@ def _validate_legacy_publication(base, pointer, *, _partitioned=None, _row_reade
     if digest(content) != report_id:
         raise IntegrityError("Public content identity mismatch")
     _safe_value(summary)
+    if strategy_context is not None and _strategy_row_context() != strategy_context:
+        raise IntegrityError("Ranked row dependencies changed during complete validation")
     if _prepared is not None:
         _prepared.extend((summary, rows, sorted(final["outcomes"], key=identity)))
     return summary
@@ -944,6 +964,8 @@ def _prepared_publication(base, pointer, _checked):
     key = (str(Path(base).resolve()), helper, before)
     prepared = memo.get(key)
     if prepared is not None:
+        if _publication_helpers() != helper:
+            raise IntegrityError("Public helper changed during prepared reuse")
         return prepared
     values = _complete_publication(base, pointer, local)
     # Never seed a success assembled across changing leaves or helper code.

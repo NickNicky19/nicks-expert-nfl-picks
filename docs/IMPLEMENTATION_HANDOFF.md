@@ -1549,3 +1549,19 @@ planning misses, the 960-second target and 1,200-second updater timeout remain
 visible. No source-only test or report-finalization retry establishes full hosted
 operation. Research recording remains inactive; odds/research are separate from
 the website release.
+
+The real saved-capture report retry at source `2a5432b` exited with signal 11
+before Pages staging, after 600.204891 seconds. Its root crash cause is not
+established. Preserved stack samples and a three-saved-row control exposed a
+connected publication cost: each ranked row reread the same retained engine Git
+objects and strategy policy. Typed row batches now use private immutable engine
+and policy digests freshly established before the batch and rechecked afterward.
+Every row keeps its identity, privacy, policy, schema and clock checks. Standalone
+row checks still read fresh dependencies. Prepared reuse binds these actual
+retained-Git/policy dependencies and rechecks them before returning a cache hit;
+changed or unavailable modern dependencies cannot inherit an earlier success.
+Legacy formats can still run complete uncached validation when optional reuse
+has no complete dependency closure. This does not alter public formats, report
+memberships, source qualification, caps, engine or scoring rules. A later actual
+report/updater result is required; removing redundant reads alone is not an
+operating or deployment PASS.
