@@ -724,9 +724,26 @@ class DiagnosticOperationLifetime(unittest.TestCase):
         saved=next(n for n in source.body if isinstance(n,ast.FunctionDef) and n.name=='check_saved')
         self.assertTrue(any(isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='operation_lifetime' for n in ast.walk(saved)))
         campaign=ast.parse((tools/'operating_campaign.py').read_text())
-        for name in ('transition_execution_plan','package_execution_source','sample_capture','sample_commit','main'):
-            fn=next(n for n in campaign.body if isinstance(n,ast.FunctionDef) and n.name==name)
-            self.assertTrue(any(isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='operation_lifetime' for n in ast.walk(fn)),name)
+        def function(name):
+            return next(n for n in campaign.body if isinstance(n,ast.FunctionDef) and n.name==name)
+        def call_name(node):
+            if not isinstance(node,ast.Call):return None
+            return node.func.id if isinstance(node.func,ast.Name) else node.func.attr if isinstance(node.func,ast.Attribute) else None
+        for name in ('transition_execution_plan','package_execution_source','main'):
+            self.assertTrue(any(call_name(n)=='operation_lifetime' for n in ast.walk(function(name))),name)
+        # Production capture/validation/staging must keep their own cache
+        # lifetimes. Only the subsequent diagnostic inventory gets the adapter.
+        capture=function('sample_capture')
+        self.assertFalse(any(call_name(n)=='operation_lifetime' for n in ast.walk(capture)))
+        self.assertTrue({'run_capture','validate_generation'} <= {call_name(n) for n in ast.walk(capture)})
+        commit=function('sample_commit')
+        self.assertTrue({'commit','stage_pages','final_candidate_workload'} <= {call_name(n) for n in ast.walk(commit)})
+        scopes=[n for n in ast.walk(commit) if isinstance(n,ast.With)
+            and any(call_name(item.context_expr)=='operation_lifetime' for item in n.items)]
+        self.assertEqual(len(scopes),1)
+        bounded={call_name(n) for n in ast.walk(scopes[0])}
+        self.assertIn('final_candidate_workload',bounded)
+        self.assertFalse({'run_capture','validate_generation','commit','stage_pages'} & bounded)
         import operating_campaign as c
         self.assertIn('tools/seed_checkpoint_frontier.py',c.DEPENDENCIES)
     def test_actual_installer_identity_never_claims_measured_capacity(self):
