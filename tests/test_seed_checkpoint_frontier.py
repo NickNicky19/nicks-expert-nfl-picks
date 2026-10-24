@@ -223,6 +223,155 @@ class GitFrontier(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'missing'): self.restore()
 
 
+class Continued22Profiles(unittest.TestCase):
+    def test_closed_profiles_and_original_constants_unchanged(self):
+        old=f.profile_identity();new=f.profile_identity(f.PROFILE22)
+        self.assertEqual((old['count'],old['artifact'],old['run']),(13,12509203616,39940028362))
+        self.assertEqual((new['count'],new['artifact'],new['run']),(22,12540324398,40017092249))
+        new['count']=1;self.assertEqual(f.profile_identity(f.PROFILE22)['count'],22)
+        for bad in ('unknown',{},False,22):
+            with self.subTest(bad=bad),self.assertRaises(ValueError):f.profile_identity(bad)
+
+    def test_typed22_progress_does_not_relabel13(self):
+        value=dict(generation=22,target=24,wall_clock='2026-10-24T00:00:00+00:00')
+        self.assertEqual(f.progress(value,f.PROFILE22),22)
+        with self.assertRaises(ValueError):f.progress(value)
+        for name,bad in [('generation',True),('generation',13),('target',True)]:
+            changed=dict(value);changed[name]=bad
+            with self.subTest(name=name,bad=bad),self.assertRaises(ValueError):f.progress(changed,f.PROFILE22)
+
+    def test_actual_outer_and_parents_rehashed_with_restored_mtime(self):
+        import zipfile
+        with tempfile.TemporaryDirectory() as directory:
+            work=Path(directory);inventory={}
+            for name in f.ALLOW-{'ARTIFACT_MANIFEST.json'}:
+                body=b'{}' if name.endswith('.json') else b'tiny-fictional-parent'
+                (work/name).write_bytes(body);inventory[name]=f.descriptor(work/name)
+            selected=f.profile_identity(f.PROFILE22)
+            envelope=dict(schema_version='cloud-seed-artifact-envelope-v1',application_source=f.BASE,
+                installer=dict(head=selected['producer'],tree=selected['tree']),integrity_sha256=selected['integrity'],
+                preparation_status='PREPARATION_FAILED',operating_qualification='NOT_RUN',files=inventory)
+            archive=work/'artifact.zip'
+            with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_STORED) as zipped:
+                for name in f.ALLOW:
+                    zipped.writestr(name,json.dumps(envelope).encode() if name=='ARTIFACT_MANIFEST.json' else (work/name).read_bytes())
+            selected.update(size=archive.stat().st_size,digest=f.descriptor(archive)['sha256'])
+            with patch.object(f,'_CONTINUED22',selected):
+                expected=f.verify_parents(work,f.PROFILE22)
+                self.assertEqual(expected,{name:inventory[name] for name in f.PARENTS})
+                parent=work/f.BUNDLE;before=parent.stat();parent.write_bytes(b'x'*before.st_size);os.utime(parent,ns=(before.st_atime_ns,before.st_mtime_ns))
+                with self.assertRaisesRegex(ValueError,'parent bytes'):f.verify_parents(work,f.PROFILE22)
+                parent.write_bytes(b'tiny-fictional-parent')
+                before=archive.stat();raw=archive.read_bytes();archive.write_bytes(raw[:-1]+bytes([raw[-1]^1]));os.utime(archive,ns=(before.st_atime_ns,before.st_mtime_ns))
+                with self.assertRaisesRegex(ValueError,'outer artifact bytes'):f.verify_parents(work,f.PROFILE22)
+
+
+class Continued22Residuals(unittest.TestCase):
+    setUp = GitFrontier.setUp
+    tearDown = GitFrontier.tearDown
+    g = GitFrontier.g
+
+    def restore(self):
+        with patch.object(f,'BASE',self.source),patch.object(f,'TREE',self.tree):
+            return f.restore_committed(self.work,self.raw,self.scope,f.PROFILE22)
+
+    def evidence(self,lane='verification/partial-failures',payload=None):
+        value=payload or dict(schema_version='completion-failure-data-integrity-v2',season=2026,week=6,
+            completion_sha256='a'*64,failed_at='2026-11-09T05:01:55+00:00',reason='FINAL_COMPLETION_BOUNDARY_FAILED')
+        digest=hashlib.sha256(f.ci.canonical(value)).hexdigest()
+        name='data/'+lane+'/2026/w06/'+digest+'.json.gz';p=self.raw/name;p.parent.mkdir(parents=True,exist_ok=True)
+        p.write_bytes(gzip.compress(f.ci.canonical(dict(payload=value,payload_sha256=digest)),mtime=0));self.scope[name]=f.descriptor(p)
+        return name
+
+    def test_failure_marker_carried_verbatim_before_replay(self):
+        name=self.evidence();root,_,residual=self.restore()
+        self.assertEqual((root/name).read_bytes(),(self.raw/name).read_bytes())
+        self.assertEqual(residual['new'],1)
+        self.assertTrue(f.git(root,'status','--porcelain')) # Carried evidence is not a false clean commit.
+
+    def test_changed_mutable_cache_keeps_committed_alias(self):
+        cache=self.raw/'data/cache/provider.json';cache.parent.mkdir(parents=True,exist_ok=True);cache.write_text('{}');self.scope[cache.relative_to(self.raw).as_posix()]=f.descriptor(cache)
+        root,_,_=self.restore();self.assertFalse((root/'data/cache/provider.json').exists())
+
+    def test_changed_immutable_or_unknown_new_role_rejected(self):
+        name=self.evidence();(self.raw/name).write_bytes(b'not-canonical');self.scope[name]=f.descriptor(self.raw/name)
+        with self.assertRaises((ValueError,OSError,EOFError)):self.restore()
+
+    def test_orphan_new_native_rejected_by_completed_consumer(self):
+        name=self.evidence('forward',dict(schema_version='baseline-capture-v2',season=2026,week=6))
+        root,_,_=self.restore()
+        partial=SimpleNamespace(COMPLETION_LANE='verification/partial-completions')
+        m={'capture':SimpleNamespace(corrected=SimpleNamespace(NATIVE='baseline-capture-v2')),'partial':partial,'ev':SimpleNamespace()}
+        with self.assertRaisesRegex(ValueError,'Orphan residual native'):
+            f._qualify_residual(self.work,root,m,self.scope,datetime(2026,11,9,tzinfo=timezone.utc))
+
+    def test_negative_marker_is_visible_to_completed_consumer_before_acceptance(self):
+        native_name=self.evidence('forward',dict(schema_version='baseline-capture-v2',season=2026,week=6))
+        marker=self.evidence()
+        completion=self.evidence('verification/partial-completions',dict(schema_version='partial-completion-data-integrity-v2',
+            season=2026,week=6,baseline_receipt=native_name,scope_receipt='scope'))
+        root,_,_=self.restore();calls=[]
+        def saved(_root,name,_lane):
+            if name=='scope':return {'fictional_scope':True}
+            return f._residual_evidence(root/name,name)
+        def rejected(*args,**kwargs):
+            calls.append((root/marker).read_bytes());raise ValueError('actual completed consumer rejected negative marker')
+        partial=SimpleNamespace(COMPLETION_LANE='verification/partial-completions',_saved=saved)
+        corrected=SimpleNamespace(NATIVE='baseline-capture-v2',_saved_spec=lambda *_:{},read_bundle=rejected)
+        m={'capture':SimpleNamespace(corrected=corrected),'partial':partial,'ev':SimpleNamespace()}
+        with self.assertRaisesRegex(ValueError,'completed consumer rejected'):
+            f._qualify_residual(self.work,root,m,self.scope,datetime(2026,11,9,tzinfo=timezone.utc))
+        self.assertEqual(calls,[(self.raw/marker).read_bytes()])
+
+    def test_copied_root_rechecks_actual_inventory_and_mode(self):
+        name=self.evidence();root,_,_=self.restore()
+        self.raw.rename(self.work/'raw-checkpoint');self.raw=self.work/'raw-checkpoint'
+        (self.work/f.MANIFEST).write_text(json.dumps(dict(status='INCOMPLETE_NOT_ADMITTED_NOT_RESUME_AUTHORIZED',
+            application_source=self.source,input_contract_sha256=f.INPUTS,files=self.scope)))
+        with patch.object(f,'BASE',self.source),patch.object(f,'TREE',self.tree),patch.object(f,'verify_parents') as parents:
+            checked=f.verify_copied_frontier(self.work,root,f.PROFILE22)
+            self.assertIn(name,checked['inventory']);self.assertEqual(parents.call_count,2)
+            target=root/'config/phase2.json';old=target.stat();raw=target.read_bytes();target.write_bytes(b'x'*len(raw));os.utime(target,ns=(old.st_atime_ns,old.st_mtime_ns))
+            with self.assertRaisesRegex(ValueError,'inventory changed'):f.verify_copied_frontier(self.work,root,f.PROFILE22)
+            target.write_bytes(raw);target.chmod(0o755)
+            with self.assertRaisesRegex(ValueError,'mode changed'):f.verify_copied_frontier(self.work,root,f.PROFILE22)
+
+    def test_actual_b3_data_aliases_keep_committed22_and_raw23_separate(self):
+        names=['output/data/'+name for name in ('matchup-proof.json','game-status.json','offer-capture.json',
+            'future.json','teams.json','track_record.json')]
+        names+=['output/data/archive/2026_w06.json','output/data/weeks/2026_w05.json']
+        for name in names:
+            p=self.repo/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'{"generation":22}')
+        self.g('add','.');self.g('commit','-qm','Fictional committed22 data aliases')
+        (self.work/f.BUNDLE).unlink();self.g('bundle','create',str(self.work/f.BUNDLE),'HEAD','refs/fixture/source')
+        for name in names:
+            p=self.raw/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'{"generation":23}');self.scope[name]=f.descriptor(p)
+        root,_,_=self.restore()
+        for name in names:
+            self.assertEqual((root/name).read_bytes(),b'{"generation":22}')
+            self.assertEqual((self.raw/name).read_bytes(),b'{"generation":23}')
+        for name in ('output/app.js','output/index.html','output/data/archive/2027_w06.json',
+                     'output/data/weeks/2026_w07.json','output/data/archive/arbitrary.json'):
+            self.assertFalse(f._mutable_role(name))
+
+    def test_partial23_report_assets_are_raw_unqualified_not22_members(self):
+        name='output/data/selection-grading/'+'a'*64+'/rows-0000.json'
+        p=self.raw/name;p.parent.mkdir(parents=True);p.write_bytes(b'{"partial23":true}');self.scope[name]=f.descriptor(p)
+        root,_,_=self.restore()
+        self.assertFalse((root/name).exists());self.assertEqual(p.read_bytes(),b'{"partial23":true}')
+
+    def test_no_new_source_config_markers_or_unknown_raw_roles(self):
+        for name in ('config/new.json','FICTIONAL_ONLY.json','output/data/unknown.json'):
+            with self.subTest(name=name):
+                p=self.raw/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'{}');self.scope[name]=f.descriptor(p)
+                with self.assertRaises(ValueError):self.restore()
+                # Restore failure retains its independent partial directory.
+                root=self.work/'committed-frontier'
+                if root.exists():
+                    import shutil;shutil.rmtree(root)
+                del self.scope[name];p.unlink()
+
+
 class SafeDiagnostics(unittest.TestCase):
     def test_nested_git_failure_identifies_role_without_raw_payload(self):
         private = 'https://example.invalid/?token=DO_NOT_PRINT'
@@ -310,6 +459,41 @@ class RetainedSourceNamespace(unittest.TestCase):
                 self.assertEqual(self.actual_reader(),{'actual_source':self.head})
             self.assertEqual(os.environ['GITHUB_SHA'],self.installer)
         self.assertFalse((self.root/'.git/objects/info/alternates').exists())
+
+    def test_actual_b3_corrected_outcome_producer_envelope_is_supported(self):
+        # Execute the exact retained B3 emitter, not a new schema-name stub.
+        target=self.root.parent/'outcome-inputs';(target/'output/data').mkdir(parents=True)
+        game=dict(id='fictional-game',home='AAA',away='BBB',state='pre',detail='Scheduled',kickoff='2026-11-10T18:00:00Z')
+        (target/'output/data/week.json').write_text(json.dumps(dict(season=2026,week=6,games=[game])))
+        program="""import json,sys;from pathlib import Path
+sys.path[:0]=['tools','pull']
+import scorecard,data_integrity_v2 as d
+from reliability import utc
+from evidence import read
+root=Path(sys.argv[1]);row=dict(season=2026,week=6,game_id='fictional-game',player_id='fictional-player',
+category='rec',team='AAA',kickoff='2026-11-10T18:00:00Z',model_version=d.MODEL)
+paths=scorecard.snapshot_outcomes(root,{(2026,6,'fictional-game','fictional-player','rec'):row},utc('2026-11-09T05:01:55Z'),include_populations=False)
+assert len(paths)==1 and read(paths[0])['schema_version']==d.OUTCOMES=='forecast-outcomes-v2'
+print(paths[0].relative_to(root).as_posix())
+"""
+        completed=subprocess.run([sys.executable,'-B','-c',program,str(target)],cwd=self.root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        self.assertEqual(completed.returncode,0,completed.stderr)
+        name=completed.stdout.strip().splitlines()[-1]
+        value=f._residual_evidence(target/name,name)
+        self.assertEqual(value['schema_version'],'forecast-outcomes-v2')
+        self.assertEqual(value['rows'][0]['actual'],None)
+        self.assertIn('statistic_contract',value)
+        # Descriptive outcomes have a distinct B3 emitter lane and cannot
+        # acquire canonical forecast-outcome trust by changing a schema label.
+        for schema in ('descriptive-statistic-outcomes-v1','descriptive-statistic-outcomes-v2'):
+            self.assertNotIn(schema,f._RESIDUAL_SCHEMAS['outcomes'])
+            wrong=dict(value,schema_version=schema)
+            digest=hashlib.sha256(f.ci.canonical(wrong)).hexdigest()
+            wrong_name='data/outcomes/2026/w06/'+digest+'.json.gz'
+            path=target/wrong_name
+            path.write_bytes(gzip.compress(f.ci.canonical(dict(payload=wrong,payload_sha256=digest)),mtime=0))
+            with self.assertRaisesRegex(ValueError,'Unsupported residual schema/role'):
+                f._residual_evidence(path,wrong_name)
 
     def test_installer_environment_is_restored_on_validation_failure(self):
         with patch.dict(os.environ,{'GITHUB_SHA':self.installer}):

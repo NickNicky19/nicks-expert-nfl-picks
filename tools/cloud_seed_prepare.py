@@ -40,6 +40,7 @@ REQUIRED={'cloud_seed_prepare.py','cloud_seed_resource_bootstrap.py','diagnostic
     'coverage_gate.py','diagnostic-seed-inputs.json','cloud-seed-requirements.txt',
     'seed_checkpoint_frontier.py','source_ci.py','operating_seed_transport.py'}
 CONTINUATION_ID='NFL-WEB-CONTINUE-VERIFIED-13-OF-24-12509203616-20261023'
+CONTINUATION22_ID='NFL-WEB-CONTINUE-CHECKPOINT-22-OF-24-12540324398-20261024'
 PREFIX_HEAD='bea7faaed74c3975b9bd746882a5718cc614ff2f'
 PREFIX_GENERATION='c9950828aefabea60c80ac691753988ba927718843e7042ba89c9e1e0f6df8c0'
 PREFIX_SEMANTICS='02bbf427657c68669482c96b56e79e40cbc270b784286c4b825a84345e6b2c48'
@@ -116,14 +117,26 @@ def paths(args):
         raise RuntimeError('Application, work and export roots must be independent')
     return a,w,o
 
+def continuation_details():
+    import seed_checkpoint_frontier as frontier
+    selected=os.environ.get('CONTINUATION_ID',CONTINUATION_ID)
+    if selected==CONTINUATION_ID:profile=None
+    elif selected==CONTINUATION22_ID:profile=frontier.PROFILE22
+    else:raise RuntimeError('Unknown closed continuation identity')
+    return selected,profile,frontier.profile_identity(profile)
+
+def _profile_call(function,path,profile):
+    return function(path) if profile is None else function(path,profile=profile)
+
 def continuation_path(args):
     """A distinct, exact invocation; never a restart of the consumed first run."""
     if not getattr(args,'continue_checkpoint',False):return None
+    selected,_,_=continuation_details()
     expected={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted',
         'GITHUB_REPOSITORY_ID':'1411185749','GITHUB_ACTOR_ID':'208912933',
         'GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_RUN_ATTEMPT':'1',
         'GITHUB_REF':'refs/heads/upgrade/phase2-reproducible-comparison',
-        'CONTINUATION_ID':CONTINUATION_ID}
+        'CONTINUATION_ID':selected}
     if any(os.environ.get(k)!=v for k,v in expected.items()):
         raise RuntimeError('Exact first-attempt continuation invocation required')
     run=os.environ.get('GITHUB_RUN_ID','')
@@ -158,11 +171,12 @@ def retrieve_continuation(args):
     else:raise RuntimeError('Invocation inventory bound exceeded')
     if len(matches)!=1 or matches[0].get('id')!=run_id or matches[0].get('run_attempt')!=1:
         raise RuntimeError('Duplicate or ambiguous continuation invocation; no retrieval')
-    frontier.hosted(path,'retrieve');frontier.retrieve(path)
+    selected,profile,spec=continuation_details()
+    frontier.hosted(path,'retrieve');_profile_call(frontier.retrieve,path,profile)
     if installed(args)!=identity:raise RuntimeError('Continuation installer changed during retrieval')
-    write(path/'CONTINUATION_INVOCATION.json',dict(continuation_id=CONTINUATION_ID,
-        run_id=run_id,installer=identity,original_artifact=frontier.ARTIFACT,
-        original_artifact_sha256=frontier.DIGEST,mode='RETRIEVED_NOT_CONSTRUCTED'))
+    write(path/'CONTINUATION_INVOCATION.json',dict(continuation_id=selected,
+        run_id=run_id,installer=identity,original_artifact=spec['artifact'],
+        original_artifact_sha256=spec['digest'],mode='RETRIEVED_NOT_CONSTRUCTED'))
 
 def continuation_inventory(root):
     import seed_checkpoint_frontier as frontier
@@ -173,41 +187,68 @@ def continuation_inventory(root):
     return result
 
 def continuation_frontier(args):
-    """Freshly replay the actual prefix, then make a separately checked copy."""
-    import operating_diagnostic as h
+    """Fresh actual prefix replay, immutable residual preservation, independent copy."""
     import seed_checkpoint_frontier as frontier
     a,w,o=paths(args);path=continuation_path(args)
     if path is None:raise RuntimeError('Explicit continuation flag required')
-    value=frontier.check_saved(path)
+    selected,profile,spec=continuation_details()
+    value=_profile_call(frontier.check_saved,path,profile)
     required=dict(status='COMMITTED_HISTORY_REPLAYED_RAW_RESIDUAL_UNQUALIFIED',
-        fixture_head=PREFIX_HEAD,recorded_generations=13,independently_replayed_committed_generations=13,
-        target_generations=24,generation_sha256=PREFIX_GENERATION,semantic_sha256=PREFIX_SEMANTICS,
-        residual_working_files=dict(new=0,changed=0,missing_from_checkpoint=0))
-    if any(value.get(k)!=v for k,v in required.items()):
-        raise RuntimeError('Only the exact freshly replayed zero-residual prefix is supported')
+        recorded_generations=spec['count'],independently_replayed_committed_generations=spec['count'],target_generations=24)
+    if profile is None:
+        required.update(fixture_head=PREFIX_HEAD,generation_sha256=PREFIX_GENERATION,semantic_sha256=PREFIX_SEMANTICS,
+            residual_working_files=dict(new=0,changed=0,missing_from_checkpoint=0))
+    else:required.update(origin_profile=spec,residual_evidence_preserved=True)
+    if (any(value.get(k)!=v for k,v in required.items()) or
+        any(not isinstance(value.get(k),str) or len(value[k])!=n or any(c not in '0123456789abcdef' for c in value[k])
+            for k,n in (('fixture_head',40),('generation_sha256',64),('semantic_sha256',64)))):
+        raise RuntimeError('Only the exact freshly replayed zero-residual or adjudicated closed prefix is supported')
     source=path/'committed-frontier';root=w/'construction/root'
     if root.exists():raise RuntimeError('Fresh independent continuation root required')
     before=continuation_inventory(source)
+    if profile is not None:
+        checked=frontier.verify_copied_frontier(path,source,profile=profile)
+        if checked['fixture_head']!=value['fixture_head'] or checked['inventory']!=before:
+            raise RuntimeError('Actual authenticated prefix changed before copying')
     root.parent.mkdir(parents=True,exist_ok=True)
-    subprocess.run(['git','-c','core.hooksPath=/dev/null','clone','--quiet','--no-hardlinks',
-        str(source),str(root)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+    subprocess.run(['git','-c','core.hooksPath=/dev/null','clone','--quiet','--no-hardlinks',str(source),str(root)],
+        check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
     frontier.git(root,'fetch','--no-tags',str(source),'refs/fixture/source:refs/fixture/source')
     frontier.git(root,'remote','set-url','origin','https://github.com/NickNicky19/nicks-expert-nfl-picks.git')
+    # Git clone excludes untracked create-only residual evidence. Copy exactly
+    # the already adjudicated source inventory, never replace a tracked byte.
+    if profile is not None:
+        for name,d in before.items():
+            src=source/name;dst=root/name
+            if dst.exists():
+                if frontier.descriptor(dst)!=d:raise RuntimeError('Independent prefix copy differs from actual verified source')
+            else:
+                dst.parent.mkdir(parents=True,exist_ok=True)
+                with src.open('rb') as inp,dst.open('xb') as out:shutil.copyfileobj(inp,out)
+                dst.chmod(stat.S_IMODE(src.stat().st_mode))
     frontier.git(root,'fsck','--full','--no-reflogs')
-    if ((root/'.git/objects/info/alternates').exists() or git(root,'rev-parse','HEAD')!=PREFIX_HEAD
+    if ((root/'.git/objects/info/alternates').exists() or git(root,'rev-parse','HEAD')!=value['fixture_head']
         or continuation_inventory(root)!=before or continuation_inventory(source)!=before):
         raise RuntimeError('Independent prefix copy differs from actual verified source')
-    frontier.verify_parents(path)
-    # Preserve the original progress bytes; later completed commits have their
-    # own actual continuation wall clocks. No original receipt is rewritten.
+    if profile is not None:
+        checked=frontier.verify_copied_frontier(path,root,profile=profile)
+        if checked['fixture_head']!=value['fixture_head'] or checked['inventory']!=before:
+            raise RuntimeError('Independent destination differs from authenticated checkpoint')
+    _profile_call(frontier.verify_parents,path,profile)
     shutil.copyfile(path/'raw-checkpoint/CONSTRUCTION_PROGRESS.json',root.parent/'progress.json')
     write(w/'CONTINUATION_PREFIX.json',before)
-    write(w/'CONTINUATION.json',dict(continuation_id=CONTINUATION_ID,run_id=int(os.environ['GITHUB_RUN_ID']),
-        original_artifact=frontier.ARTIFACT,original_artifact_sha256=frontier.DIGEST,
-        original_fixture_head=PREFIX_HEAD,application_source=BASE,harness_sha256=HARNESS,
-        input_contract_sha256=INPUTS,first_remaining_generation=14,target_generations=24,
-        freshly_replayed_prefix_generations=13,prefix_inventory_sha256=rawhash(w/'CONTINUATION_PREFIX.json'),
-        installer=load(w/'PREFLIGHT.json')['installer'],originals_unchanged=True))
+    record=dict(continuation_id=selected,run_id=int(os.environ['GITHUB_RUN_ID']),
+        original_artifact=spec['artifact'],original_artifact_sha256=spec['digest'],
+        original_fixture_head=value['fixture_head'],application_source=BASE,harness_sha256=HARNESS,
+        input_contract_sha256=INPUTS,first_remaining_generation=spec['count']+1,target_generations=24,
+        freshly_replayed_prefix_generations=spec['count'],prefix_inventory_sha256=rawhash(w/'CONTINUATION_PREFIX.json'),
+        installer=load(w/'PREFLIGHT.json')['installer'],originals_unchanged=True)
+    if profile is not None:
+        record.update(origin_profile=profile,prefix_generation_sha256=value['generation_sha256'],
+            prefix_semantic_sha256=value['semantic_sha256'],residual_evidence_preserved=True,
+            retained_checkpoint_parents=[dict(name=n,bytes=(path/n).stat().st_size,allocated_bytes=(path/n).stat().st_blocks*512)
+                for n in ('artifact.zip',frontier.CHECKPOINT,frontier.BUNDLE,frontier.MANIFEST)])
+    write(w/'CONTINUATION.json',record)
 
 def prefix_immutable(name):
     if name in ('FICTIONAL_ONLY.json','FICTIONAL_PHASES.json',
@@ -217,10 +258,17 @@ def prefix_immutable(name):
     base='output/data/selection-grading/'
     return name.startswith(base) and name[len(base):] not in ('latest.json','hosting.json')
 
-def continue_generations(root,h):
+def continue_generations(root,h,*,profile=None,prefix_generation=None,tail_path=None):
     """Use the original inner updater loop; do not rerun plan/legacy setup."""
     import seed_checkpoint_frontier as frontier
-    dimensions=h.FULL;start=13
+    dimensions=h.FULL
+    start=frontier.profile_identity(profile)["count"]
+    if profile is None:expected_generation=PREFIX_GENERATION
+    else:
+        if profile!=frontier.PROFILE22 or not isinstance(prefix_generation,str) or len(prefix_generation)!=64:
+            raise RuntimeError("Actual authenticated new prefix generation required")
+        expected_generation=prefix_generation
+    updates=[]
     if dimensions!=dict(games=14,per_team=20,snapshots=277,outcomes=49,generations=24):
         raise RuntimeError('Unchanged full continuation dimensions required')
     m=h.bind(root);before=continuation_inventory(root)
@@ -234,20 +282,31 @@ def continue_generations(root,h):
         # This is a fresh process/root and actual saved validation, not source-
         # root cache trust or the previous job's reported PASS.
         value=m['capture'].validate_generation(root)
-        if dimensions==h.FULL and value['generation_sha256']!=PREFIX_GENERATION:
+        if dimensions==h.FULL and value['generation_sha256']!=expected_generation:
             raise RuntimeError('Copied prefix generation changed')
         for i in range(start,dimensions['generations']):
             provider.at=h.START+h.timedelta(hours=h.SEED_HOUR,seconds=(i+1)*5)
             provider.revision=int(i>=dimensions['generations']//2)
-            m['capture'].run_capture(root,build_first=True)
-            current=m['rel'].load_json(root/'output/data/week.json')
-            if any(m['rel'].digest(m['partial'].game_contract(current,g))!=v for g,v in frozen.items()):
-                raise RuntimeError('Continuation changed a frozen contract')
-            for name,d in before.items():
-                if prefix_immutable(name) and frontier.descriptor(root/name)!=d:
-                    raise RuntimeError('Continuation changed prior immutable evidence')
-            h.commit(root)
-            h.put(root.parent/'progress.json',dict(generation=i+1,target=dimensions['generations'],wall_clock=now()))
+            tick=time.monotonic()
+            update=dict(generation=i+1,fictional_observed_at=provider.at.isoformat(),status='RUNNING')
+            updates.append(update)
+            if tail_path is not None:write(tail_path,updates)
+            try:
+                m['capture'].run_capture(root,build_first=True)
+                current=m['rel'].load_json(root/'output/data/week.json')
+                if any(m['rel'].digest(m['partial'].game_contract(current,g))!=v for g,v in frozen.items()):
+                    raise RuntimeError('Continuation changed a frozen contract')
+                for name,d in before.items():
+                    if prefix_immutable(name) and frontier.descriptor(root/name)!=d:
+                        raise RuntimeError('Continuation changed prior immutable evidence')
+                h.commit(root)
+                h.put(root.parent/'progress.json',dict(generation=i+1,target=dimensions['generations'],wall_clock=now()))
+            except BaseException:
+                update.update(status='FAIL',exclusive_seconds=time.monotonic()-tick)
+                if tail_path is not None:write(tail_path,updates)
+                raise
+            update.update(status='PASS',exclusive_seconds=time.monotonic()-tick)
+            if tail_path is not None:write(tail_path,updates)
     return dict(completed_generations=dimensions['generations'],previous_generations=start,
         added_generations=dimensions['generations']-start,prior_immutable_bytes_preserved=True)
 
@@ -265,14 +324,17 @@ def preflight(args,initialize=True):
     if node is None or request is None or not request.origin:raise RuntimeError('Installed declared node/requests dependencies required')
     resume=continuation_path(args)
     if resume is not None:
+        selected,profile,spec=continuation_details()
         invocation=load(resume/'CONTINUATION_INVOCATION.json')
-        if invocation!={'continuation_id':CONTINUATION_ID,'run_id':int(os.environ['GITHUB_RUN_ID']),
-            'installer':installer,'original_artifact':12509203616,
-            'original_artifact_sha256':'e9a1be3a3580d01a51b39375d7d908ba37300b02e83ab6ccf2e2732540b9876c',
+        if invocation!={'continuation_id':selected,'run_id':int(os.environ['GITHUB_RUN_ID']),
+            'installer':installer,'original_artifact':spec['artifact'],
+            'original_artifact_sha256':spec['digest'],
             'mode':'RETRIEVED_NOT_CONSTRUCTED'}:raise RuntimeError('Actual retrieved invocation differs')
     fs=[filesystem(p) for p in (a,source,w,o,*([resume] if resume is not None else []),Path('/tmp'),Path.home(),Path(sys.executable).resolve(),Path(sys.prefix),Path(node).resolve(),Path(request.origin).resolve())]
     allocation={}
-    for location,size in ((w,8*GIB),(o,2*GIB),*([(resume,4*GIB)] if resume is not None else [])):
+    # The22 profile retains its outerZIP, parents, raw and committed roots.
+    resume_peak=(22*GIB if resume is not None and continuation_details()[1] is not None else 4*GIB)
+    for location,size in ((w,8*GIB),(o,2*GIB),*([(resume,resume_peak)] if resume is not None else [])):
         device=actual(location).stat().st_dev;allocation[device]=allocation.get(device,0)+size
     for f in fs:
         f['additional_peak_estimate_bytes']=allocation.get(f['device'],0)
@@ -303,16 +365,28 @@ def worker(args):
         else:
             record=load(w/'CONTINUATION.json');prefix=load(w/'CONTINUATION_PREFIX.json')
             import seed_checkpoint_frontier as frontier
-            if (record['run_id']!=int(os.environ['GITHUB_RUN_ID']) or record['continuation_id']!=CONTINUATION_ID
+            selected,profile,spec=continuation_details()
+            expected_head=PREFIX_HEAD if profile is None else record.get('original_fixture_head')
+            if profile is not None:
+                checked=frontier.verify_copied_frontier(continuation_path(args),root,profile=profile)
+                if checked['fixture_head']!=expected_head or checked['inventory']!=prefix:
+                    raise RuntimeError('Authenticated copied prefix changed before construction')
+            if (record['run_id']!=int(os.environ['GITHUB_RUN_ID']) or record['continuation_id']!=selected
                 or record['installer']!=load(w/'PREFLIGHT.json')['installer']
-                or record['original_fixture_head']!=PREFIX_HEAD or record['application_source']!=BASE
+                or record['original_fixture_head']!=expected_head or record['application_source']!=BASE
                 or record['harness_sha256']!=HARNESS or record['input_contract_sha256']!=INPUTS
-                or record['first_remaining_generation']!=14 or record['target_generations']!=24
-                or record['freshly_replayed_prefix_generations']!=13
+                or record['first_remaining_generation']!=spec['count']+1 or record['target_generations']!=24
+                or record['freshly_replayed_prefix_generations']!=spec['count']
                 or record['prefix_inventory_sha256']!=rawhash(w/'CONTINUATION_PREFIX.json')
-                or continuation_inventory(root)!=prefix or git(root,'rev-parse','HEAD')!=PREFIX_HEAD):
+                or continuation_inventory(root)!=prefix or git(root,'rev-parse','HEAD')!=expected_head):
                 raise RuntimeError('Continuation prefix changed before construction')
-            continue_generations(root,h)
+            if profile is None:continue_generations(root,h)
+            else:
+                if (record.get('origin_profile')!=profile or record.get('residual_evidence_preserved') is not True or
+                    record.get('original_artifact')!=spec['artifact'] or record.get('original_artifact_sha256')!=spec['digest']):
+                    raise RuntimeError('Wrong closed new continuation binding')
+                continue_generations(root,h,profile=profile,prefix_generation=record.get('prefix_generation_sha256'),
+                    tail_path=w/'CONTINUATION_TAIL.json')
     elif args.stage=='admit':h.admit(a,root,w/'ADMISSION.json',small=False)
     elif args.stage=='gate':
         admission=load(w/'ADMISSION.json');gate=coverage_gate.evaluate(h,admission);write(w/'COVERAGE.json',gate)
@@ -453,6 +527,16 @@ def run(args):
         except Exception as failure:result['preservation']=dict(status='RETENTION_FAILED',reason=type(failure).__name__+': '+str(failure),runner_local_progress_only=True)
     finally:
         if (w/'CONTINUATION.json').exists():result['continuation']=load(w/'CONTINUATION.json')
+        if (w/'CONTINUATION_TAIL.json').exists():
+            tail=load(w/'CONTINUATION_TAIL.json')
+            allowed={'generation','fictional_observed_at','status','exclusive_seconds'}
+            if (type(tail) is list and len(tail)<=2 and all(type(v) is dict and set(v)<=allowed and
+                type(v.get('generation')) is int and v['generation'] in (23,24) and
+                v.get('status') in ('RUNNING','PASS','FAIL') and
+                v.get('fictional_observed_at')==(h.START+h.timedelta(hours=h.SEED_HOUR,seconds=5*v['generation'])).isoformat() and
+                (v.get('exclusive_seconds') is None or type(v['exclusive_seconds']) in (int,float) and 0<=v['exclusive_seconds']<=86400)
+                for v in tail)):result['tail_updates']=tail
+            else:result['tail_updates_status']='INVALID_TECHNICAL_RECORD_NOT_PUBLISHED'
         result.update(finished_at=now(),driver_seconds=time.monotonic()-start)
         write(w/'PREPARATION_RESULT.json',result)
     return 0 if result['status']=='PREPARATION_COMPLETE_NOT_OPERATING_QUALIFIED' else 3

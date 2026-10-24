@@ -148,10 +148,24 @@ class SourceClosure(unittest.TestCase):
         value=self.check()
         self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.SEED_INTEGRITY)
         self.assertEqual(len(b.SEED_CONTRACTS[b.SEED_INTEGRITY]),9)
-    def test_only_two_exact_contracts_are_recognized(self):
+    def test_exact_retained_twelve_file_contract_uses_actual485_bytes(self):
+        old='4855732886ce0da65ccf3af13928049149f33ea8'
+        for name in b.SEED_CONTRACTS[b.CONTINUED_SEED_INTEGRITY]|{'cloud-seed-integrity.json'}:
+            raw=subprocess.check_output(['git','-C',str(SOURCE),'show',old+':tools/'+name])
+            (self.code/'tools'/name).write_bytes(raw);self.objects['tools/'+name]=raw
+        value=self.check()
+        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.CONTINUED_SEED_INTEGRITY)
+
+    def test_latest_twelve_file_contract_binds_finished_helpers(self):
+        value=self.check()
+        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.FINISHED22_SEED_INTEGRITY)
+        self.assertEqual(len(b.SEED_CONTRACTS[b.FINISHED22_SEED_INTEGRITY]),12)
+
+    def test_only_three_exact_contracts_are_recognized(self):
         self.assertEqual(set(b.SEED_CONTRACTS),{
             'bfb48f36d1db5b2980235238e1b869efb183f23095ff72cee33c1d88e84a3b26',
-            'ed5b6773c3d4e642bf4346aa2b9de89a2b580a1f34e97bddc6172b068a388611'})
+            'ed5b6773c3d4e642bf4346aa2b9de89a2b580a1f34e97bddc6172b068a388611',
+            '636b3cd2a966346df02ad30c516dc805e40ae082e1b4f5e7b757162c29e6459f'})
         self.assertTrue(all(isinstance(v,frozenset) for v in b.SEED_CONTRACTS.values()))
     def test_newly_required_frontier_same_size_mutation_rejected(self):
         path=self.code/'tools/seed_checkpoint_frontier.py';raw=path.read_bytes();old=path.stat()

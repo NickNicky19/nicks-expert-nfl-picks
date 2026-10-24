@@ -37,8 +37,11 @@ SEED_NAMES = {'cloud-seed-requirements.txt', 'cloud_seed_prepare.py',
               'diagnostic-seed-inputs.json', 'diagnostic_network_guard.py',
               'diagnostic_resources.py', 'diagnostic_seed.py', 'operating_diagnostic.py'}
 CONTINUED_SEED_INTEGRITY = 'ed5b6773c3d4e642bf4346aa2b9de89a2b580a1f34e97bddc6172b068a388611'
+FINISHED22_SEED_INTEGRITY = '636b3cd2a966346df02ad30c516dc805e40ae082e1b4f5e7b757162c29e6459f'
 SEED_CONTRACTS = {
     SEED_INTEGRITY: frozenset(SEED_NAMES),
+    FINISHED22_SEED_INTEGRITY: frozenset(SEED_NAMES | {
+        'seed_checkpoint_frontier.py', 'source_ci.py', 'operating_seed_transport.py'}),
     CONTINUED_SEED_INTEGRITY: frozenset(SEED_NAMES | {
         'seed_checkpoint_frontier.py', 'source_ci.py', 'operating_seed_transport.py'}),
 }

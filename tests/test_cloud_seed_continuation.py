@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -69,7 +70,7 @@ class Invocation(unittest.TestCase):
             calls.append(path)
             if path=='/actions/runs/123':return current or self.current
             return dict(workflow_runs=rows)
-        def receive(path):path.mkdir()
+        def receive(path,**kwargs):path.mkdir()
         with patch.dict(os.environ,self.env,clear=True),patch.object(p,'integrity'),\
             patch.object(p,'installed',return_value=self.identity),patch.object(ci,'GitHub',return_value=SimpleNamespace(get=get)),\
             patch.object(f,'hosted'),patch.object(f,'retrieve',side_effect=receive) as download:
@@ -81,6 +82,14 @@ class Invocation(unittest.TestCase):
         value=p.load(self.root/'nfl-seed-frontier-123/CONTINUATION_INVOCATION.json')
         self.assertEqual(value['installer'],self.identity);self.assertEqual(value['run_id'],123)
         self.assertEqual(value['mode'],'RETRIEVED_NOT_CONSTRUCTED');self.assertEqual(len(calls),2)
+
+    def test_exact_new_invocation_uses_closed22_artifact(self):
+        self.env['CONTINUATION_ID']=p.CONTINUATION22_ID
+        calls,count=self.retrieve([self.current]);self.assertEqual(count,1)
+        value=p.load(self.root/'nfl-seed-frontier-123/CONTINUATION_INVOCATION.json')
+        self.assertEqual(value['continuation_id'],p.CONTINUATION22_ID)
+        self.assertEqual(value['original_artifact'],12540324398)
+        self.assertEqual(value['original_artifact_sha256'],'d5060fb316f4626144b71ebbf6d774f7c644f2568f92b2e5b89efd10c04ac18d')
 
     def test_duplicate_fresh_dispatch_is_rejected_before_download(self):
         with self.assertRaisesRegex(RuntimeError,'Duplicate'):
@@ -171,6 +180,66 @@ class CopyPrefix(unittest.TestCase):
         with patch.object(p.subprocess,'run',side_effect=mutate),self.assertRaisesRegex(RuntimeError,'copy differs'):
             self.prepare()
 
+    def test_new22_copy_keeps_actual_untracked_carried_bytes(self):
+        carried=self.source/'data/verification/carried-unit.json.gz'
+        carried.write_bytes(b'unit-only carried bytes; no real qualification claim')
+        self.progress=b'{"generation":22,"target":24,"wall_clock":"2026-10-24T00:00:00+00:00"}'
+        (self.checkpoint/'raw-checkpoint/CONSTRUCTION_PROGRESS.json').write_bytes(self.progress)
+        for name in ('artifact.zip',f.CHECKPOINT,f.BUNDLE,f.MANIFEST):(self.checkpoint/name).write_bytes(b'unit-only authenticated transport double')
+        before=p.continuation_inventory(self.source)
+        value={**self.value,'recorded_generations':22,'independently_replayed_committed_generations':22,
+            'origin_profile':f.profile_identity(f.PROFILE22),'residual_evidence_preserved':True,
+            'residual_working_files':dict(new=1,changed=0,missing_from_checkpoint=0)}
+        def checked(path,root,profile):
+            self.assertEqual(profile,f.PROFILE22)
+            return dict(fixture_head=self.head,inventory=before)
+        with patch.dict(os.environ,{'GITHUB_RUN_ID':'123','CONTINUATION_ID':p.CONTINUATION22_ID}),            patch.object(p,'continuation_path',return_value=self.checkpoint),patch.object(f,'check_saved',return_value=value),            patch.object(f,'verify_parents'),patch.object(f,'verify_copied_frontier',side_effect=checked):
+            p.continuation_frontier(self.args)
+        root=self.work/'construction/root'
+        self.assertEqual((root/carried.relative_to(self.source)).read_bytes(),carried.read_bytes())
+        self.assertEqual(p.continuation_inventory(root),before)
+        record=p.load(self.work/'CONTINUATION.json')
+        self.assertEqual(record['first_remaining_generation'],23)
+        self.assertEqual(record['freshly_replayed_prefix_generations'],22)
+        self.assertEqual(record['original_artifact'],12540324398)
+        self.assertEqual(record['origin_profile'],f.PROFILE22)
+        self.assertEqual((root.parent/'progress.json').read_bytes(),self.progress)
+
+
+    def test_actual_check_saved_profile_shape_reaches_real_frontier_copy(self):
+        # Actual result projection and driver bridge; lower model/transport
+        # consumers are unit doubles, Git clone/fsck/byte checks are real.
+        import operating_diagnostic as h
+        from datetime import timezone
+        marker=dict(reviewed_source=f.BASE,dimensions=h.FULL)
+        (self.source/'FICTIONAL_ONLY.json').write_bytes(h.encoded(marker))
+        contract=h.phase_contract()
+        (self.source/'FICTIONAL_PHASES.json').write_bytes(h.encoded(dict(contract=contract,
+            contract_sha256=hashlib.sha256(h.encoded(contract)).hexdigest())))
+        self.git('add','.');self.git('commit','-qm','Tiny actual reader-return bridge')
+        self.head=self.git('rev-parse','HEAD')
+        raw=self.checkpoint/'raw-checkpoint'
+        for name in p.continuation_inventory(self.source):
+            dst=raw/name;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(self.source/name,dst)
+        self.progress=b'{"generation":22,"target":24,"wall_clock":"2026-10-24T00:00:00+00:00"}'
+        (raw/'CONSTRUCTION_PROGRESS.json').write_bytes(self.progress)
+        for name in ('artifact.zip',f.CHECKPOINT,f.BUNDLE):(self.checkpoint/name).write_bytes(b'unit-only transport double')
+        (self.checkpoint/f.MANIFEST).write_bytes(b'{}')
+        files={name:f.descriptor(raw/name) for name in p.continuation_inventory(self.source)}
+        files['CONSTRUCTION_PROGRESS.json']=f.descriptor(raw/'CONSTRUCTION_PROGRESS.json')
+        before=p.continuation_inventory(self.source)
+        modules={'capture':SimpleNamespace(validate_generation=lambda root:dict(generation_sha256='c'*64),
+            _public_archive_commit=lambda *a:None)}
+        checked=dict(fixture_head=self.head,inventory=before,expected_inventory_sha256=p.rawhash(self.source/'config/phase2.json'))
+        with patch.dict(os.environ,{'GITHUB_RUN_ID':'123','CONTINUATION_ID':p.CONTINUATION22_ID}),            patch.object(p,'continuation_path',return_value=self.checkpoint),patch.object(f,'verify_parents'),            patch.object(f,'unpack_checkpoint',return_value=files),            patch.object(f,'restore_committed',return_value=(self.source,{'HEAD':self.head},dict(new=0,changed=0,missing_from_checkpoint=0))),            patch.object(f,'verify_copied_frontier',return_value=checked),patch.object(f,'_qualify_residual',return_value={}),            patch.object(h,'require_offline'),patch.object(h,'bind',return_value=modules),            patch.object(h,'external',side_effect=lambda *a:contextlib.nullcontext()),            patch.object(h,'workload',return_value=dict(complete_generations=22,public_semantics_sha256='d'*64,rows=1,groups=1,outcomes=1,native=1)):
+            p.continuation_frontier(self.args)
+        record=p.load(self.work/'CONTINUATION.json')
+        self.assertEqual(record['origin_profile'],f.PROFILE22)
+        self.assertEqual(record['prefix_generation_sha256'],'c'*64)
+        self.assertEqual(record['freshly_replayed_prefix_generations'],22)
+        self.assertEqual(p.continuation_inventory(self.work/'construction/root'),before)
+
+
 
 class UpdateSequence(unittest.TestCase):
     def setUp(self):
@@ -204,6 +273,48 @@ class UpdateSequence(unittest.TestCase):
         self.assertEqual(value['completed_generations'],24);self.assertEqual(value['added_generations'],11)
         self.assertEqual(p.load(self.root.parent/'progress.json')['generation'],24)
         self.assertEqual(self.evidence.read_bytes(),b'original immutable control')
+
+    def test_closed22_executes_only23_and24_at_original_tail_clocks(self):
+        self.capture.validate_generation=lambda root:dict(generation_sha256='c'*64)
+        tail=self.root.parent/'tail.json'
+        value=p.continue_generations(self.root,self.h,profile=f.PROFILE22,prefix_generation='c'*64,tail_path=tail)
+        self.assertEqual(self.observations,[(self.h.START+timedelta(hours=77,seconds=n),1) for n in (115,120)])
+        self.assertEqual((value['previous_generations'],value['added_generations'],len(self.commits)),(22,2,2))
+        records=p.load(tail);self.assertEqual([v['generation'] for v in records],[23,24])
+        self.assertTrue(all(v['status']=='PASS' and type(v['exclusive_seconds']) is float for v in records))
+        self.assertEqual(self.evidence.read_bytes(),b'original immutable control')
+
+    def test_tail_capture_failure_preserved_without_progress_promotion(self):
+        self.capture.validate_generation=lambda root:dict(generation_sha256='c'*64)
+        def fail(*a,**kw):raise RuntimeError('UNIT_CONTROL_FAILURE_NOT_A_PROVIDER')
+        self.capture.run_capture=fail;tail=self.root.parent/'tail.json'
+        with self.assertRaisesRegex(RuntimeError,'UNIT_CONTROL_FAILURE'):
+            p.continue_generations(self.root,self.h,profile=f.PROFILE22,prefix_generation='c'*64,tail_path=tail)
+        self.assertEqual(self.commits,[])
+        self.assertEqual([(v['generation'],v['status']) for v in p.load(tail)],[(23,'FAIL')])
+
+    def test_tail_frozen_failure_records_failure_before_commit(self):
+        self.capture.validate_generation=lambda root:dict(generation_sha256='c'*64)
+        self.capture.run_capture=lambda *a,**kw:self.board.update(contract='changed')
+        tail=self.root.parent/'tail.json'
+        with self.assertRaisesRegex(RuntimeError,'frozen contract'):
+            p.continue_generations(self.root,self.h,profile=f.PROFILE22,prefix_generation='c'*64,tail_path=tail)
+        self.assertEqual(self.commits,[])
+        self.assertEqual([(v['generation'],v['status']) for v in p.load(tail)],[(23,'FAIL')])
+        self.assertFalse((self.root.parent/'progress.json').exists())
+
+    def test_tail_commit_failure_is_recorded_without_progress_promotion(self):
+        self.capture.validate_generation=lambda root:dict(generation_sha256='c'*64)
+        def fail(root):raise RuntimeError('UNIT_COMMIT_FAILURE')
+        self.h.commit=fail;tail=self.root.parent/'tail.json'
+        with self.assertRaisesRegex(RuntimeError,'UNIT_COMMIT_FAILURE'):
+            p.continue_generations(self.root,self.h,profile=f.PROFILE22,prefix_generation='c'*64,tail_path=tail)
+        self.assertEqual([(v['generation'],v['status']) for v in p.load(tail)],[(23,'FAIL')])
+        self.assertFalse((self.root.parent/'progress.json').exists())
+
+    def test_unknown_profile_cannot_choose_a_tail_count(self):
+        with self.assertRaises(ValueError):p.continue_generations(self.root,self.h,profile='unapproved',prefix_generation='c'*64)
+        self.assertEqual(self.observations,[])
 
     def test_wrong_copied_saved_generation_fails_before_update(self):
         self.capture.validate_generation=lambda r:dict(generation_sha256='0'*64)
