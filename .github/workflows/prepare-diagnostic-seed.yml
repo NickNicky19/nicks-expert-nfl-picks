@@ -1564,7 +1564,7 @@ jobs:
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
           task_code="$GITHUB_WORKSPACE/source"
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '76ec6761a53b4762df8bca12d135bef8d503460dd49cc1dc270848f7d398f1c9'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '86cb09f4dce8aa365939548ff30747ed27083ab9c352df4bed302e94025613b2'
           test "$(sha256sum "$task_code/tools/genuine_case_recovery.py" | cut -d' ' -f1)" = '2a175d65b90b586303622e98380680f92e31de965a3707ead509985c749a74b9'
           task_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-baseline-pyc.XXXXXX")";chmod 0700 "$task_prefix"
           PYTHONPYCACHEPREFIX="$task_prefix" python -P "$task_code/tools/genuine_case_recovery.py" baseline > "$RUNNER_TEMP/nfl-genuine-baseline-$GITHUB_RUN_ID.json"
@@ -1578,7 +1578,7 @@ jobs:
           task_sample=1
           task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '76ec6761a53b4762df8bca12d135bef8d503460dd49cc1dc270848f7d398f1c9'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '86cb09f4dce8aa365939548ff30747ed27083ab9c352df4bed302e94025613b2'
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
           task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
           task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
@@ -1721,7 +1721,7 @@ jobs:
           task_sample=2
           task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '76ec6761a53b4762df8bca12d135bef8d503460dd49cc1dc270848f7d398f1c9'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '86cb09f4dce8aa365939548ff30747ed27083ab9c352df4bed302e94025613b2'
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
           task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
           task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
@@ -2283,7 +2283,7 @@ jobs:
           REPO='NickNicky19/nicks-expert-nfl-picks'
           BRANCH='upgrade/phase2-reproducible-comparison'
           WORKFLOW='.github/workflows/prepare-diagnostic-seed.yml'
-          BROWSER='f00a1f086d45958b04b3752bad0ea9bd447b4fccc508bfaa648ca33338b99064'
+          BROWSER='d88d911a3ee10741cae7a01e63a15fc824647e7138afe2bc6fff7bf3bc7f543f'
           MIB=1024**2; GIB=1024**3; CAP=128*MIB
           stage='INVOCATION'; aggregate={'schema_version':'genuine-generated-browser-acceptance-v1','status':'FAIL','resource_verdict':'UNKNOWN','operating_qualification':'NOT_ESTABLISHED','provider_calls':0,'deployment':False}
           source=Path(os.environ['GITHUB_WORKSPACE'])/'source'
@@ -2315,7 +2315,7 @@ jobs:
           def copy_data(name,body,info):
               need(recovery.safe_name(name) and name.startswith(('data/','output/data/')),'RESTORED_DATA_PATH')
               need(info['bytes']==len(body) and info['sha256']==sha(body) and info['mode'] in (0o600,0o644),'RESTORED_DATA_BYTES')
-              target=source/name
+              target=capture_root/name
               need(not target.is_symlink() and all(not p.is_symlink() for p in target.parents),'RESTORED_DATA_ALIAS')
               if recovery.LANE.match(name) and target.exists():
                   need(target.is_file() and target.read_bytes()==body,'INHERITED_NATIVE_CHANGED')
@@ -2344,8 +2344,58 @@ jobs:
                           n+=len(b);need(n<=expected['tar_bytes'],'TAR_STREAM_BOUND');chunks.append(b)
                   raw=b''.join(chunks);need(n==expected['tar_bytes'] and sha(raw)==expected['tar_sha256'],'TAR_TRANSPORT_HASH');return raw
 
+          BROWSER_DIAGNOSTIC_PHASES=frozenset(["B001","B002","B003","B004","B005","B006","B007","B008","B009","B010","B011","B012","B013","B014","B015","B016","B017","B018","B019","B020","B021","B022","B023","B024","B025","B026","B027","B028","B029"])
+          BROWSER_DIAGNOSTIC_KINDS=frozenset(["ASSERTION","TIMEOUT","TYPE","REFERENCE","SYNTAX","RANGE","ERROR","OTHER","MODULE_NOT_FOUND","ENOENT","EACCES","ENOSPC","ENOMEM","FILESYSTEM_GUARD","BROWSER_DEADLINE"])
+          BROWSER_READER_CODES=frozenset(('FILESYSTEM_HEADROOM','PREINSTALLED_CHROME_UNAVAILABLE','BROWSER_CHECKS_REJECTED','ACTUAL_BROWSER_RESULT','ACTUAL_PUBLIC_BROWSER_REJECTED','ACTUAL_PUBLIC_BROWSER_RESULT','COMPLETE_BROWSER_CONTEXTS','AGGREGATE_BROWSER_CONTRACT','ACTUAL_BROWSER_INSTRUMENTATION','BOUNDED_JSON','CHILD_TIMEOUT','UNCLASSIFIED'))
+          def parse_browser_failure(raw):
+              unavailable={'browser_failure_stage':'UNAVAILABLE','browser_failure_kind':'UNAVAILABLE','browser_failure_viewport':0}
+              invalid={'browser_failure_stage':'INVALID','browser_failure_kind':'INVALID','browser_failure_viewport':0}
+              if not raw:return unavailable
+              try:
+                  need(type(raw) is bytes and len(raw)<=1024**2,'PRIVATE_DIAGNOSTIC_BOUND')
+                  prefix=b'NFL_BROWSER_FAILURE_DIAGNOSTIC_V1='
+                  lines=[line[len(prefix):] for line in raw.splitlines() if line.startswith(prefix)]
+                  if not lines:return unavailable
+                  need(len(lines)==1 and len(lines[0])<=256,'ONE_BOUNDED_DIAGNOSTIC')
+                  value=json.loads(lines[0],object_pairs_hook=pairs)
+                  need(type(value) is dict and set(value)=={'schema_version','stage','kind','viewport'} and value['schema_version']=='release-browser-failure-diagnostic-v1','CLOSED_BROWSER_DIAGNOSTIC')
+                  need(value['stage'] in BROWSER_DIAGNOSTIC_PHASES and value['kind'] in BROWSER_DIAGNOSTIC_KINDS and type(value['viewport']) is int and value['viewport'] in (0,1280,390,320),'FIXED_BROWSER_DIAGNOSTIC_ENUMS')
+                  return {'browser_failure_stage':value['stage'],'browser_failure_kind':value['kind'],'browser_failure_viewport':value['viewport']}
+              except (ValueError,TypeError,KeyError,UnicodeError):return invalid
+          def private_browser_failure(path):
+              try:
+                  need(path.is_file() and not path.is_symlink() and path.stat().st_size<=1024**2,'PRIVATE_DIAGNOSTIC_FILE')
+                  return parse_browser_failure(path.read_bytes())
+              except (OSError,ValueError):return parse_browser_failure(b'')
+          def browser_reader_code(error):
+              if isinstance(error,subprocess.TimeoutExpired):return 'CHILD_TIMEOUT'
+              code=error.args[0] if isinstance(error,ValueError) and len(error.args)==1 and type(error.args[0]) is str else ''
+              return code if code in BROWSER_READER_CODES else 'UNCLASSIFIED'
+
+          CAPTURE_F130='f1303ee9dfac61fb47fb6820eabd1d04b36f173c'
+          CAPTURE_F130_MANIFEST='e5c510aa05d697d3c7f9f77df1600e24ffae4114f846217d04ad509214a43c1a'
+          DIAGNOSTIC_SOURCE_PATHS=frozenset(["tools/seed_checkpoint_frontier.py","tools/cloud_seed_prepare.py","tools/operating_campaign.py","tools/cloud-seed-integrity.json","tools/operating_resource_bootstrap.py","tools/release_browser.cjs","tests/test_seed_checkpoint_frontier.py","tests/test_cloud_seed_continuation.py","tests/test_operating_campaign.py","tests/test_operating_resource_bootstrap.py",".github/workflows/prepare-diagnostic-seed.yml",".github/workflows/operating-diagnostic.yml"])
+          F130_ARTIFACT_APPROVAL={'schema_version':'genuine-browser-artifact-approval-v1','source':CAPTURE_F130,'case_run_id':40099428552,'artifact_id':12563140141,'artifact_bytes':42137750,'artifact_sha256':'1982427c8ecb044ec09e6d6a313e71b8a04ec6e5ad875290a06e907b55b137b3','artifact_expires_at':'2026-10-25T14:02:04Z','tar_bytes':42137600,'tar_sha256':'0c9e6f00e2b64c0947142306b6d0cb5c774ba8cad18b5acfa7f2731739e48e27'}
+          def capture_source_for_approval(approval,current):
+              captured=approval['source'];need(captured in (current,CAPTURE_F130),'CLOSED_CAPTURE_SOURCE')
+              if captured!=current:need(approval==F130_ARTIFACT_APPROVAL,'EXACT_IMMUTABLE_F130_ARTIFACT')
+              return captured
+
+          def require_f130_source_ci(value):
+              expected={'schema_version':'source-ci-verification-v1','executed_commit':CAPTURE_F130,'executed_tree':'13cd5461b81bf775c4fd415640de70d28a5edf69','source_ci_commit':CAPTURE_F130,'source_manifest_sha256':CAPTURE_F130_MANIFEST,'run_id':40091905641,'run_attempt':1,'job_id':120866138326,'seal_sha256':'d15f4084d2e7aad9e7c2282c2864684469106873bd6e8a40c4e53b14d0f88fee'}
+              need(all(value.get(k)==v for k,v in expected.items()) and all(type(value[k]) is int for k in ('run_id','run_attempt','job_id')),'ACTUAL_F130_QUALIFIED_SEAL')
+
+          def compare_diagnostic_sources(captured,current):
+              need(captured['commit']==CAPTURE_F130 and captured['source_manifest_sha256']==CAPTURE_F130_MANIFEST and len(captured['files'])==123,'QUALIFIED_F130_SOURCE_MANIFEST')
+              need(sha(canonical(captured['files']))==captured['source_manifest_sha256'] and sha(canonical(current['files']))==current['source_manifest_sha256'],'ACTUAL_SOURCE_MANIFEST_DIGESTS')
+              old={v['path']:v for v in captured['files']};new={v['path']:v for v in current['files']}
+              need(len(old)==len(captured['files']) and len(new)==len(current['files']) and set(old)==set(new),'COMPLETE_SOURCE_NAMESPACES_EQUAL')
+              changed={name: {'capture':old[name],'diagnostic':new[name]} for name in old if old[name]!=new[name]}
+              need(set(changed)<=DIAGNOSTIC_SOURCE_PATHS,'UNEXPECTED_APPLICATION_OR_VALIDATOR_SOURCE_CHANGE')
+              return {'difference_count':len(changed),'comparison_sha256':sha(canonical(changed))}
+
           def execute():
-              global stage,deadline,sci,recovery,initialized
+              global stage,deadline,sci,recovery,initialized,capture_root
               deadline=time.monotonic()+1080
               expected={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','GITHUB_REPOSITORY':REPO,'GITHUB_REPOSITORY_ID':'1411185749','GITHUB_ACTOR_ID':'208912933','GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_RUN_ATTEMPT':'1','GITHUB_REF':'refs/heads/'+BRANCH,'GITHUB_JOB':'generated-browser-acceptance','GITHUB_WORKFLOW_REF':REPO+'/'+WORKFLOW+'@refs/heads/'+BRANCH}
               need(all(os.environ.get(k)==v for k,v in expected.items()),'FIXED_INVOCATION')
@@ -2357,7 +2407,7 @@ jobs:
               need(type(inputs['storage_approved']) is str and len(inputs['storage_approved'])<=4096,'APPROVAL_INPUT_BOUND')
               approval=json.loads(inputs['storage_approved'],object_pairs_hook=pairs)
               keys={'schema_version','source','case_run_id','artifact_id','artifact_bytes','artifact_sha256','artifact_expires_at','tar_bytes','tar_sha256'}
-              need(type(approval) is dict and set(approval)==keys and approval['schema_version']=='genuine-browser-artifact-approval-v1' and approval['source']==current,'CLOSED_ARTIFACT_APPROVAL')
+              need(type(approval) is dict and set(approval)==keys and approval['schema_version']=='genuine-browser-artifact-approval-v1' and approval['source'] in (current,CAPTURE_F130),'CLOSED_ARTIFACT_APPROVAL')
               for k in ('case_run_id','artifact_id','artifact_bytes','tar_bytes'):need(type(approval[k]) is int and approval[k]>0,'APPROVAL_INTEGER')
               need(approval['case_run_id']!=int(os.environ['GITHUB_RUN_ID']) and approval['artifact_bytes']<=CAP and approval['tar_bytes']<=127*MIB,'APPROVAL_BOUND')
               for k in ('artifact_sha256','tar_sha256'):need(re.fullmatch('[0-9a-f]{64}',approval[k]),'APPROVAL_DIGEST')
@@ -2375,24 +2425,36 @@ jobs:
               need(code_before['source_manifest_sha256']==ci['source_manifest_sha256'],'INSTALLED_SOURCE_CLOSURE')
               need(sha((source/'tools/release_browser.cjs').read_bytes())==BROWSER,'REVIEWED_BROWSER_BYTES')
               need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='2a175d65b90b586303622e98380680f92e31de965a3707ead509985c749a74b9','REVIEWED_RECOVERY_BYTES')
+              capture_source=capture_source_for_approval(approval,current);capture_root=source;capture_ci=ci;capture_code=code_before
+              compatibility={'difference_count':0,'comparison_sha256':sha(canonical({}))}
+              if capture_source!=current:
+                  need(approval==F130_ARTIFACT_APPROVAL,'EXACT_IMMUTABLE_F130_ARTIFACT')
+                  capture_code=sci.source(source,CAPTURE_F130,actual=False);compatibility=compare_diagnostic_sources(capture_code,code_before)
+                  capture_root=work/'capture-f130';sci.git(source,'worktree','add','--detach',str(capture_root),CAPTURE_F130)
+                  need(sci.source(capture_root)==capture_code,'ACTUAL_RETAINED_F130_CHECKOUT')
+                  old_env=dict(os.environ);old_cache=work/'capture-source-ci-cache';old_cache.mkdir();old_env['PYTHONPYCACHEPREFIX']=str(old_cache)
+                  with (work/'CAPTURE_SOURCE_CI.json').open('wb') as value,(work/'private-capture-source-ci.log').open('wb') as log:
+                      checked=subprocess.run([sys.executable,str(capture_root/'tools/source_ci.py'),'verify','--root',str(capture_root),'--run-id','40091905641'],env=old_env,cwd=capture_root,stdin=subprocess.DEVNULL,stdout=value,stderr=log,timeout=min(240,left()))
+                  need(checked.returncode==0,'QUALIFIED_F130_SOURCE_CI_UNAVAILABLE');capture_ci=load(work/'CAPTURE_SOURCE_CI.json',65536)
+                  require_f130_source_ci(capture_ci)
               api=sci.GitHub()
               def identity():
                   repo=api.get('');need(repo.get('id')==1411185749 and repo.get('full_name')==REPO and repo.get('private') is False,'PUBLIC_REPOSITORY')
                   wf=api.get('/actions/workflows/prepare-diagnostic-seed.yml');need(wf.get('path')==WORKFLOW and wf.get('state')=='active','PREPARATION_WORKFLOW')
                   run=api.get('/actions/runs/'+str(approval['case_run_id']));attempt=api.get('/actions/runs/'+str(approval['case_run_id'])+'/attempts/1')
-                  fixed={'id':approval['case_run_id'],'run_attempt':1,'head_sha':current,'workflow_id':wf['id'],'path':WORKFLOW,'event':'workflow_dispatch','head_branch':BRANCH,'status':'completed','conclusion':'success'}
+                  fixed={'id':approval['case_run_id'],'run_attempt':1,'head_sha':capture_source,'workflow_id':wf['id'],'path':WORKFLOW,'event':'workflow_dispatch','head_branch':BRANCH,'status':'completed','conclusion':'success'}
                   for value in (run,attempt):
                       need(all(value.get(k)==v for k,v in fixed.items()) and (value.get('repository') or {}).get('id')==1411185749 and (value.get('head_repository') or {}).get('id')==1411185749,'COMPLETE_EXACT_CASE_RUN')
                   need((run.get('actor') or {}).get('id')==208912933,'CASE_ACTOR')
                   jobs=api.get('/actions/runs/'+str(approval['case_run_id'])+'/attempts/1/jobs?per_page=100')
                   need(jobs.get('total_count')==len(jobs.get('jobs',[])),'COMPLETE_JOB_PAGE')
                   selected=[j for j in jobs['jobs'] if j.get('name')=='genuine-production-case']
-                  need(len(selected)==1 and all(selected[0].get(k)==v for k,v in {'run_id':approval['case_run_id'],'head_sha':current,'status':'completed','conclusion':'success'}.items()),'COMPLETE_GENUINE_JOB')
+                  need(len(selected)==1 and all(selected[0].get(k)==v for k,v in {'run_id':approval['case_run_id'],'head_sha':capture_source,'status':'completed','conclusion':'success'}.items()),'COMPLETE_GENUINE_JOB')
                   artifact=api.get('/actions/artifacts/'+str(approval['artifact_id']))
                   fixed_art={'id':approval['artifact_id'],'name':'genuine-production-review-'+str(approval['case_run_id']),'size_in_bytes':approval['artifact_bytes'],'digest':'sha256:'+approval['artifact_sha256'],'expires_at':approval['artifact_expires_at'],'expired':False}
                   need(all(artifact.get(k)==v for k,v in fixed_art.items()),'EXACT_ARTIFACT')
                   link=artifact.get('workflow_run') or {}
-                  need(all(link.get(k)==v for k,v in {'id':approval['case_run_id'],'repository_id':1411185749,'head_repository_id':1411185749,'head_sha':current,'head_branch':BRANCH}.items()),'ARTIFACT_RUN_BINDING')
+                  need(all(link.get(k)==v for k,v in {'id':approval['case_run_id'],'repository_id':1411185749,'head_repository_id':1411185749,'head_sha':capture_source,'head_branch':BRANCH}.items()),'ARTIFACT_RUN_BINDING')
                   created,expires=transport._stamp(artifact['created_at']),transport._stamp(artifact['expires_at'])
                   now=transport.datetime.now(transport.timezone.utc)
                   need(transport._stamp(run['run_started_at'])<=created<=transport._stamp(run['updated_at']) and created<=now<expires,'ARTIFACT_TIME')
@@ -2401,29 +2463,29 @@ jobs:
               before=identity();archive=work/'artifact.zip'
               transport._download(dict(artifact_id=approval['artifact_id'],archive_bytes=approval['artifact_bytes'],archive_sha256=approval['artifact_sha256']),archive,deadline=deadline)
               need(identity()==before,'ARTIFACT_IDENTITY_CHANGED')
-              case_raw=zip_single(archive,approval);meta=recovery.controller_archive(case_raw,current,'COMPLETE_GENUINE_NONDEPLOY_CASE');entries=recovery.tar_entries(case_raw)
+              case_raw=zip_single(archive,approval);meta=recovery.controller_archive(case_raw,capture_source,'COMPLETE_GENUINE_NONDEPLOY_CASE');entries=recovery.tar_entries(case_raw)
               case=meta['RELEASE_CASE_MANIFEST.json'];need(case.get('run_id')==approval['case_run_id'] and case.get('attempt')==1 and case.get('provider_case_attempts')==1 and case.get('deployed') is False and case.get('main_written') is False and case.get('operating_qualification')=='NOT_ESTABLISHED' and case.get('resource_verdict')=='UNKNOWN','GENUINE_CASE_MANIFEST')
               need(case['verification_scope']['complete_week_qualified'] is False and case['verification_scope']['full_board_verified'] is False,'CASE_SCOPE')
               for name in ('source-ci-before','source-ci-before-data-commit','source-ci-after-stage'):
                   proof=meta['SOURCE_CI_BINDINGS.json'][name]
-                  need(proof['source_ci_commit']==current and proof['source_manifest_sha256']==ci['source_manifest_sha256'] and proof['environment_sha256']==ci['environment_sha256'],'CASE_SOURCE_CI_BINDING')
+                  need(proof['source_ci_commit']==capture_source and proof['source_manifest_sha256']==capture_ci['source_manifest_sha256'] and proof['environment_sha256']==capture_ci['environment_sha256'],'CASE_SOURCE_CI_BINDING')
               need(meta['SOURCE_CI_BINDINGS.json']['source-ci-after-stage']['executed_commit']==case['local_data_commit']['commit'] and meta['SOURCE_CI_BINDINGS.json']['source-ci-after-stage']['executed_tree']==case['local_data_commit']['tree'],'CASE_LOCAL_DATA_COMMIT')
               for key in ('GH_TOKEN','GITHUB_TOKEN','ACTIONS_RUNTIME_TOKEN','ACTIONS_ID_TOKEN_REQUEST_TOKEN'):os.environ.pop(key,None)
               api.token=None;del api
               stage='EXACT_RUNTIME_RESTORATION'
-              driver=bootstrap.genuine_driver(source,current);need(len(driver)==30854 and sha(driver)=='2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf','REVIEWED_ORIGINAL_CONTROLLER');module=types.ModuleType('verified_original_controller')
+              driver=bootstrap.genuine_driver(capture_root,capture_source);need(len(driver)==30854 and sha(driver)=='2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf','REVIEWED_ORIGINAL_CONTROLLER');module=types.ModuleType('verified_original_controller')
               exec(compile(driver,'verified-controller','exec'),module.__dict__)
               original=meta['INPUT_DATA_MANIFEST.json'];after=meta['OUTPUT_DATA_MANIFEST.json']['after'];main=original['production_main']
               need(re.fullmatch('[0-9a-f]{40}',main) and case['production_main']==main,'PRODUCTION_COMMIT')
-              need(subprocess.run(['git','--no-replace-objects','-C',str(source),'merge-base','--is-ancestor',main,'refs/remotes/origin/main'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=min(30,left())).returncode==0,'PRODUCTION_MAIN_ANCESTRY')
-              expected_prod=original['production_files'];tree=sci.git(source,'ls-tree','-r','-l','-z',main,'--','data','output/data');found={}
+              need(subprocess.run(['git','--no-replace-objects','-C',str(capture_root),'merge-base','--is-ancestor',main,'refs/remotes/origin/main'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=min(30,left())).returncode==0,'PRODUCTION_MAIN_ANCESTRY')
+              expected_prod=original['production_files'];tree=sci.git(capture_root,'ls-tree','-r','-l','-z',main,'--','data','output/data');found={}
               for row in tree.split(b'\0'):
                   if not row:continue
                   header,name=row.split(b'\t',1);mode,kind,oid,size=header.decode().split();name=name.decode()
                   need(recovery.safe_name(name) and mode=='100644' and kind=='blob' and int(size)<=128*MIB,'PRODUCTION_BLOB_ROLE')
                   found[name]={'oid':oid,'bytes':int(size)}
               need(set(found)==set(expected_prod) and sum(v['bytes'] for v in found.values())<=768*MIB,'COMPLETE_PRODUCTION_BASE')
-              process=subprocess.Popen(['git','--no-replace-objects','-C',str(source),'cat-file','--batch'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+              process=subprocess.Popen(['git','--no-replace-objects','-C',str(capture_root),'cat-file','--batch'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
               try:
                   for name,entry in sorted(found.items()):
                       left();process.stdin.write((entry['oid']+'\n').encode());process.stdin.flush();header=process.stdout.readline(200).decode().strip().split()
@@ -2437,7 +2499,7 @@ jobs:
                   process.stdin.close();need(process.wait(timeout=min(30,left()))==0,'PRODUCTION_BATCH_STATUS')
               finally:
                   if process.poll() is None:process.kill();process.wait()
-              need(module.inventory(source)==original['before'],'EXACT_INPUT_INVENTORY')
+              need(module.inventory(capture_root)==original['before'],'EXACT_INPUT_INVENTORY')
               case_dir=work/'artifact';case_dir.mkdir();pages=case_dir/'pages';pages.mkdir()
               for name in recovery.META:write(case_dir/name,entries[name],0o600)
               bodies=recovery.tar_entries(entries['public-pages.tar'],True,meta['PAGES_MEMBERS_MANIFEST.json'])
@@ -2446,20 +2508,22 @@ jobs:
                   if name.startswith('data/'):
                       logical='output/'+name;info=after.get(logical)
                       if info and info['bytes']==len(body) and info['sha256']==sha(body):copy_data(logical,body,info)
-                  else:need((source/'output'/name).read_bytes()==body,'IMMUTABLE_PUBLIC_SOURCE')
+                  else:need((capture_root/'output'/name).read_bytes()==body,'IMMUTABLE_PUBLIC_SOURCE')
               for name,body in entries.items():
                   if name.startswith('receipts/'):logical=name[9:];copy_data(logical,body,after[logical])
                   elif name.startswith('mutable/'):logical=name[8:];copy_data(logical,body,after[logical])
-              need(module.inventory(source)==after,'EXACT_OUTPUT_INVENTORY')
-              need(sci.source(source)['source_manifest_sha256']==code_before['source_manifest_sha256'],'SOURCE_UNCHANGED_BY_RESTORATION')
-              generation=json.loads((pages/'data/release-identity.json').read_bytes());need(generation==case['generation'] and generation['source_sha']==current,'GENUINE_GENERATION')
+              need(module.inventory(capture_root)==after,'EXACT_OUTPUT_INVENTORY')
+              need(sci.source(capture_root)['source_manifest_sha256']==capture_code['source_manifest_sha256'],'CAPTURE_SOURCE_UNCHANGED_BY_RESTORATION')
+              need(sci.source(source)['source_manifest_sha256']==code_before['source_manifest_sha256'],'DIAGNOSTIC_SOURCE_UNCHANGED')
+              generation=json.loads((pages/'data/release-identity.json').read_bytes());need(generation==case['generation'] and generation['source_sha']==capture_source,'GENUINE_GENERATION')
               stage='FULL_OFFLINE_GENERATION_VALIDATION';guard()
               validate="import contextlib,json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);import diagnostic_network_guard as guard;guard.install();import phase2_capture\nwith contextlib.redirect_stdout(sys.stderr): g=phase2_capture.validate_generation(Path(sys.argv[2]))\nprint(json.dumps({'generation_sha256':g['generation_sha256']}))"
               env=clear_tokens(os.environ)
               with (work/'VALIDATION.json').open('wb') as value,(work/'private-validation.log').open('wb') as log:
-                  checked=subprocess.run([sys.executable,'-P','-c',validate,str(source/'tools'),str(source)],env=env,stdin=subprocess.DEVNULL,stdout=value,stderr=log,timeout=min(600,left()))
+                  checked=subprocess.run([sys.executable,'-P','-c',validate,str(capture_root/'tools'),str(capture_root)],env=env,stdin=subprocess.DEVNULL,stdout=value,stderr=log,timeout=min(600,left()))
               need(checked.returncode==0,'FULL_GENERATION_VALIDATOR_REJECTED')
               validated=load(work/'VALIDATION.json',65536);need(validated=={'generation_sha256':generation['generation_sha256']},'FULL_VALIDATION_IDENTITY')
+              aggregate.update(source=capture_source,diagnostic_source=current,capture_source=capture_source,diagnostic_manifest_sha256=ci['source_manifest_sha256'],capture_manifest_sha256=capture_ci['source_manifest_sha256'],new_source_ci_run_id=ci['run_id'],old_source_ci_run_id=capture_ci['run_id'],new_source_ci_seal_sha256=ci['seal_sha256'],new_source_ci_environment_sha256=ci['environment_sha256'],old_source_ci_environment_sha256=capture_ci['environment_sha256'],new_source_ci_verification_sha256=sha(canonical(ci)),old_source_ci_verification_sha256=sha(canonical(capture_ci)),old_source_ci_seal_sha256=capture_ci['seal_sha256'],source_compatibility_sha256=compatibility['comparison_sha256'],diagnostic_source_differences=compatibility['difference_count'],generation_sha256=generation['generation_sha256'],report_sha256=generation['selection_report_id'],browser_script_sha256=BROWSER,validation='PASS_FULL_SAVED_GENERATION')
               stage='ACTUAL_BROWSER';guard()
               browser_env=clear_tokens(os.environ)
               browser_env['NODE_PATH']=str(Path(os.environ['RUNNER_TEMP'])/'nfl-browser-dependencies/node_modules')
@@ -2469,17 +2533,21 @@ jobs:
               command=['node',str(source/'tools/release_browser.cjs'),'--manifest',str(case_dir/'RELEASE_CASE_MANIFEST.json'),'--artifact-root',str(case_dir),'--root',str(pages),'--result',str(result),'--profile-root',str(work/'profiles')]
               with (work/'private-browser.log').open('wb') as log:
                   checked=subprocess.run(command,env=browser_env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,timeout=min(440,left()))
+              aggregate['browser_exit_code']=checked.returncode if 0<=checked.returncode<=255 else 256
+              if checked.returncode:aggregate.update(private_browser_failure(work/'private-browser.log'))
               need(checked.returncode==0,'BROWSER_CHECKS_REJECTED')
               actual=load(result,128*1024)
-              need(actual.get('status') in ('PASS_EXECUTED_ACTUAL_CHECKS','PASS_EXECUTED_CHECKS_WITH_EXPLICIT_UNAVAILABLE_CASES') and actual['source']==current and actual['generation_sha256']==generation['generation_sha256'] and actual['report_id']==generation['selection_report_id'] and actual.get('playwright_routing_installed') is False and actual.get('provider_requests')==0,'ACTUAL_BROWSER_RESULT')
+              need(actual.get('status') in ('PASS_EXECUTED_ACTUAL_CHECKS','PASS_EXECUTED_CHECKS_WITH_EXPLICIT_UNAVAILABLE_CASES') and actual['source']==capture_source and actual['generation_sha256']==generation['generation_sha256'] and actual['report_id']==generation['selection_report_id'] and actual.get('playwright_routing_installed') is False and actual.get('provider_requests')==0,'ACTUAL_BROWSER_RESULT')
+              need(actual.get('diagnostic_source')==current and actual.get('instrumentation_sha256')==BROWSER,'ACTUAL_BROWSER_INSTRUMENTATION')
               contexts=actual['contexts'];need([c['width'] for c in contexts]==[1280,390,320] and all(c['status']=='PASS' for c in contexts),'COMPLETE_BROWSER_CONTEXTS')
-              aggregate.update(status=actual['status'],source=current,case_run_id=approval['case_run_id'],artifact_id=approval['artifact_id'],artifact_sha256=approval['artifact_sha256'],tar_sha256=approval['tar_sha256'],generation_sha256=generation['generation_sha256'],report_sha256=generation['selection_report_id'],browser_script_sha256=BROWSER,private_report_sha256=sha(result.read_bytes()),validation='PASS_FULL_SAVED_GENERATION',viewports=[c['width'] for c in contexts],category_source_side_cases=len(contexts[0]['category_source_side_controls']),saved_ticket_count=sum(c['paper']['saved_ticket_count'] for c in contexts),unavailable_case_count=len(actual['unavailable']),playwright_version=actual['browser']['playwright'],chrome_version=actual['browser']['chrome_version'],physical_device=False)
+              aggregate.update(status=actual['status'],source=capture_source,diagnostic_source=current,capture_source=capture_source,diagnostic_manifest_sha256=ci['source_manifest_sha256'],capture_manifest_sha256=capture_ci['source_manifest_sha256'],new_source_ci_run_id=ci['run_id'],old_source_ci_run_id=capture_ci['run_id'],new_source_ci_seal_sha256=ci['seal_sha256'],new_source_ci_environment_sha256=ci['environment_sha256'],old_source_ci_environment_sha256=capture_ci['environment_sha256'],new_source_ci_verification_sha256=sha(canonical(ci)),old_source_ci_verification_sha256=sha(canonical(capture_ci)),old_source_ci_seal_sha256=capture_ci['seal_sha256'],source_compatibility_sha256=compatibility['comparison_sha256'],diagnostic_source_differences=compatibility['difference_count'],case_run_id=approval['case_run_id'],artifact_id=approval['artifact_id'],artifact_sha256=approval['artifact_sha256'],tar_sha256=approval['tar_sha256'],generation_sha256=generation['generation_sha256'],report_sha256=generation['selection_report_id'],browser_script_sha256=BROWSER,private_report_sha256=sha(result.read_bytes()),validation='PASS_FULL_SAVED_GENERATION',viewports=[c['width'] for c in contexts],category_source_side_cases=len(contexts[0]['category_source_side_controls']),saved_ticket_count=sum(c['paper']['saved_ticket_count'] for c in contexts),unavailable_case_count=len(actual['unavailable']),playwright_version=actual['browser']['playwright'],chrome_version=actual['browser']['chrome_version'],physical_device=False)
               aggregate.update(saved_rows=contexts[0]['independent_saved_rows']['complete_saved_rows'],supporting_groups=contexts[0]['independent_saved_rows']['complete_context_groups_reconciled'],populated_cache_contexts=sum(bool(c['ordinary_cache']['populated_storage']) for c in contexts),strategy_ui_contexts=sum(item['status']=='PASS_ACTUAL_STRATEGY_UI' for c in contexts for item in c['strategy_ui']))
               need(aggregate['category_source_side_cases']==60 and aggregate['playwright_version']=='1.62.1' and re.fullmatch('[0-9.]{1,80}',aggregate['chrome_version']),'AGGREGATE_BROWSER_CONTRACT')
 
           try:
               execute()
           except BaseException as error:
+              if stage=='ACTUAL_BROWSER':aggregate.update(private_browser_failure(work/'private-browser.log'),browser_reader_code=browser_reader_code(error))
               aggregate.update(status='FAIL',rejected_stage=stage,failure_class=type(error).__name__)
           finally:
               raw=canonical(aggregate)+b'\n';need(len(raw)<=8192,'AGGREGATE_BOUND')
@@ -2497,14 +2565,23 @@ jobs:
           from pathlib import Path
           p=Path(os.environ['RUNNER_TEMP'])/('nfl-generated-browser-'+os.environ['GITHUB_RUN_ID'])/'report/BROWSER_ACCEPTANCE.json'
           fallback={'schema_version':'genuine-generated-browser-acceptance-v1','status':'FAIL','rejected_stage':'SETUP_OR_SOURCE','resource_verdict':'UNKNOWN','operating_qualification':'NOT_ESTABLISHED','provider_calls':0,'deployment':False}
-          allowed=set('schema_version status resource_verdict operating_qualification provider_calls deployment source case_run_id artifact_id artifact_sha256 tar_sha256 generation_sha256 report_sha256 browser_script_sha256 private_report_sha256 validation viewports category_source_side_cases saved_ticket_count unavailable_case_count playwright_version chrome_version physical_device saved_rows supporting_groups populated_cache_contexts strategy_ui_contexts rejected_stage failure_class'.split())
+          allowed=set('schema_version browser_failure_stage browser_failure_kind browser_failure_viewport browser_reader_code browser_exit_code diagnostic_source capture_source diagnostic_manifest_sha256 capture_manifest_sha256 new_source_ci_run_id old_source_ci_run_id new_source_ci_seal_sha256 old_source_ci_seal_sha256 new_source_ci_environment_sha256 old_source_ci_environment_sha256 new_source_ci_verification_sha256 old_source_ci_verification_sha256 source_compatibility_sha256 diagnostic_source_differences status resource_verdict operating_qualification provider_calls deployment source case_run_id artifact_id artifact_sha256 tar_sha256 generation_sha256 report_sha256 browser_script_sha256 private_report_sha256 validation viewports category_source_side_cases saved_ticket_count unavailable_case_count playwright_version chrome_version physical_device saved_rows supporting_groups populated_cache_contexts strategy_ui_contexts rejected_stage failure_class'.split())
           try:
               assert p.is_file() and not p.is_symlink() and p.stat().st_size<=8192
               value=json.loads(p.read_bytes());assert isinstance(value,dict) and set(value)<=allowed
               assert value['schema_version']==fallback['schema_version'] and value['resource_verdict']=='UNKNOWN' and value['operating_qualification']=='NOT_ESTABLISHED' and value['provider_calls']==0 and value['deployment'] is False
               for key,item in value.items():
                   if key.endswith('sha256'):assert isinstance(item,str) and re.fullmatch('[0-9a-f]{64}',item)
-                  elif key=='source':assert item==os.environ['GITHUB_SHA']
+                  elif key=='source':
+                      assert item in (os.environ['GITHUB_SHA'],'f1303ee9dfac61fb47fb6820eabd1d04b36f173c')
+                      if item!=os.environ['GITHUB_SHA']:assert value.get('capture_source')==item and value.get('diagnostic_source')==os.environ['GITHUB_SHA'] and value.get('capture_manifest_sha256')=='e5c510aa05d697d3c7f9f77df1600e24ffae4114f846217d04ad509214a43c1a' and value.get('old_source_ci_run_id')==40091905641 and value.get('old_source_ci_seal_sha256')=='d15f4084d2e7aad9e7c2282c2864684469106873bd6e8a40c4e53b14d0f88fee'
+                  elif key=='browser_failure_stage':assert item in ["B001","B002","B003","B004","B005","B006","B007","B008","B009","B010","B011","B012","B013","B014","B015","B016","B017","B018","B019","B020","B021","B022","B023","B024","B025","B026","B027","B028","B029","UNAVAILABLE","INVALID"]
+                  elif key=='browser_failure_kind':assert item in ["ASSERTION","TIMEOUT","TYPE","REFERENCE","SYNTAX","RANGE","ERROR","OTHER","MODULE_NOT_FOUND","ENOENT","EACCES","ENOSPC","ENOMEM","FILESYSTEM_GUARD","BROWSER_DEADLINE","UNAVAILABLE","INVALID"]
+                  elif key=='browser_failure_viewport':assert type(item) is int and item in (0,1280,390,320)
+                  elif key=='browser_reader_code':assert item in ('FILESYSTEM_HEADROOM','PREINSTALLED_CHROME_UNAVAILABLE','BROWSER_CHECKS_REJECTED','ACTUAL_BROWSER_RESULT','ACTUAL_PUBLIC_BROWSER_REJECTED','ACTUAL_PUBLIC_BROWSER_RESULT','COMPLETE_BROWSER_CONTEXTS','AGGREGATE_BROWSER_CONTRACT','ACTUAL_BROWSER_INSTRUMENTATION','BOUNDED_JSON','CHILD_TIMEOUT','UNCLASSIFIED')
+                  elif key=='browser_exit_code':assert type(item) is int and 0<=item<=256
+                  elif key=='diagnostic_source':assert item==os.environ['GITHUB_SHA']
+                  elif key=='capture_source':assert item in (os.environ['GITHUB_SHA'],'f1303ee9dfac61fb47fb6820eabd1d04b36f173c') and item==value['source']
                   elif key=='viewports':assert item==[1280,390,320]
                   elif type(item) is str:assert re.fullmatch('[A-Za-z0-9_.-]{1,100}',item)
                   else:assert type(item) in (int,bool) and (type(item) is bool or 0<=item<=100000000000000000000)
@@ -2515,7 +2592,6 @@ jobs:
           print('CODEX_RESULT='+raw.decode().strip())
           with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
               f.write('Generated-artifact browser acceptance: '+value['status']+'. Resource and operating qualification remain unestablished.\n')
-
           PY
       - name: Retain only sanitized aggregate acceptance evidence
         if: ${{ always() }}
@@ -2595,7 +2671,7 @@ jobs:
           REPO='NickNicky19/nicks-expert-nfl-picks'
           BRANCH='upgrade/phase2-reproducible-comparison'
           WORKFLOW='.github/workflows/prepare-diagnostic-seed.yml'
-          BROWSER='f00a1f086d45958b04b3752bad0ea9bd447b4fccc508bfaa648ca33338b99064'
+          BROWSER='d88d911a3ee10741cae7a01e63a15fc824647e7138afe2bc6fff7bf3bc7f543f'
           MIB=1024**2; GIB=1024**3; CAP=128*MIB
           stage='INVOCATION'; aggregate={'schema_version':'genuine-generated-browser-acceptance-v1','status':'FAIL','resource_verdict':'UNKNOWN','operating_qualification':'NOT_ESTABLISHED','provider_calls':0,'deployment':False}
           source=Path(os.environ['GITHUB_WORKSPACE'])/'source'
@@ -2655,6 +2731,34 @@ jobs:
                           if not b:break
                           n+=len(b);need(n<=expected['tar_bytes'],'TAR_STREAM_BOUND');chunks.append(b)
                   raw=b''.join(chunks);need(n==expected['tar_bytes'] and sha(raw)==expected['tar_sha256'],'TAR_TRANSPORT_HASH');return raw
+
+          BROWSER_DIAGNOSTIC_PHASES=frozenset(["B001","B002","B003","B004","B005","B006","B007","B008","B009","B010","B011","B012","B013","B014","B015","B016","B017","B018","B019","B020","B021","B022","B023","B024","B025","B026","B027","B028","B029"])
+          BROWSER_DIAGNOSTIC_KINDS=frozenset(["ASSERTION","TIMEOUT","TYPE","REFERENCE","SYNTAX","RANGE","ERROR","OTHER","MODULE_NOT_FOUND","ENOENT","EACCES","ENOSPC","ENOMEM","FILESYSTEM_GUARD","BROWSER_DEADLINE"])
+          BROWSER_READER_CODES=frozenset(('FILESYSTEM_HEADROOM','PREINSTALLED_CHROME_UNAVAILABLE','BROWSER_CHECKS_REJECTED','ACTUAL_BROWSER_RESULT','ACTUAL_PUBLIC_BROWSER_REJECTED','ACTUAL_PUBLIC_BROWSER_RESULT','COMPLETE_BROWSER_CONTEXTS','AGGREGATE_BROWSER_CONTRACT','ACTUAL_BROWSER_INSTRUMENTATION','BOUNDED_JSON','CHILD_TIMEOUT','UNCLASSIFIED'))
+          def parse_browser_failure(raw):
+              unavailable={'browser_failure_stage':'UNAVAILABLE','browser_failure_kind':'UNAVAILABLE','browser_failure_viewport':0}
+              invalid={'browser_failure_stage':'INVALID','browser_failure_kind':'INVALID','browser_failure_viewport':0}
+              if not raw:return unavailable
+              try:
+                  need(type(raw) is bytes and len(raw)<=1024**2,'PRIVATE_DIAGNOSTIC_BOUND')
+                  prefix=b'NFL_BROWSER_FAILURE_DIAGNOSTIC_V1='
+                  lines=[line[len(prefix):] for line in raw.splitlines() if line.startswith(prefix)]
+                  if not lines:return unavailable
+                  need(len(lines)==1 and len(lines[0])<=256,'ONE_BOUNDED_DIAGNOSTIC')
+                  value=json.loads(lines[0],object_pairs_hook=pairs)
+                  need(type(value) is dict and set(value)=={'schema_version','stage','kind','viewport'} and value['schema_version']=='release-browser-failure-diagnostic-v1','CLOSED_BROWSER_DIAGNOSTIC')
+                  need(value['stage'] in BROWSER_DIAGNOSTIC_PHASES and value['kind'] in BROWSER_DIAGNOSTIC_KINDS and type(value['viewport']) is int and value['viewport'] in (0,1280,390,320),'FIXED_BROWSER_DIAGNOSTIC_ENUMS')
+                  return {'browser_failure_stage':value['stage'],'browser_failure_kind':value['kind'],'browser_failure_viewport':value['viewport']}
+              except (ValueError,TypeError,KeyError,UnicodeError):return invalid
+          def private_browser_failure(path):
+              try:
+                  need(path.is_file() and not path.is_symlink() and path.stat().st_size<=1024**2,'PRIVATE_DIAGNOSTIC_FILE')
+                  return parse_browser_failure(path.read_bytes())
+              except (OSError,ValueError):return parse_browser_failure(b'')
+          def browser_reader_code(error):
+              if isinstance(error,subprocess.TimeoutExpired):return 'CHILD_TIMEOUT'
+              code=error.args[0] if isinstance(error,ValueError) and len(error.args)==1 and type(error.args[0]) is str else ''
+              return code if code in BROWSER_READER_CODES else 'UNCLASSIFIED'
 
           def execute():
               global stage,deadline,sci,recovery,initialized
@@ -2774,8 +2878,11 @@ jobs:
               command=['node',str(source/'tools/release_browser.cjs'),'--manifest',str(case_dir/'PUBLIC_DEPLOYMENT_REVIEW.json'),'--artifact-root',str(case_dir),'--root',str(pages),'--url',site,'--result',str(result),'--profile-root',str(work/'profiles')]
               with (work/'private-browser.log').open('wb') as log:
                   checked=subprocess.run(command,env=browser_env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,timeout=min(440,left()))
+              aggregate['browser_exit_code']=checked.returncode if 0<=checked.returncode<=255 else 256
+              if checked.returncode:aggregate.update(private_browser_failure(work/'private-browser.log'))
               need(checked.returncode==0,'ACTUAL_PUBLIC_BROWSER_REJECTED');actual=load(result,128*1024)
               need(actual.get('status') in ('PASS_EXECUTED_ACTUAL_CHECKS','PASS_EXECUTED_CHECKS_WITH_EXPLICIT_UNAVAILABLE_CASES') and actual['source']==runtime_source and actual['generation_sha256']==generation['generation_sha256'] and actual['report_id']==generation['selection_report_id'] and actual.get('playwright_routing_installed') is False and actual.get('provider_requests')==0 and actual.get('review_contract')=='public-deployment-review-v1','ACTUAL_PUBLIC_BROWSER_RESULT')
+              need(actual.get('diagnostic_source')==current and actual.get('instrumentation_sha256')==BROWSER,'ACTUAL_BROWSER_INSTRUMENTATION')
               contexts=actual['contexts'];need([c['width'] for c in contexts]==[1280,390,320] and all(c['status']=='PASS' for c in contexts),'COMPLETE_BROWSER_CONTEXTS')
               aggregate.update(status=actual['status'],source=current,hourly_run_id=approval['hourly_run_id'],runtime_source=runtime_source,runtime_data_commit=data_commit,artifact_id=approval['artifact_id'],artifact_sha256=approval['artifact_sha256'],tar_sha256=approval['tar_sha256'],generation_sha256=generation['generation_sha256'],report_sha256=generation['selection_report_id'],browser_script_sha256=BROWSER,private_report_sha256=sha(result.read_bytes()),validation='PASS_FULL_SAVED_GENERATION',viewports=[c['width'] for c in contexts],category_source_side_cases=len(contexts[0]['category_source_side_controls']),saved_ticket_count=sum(c['paper']['saved_ticket_count'] for c in contexts),unavailable_case_count=len(actual['unavailable']),playwright_version=actual['browser']['playwright'],chrome_version=actual['browser']['chrome_version'],physical_device=False,public_members_verified=len(members),target='ACTUAL_PUBLIC_URL')
               aggregate.update(saved_rows=contexts[0]['independent_saved_rows']['complete_saved_rows'],supporting_groups=contexts[0]['independent_saved_rows']['complete_context_groups_reconciled'],populated_cache_contexts=sum(bool(c['ordinary_cache']['populated_storage']) for c in contexts),strategy_ui_contexts=sum(item['status']=='PASS_ACTUAL_STRATEGY_UI' for c in contexts for item in c['strategy_ui']))
@@ -2784,6 +2891,7 @@ jobs:
           try:
               execute()
           except BaseException as error:
+              if stage=='ACTUAL_PUBLIC_BROWSER':aggregate.update(private_browser_failure(work/'private-browser.log'),browser_reader_code=browser_reader_code(error))
               aggregate.update(status='FAIL',rejected_stage=stage,failure_class=type(error).__name__)
           finally:
               raw=canonical(aggregate)+b'\n';need(len(raw)<=8192,'AGGREGATE_BOUND')
@@ -2801,7 +2909,7 @@ jobs:
           from pathlib import Path
           p=Path(os.environ['RUNNER_TEMP'])/('nfl-public-browser-'+os.environ['GITHUB_RUN_ID'])/'report/BROWSER_ACCEPTANCE.json'
           fallback={'schema_version':'genuine-generated-browser-acceptance-v1','status':'FAIL','rejected_stage':'SETUP_OR_SOURCE','resource_verdict':'UNKNOWN','operating_qualification':'NOT_ESTABLISHED','provider_calls':0,'deployment':False}
-          allowed=set('schema_version status resource_verdict operating_qualification provider_calls deployment source case_run_id hourly_run_id runtime_source runtime_data_commit public_members_verified target artifact_id artifact_sha256 tar_sha256 generation_sha256 report_sha256 browser_script_sha256 private_report_sha256 validation viewports category_source_side_cases saved_ticket_count unavailable_case_count playwright_version chrome_version physical_device saved_rows supporting_groups populated_cache_contexts strategy_ui_contexts rejected_stage failure_class'.split())
+          allowed=set('schema_version browser_failure_stage browser_failure_kind browser_failure_viewport browser_reader_code browser_exit_code diagnostic_source capture_source diagnostic_manifest_sha256 capture_manifest_sha256 new_source_ci_run_id old_source_ci_run_id new_source_ci_seal_sha256 old_source_ci_seal_sha256 new_source_ci_environment_sha256 old_source_ci_environment_sha256 new_source_ci_verification_sha256 old_source_ci_verification_sha256 source_compatibility_sha256 diagnostic_source_differences status resource_verdict operating_qualification provider_calls deployment source case_run_id hourly_run_id runtime_source runtime_data_commit public_members_verified target artifact_id artifact_sha256 tar_sha256 generation_sha256 report_sha256 browser_script_sha256 private_report_sha256 validation viewports category_source_side_cases saved_ticket_count unavailable_case_count playwright_version chrome_version physical_device saved_rows supporting_groups populated_cache_contexts strategy_ui_contexts rejected_stage failure_class'.split())
           try:
               assert p.is_file() and not p.is_symlink() and p.stat().st_size<=8192
               value=json.loads(p.read_bytes());assert isinstance(value,dict) and set(value)<=allowed
@@ -2810,6 +2918,13 @@ jobs:
                   if key.endswith('sha256'):assert isinstance(item,str) and re.fullmatch('[0-9a-f]{64}',item)
                   elif key=='source':assert item==os.environ['GITHUB_SHA']
                   elif key in ('runtime_source','runtime_data_commit'):assert isinstance(item,str) and re.fullmatch('[0-9a-f]{40}',item)
+                  elif key=='browser_failure_stage':assert item in ["B001","B002","B003","B004","B005","B006","B007","B008","B009","B010","B011","B012","B013","B014","B015","B016","B017","B018","B019","B020","B021","B022","B023","B024","B025","B026","B027","B028","B029","UNAVAILABLE","INVALID"]
+                  elif key=='browser_failure_kind':assert item in ["ASSERTION","TIMEOUT","TYPE","REFERENCE","SYNTAX","RANGE","ERROR","OTHER","MODULE_NOT_FOUND","ENOENT","EACCES","ENOSPC","ENOMEM","FILESYSTEM_GUARD","BROWSER_DEADLINE","UNAVAILABLE","INVALID"]
+                  elif key=='browser_failure_viewport':assert type(item) is int and item in (0,1280,390,320)
+                  elif key=='browser_reader_code':assert item in ('FILESYSTEM_HEADROOM','PREINSTALLED_CHROME_UNAVAILABLE','BROWSER_CHECKS_REJECTED','ACTUAL_BROWSER_RESULT','ACTUAL_PUBLIC_BROWSER_REJECTED','ACTUAL_PUBLIC_BROWSER_RESULT','COMPLETE_BROWSER_CONTEXTS','AGGREGATE_BROWSER_CONTRACT','ACTUAL_BROWSER_INSTRUMENTATION','BOUNDED_JSON','CHILD_TIMEOUT','UNCLASSIFIED')
+                  elif key=='browser_exit_code':assert type(item) is int and 0<=item<=256
+                  elif key=='diagnostic_source':assert item==os.environ['GITHUB_SHA']
+                  elif key=='capture_source':assert item in (os.environ['GITHUB_SHA'],'f1303ee9dfac61fb47fb6820eabd1d04b36f173c') and item==value['source']
                   elif key=='viewports':assert item==[1280,390,320]
                   elif type(item) is str:assert re.fullmatch('[A-Za-z0-9_.-]{1,100}',item)
                   else:assert type(item) in (int,bool) and (type(item) is bool or 0<=item<=100000000000000000000)
