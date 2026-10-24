@@ -218,12 +218,36 @@ function scopeAssets(kind) {
 }
 let variant = 'valid', transferred = 0;
 const requests = [];
+function fictionalWeeklyAssets(current) {
+  const hash=sha(encode(current)),identity=sha('FICTIONAL_WEEKLY_BROWSER_ONLY');
+  const player=current.players[0],game=current.games.find(g=>g.id===player.game_id);
+  const row={player_id:player.id,game_id:game.id,category:'rec',method_id:'FICTIONAL_BROWSER_CONTROL',
+    model_version:identity,procedure_version:identity,product:'point_mean',prediction_functional:'expected_mean',forecast_value:5.25,
+    horizon:'player_game',source_cutoff_utc:'2026-10-14T09:00:00Z',issued_at:'2026-10-14T08:00:00Z',
+    persistence_completed_at:'2026-10-14T08:01:00Z',kickoff_utc:game.kickoff,valid_until_utc:game.kickoff,
+    selection_sha256:identity,source_policy_sha256:identity,query_source_sha256:identity,first_prepared_at:'2026-10-14T10:00:00Z'};
+  const doc={schema_version:'weekly-adaptive-public-overlay-v1',registration_id:'weekly-adaptive-release-v1',
+    state:variant==='weekly-disabled'?'DISABLED_USE_R0':'PROVISIONAL',season:current.season,week:current.week,
+    canonical_board_sha256:hash,display_board_sha256:hash,board_contract_sha256:identity,
+    prepared_at:'2026-10-14T10:00:00Z',packaged_at:'2026-10-14T10:00:00Z',website_source_sha:'7'.repeat(40),
+    publication_review_sha256:identity,rows:variant==='weekly-disabled'?[]:[row],frozen_rows:[],fallback_counts:{}};
+  const body=encode(doc),pointer={schema_version:'weekly-adaptive-overlay-pointer-v1',path:'data/weekly-adaptive/'+sha(body)+'.json',
+    sha256:sha(body),bytes:body.length,display_board_sha256:variant==='weekly-wrong-board'?'0'.repeat(64):hash};
+  return {body,pointer};
+}
 const server = http.createServer((req, res) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
   requests.push(pathname);
   let bytes;
   if (!arg('--root')) {
-    if (pathname === '/data/week.json') bytes = encode(variant === 'scope-mixed-board' ? { ...week, generated_at: '2026-10-15T11:00:00Z' } : week);
+    if(pathname==='/data/weekly-adaptive-overlay.json'||pathname.startsWith('/data/weekly-adaptive/')){
+      if(!variant.startsWith('weekly-')||variant==='weekly-missing'){res.writeHead(404);res.end();return;}
+      const saved=fictionalWeeklyAssets(week);
+      if(pathname==='/data/weekly-adaptive-overlay.json')bytes=encode(saved.pointer);
+      else if(pathname==='/'+saved.pointer.path){bytes=Buffer.from(saved.body);if(variant==='weekly-corrupt')bytes[0]^=1;}
+      if(!bytes){res.writeHead(404);res.end();return;}
+    }
+    else if (pathname === '/data/week.json') bytes = encode(variant === 'scope-mixed-board' ? { ...week, generated_at: '2026-10-15T11:00:00Z' } : week);
     else if (variant.startsWith('scope-') && /^\/data\/(verification-scope|release-identity|health)\.json$/.test(pathname)) {
       bytes = scopeAssets(variant)[pathname.split('/').pop().replace('.json', '')];
     }
@@ -251,6 +275,53 @@ const server = http.createServer((req, res) => {
   res.writeHead(200, { ...(coding ? { 'Content-Encoding': 'gzip' } : {}), 'Content-Type': pathname.endsWith('.js') ? 'application/javascript' : pathname.endsWith('.css') ? 'text/css' : pathname.endsWith('.json') ? 'application/json' : 'text/html', 'Cache-Control': 'no-store' });
   res.end(bytes);
 });
+
+async function weeklyDisplayChecks(browser,origin) {
+  if(arg('--root'))return {status:'NOT_RUN_USE_ACTUAL_RELEASE_BROWSER_FOR_GENERATED_ROOT'};
+  const savedVariant=variant,savedWeek=week,savedFixture=fixture,results=[];
+  try{
+    week=fictionalWeek();fixture=gzipPublication(partitionedPublication(fictionalPublication('weekly-display')));
+    for(const width of [1280,390,320]){
+      const context=await browser.newContext({viewport:{width,height:width===390?844:900},serviceWorkers:'block'});
+      await context.route('**/*',route=>route.request().url().startsWith(origin+'/')?route.continue():route.fulfill({status:200,contentType:'application/json',body:route.request().url().includes('/stats')?'[]':'{"events":[]}'}));
+      const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
+      try{
+        let originalBoard=null,originalPicks=null,originalGrade=null;
+        const mine='[{"pid":"fixture-0","key":"rec","dir":"over","line":4.5,"season":2026,"week":6,"at":1}]';
+        for(const state of ['weekly-valid','weekly-missing','weekly-corrupt','weekly-wrong-board','weekly-disabled']){
+          variant=state;if(state==='weekly-valid')await page.goto(origin+'/#/props');else await page.reload();
+          await page.waitForFunction(()=>S.data&&S.weeklyOverlayReady&&typeof WeeklyAdaptiveOverlay?.load==='function');
+          if(state==='weekly-valid'||state==='weekly-disabled')await page.waitForFunction(()=>S.weeklyOverlay!==null);
+          else assert.equal(await page.evaluate(async()=>await WeeklyAdaptiveOverlay.load(S.data,S.weeklyOverlayBoardHash)),null);
+          if(state==='weekly-valid')await page.evaluate(bytes=>localStorage.setItem('nflprops.mine',bytes),mine);
+          const actual=await page.evaluate(()=>{
+            const p=S.byId['fixture-0'],prop=p.props.find(v=>v.key==='rec'),selected=selectedPropForecast(p,'rec');
+            const template=document.createElement('template');template.innerHTML=catCard(p,prop);
+            return {selected,primary:template.content.querySelector('[data-weekly-primary]')?.textContent||null,
+              component_text:template.content.textContent,visible:document.querySelectorAll('[data-weekly-primary]').length,
+              board:JSON.stringify(S.data),picks:JSON.stringify(S.data.picks),grade:JSON.stringify(propStatus(p,'rec',prop.line,'over')),
+              mine:localStorage.getItem('nflprops.mine'),state:S.weeklyOverlay?.state||null};
+          });
+          if(state==='weekly-valid'){
+            assert.equal(actual.selected.value,5.25);assert.match(actual.primary,/Frozen provisional mean forecast\s*5\.25/);
+            assert.match(actual.component_text,/Current reference forecast/);assert.match(actual.component_text,/Lines, leans, ranking and saved selections use the reference model/);
+            assert.ok(actual.visible>0,'Actual Props includes selected primary chip');
+            originalBoard=actual.board;originalPicks=actual.picks;originalGrade=actual.grade;
+          }else{
+            assert.equal(actual.selected,null);assert.equal(actual.primary,null);assert.equal(actual.visible,0);
+            assert.equal(actual.state,state==='weekly-disabled'?'DISABLED_USE_R0':null);
+          }
+          assert.equal(actual.board,originalBoard);assert.equal(actual.picks,originalPicks);assert.equal(actual.grade,originalGrade);
+          assert.equal(actual.mine,mine);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth)<=width+1);
+          results.push({width,state,selected_rows:state==='weekly-valid'?1:0,reference_and_saved_results_unchanged:true});
+        }
+        assert.deepEqual(errors,[]);
+      }finally{await context.close();}
+    }
+    return {status:'PASS_FICTIONAL_OPTIONAL_DISPLAY_CONTROLS',cases:results,provider_requests:0,
+      qualified_selected_feed:false,disclosure:'Fictional consumer controls, not production forecast or predictive evidence.'};
+  }finally{variant=savedVariant;week=savedWeek;fixture=savedFixture;}
+}
 
 async function presentationChecks(browser, origin, width) {
   // Reuse the real application and normal HTTP reload path with fictional,
@@ -1037,6 +1108,8 @@ async function paperHistoricalAsyncChecks(browser, origin) {
   const measurements = [];
   const presentation = [];
   try {
+    const weekly=['--modern-only','--paper-only','--paper-readability-only','--paper-async-only'].some(flag=>args.includes(flag))?null:await weeklyDisplayChecks(browser,origin);
+    if(args.includes('--weekly-only')){console.log(JSON.stringify({weekly,scope:'FOCUSED_FICTIONAL_WEEKLY_DISPLAY_UI_ONLY',app_sha256:sha(fs.readFileSync(path.join(staticRoot,'app.js'))),performance_claim:false},null,2));return;}
     const modern = ['--paper-only','--paper-readability-only','--paper-async-only'].some(flag=>args.includes(flag)) ? null : await modernAccuracyChecks(browser, origin);
     if (args.includes('--modern-only')) { console.log(JSON.stringify({ modern, app_sha256: sha(fs.readFileSync(path.join(staticRoot, 'app.js'))), scope: 'FOCUSED_MODERN_ACCURACY_JOINT_UI_ONLY', performance_claim: false }, null, 2)); return; }
     const paperReadability = args.includes('--paper-async-only') ? null : await paperSelectReadabilityChecks(browser, origin);
@@ -1232,7 +1305,7 @@ async function paperHistoricalAsyncChecks(browser, origin) {
       }
     }
     const hosting = !arg('--root') ? await archiveAndDecoderChecks(browser, origin) : null;
-    const result = { hosting, modern, paperReadability, paperAsync, paper, fixture: arg('--root') ? 'AUTHORIZED_SAVED_DATA_ISOLATED_ROOT' : 'FICTIONAL_ONLY', public_deployment_test: false,
+    const result = { hosting, weekly, modern, paperReadability, paperAsync, paper, fixture: arg('--root') ? 'AUTHORIZED_SAVED_DATA_ISOLATED_ROOT' : 'FICTIONAL_ONLY', public_deployment_test: false,
       external_network_requests: 0, app_sha256: sha(fs.readFileSync(path.join(staticRoot, 'app.js'))),
       html_sha256: sha(fs.readFileSync(path.join(staticRoot, 'index.html'))), measurements, presentation, requests: [...new Set(requests)], assertions: 'passed' };
     if (evidence) fs.writeFileSync(path.join(evidence, 'grading-browser-results.json'), JSON.stringify(result, null, 2) + '\n');

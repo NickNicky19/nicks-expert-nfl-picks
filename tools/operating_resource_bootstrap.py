@@ -23,7 +23,9 @@ WORKFLOW = '.github/workflows/operating-diagnostic.yml'
 CAMPAIGN = 'NFL-WEB-OPERATING-SEED-THREE-20261020-B3'
 GENUINE_WORKFLOW = '.github/workflows/prepare-diagnostic-seed.yml'
 GENUINE_CONFIRMATION = 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024'
-GENUINE_DRIVER = '2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf'
+GENUINE_DRIVER = '918ad731a3c1a299f8b5d3286f0fd8f1de79615127163a517722240f6bc53050'
+LEGACY_GENUINE_DRIVER = '2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf'
+GENUINE_DRIVER_BYTES = {LEGACY_GENUINE_DRIVER: 30854, GENUINE_DRIVER: 34202}
 LIFETIME_BACKEND = 'SYSTEMD_INVOCATION_CACHED_KERNEL_MEMORY_PEAK_V1'
 P5 = '441f0ccaa1b274708419643d993896b5ff6f2c4118e0016719c80a1746289328'
 RESOURCE = 'e02bc3926f709029f038bd2bd275247e8738ace9fb1645dfb67eff63d804d292'
@@ -44,7 +46,10 @@ CONTINUED_SEED_INTEGRITY = 'ed5b6773c3d4e642bf4346aa2b9de89a2b580a1f34e97bddc617
 FINISHED22_SEED_INTEGRITY = '636b3cd2a966346df02ad30c516dc805e40ae082e1b4f5e7b757162c29e6459f'
 PREPARATION22_RETRIEVAL_INTEGRITY = '08a9fc62c6707d7385ac8388df8325bd9588f95caad3fdfc48762fdfa4b200a4'
 PREPARATION24_LIFETIME_INTEGRITY = '3c68e0b8e88b458dc5ecb0dce1376160e668e1941e3e2302bce3e35a38a08f77'
+CURRENT_MAIN_WEEKLY_INTEGRITY = 'a44be6d81cca14e6830cafe4f3811463e5854c05e828545aeb085bcb05ac3767'
 SEED_CONTRACTS = {
+    CURRENT_MAIN_WEEKLY_INTEGRITY: frozenset(SEED_NAMES | {
+        'seed_checkpoint_frontier.py', 'source_ci.py', 'operating_seed_transport.py'}),
     PREPARATION24_LIFETIME_INTEGRITY: frozenset(SEED_NAMES | {
         'seed_checkpoint_frontier.py', 'source_ci.py', 'operating_seed_transport.py'}),
     PREPARATION22_RETRIEVAL_INTEGRITY: frozenset(SEED_NAMES | {
@@ -187,14 +192,14 @@ def genuine_driver(code, commit):
     if any(row.strip() and not row.startswith(b'          ') for row in block.splitlines()):
         raise RuntimeError('Genuine source indentation changed')
     value = b''.join((row[10:] if row.startswith(b'          ') else b'') + b'\n' for row in block.splitlines())
-    if len(value) != 30854 or sha(value) != GENUINE_DRIVER:
+    if GENUINE_DRIVER_BYTES.get(sha(value)) != len(value):
         raise RuntimeError('Unknown genuine controller bytes')
     return value
 
 
 def genuine_data_head(code, source):
     head = git(code, 'rev-parse', 'HEAD').decode().strip()
-    mutable = lambda n: n != 'data/verification/2026/w06/dcf4bce0b2d3a162bdea39217eb6ae0ee2545e3895cce129338afc715a5e8e2a.json.gz' and n.startswith(('output/data/', 'data/cache/', 'data/forward/', 'data/history/', 'data/verification/', 'data/shadow/', 'data/offers/', 'data/outcomes/')) and n.endswith(('.json', '.json.gz'))
+    mutable = lambda n: bool(re.fullmatch(r'data/weekly-adaptive-audit/[0-9a-f]{64}\.json',n)) or n != 'data/verification/2026/w06/dcf4bce0b2d3a162bdea39217eb6ae0ee2545e3895cce129338afc715a5e8e2a.json.gz' and n.startswith(('output/data/', 'data/cache/', 'data/forward/', 'data/history/', 'data/verification/', 'data/shadow/', 'data/offers/', 'data/outcomes/')) and n.endswith(('.json', '.json.gz'))
     if head != source:
         if git(code, 'show', '-s', '--format=%P', head).decode().strip() != source:
             raise RuntimeError('Genuine local result is not one direct data descendant')
@@ -577,7 +582,8 @@ def genuine_result(args):
             or regular_bytes(out/'FINAL.json',65536)!=raw):
         raise RuntimeError('Genuine FINAL/tar changed during verification')
     return {'sha256':sha(raw),'bytes':len(raw),'tar_sha256':digest.hexdigest(),'tar_bytes':size,
-            'source':value['source'],'root_run_id':args.run_id,'driver_sha256':GENUINE_DRIVER}
+            'source':value['source'],'root_run_id':args.run_id,
+            'driver_sha256':sha(genuine_driver(args.code, os.environ['GITHUB_SHA']))}
 
 
 def read_unit_lifetime(args):

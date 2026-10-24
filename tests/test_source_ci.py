@@ -164,6 +164,38 @@ class GateTests(unittest.TestCase):
         self.assertIn("NOT_GENERATION_OR_OPERATING", self.verify()["claim"])
         self.assertNotIn(str(path), str(self.verify()))
 
+    def test_only_exact_weekly_audit_content_addressed_json_is_mutable(self):
+        valid = "data/weekly-adaptive-audit/" + "a" * 64 + ".json"
+        self.assertTrue(ci.mutable(valid))
+        for name in (valid + ".gz", valid + "/code.py", valid.replace("a" * 64, "A" * 64),
+                     valid.replace(".json", ".py"), valid.replace("a" * 64, "policy"),
+                     valid.replace("a" * 64, "nested/" + "a" * 64),
+                     "data/weekly-adaptive-input/approved-input.json", "tools/weekly_adaptive_overlay.py",
+                     "config/weekly-adaptive.json", ci.FIXTURE):
+            with self.subTest(path=name):
+                self.assertFalse(ci.mutable(name))
+
+    def test_new_weekly_audit_is_data_not_source_or_generation_qualification(self):
+        raw = ci.canonical({"schema_version": "fictional-audit-control", "qualified": False})
+        path = self.root / "data/weekly-adaptive-audit" / (ci.sha(raw) + ".json")
+        path.parent.mkdir(parents=True); path.write_bytes(raw); self.commit()
+        result = self.verify()
+        self.assertEqual(result["source_manifest_sha256"], self.source["source_manifest_sha256"])
+        self.assertNotIn(path.relative_to(self.root).as_posix(), {f["path"] for f in ci.source(self.root)["files"]})
+        self.assertIn("NOT_GENERATION_OR_OPERATING", result["claim"])
+
+    def test_weekly_noncanonical_json_and_executable_remain_source_dependencies(self):
+        for name in ("data/weekly-adaptive-audit/policy.json", "data/weekly-adaptive-audit/" + "a" * 64 + ".py",
+                     "data/weekly-adaptive-audit/nested/" + "a" * 64 + ".json",
+                     "data/weekly-adaptive-input/approved-input.json"):
+            with self.subTest(path=name):
+                path = self.root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text("{}")
+                with self.assertRaises(ci.Rejected): self.verify()
+                self.commit()
+                with self.assertRaises(ci.Rejected): self.verify()
+                self.assertIn(name, {f["path"] for f in ci.source(self.root)["files"]})
+                path.unlink(); self.commit()
+
     def test_newest_compatible_failed_pending_or_cancelled_run_blocks_old_success(self):
         for status, conclusion in (("completed", "failure"), ("in_progress", None), ("completed", "cancelled")):
             with self.subTest(status=status, conclusion=conclusion):

@@ -3457,5 +3457,86 @@ class RetainedRankedTreeTests(unittest.TestCase):
                     with strategies._retained_source(): self.fail("Corrupt tree supplied executable source")
 
 
+class WeeklyPagesGraphTests(unittest.TestCase):
+    """Actual overlay validators and Pages copy; no provider or qualification claim."""
+
+    def fixture(self, directory):
+        import weekly_adaptive_overlay as weekly
+        from test_weekly_adaptive_overlay import fixture
+        root = Path(directory) / "root"; output = root / "output"
+        output.mkdir(parents=True)
+        board, selected, review = fixture()
+        def save(path, value):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(weekly.canonical(value))
+        save(output / "data/week.json", board)
+        doc = weekly.prepare_overlay(board, weekly.digest(board), selected, review,
+            website_source_sha="f" * 40, prepared_at="2026-10-24T10:02:00Z")
+        pointer = weekly.write_public(doc, output / "data", save)
+        (output / "weekly-adaptive-overlay.js").write_text("// Fictional overlay presentation.\n")
+        return root, weekly, doc, pointer, save
+
+    def test_pages_copies_exact_validated_graph_and_preserves_older_originals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, weekly, doc, pointer, _ = self.fixture(directory)
+            output = root / "output"; before = (output / "data/week.json").read_bytes()
+            old_bytes = b'{"fictional_old_public_body":true}'
+            old_path = output / "data/weekly-adaptive" / (hashlib.sha256(old_bytes).hexdigest() + ".json")
+            old_path.write_bytes(old_bytes)
+            expected = weekly.stage_assets(root)
+            stage = phase2_capture.stage_pages(root, Path(directory) / "pages")
+            self.assertEqual(weekly.validate_public_root(stage), expected)
+            for name in expected:
+                self.assertEqual((stage / name).read_bytes(), (output / name).read_bytes())
+            self.assertEqual((stage / "data/week.json").read_bytes(), before)
+            self.assertFalse((stage / old_path.relative_to(output)).exists())
+            self.assertEqual(old_path.read_bytes(), old_bytes)
+            self.assertEqual(weekly.read_public(stage)[1], doc)
+            self.assertEqual(list((stage / "data/weekly-adaptive").glob("*.json")), [stage / pointer["path"]])
+
+    def test_missing_corrupt_oversized_and_self_consistent_wrong_context_never_fallback(self):
+        for mutation in ("missing_body", "corrupt_body", "missing_script", "wrong_source", "wrong_week", "wrong_pointer_board", "oversized_body", "unclassified_body"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root, weekly, doc, pointer, save = self.fixture(directory)
+                output = root / "output"; body = output / pointer["path"]
+                if mutation == "missing_body": body.unlink()
+                elif mutation == "corrupt_body": body.write_bytes(b"X" + body.read_bytes()[1:])
+                elif mutation == "missing_script": (output / "weekly-adaptive-overlay.js").unlink()
+                elif mutation in ("wrong_source", "wrong_week"):
+                    doc["website_source_sha" if mutation == "wrong_source" else "week"] = "unknown" if mutation == "wrong_source" else 9
+                    raw = weekly.canonical(doc); checksum = hashlib.sha256(raw).hexdigest()
+                    save(output / "data/weekly-adaptive" / (checksum + ".json"), doc)
+                    pointer.update(path="data/weekly-adaptive/" + checksum + ".json", sha256=checksum, bytes=len(raw))
+                    save(output / "data/weekly-adaptive-overlay.json", pointer)
+                elif mutation == "wrong_pointer_board":
+                    pointer["display_board_sha256"] = "0" * 64
+                    save(output / "data/weekly-adaptive-overlay.json", pointer)
+                elif mutation == "oversized_body":
+                    with body.open("r+b") as handle: handle.truncate(weekly.MAX_BYTES + 1)
+                    pointer["bytes"] = weekly.MAX_BYTES + 1
+                    save(output / "data/weekly-adaptive-overlay.json", pointer)
+                else:
+                    (output / "data/weekly-adaptive/private.json").write_text("{}")
+                with self.assertRaises(IntegrityError):
+                    phase2_capture.stage_pages(root, Path(directory) / "rejected")
+
+    def test_source_and_destination_mutation_are_rechecked_after_actual_copy(self):
+        for mutation in ("source_script_same_size_restored_mtime", "destination_body"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root, _, _, pointer, _ = self.fixture(directory)
+                output = root / "output"; actual_copy = shutil.copyfile; changed = []
+                def race(source, target):
+                    value = actual_copy(source, target)
+                    if not changed and Path(source).relative_to(output).as_posix() == pointer["path"]:
+                        changed.append(True)
+                        path = output / "weekly-adaptive-overlay.js" if mutation.startswith("source_") else Path(target)
+                        info = path.stat(); raw = path.read_bytes(); path.write_bytes(b"X" + raw[1:])
+                        os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+                    return value
+                with patch.object(phase2_capture.shutil, "copyfile", side_effect=race), self.assertRaises(IntegrityError):
+                    phase2_capture.stage_pages(root, Path(directory) / "raced")
+                self.assertEqual(changed, [True])
+
+
 if __name__ == "__main__":
     unittest.main()

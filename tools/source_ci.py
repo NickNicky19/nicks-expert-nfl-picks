@@ -145,7 +145,10 @@ def _history_guard(root):
 
 
 def mutable(name):
-    return name != FIXTURE and name.startswith(MUTABLE) and name.endswith((".json", ".json.gz"))
+    # One producer-validated, content-addressed evidence lane, not a general
+    # exclusion for weekly code, inputs, policies or arbitrary JSON filenames.
+    weekly_audit = re.fullmatch(r"data/weekly-adaptive-audit/[0-9a-f]{64}\.json", name) is not None
+    return name != FIXTURE and (weekly_audit or name.startswith(MUTABLE) and name.endswith((".json", ".json.gz")))
 
 
 def generated(name):

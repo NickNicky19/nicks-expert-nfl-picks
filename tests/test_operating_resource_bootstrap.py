@@ -160,7 +160,7 @@ class SourceClosure(unittest.TestCase):
 
     def test_latest_twelve_file_contract_binds_lifetime_helpers(self):
         value=self.check()
-        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.PREPARATION24_LIFETIME_INTEGRITY)
+        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.CURRENT_MAIN_WEEKLY_INTEGRITY)
         self.assertEqual(len(b.SEED_CONTRACTS[b.FINISHED22_SEED_INTEGRITY]),12)
 
     def test_retained_finished22_contract_uses_actual_5eb_source_bytes(self):
@@ -179,8 +179,9 @@ class SourceClosure(unittest.TestCase):
         value=self.check()
         self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.PREPARATION22_RETRIEVAL_INTEGRITY)
 
-    def test_only_five_exact_contracts_are_recognized(self):
+    def test_only_six_exact_contracts_are_recognized(self):
         self.assertEqual(set(b.SEED_CONTRACTS),{
+            b.CURRENT_MAIN_WEEKLY_INTEGRITY,
             b.PREPARATION24_LIFETIME_INTEGRITY,
             'bfb48f36d1db5b2980235238e1b869efb183f23095ff72cee33c1d88e84a3b26',
             'ed5b6773c3d4e642bf4346aa2b9de89a2b580a1f34e97bddc6172b068a388611',
@@ -412,9 +413,22 @@ class GenuineRoute(unittest.TestCase):
         self.assertFalse(b.arguments(raw).genuine_case)
     def test_actual_reviewed_inline_source_bytes_and_changed_source_rejected(self):
         commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
-        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),30854);self.assertEqual(b.sha(raw),b.GENUINE_DRIVER)
+        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),34202);self.assertEqual(b.sha(raw),b.GENUINE_DRIVER)
         with patch.object(b,'git',return_value=b'not the actual source'):
             with self.assertRaisesRegex(RuntimeError,'actual source'):b.genuine_driver(ROOT,commit)
+        original=(ROOT/b.GENUINE_WORKFLOW).read_bytes()
+        changed=original.replace(b'genuine-current-production-controller-v2',b'genuine-current-production-controller-v9',1)
+        self.assertNotEqual(changed,original);self.assertEqual(len(changed),len(original))
+        with patch.object(b,'regular_bytes',return_value=changed),patch.object(b,'git',return_value=changed):
+            with self.assertRaisesRegex(RuntimeError,'Unknown genuine controller'):b.genuine_driver(ROOT,commit)
+    def test_legacy_controller_reader_keeps_actual_retained_source_association(self):
+        legacy='25826e015e70cad74a375e9a5028e7cada5d5c88'
+        # Read the real retained Git object; mock only its physical replay root.
+        original=subprocess.check_output(['git','-C',str(ROOT),'show',legacy+':'+b.GENUINE_WORKFLOW])
+        with patch.object(b,'regular_bytes',return_value=original),patch.object(b,'git',return_value=original):
+            raw=b.genuine_driver(ROOT,legacy)
+        self.assertEqual(len(raw),30854);self.assertEqual(b.sha(raw),b.LEGACY_GENUINE_DRIVER)
+        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.GENUINE_DRIVER:34202})
     def test_direct_data_only_descendant_and_unchanged_source(self):
         def git(code,*argv):
             if argv==('rev-parse','HEAD'):return b'2'*40
@@ -468,8 +482,9 @@ class GenuineRoute(unittest.TestCase):
             out=Path(temp)/'nfl-real-production-case';out.mkdir();tar=out/'release-review.tar';tar.write_bytes(b'fictional bytes')
             value=dict(status='COMPLETE_GENUINE_NONDEPLOY_CASE',source='1'*40,artifact_tar_bytes=tar.stat().st_size,artifact_tar_sha256=hashlib.sha256(tar.read_bytes()).hexdigest(),operating_qualification='NOT_ESTABLISHED',resource_verdict='UNKNOWN')
             final=out/'FINAL.json';final.write_text(json.dumps(value))
-            with patch.dict(os.environ,RUNNER_TEMP=temp,GITHUB_SHA='1'*40):
+            with patch.dict(os.environ,RUNNER_TEMP=temp,GITHUB_SHA='1'*40),patch.object(b,'genuine_driver',return_value=b'fictional reviewed controller'):
                 first=b.genuine_result(args());self.assertEqual(first['root_run_id'],123)
+                self.assertEqual(first['driver_sha256'],b.sha(b'fictional reviewed controller'))
                 # A caught application failure may exit0; typed status must reject.
                 value['status']='FAILED';final.write_text(json.dumps(value))
                 with self.assertRaisesRegex(RuntimeError,'did not complete'):b.genuine_result(args())
@@ -485,6 +500,23 @@ class GenuineRoute(unittest.TestCase):
         for tracked in (False,True):
             with self.assertRaisesRegex(RuntimeError,'source'):check('pull/__pycache__/untrusted.py',tracked)
         self.assertEqual(check('pull/__pycache__/grade.cpython-312.pyc',False),'1'*40)
+
+    def test_canonical_weekly_audit_data_lane_never_exempts_source(self):
+        def check(name,tracked=False):
+            def git(code,*argv):
+                if argv==('rev-parse','HEAD'):return b'1'*40
+                if (argv[0]=='diff')==tracked:return name.encode()+b'\0'
+                return b''
+            with patch.object(b,'git',side_effect=git):return b.genuine_data_head(Path('/unit'),'1'*40)
+        for tracked in (False,True):
+            self.assertEqual(check('data/weekly-adaptive-audit/'+'a'*64+'.json',tracked),'1'*40)
+            for name in ('data/weekly-adaptive-audit/'+ 'A'*64+'.json',
+                    'data/weekly-adaptive-audit/'+ 'a'*63+'.json',
+                    'data/weekly-adaptive-audit/'+ 'a'*64+'.json.gz',
+                    'data/weekly-adaptive-audit/nested/'+ 'a'*64+'.json',
+                    'data/weekly-adaptive-audit/helper.py'):
+                with self.subTest(name=name,tracked=tracked),self.assertRaisesRegex(RuntimeError,'source'):
+                    check(name,tracked)
 
     def test_cached_kernel_unknown_identity_race_and_lower_bound_fail_closed(self):
         with self.assertRaisesRegex(RuntimeError,'unavailable'):self.read(bad_peak=True)
@@ -804,6 +836,178 @@ class GenuineRecovery(unittest.TestCase):
         entries['PAGES_MEMBERS_MANIFEST.json']=r.canonical(pages)
         with self.assertRaisesRegex(ValueError,'CONTROLLER_PAGES_MEMBERSHIP'):r.controller_archive(self.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE')
 
+    def audit_fixture(self,**changes):
+        r=self.r
+        value=dict(schema_version='weekly-public-feed-writer-audit-v1',website_source_sha='a'*40,
+            at='2026-10-24T10:02:00Z',policy_file_sha256='b'*64,
+            authority_kind='AUTOMATED_REGISTERED_POLICY',human_approval=False,
+            validation=dict(state='CURRENT_REFERENCE_FALLBACK',reason='FICTIONAL_NO_FEED',rows=0,human_approval=False),review={})
+        value.update(changes)
+        return 'data/weekly-adaptive-audit/'+r.sha(r.canonical(value))+'.json',r.canonical(value)
+
+    def test_weekly_audit_typed_identity_and_private_fields_fail_closed(self):
+        r=self.r;name,body=self.audit_fixture()
+        self.assertEqual(r.role(name),'weekly_audit')
+        self.assertEqual(r.weekly_json(name,body)['schema_version'],'weekly-public-feed-writer-audit-v1')
+        for change in (dict(website_source_sha='a'*39),dict(at='2026-10-24T10:02:00'),
+                dict(human_approval=True),dict(policy_file_sha256=None),dict(review=[]),dict(extra='UNAPPROVED'),
+                dict(review={'access_token':'CONTROL'})):
+            bad_name,bad=self.audit_fixture(**change)
+            with self.subTest(change=change),self.assertRaises(ValueError):r.weekly_json(bad_name,bad)
+        with self.assertRaisesRegex(ValueError,'IDENTITY'):r.weekly_json(name,body.replace(b'FICTIONAL_NO_FEED',b'FICTIONAL_NO_DATA'))
+        with patch.object(r,'MIB',1),self.assertRaisesRegex(ValueError,'BOUND'):r.weekly_json(name,body)
+        for wrong in ('data/weekly-adaptive-audit/x.json','data/weekly-adaptive-audit/'+ 'a'*64+'.json.gz'):
+            self.assertIsNone(r.role(wrong))
+
+    def test_weekly_plain_json_roles_reject_gzip_before_decoding(self):
+        import gzip
+        r=self.r;name,body=self.audit_fixture();w,pages=self.weekly_fixture()
+        pointer=pages[r.WEEKLY_POINTER];path=r.parsed(pointer)['path'];overlay=gzip.compress(pages[path],mtime=0)
+        cases=[(name,gzip.compress(body,mtime=0)),(r.WEEKLY_POINTER,gzip.compress(pointer,mtime=0)),
+            ('data/weekly-adaptive/'+r.sha(overlay)+'.json',overlay)]
+        for logical,encoded in cases:
+            with self.subTest(role=logical),self.assertRaisesRegex(ValueError,'WEEKLY_PLAIN_JSON_REQUIRED'):
+                r.weekly_json(logical,encoded)
+            with patch.object(r,'decoded') as decoding:
+                with self.assertRaisesRegex(ValueError,'WEEKLY_PLAIN_JSON_REQUIRED'):r.weekly_json(logical,encoded)
+                decoding.assert_not_called()
+        self.assertEqual(r.decoded(self.receipt(),True)['schema_version'],'baseline-capture-v2')
+
+    def test_weekly_audit_quarantine_preserves_exact_valid_bytes_and_neighbors(self):
+        r=self.r;name,body=self.audit_fixture()
+        with tempfile.TemporaryDirectory() as raw:
+            root=Path(raw);good=root/name;good.parent.mkdir(parents=True);good.write_bytes(body)
+            bad_name,bad=self.audit_fixture(human_approval=True);(root/bad_name).write_bytes(bad)
+            receipt=root/'data/forward/new.json.gz';receipt.parent.mkdir();receipt.write_bytes(self.receipt())
+            recordings,records=r.recover([('source',root)],{})
+            self.assertIn(body,self.members(recordings).values());self.assertIn(receipt.read_bytes(),self.members(recordings).values())
+            kept=next(v for v in records if v.get('logical_path')==name)
+            self.assertEqual(kept['state'],'UNQUALIFIED_PRESERVED');self.assertEqual(kept['role'],'weekly_audit')
+            self.assertTrue(any(v.get('reason')=='WEEKLY_AUDIT_CONTRACT' for v in records))
+            self.assertEqual(good.read_bytes(),body)
+
+    def test_weekly_reader_bound_precedes_open_and_applies_to_both_reads(self):
+        r=self.r;name,body=self.audit_fixture()
+        with tempfile.TemporaryDirectory() as raw:
+            root=Path(raw);path=root/name;path.parent.mkdir(parents=True);path.write_bytes(body)
+            real=r.encoded;calls=[]
+            def read(p,retain=False,limit=None):
+                calls.append((retain,limit))
+                return real(p,retain,limit)
+            with patch.object(r,'encoded',side_effect=read):recordings,records=r.recover([('source',root)],{})
+            self.assertEqual(calls,[(False,4*r.MIB),(True,4*r.MIB)])
+            self.assertIn(body,self.members(recordings).values())
+            # A sparse invalid file exercises the actual pre-read size check
+            # without allocating a multi-megabyte test payload.
+            with path.open('wb') as output:output.truncate(4*r.MIB+1)
+            with patch.object(r.os,'open') as opening:
+                recordings,records=r.recover([('source',root)],{})
+                opening.assert_not_called()
+            self.assertEqual(self.members(recordings),{})
+            self.assertEqual(records[0]['reason'],'ENCODED_BOUND')
+
+    def test_weekly_retained_read_rejects_growth_and_legacy_keeps_its_limit(self):
+        r=self.r;name,body=self.audit_fixture()
+        with tempfile.TemporaryDirectory() as raw:
+            root=Path(raw);path=root/name;path.parent.mkdir(parents=True);path.write_bytes(body)
+            real=r.encoded
+            def read(p,retain=False,limit=None):
+                if retain:
+                    self.assertEqual(limit,4*r.MIB)
+                    with p.open('wb') as output:output.truncate(4*r.MIB+1)
+                return real(p,retain,limit)
+            with patch.object(r,'encoded',side_effect=read):recordings,records=r.recover([('source',root)],{})
+            self.assertEqual(self.members(recordings),{});self.assertEqual(records[0]['reason'],'ENCODED_BOUND')
+            path.unlink();legacy=root/'data/forward/control.json.gz';legacy.parent.mkdir();legacy.write_bytes(self.receipt())
+            calls=[]
+            def legacy_read(p,retain=False,limit=None):
+                calls.append(limit);return real(p,retain,limit)
+            with patch.object(r,'encoded',side_effect=legacy_read):recordings,records=r.recover([('source',root)],{})
+            self.assertEqual(calls,[r.ENCODED,r.ENCODED]);self.assertIn(legacy.read_bytes(),self.members(recordings).values())
+
+    def weekly_fixture(self):
+        spec=importlib.util.spec_from_file_location('weekly_recovery_test',ROOT/'tools/weekly_adaptive_overlay.py')
+        w=importlib.util.module_from_spec(spec);spec.loader.exec_module(w);r=self.r
+        board=dict(season=2026,week=8,generated_at='2026-10-24T10:00:00Z',
+            games=[dict(id='fictional-game',kickoff='2026-10-25T17:00:00Z',state='pre')],
+            players=[dict(id='fictional-player',game_id='fictional-game',team='AAA',opp='BBB',
+                props=[dict(key='rec',proj=2.,adj=2.5,line=3.,line_from='dk')])])
+        selected=dict(rows=[dict(game_id='fictional-game',player_id='fictional-player',category='rec',
+            method_id='FICTIONAL_METHOD',model_version='b'*64,procedure_version='c'*64,product='point_mean',
+            prediction_functional='expected_mean',forecast_value=3.25,horizon='player_game',
+            source_cutoff_utc='2026-10-24T10:01:00Z',issued_at='2026-10-24T10:00:00Z',
+            persistence_completed_at='2026-10-24T10:01:00Z',kickoff_utc='2026-10-25T17:00:00Z',
+            valid_until_utc='2026-10-25T17:00:00Z',selection_sha256='d'*64,source_policy_sha256='e'*64,
+            query_source_sha256='f'*64,season=2026,week=8,team='AAA',opponent='BBB',
+            evidence_lane='original_pregame',operational_eligible=True)])
+        review=dict(schema_version=w.REVIEW,approved=True,selected_input_sha256=w.digest(selected),website_source_sha='a'*40)
+        board_raw=w.canonical(board)
+        doc=w.prepare_overlay(board,w.sha(board_raw),selected,review,website_source_sha='a'*40,prepared_at='2026-10-24T10:02:00Z')
+        self.assertEqual(len(doc['rows']),1)
+        body=w.canonical(doc);path='data/weekly-adaptive/'+w.sha(body)+'.json'
+        pointer=dict(schema_version=w.POINTER,path=path,sha256=w.sha(body),bytes=len(body),display_board_sha256=w.sha(board_raw))
+        pages={r.WEEKLY_JS:b'// FICTIONAL reviewed public helper\n','data/week.json':board_raw,
+            r.WEEKLY_POINTER:w.canonical(pointer),path:body}
+        return w,pages
+
+    def test_complete_weekly_graph_uses_actual_semantic_validator_and_closed_source(self):
+        r=self.r;w,pages=self.weekly_fixture()
+        with patch.object(r,'weekly_overlay',w),patch.object(r,'weekly_static',pages[r.WEEKLY_JS]):
+            r.weekly_pages(pages,'a'*40)
+            for key in (r.WEEKLY_JS,r.WEEKLY_POINTER,w.sha(b'absent')):
+                if key not in pages:continue
+                changed=dict(pages);changed.pop(key)
+                with self.subTest(missing=key),self.assertRaises(ValueError):r.weekly_pages(changed,'a'*40)
+            path=r.parsed(pages[r.WEEKLY_POINTER])['path']
+            changed=dict(pages);changed.pop(path)
+            with self.assertRaisesRegex(ValueError,'COMPLETE_GRAPH'):r.weekly_pages(changed,'a'*40)
+            with self.assertRaisesRegex(ValueError,'EXECUTED_SOURCE'):r.weekly_pages(pages,'b'*40)
+            changed=dict(pages);changed[path]=changed[path].replace(b'3.25',b'9.25')
+            with self.assertRaisesRegex(ValueError,'DESCRIPTOR_BYTES'):r.weekly_pages(changed,'a'*40)
+            changed=dict(pages);changed[r.WEEKLY_JS]=b'// changed same role\n'
+            with self.assertRaisesRegex(ValueError,'STATIC_SOURCE'):r.weekly_pages(changed,'a'*40)
+            changed=dict(pages);changed['data/weekly-adaptive/'+'0'*64+'.json']=b'{}'
+            with self.assertRaisesRegex(ValueError,'COMPLETE_GRAPH'):r.weekly_pages(changed,'a'*40)
+            for mutate in (lambda d:d.update(week=9),lambda d:d['rows'][0].update(game_id='other-game'),
+                    lambda d:d['rows'][0].update(access_token='CONTROL')):
+                changed=dict(pages);doc=r.parsed(changed.pop(path));mutate(doc);body=r.canonical(doc)
+                new='data/weekly-adaptive/'+r.sha(body)+'.json';changed[new]=body
+                pointer=r.parsed(changed[r.WEEKLY_POINTER]);pointer.update(path=new,sha256=r.sha(body),bytes=len(body))
+                changed[r.WEEKLY_POINTER]=r.canonical(pointer)
+                with self.subTest(mutation=mutate),self.assertRaises(ValueError):r.weekly_pages(changed,'a'*40)
+
+    def test_weekly_controller_extension_is_explicit_and_legacy_stays_readable(self):
+        r=self.r;archive,_=self.controller_fixture();r.controller_archive(archive,'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE')
+        entries=r.tar_entries(archive);w,pages=self.weekly_fixture()
+        entries['public-pages.tar']=self.tar(pages,True)
+        entries['PAGES_MEMBERS_MANIFEST.json']=r.canonical({n:dict(bytes=len(v),sha256=r.sha(v)) for n,v in pages.items()})
+        case=r.parsed(entries['RELEASE_CASE_MANIFEST.json'])
+        with patch.object(r,'weekly_overlay',w),patch.object(r,'weekly_static',pages[r.WEEKLY_JS]):
+            with self.assertRaisesRegex(ValueError,'WEEKLY_CONTROLLER_REQUIRED'):r.controller_archive(self.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE')
+            case.update(controller_contract=r.WEEKLY_CONTRACT,reviewed_main_base='315be5e86a1a3a93022b68c453739076487e2077',
+                reviewed_main_source_tree='dfdc11ac312a6a54c79e7379352106c315e13f5f')
+            entries['RELEASE_CASE_MANIFEST.json']=r.canonical(case)
+            r.controller_archive(self.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE')
+            name,body=self.audit_fixture();storage='mutable/'+name;info=dict(bytes=len(body),sha256=r.sha(body),storage=storage)
+            outputs=r.parsed(entries['OUTPUT_DATA_MANIFEST.json']);outputs['after'][name]=dict(bytes=len(body),sha256=r.sha(body))
+            outputs['representations'][name]=info;entries[storage]=body;entries['OUTPUT_DATA_MANIFEST.json']=r.canonical(outputs)
+            r.controller_archive(self.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE')
+            case['reviewed_main_base']='0'*40;entries['RELEASE_CASE_MANIFEST.json']=r.canonical(case)
+            with self.assertRaisesRegex(ValueError,'REVIEWED_MAIN_SOURCE'):r.controller_archive(self.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE')
+
+    def test_recovery_driver_dispatch_uses_only_exact_actual_controller_bytes(self):
+        r=self.r;original=(ROOT/r.WORKFLOW).read_bytes()
+        with patch.object(r,'authenticated_bytes',return_value=original):
+            self.assertEqual(r.checked_driver(ROOT,'a'*40),r.DRIVER)
+        changed=original.replace(b'genuine-current-production-controller-v2',b'genuine-current-production-controller-v9',1)
+        self.assertNotEqual(changed,original);self.assertEqual(len(changed),len(original))
+        with patch.object(r,'authenticated_bytes',return_value=changed):
+            with self.assertRaisesRegex(ValueError,'CLOSED_DRIVER_IDENTITY'):r.checked_driver(ROOT,'a'*40)
+        legacy=subprocess.check_output(['git','-C',str(ROOT),'show','25826e015e70cad74a375e9a5028e7cada5d5c88:'+r.WORKFLOW])
+        with patch.object(r,'authenticated_bytes',return_value=legacy):
+            self.assertEqual(r.checked_driver(ROOT,'25826e015e70cad74a375e9a5028e7cada5d5c88'),r.LEGACY_DRIVER)
+        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.DRIVER:34202})
+
 
 class DiagnosticLifetimeDependencyContract(unittest.TestCase):
     def test_frozen_and_new_seed_contracts_and_direct_child_dependency(self):
@@ -817,6 +1021,17 @@ class DiagnosticLifetimeDependencyContract(unittest.TestCase):
                 b.PREPARATION22_RETRIEVAL_INTEGRITY):
             self.assertEqual(b.SEED_CONTRACTS[version],expected)
         self.assertEqual(b.SEED_CONTRACTS[b.SEED_INTEGRITY],frozenset(b.SEED_NAMES))
+        self.assertEqual(b.SEED_CONTRACTS[b.CURRENT_MAIN_WEEKLY_INTEGRITY],expected)
+    def test_derivative_manifest_changes_only_current_source_ci_binding(self):
+        manifest=json.loads((ROOT/'tools/cloud-seed-integrity.json').read_bytes())
+        self.assertEqual(b.sha((ROOT/'tools/cloud-seed-integrity.json').read_bytes()),b.CURRENT_MAIN_WEEKLY_INTEGRITY)
+        self.assertEqual(manifest['files']['source_ci.py'],
+            'f3728b363e3556771b48e9e9ed761928ca9078fa842beae5551a982d7820b619')
+        self.assertEqual(len(manifest['files']),12)
+        self.assertNotIn('operating_resource_bootstrap.py',manifest['files'])
+        retained=copy.deepcopy(manifest)
+        retained['files']['source_ci.py']='f7bb054c9299a226ae9f30aa71b8f5afeca07b2ee37c853aad7abc40360e59cd'
+        self.assertEqual(b.sha((json.dumps(retained,sort_keys=True,indent=2)+'\n').encode()),b.PREPARATION24_LIFETIME_INTEGRITY)
 
 
 class BrowserFailureTelemetryAndCaptureBinding(unittest.TestCase):

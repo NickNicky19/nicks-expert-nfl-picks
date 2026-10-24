@@ -1651,3 +1651,83 @@ publication clocks fail before setup. Original capture and observation clocks
 are untouched. This correction changes no publication format, retained seed,
 forecast, source qualification or production setting. The subsequent connected
 replay and final-source CI remain separate required acceptance results.
+
+### Current-main and Phase 2 coexistence — 2026-10-24
+
+The companion diagnostic-test correction at `25826e0` passed exact-source push
+CI and PR test-merge CI: 1,101 Python tests in each job, with the retained syntax,
+UI and About checks. The actual test-merge checkout was
+`ea2c7b79551d490ab739f008fd2d4a714a99d23a`, based on `c1d69ce`.
+These results do not cover the later `315be5e` main-source integration or measure
+a complete website update. The application lifetime correction and original
+failed controls remain preserved.
+
+While those checks ran, main acquired a provisional weekly forecast display and
+its optional producer. The integration preserves that display alongside Phase 2
+grading and the private paper builder. It ports the relevant rendering changes
+instead of replacing the expanded application with the older main application.
+Unknown touchdown probabilities, unresolved final outcomes, personal lines,
+rank ordering and saved local selections retain their existing behavior.
+
+The proposed website-only policy-v3 transition distinguishes the original R0
+registration from corrected current execution. It preserves the original V1/V2
+policies, historical engine hashes, catalog authority and procedure identities.
+Current reference-engine source/schema bindings and actual website-code hashes
+are checked separately. Unknown or inconsistent combinations are unavailable;
+they cannot qualify by falling back to an older policy. The public feed-v2 and
+overlay-v1 representations remain unchanged. This is an execution compatibility
+transition, not experiment activation or retrospective qualification.
+
+Pages staging validates the optional JavaScript, pointer and required body as a
+complete typed, bounded graph. It freshly checks source bytes, copies only the
+current required graph, then checks destination bytes and semantics. Earlier
+repository assets remain retained. Source CI treats only canonical hashed audit
+JSON in the dedicated generated audit lane as data; code, policy, schemas and
+workflows remain part of the source-acceptance boundary.
+
+At this implementation checkpoint, expanded Top Over/Under and qualifying-lean
+weekly/cumulative grading, exact saved-row category/side/source/timing joints,
+prospectively recorded ranked strategies, all-category reference accuracy,
+corrected My Picks states and private paper tickets are implemented in
+development. They are not yet verified on the public website. The current public
+provisional forecast display is separate. Accuracy evaluates saved reference
+model/engine cohorts; provisional display forecasts are not scored there.
+Display sorting does not create historical strategy selections. Missing original
+strategy history, unsupported probability or price claims remain unavailable.
+
+Status: implemented candidate; focused component tests completed; combined
+current-main integration CI, complete-updater operating acceptance, generated
+artifact/browser acceptance and public deployment verification remain pending.
+Protected workflow and policy installation are separate from the ordinary writer
+lease. No deployment, source qualification, full seed or season-long operating
+PASS is inferred from these component checks.
+
+The retained genuine hosted update used 985.876494 seconds inside its measured
+updater unit: above the 960-second planning target and below the unchanged
+1,200-second timeout. Its attributable updater-unit aggregate memory passed its
+recorded limit/headroom checks; whole-VM/job aggregate memory was not established.
+A separate retained full-fixture continuation was OOM-killed and has no full
+admitted seed. The historical 960.625703-second planning miss and earlier
+failures remain. New source must obtain its own applicable acceptance; neither
+an old CI job nor the former generated artifact certifies this integration.
+
+Daily scheduling, retired Ticker, updater concurrency, manual recovery, PR #2,
+original evidence, frozen production contracts, My Picks and inactive experiments
+remain preserved. Odds and forecasting research are separate from the website
+release. Recovery must understand retained shared/gzip report formats and the
+optional weekly graph; an older reader alone is not measured operational
+recovery. The remaining sequence is current-source acceptance, operating and
+production-rooted artifact acceptance, approved public contents, deployment,
+actual public/cache/phone checks and compatible recovery.
+
+Read-only review caught a first-read size race in the imported optional reader
+and an encoding mismatch in the new recovery roles. The reader now rejects
+nonregular files and bounds actual reads; weekly recovery JSON rejects gzip
+before legacy decoding and enforces its smaller cap before allocation. Existing
+legacy gzip receipt behavior is retained. Focused growth, type, encoding,
+identity and interoperability controls passed. The required UI entrypoint also
+runs the imported overlay controls: 250 reported assertions/checks passed in the
+combined fictional Node run. These are software controls, not an actual browser,
+aggregate resource, hosted updater or public-deployment result. The current live
+Pages backup was separately retrieved and all 25 files matched its immutable
+main-data commit; it is preserved in addition to earlier release evidence.

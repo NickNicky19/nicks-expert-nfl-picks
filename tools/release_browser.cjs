@@ -26,6 +26,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
+const vm = require('node:vm');
 browserPhase='B002';
 const { chromium } = require('playwright');
 const argv = process.argv.slice(2);
@@ -62,6 +63,38 @@ browserPhase='B006';
 const initialFilesystems=filesystemGuard(criticalPaths,12*1024*1024);
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const readJSON = filename => JSON.parse(fs.readFileSync(filename));
+// BEGIN WEEKLY DISPLAY GRAPH CONTRACT
+const WEEKLY_HELPER_SHA256='d6657e82639aa001f64701672e25cc72bd6e55142127669a59396f9efe485a68';
+function readWeeklyAsset(filename,cap,io=fs) {
+  assert.ok(Number.isSafeInteger(cap)&&cap>0&&cap<=16*1024*1024,'WEEKLY_READ_LIMIT');
+  const flags=io.constants;assert.ok(Number.isInteger(flags.O_NOFOLLOW)&&Number.isInteger(flags.O_NONBLOCK),'WEEKLY_READER_PLATFORM');
+  const fd=io.openSync(filename,flags.O_RDONLY|flags.O_NOFOLLOW|flags.O_NONBLOCK);
+  try{
+    const first=io.fstatSync(fd);
+    assert.ok(first.isFile()&&Number.isSafeInteger(first.size)&&first.size>=0&&first.size<=cap,'WEEKLY_BOUNDED_REGULAR_FILE');
+    const chunks=[],buffer=Buffer.alloc(Math.min(65536,cap+1));let bytes=0;
+    for(;;){const count=io.readSync(fd,buffer,0,Math.min(buffer.length,cap+1-bytes),null);if(!count)break;
+      bytes+=count;assert.ok(bytes<=cap,'WEEKLY_STREAMED_BOUND');chunks.push(Buffer.from(buffer.subarray(0,count)));}
+    const after=io.fstatSync(fd),current=io.lstatSync(filename);
+    assert.ok(after.isFile()&&current.isFile()&&!current.isSymbolicLink()&&first.dev===after.dev&&first.ino===after.ino
+      &&after.dev===current.dev&&after.ino===current.ino&&first.size===bytes&&after.size===bytes&&current.size===bytes,'WEEKLY_READ_RACE');
+    return Buffer.concat(chunks,bytes);
+  }finally{io.closeSync(fd);}
+}
+function weeklyDisplayGraph(pointer,body,actualBoard,boardHash,source,helper) {
+  assert.deepEqual(Object.keys(pointer).sort(),['schema_version','path','sha256','bytes','display_board_sha256'].sort(),'WEEKLY_POINTER_CLOSED');
+  assert.equal(pointer.schema_version,'weekly-adaptive-overlay-pointer-v1');
+  assert.match(pointer.sha256,/^[a-f0-9]{64}$/);
+  assert.equal(pointer.path,'data/weekly-adaptive/'+pointer.sha256+'.json');
+  assert.ok(Number.isSafeInteger(pointer.bytes)&&pointer.bytes>0&&pointer.bytes<=4*1024*1024);
+  assert.equal(pointer.display_board_sha256,boardHash,'WEEKLY_ACTUAL_BOARD_BINDING');
+  assert.equal(body.length,pointer.bytes);assert.equal(sha(body),pointer.sha256,'WEEKLY_ACTUAL_BODY_HASH');
+  const doc=JSON.parse(body),value=helper.validate(doc,actualBoard,boardHash);
+  assert.equal(doc.website_source_sha,source,'WEEKLY_ACTUAL_SOURCE_BINDING');
+  assert.equal(value.rows.size,doc.rows.length);
+  return {pointer,doc};
+}
+// END WEEKLY DISPLAY GRAPH CONTRACT
 // BEGIN PUBLIC DEPLOYMENT REVIEW CONTRACT
 const PUBLIC_SITE='https://nicknicky19.github.io/nicks-expert-nfl-picks/';
 function publicDeploymentContract(value,url,actualGeneration,identityBytes,membersDigest) {
@@ -133,12 +166,28 @@ assert.equal(generation.source_sha, marker.source, 'Capture source is actual suc
 assert.deepEqual(generation,marker.generation,'Identity is the actual case generation');
 assert.equal(sha(fs.readFileSync(path.join(root,'data/selection-grading/latest.json'))),generation.bindings['data/selection-grading/latest.json']);
 assert.equal(sha(fs.readFileSync(path.join(root,'data/week.json'))),generation.bindings['data/week.json']);
+const weeklyScript=readWeeklyAsset(path.join(root,'weekly-adaptive-overlay.js'),1<<20);
+assert.equal(sha(weeklyScript),WEEKLY_HELPER_SHA256,'Actual reviewed weekly helper');
+assert.match(fs.readFileSync(path.join(root,'index.html'),'utf8'),/src=["']weekly-adaptive-overlay\.js(?:\?[^"']*)?["']/,'Weekly helper is included in actual shell');
+const weeklyPointerBytes=readWeeklyAsset(path.join(root,'data/weekly-adaptive-overlay.json'),4096);
+assert.ok(weeklyPointerBytes.length<=4096,'Bounded actual weekly pointer');
+const weeklyPointer=JSON.parse(weeklyPointerBytes);
+assert.match(weeklyPointer.sha256||'',/^[a-f0-9]{64}$/);assert.equal(weeklyPointer.path,'data/weekly-adaptive/'+weeklyPointer.sha256+'.json');
+const weeklyBodyPath=path.join(root,weeklyPointer.path),weeklyModule={exports:{}};
+// Execute exactly the reviewed bytes already read and hashed, never a second
+// mutable pathname read. The validation realm has no filesystem/network APIs.
+vm.runInNewContext(weeklyScript.toString('utf8'),{module:weeklyModule},{timeout:2000});
+const weeklySaved=weeklyDisplayGraph(weeklyPointer,readWeeklyAsset(weeklyBodyPath,4*1024*1024),board,
+  generation.bindings['data/week.json'],generation.source_sha,weeklyModule.exports);
 const result = {
   schema_version: 'actual-staged-release-browser-acceptance-v1', status: 'RUNNING',
   started_at: new Date().toISOString(), source: marker.source,
   app_sha256: appHash, generation_sha256: generation.generation_sha256,
   release_identity_file_sha256: sha(generationBytes), report_id: pointer.report_id,
   board_period: [board.season, board.week], original_board_generated_at: board.generated_at,
+  weekly_display: {pointer_sha256:sha(weeklyPointerBytes),body_sha256:weeklyPointer.sha256,
+    helper_sha256:sha(weeklyScript),website_source_sha:weeklySaved.doc.website_source_sha,
+    state:weeklySaved.doc.state,rows:weeklySaved.doc.rows.length,qualified_accuracy_claim:false},
   contexts: [], checks: [], limitations: [
     'Local Chromium, not physical iPhone/Safari or deployed public acceptance.',
     'External requests are intercepted; zero provider requests are permitted.',
@@ -189,6 +238,64 @@ async function loaded(page) {
   assert.equal(state.part_error, null, 'Actual selected summary must load');
   assert.equal(state.report_id, pointer.report_id, 'Browser must retain actual generation report');
   return state;
+}
+async function weeklyDisplay(page,network) {
+  await page.waitForFunction(() => S.weeklyOverlayReady&&S.weeklyOverlayRequestBoard===S.data&&S.weeklyOverlay!==null,null,{timeout:10000});
+  const before=await records(page);
+  const value=await page.evaluate(expected=>{
+    const overlay=S.weeklyOverlay;
+    if(overlay.boardHash!==expected.board_hash||overlay.state!==expected.state)throw Error('Weekly displayed board/state mismatch');
+    const rows=[...overlay.rows.values()];
+    const examples=[];const seen=new Set();
+    for(const row of rows){
+      const player=S.byId[row.player_id],prop=player?.props.find(p=>p.key===row.category);
+      if(!player||!prop)throw Error('Weekly selected identity absent from actual reference');
+      const selected=selectedPropForecast(player,row.category);
+      if(!selected||seen.has(row.product))continue;
+      if(selected.value!==row.forecast_value)throw Error('Weekly typed selected value changed');
+      const template=document.createElement('template');template.innerHTML=catCard(player,prop);
+      const primary=template.content.querySelector('[data-weekly-primary]');
+      if(!primary||!primary.textContent.includes(selected.text))throw Error('Weekly primary caption/value mismatch');
+      const text=template.content.textContent;
+      const knownReference=row.product==='binary_probability'||pv(player,prop).adj!=null;
+      if(!/provisional/i.test(primary.textContent)||(knownReference&&!/Current reference (forecast|probability)/.test(text))||!text.includes('Lines, leans, ranking and saved selections use the reference model.'))throw Error('Weekly/reference captions conflated');
+      examples.push({product:row.product,category:row.category,value:selected.value,frozen:selected.frozen,
+        reference_status:knownReference?'KNOWN_SHOWN':'UNAVAILABLE_REFERENCE_FORECAST'});seen.add(row.product);
+    }
+    return {rows,examples,board:JSON.stringify(S.data),report_id:S.grading.pointer.report_id,
+      visible_primary_cells:document.querySelectorAll('[data-weekly-primary]').length};
+  },{board_hash:generation.bindings['data/week.json'],state:weeklySaved.doc.state});
+  assert.deepEqual(value.rows,weeklySaved.doc.rows,'Browser consumes exact saved selected rows');
+  assert.equal(value.report_id,pointer.report_id);assert.deepEqual(await records(page),before);
+  assert.ok(network.some(r=>r.path==='data/weekly-adaptive-overlay.json'&&r.status===200),'Actual optional pointer request');
+  assert.ok(network.some(r=>r.path===weeklySaved.pointer.path&&r.status===200),'Actual required overlay body request');
+  assert.ok(network.some(r=>r.path.split('?')[0]==='weekly-adaptive-overlay.js'&&r.status===200),'Actual helper script request');
+  return {state:weeklySaved.doc.state,rows:value.rows.length,typed_caption_examples:value.examples,
+    visible_primary_cells:value.visible_primary_cells,
+    selected_feed_coverage:weeklySaved.doc.rows.length?'ACTUAL_SAVED_PROVISIONAL_ROWS':'UNAVAILABLE_NO_ACCEPTED_SELECTED_ROWS',
+    reference_board_and_storage_unchanged:true,provisional_rows_used_as_qualified_accuracy:false};
+}
+async function missingWeeklyDisplay(page,cdp,blockedURLs,base) {
+  const before=await records(page),boardHash=await page.evaluate(()=>gradingHash(new TextEncoder().encode(JSON.stringify(S.data))));
+  try{
+    await cdp.send('Network.setCacheDisabled',{cacheDisabled:true});faultPath='/data/weekly-adaptive-overlay.json';
+    await cdp.send('Network.setBlockedURLs',{urls:[...blockedURLs,new URL('data/weekly-adaptive-overlay.json',base).href]});
+    await page.reload();await loaded(page);await tab(page,'props');
+    const result=await page.evaluate(async()=>{
+      const missing=await WeeklyAdaptiveOverlay.load(S.data,S.weeklyOverlayBoardHash);
+      const bad={schema_version:'weekly-adaptive-overlay-pointer-v1',path:'data/weekly-adaptive/'+'0'.repeat(64)+'.json',sha256:'0'.repeat(64),bytes:1,display_board_sha256:'0'.repeat(64)};
+      const rejected=await WeeklyAdaptiveOverlay.load(S.data,S.weeklyOverlayBoardHash,async()=>new Response(JSON.stringify(bad)));
+      return {missing:missing===null,rejected:rejected===null,active:S.weeklyOverlay===null,
+        primary_cells:document.querySelectorAll('[data-weekly-primary]').length,report:S.grading.pointer.report_id};
+    });
+    assert.deepEqual(result,{missing:true,rejected:true,active:true,primary_cells:0,report:pointer.report_id});
+    assert.equal(await page.evaluate(()=>gradingHash(new TextEncoder().encode(JSON.stringify(S.data)))),boardHash);
+    assert.deepEqual(await records(page),before);
+  }finally{faultPath=null;await cdp.send('Network.setBlockedURLs',{urls:blockedURLs});await cdp.send('Network.setCacheDisabled',{cacheDisabled:false});}
+  await page.reload();await loaded(page);await page.waitForFunction(()=>S.weeklyOverlay!==null,null,{timeout:10000});
+  assert.deepEqual(await records(page),before);
+  return {status:'PASS_CONTROLLED_MISSING_AND_REJECTED_OPTIONAL_GRAPH_REFERENCE_FALLBACK_AND_RECOVERY',
+    scope:'Actual missing-asset/CDP denial and separately identified wrong-board response control; not an observed public outage'};
 }
 async function tab(page, name) {
   await page.locator('[data-tab="' + name + '"]').first().click();
@@ -497,6 +604,7 @@ browserPhase='B011';
       try {
 browserPhase='B012';
         await page.goto(origin+'#/record');review.state=await loaded(page);
+        review.weekly_display=await weeklyDisplay(page,network);
 browserPhase='B013';
         const bindings=await page.evaluate(async names=>{const out={};for(const name of names){const r=await fetch(name,{cache:'no-store'});if(!r.ok)throw Error('Required actual binding unavailable');out[name]=await gradingHash(new Uint8Array(await r.arrayBuffer()));}return out;},['data/release-identity.json',...Object.keys(generation.bindings)]);
         assert.equal(bindings['data/release-identity.json'],sha(generationBytes));for(const [name,hash]of Object.entries(generation.bindings))assert.equal(bindings[name],hash);
@@ -536,6 +644,7 @@ browserPhase='B023';
         browserPhase='B024';review.scoring_and_real_rules=await scoringAndRules(page);
         browserPhase='B025';review.ordinary_cache=await ordinaryCache(page,cdp,network);
         browserPhase='B026';review.missing_partition_and_recovery=await missingPartition(page,cdp,blockedURLs,origin);
+        review.missing_weekly_display_and_recovery=await missingWeeklyDisplay(page,cdp,blockedURLs,origin);
         for(const item of review.paper.coverage)if(item.status.startsWith('UNAVAILABLE'))result.unavailable.push({width,...item});
         for(const kind of review.scoring_and_real_rules.unavailable)result.unavailable.push({width,kind,status:'UNAVAILABLE_ACTUAL_OUTCOME_POPULATION'});
         result.unavailable.push({width,kind:'natural_future_correction_transition',status:'UNAVAILABLE_NOT_FABRICATED'});

@@ -1458,6 +1458,40 @@ def validate_generation(root, *, _checked=None):
     return generation
 
 
+def _weekly_stage_graph(output, names, limit):
+    """Fresh bounded identities for the explicitly validated weekly public graph."""
+    output = Path(output)
+    static, pointer = "weekly-adaptive-overlay.js", "data/weekly-adaptive-overlay.json"
+    if (type(names) is not set or not {static} <= names
+            or any(name not in {static, pointer} and not re.fullmatch(r"data/weekly-adaptive/[0-9a-f]{64}\.json", name) for name in names)
+            or (pointer in names and len(names) != 3)
+            or (pointer not in names and names != {static})):
+        raise IntegrityError("Invalid weekly Pages asset graph")
+    graph = {}
+    for name in sorted(names):
+        path = output / name
+        publication._no_symlinks(path, output)
+        if not path.exists() and name == static and pointer not in names:
+            continue  # Supported older output without any weekly presentation.
+        if not path.is_file():
+            raise IntegrityError("Missing or nonregular weekly Pages asset")
+        bound = STAGING_BUDGET if name == static else limit
+        expected = path.stat().st_size
+        if expected > bound:
+            raise IntegrityError("Oversized weekly Pages asset")
+        h, size = hashlib.sha256(), 0
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(65536), b""):
+                size += len(block)
+                if size > bound:
+                    raise IntegrityError("Oversized weekly Pages asset")
+                h.update(block)
+        if size != expected:
+            raise IntegrityError("Weekly Pages asset changed while reading")
+        graph[name] = (size, h.hexdigest())
+    return graph
+
+
 def stage_pages(root, destination):
     """Fresh bounded Pages projection. Never delete GitHub originals/old assets."""
     root, destination = Path(root).resolve(), Path(destination).resolve()
@@ -1468,6 +1502,14 @@ def stage_pages(root, destination):
     output = root / "output"
     if any(path.is_symlink() for path in output.rglob("*")):
         raise IntegrityError("Refusing symlink Pages asset")
+    weekly, weekly_names, weekly_before = None, set(), {}
+    if any((output / name).exists() for name in ("weekly-adaptive-overlay.js", "data/weekly-adaptive-overlay.json", "data/weekly-adaptive")):
+        import weekly_adaptive_overlay as weekly
+        try:
+            weekly_names = weekly.stage_assets(root)
+            weekly_before = _weekly_stage_graph(output, weekly_names, weekly.MAX_BYTES)
+        except (ValueError, OSError) as error:
+            raise IntegrityError("Weekly Pages graph failed validation") from error
     if read_phase2(root):
         validate_generation(root, _checked=_checked)
     initial_generation = (root / "output/data/release-identity.json").read_bytes() if read_phase2(root) else None
@@ -1496,11 +1538,15 @@ def stage_pages(root, destination):
             continue
         relative = path.relative_to(output); name = relative.as_posix()
         report_asset = re.fullmatch(r"data/selection-grading/(?:latest\.json|hosting\.json|[0-9a-f]{64}/(?:summary|outcomes|rows|rows-[0-9]{4}|manifest|registry|archive)\.json|[0-9a-f]{64}/snapshot-(?:app\.js|index\.html|data_(?:week|meta|verification-scope|forecast-scorecard|health|release-identity)\.json|data_selection-grading_latest\.json))", name)
+        weekly_body = re.fullmatch(r"data/weekly-adaptive/[0-9a-f]{64}\.json", name)
         allowed = (name in {"app.js", "index.html", "style.css", "reliability-ui.js", "recovery.html"}
-                   or name in public_data or re.fullmatch(r"data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json", name) or report_asset)
+                   or name in public_data or re.fullmatch(r"data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json", name) or report_asset
+                   or name in weekly_names or weekly_body)
         if (not allowed or any(part.startswith(".") for part in relative.parts)
                 or path.suffix not in (".js", ".css", ".html", ".json", ".png", ".svg", ".ico", ".txt")):
             raise IntegrityError("Unclassified Pages asset")
+        if weekly_body and name not in weekly_names:
+            continue  # Retain original historical bodies; publish only this graph.
         if working is not None and name.startswith("data/selection-grading/"):
             report_name = path.relative_to(base).as_posix()
             if report_name == "hosting.json" or report_name != "latest.json" and report_name not in retained:
@@ -1543,6 +1589,16 @@ def stage_pages(root, destination):
     total = sum(path.stat().st_size for path in destination.rglob("*") if path.is_file())
     if total > STAGING_BUDGET:
         raise IntegrityError("Complete Pages stage exceeds conservative 900000000-byte budget")
+    if weekly is not None:
+        try:
+            staged_names = weekly.validate_public_root(destination)
+            source_names = weekly.stage_assets(root)
+            if (staged_names != weekly_names or source_names != weekly_names
+                    or _weekly_stage_graph(destination, staged_names, weekly.MAX_BYTES) != weekly_before
+                    or _weekly_stage_graph(output, source_names, weekly.MAX_BYTES) != weekly_before):
+                raise IntegrityError("Weekly Pages graph changed during staging")
+        except (ValueError, OSError) as error:
+            raise IntegrityError("Staged weekly Pages graph failed validation") from error
     # GitHub Pages reads the new public stage, including atomic-json metadata.
     # Do not inherit a private local umask or alter any original source/evidence.
     destination.chmod(0o755)

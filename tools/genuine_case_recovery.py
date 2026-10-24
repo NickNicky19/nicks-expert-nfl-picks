@@ -1,12 +1,18 @@
 """Closed nonprivileged preservation of one genuine case; never qualification."""
 import argparse, gzip, hashlib, io, itertools, json, math, os, re, stat, subprocess, sys, tarfile, types, zlib
+from datetime import datetime
 from pathlib import Path
 source_ci=None
+weekly_overlay=None
+weekly_static=None
 
 CONF='NFL-WEB-GENUINE-PRODUCTION-CASE-20261024'
 REPO='NickNicky19/nicks-expert-nfl-picks'
 REF='refs/heads/upgrade/phase2-reproducible-comparison'
-DRIVER='2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf'
+DRIVER='918ad731a3c1a299f8b5d3286f0fd8f1de79615127163a517722240f6bc53050'
+LEGACY_DRIVER='2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf'
+DRIVER_BYTES={LEGACY_DRIVER:30854,DRIVER:34202}
+WORKFLOW='.github/workflows/prepare-diagnostic-seed.yml'
 MIB=1024**2
 CAP=127*MIB
 ENCODED=128*MIB
@@ -20,6 +26,11 @@ CACHE=re.compile(r'data/cache/(?:espn_athletes|injury_timeline|stats_[0-9]{4}_[0
 BOARDS={'output/data/'+x+'.json' for x in 'week meta future teams track_record dk_backtest forecast-scorecard offer-capture health release-identity verification-scope game-status matchup-proof'.split()}
 META=set('RELEASE_CASE_MANIFEST.json INPUT_DATA_MANIFEST.json OUTPUT_DATA_MANIFEST.json NEW_RECEIPTS_MANIFEST.json PAGES_MEMBERS_MANIFEST.json SOURCE_CI_BINDINGS.json'.split())
 STATIC={'app.js','index.html','style.css','reliability-ui.js','recovery.html'}
+WEEKLY_JS='weekly-adaptive-overlay.js'
+WEEKLY_POINTER='data/weekly-adaptive-overlay.json'
+WEEKLY_BODY=re.compile(r'data/weekly-adaptive/[0-9a-f]{64}\.json\Z')
+WEEKLY_AUDIT=re.compile(r'data/weekly-adaptive-audit/[0-9a-f]{64}\.json\Z')
+WEEKLY_CONTRACT='genuine-current-production-controller-v2'
 REPORT=re.compile(r'data/selection-grading/(?:latest\.json|hosting\.json|[0-9a-f]{64}/(?:summary|outcomes|rows|rows-[0-9]{4}|manifest|registry|archive)\.json|[0-9a-f]{64}/snapshot-(?:app\.js|index\.html|data_(?:week|meta|verification-scope|forecast-scorecard|health|release-identity)\.json|data_selection-grading_latest\.json))\Z')
 SECRET=re.compile(r'\b(?:gh[pousr]_|github_pat_|sk-proj-|AKIA[A-Z0-9]{16}|xox[baprs]-)|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+\S+',re.I)
 PRIVATE=re.compile(r'^(?:authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|password|credentials?|tokens?|(?:access|refresh|id|auth|session|bearer)[-_]?tokens?|x[-_]?(?:auth[-_]?token|api[-_]?key)|secret|client[-_]?secret|api[_-]?key|localStorage|device_id|session_id|account_balance)$',re.I)
@@ -38,6 +49,9 @@ def parsed(raw):
 def safe_name(name):
     return len(name)<=512 and bool(re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*',name)) and all(x not in ('.','..') for x in name.split('/'))
 def role(name):
+    if safe_name(name) and WEEKLY_AUDIT.fullmatch(name):return 'weekly_audit'
+    if name=='output/'+WEEKLY_POINTER:return 'weekly_pointer'
+    if safe_name(name) and name.startswith('output/') and WEEKLY_BODY.fullmatch(name[7:]):return 'weekly_overlay'
     if safe_name(name) and LANE.match(name):
         if name.endswith('.json.gz'):return 'receipt'
         if re.fullmatch(r'\.capture-[a-z0-9_]{8}',name.rsplit('/',1)[-1]):return 'receipt_temporary'
@@ -74,6 +88,51 @@ def decoded(raw,receipt=False,object_required=True):
         need(value['payload'].get('schema_version') in SCHEMAS,'RECEIPT_SCHEMA')
         return value['payload']
     return value
+def weekly_json(name,raw):
+    """Strictly typed preservation; never an original-evidence qualification."""
+    need(len(raw)<=4*MIB,'WEEKLY_JSON_BOUND')
+    need(raw[:2]!=b'\x1f\x8b','WEEKLY_PLAIN_JSON_REQUIRED')
+    value=decoded(raw)
+    logical=name[7:] if name.startswith('output/') else name
+    if WEEKLY_AUDIT.fullmatch(logical):
+        need(set(value)=={'schema_version','website_source_sha','at','policy_file_sha256','authority_kind','human_approval','validation','review'}
+            and value['schema_version']=='weekly-public-feed-writer-audit-v1'
+            and isinstance(value['website_source_sha'],str) and re.fullmatch('[0-9a-f]{40}',value['website_source_sha'])
+            and isinstance(value['policy_file_sha256'],str) and re.fullmatch('[0-9a-f]{64}',value['policy_file_sha256'])
+            and value['authority_kind']=='AUTOMATED_REGISTERED_POLICY' and value['human_approval'] is False
+            and isinstance(value['validation'],dict) and isinstance(value['review'],dict),'WEEKLY_AUDIT_CONTRACT')
+        need(isinstance(value['at'],str) and datetime.fromisoformat(value['at'].replace('Z','+00:00')).tzinfo is not None,'WEEKLY_AUDIT_CLOCK')
+        need(logical=='data/weekly-adaptive-audit/'+sha(canonical(value))+'.json','WEEKLY_AUDIT_IDENTITY')
+    elif logical==WEEKLY_POINTER:
+        need(set(value)=={'schema_version','path','sha256','bytes','display_board_sha256'}
+            and value['schema_version']=='weekly-adaptive-overlay-pointer-v1'
+            and isinstance(value['sha256'],str) and re.fullmatch('[0-9a-f]{64}',value['sha256'])
+            and value['path']=='data/weekly-adaptive/'+value['sha256']+'.json'
+            and type(value['bytes']) is int and 0<value['bytes']<=4*MIB
+            and isinstance(value['display_board_sha256'],str) and re.fullmatch('[0-9a-f]{64}',value['display_board_sha256']),'WEEKLY_POINTER_CONTRACT')
+    else:
+        need(WEEKLY_BODY.fullmatch(logical) and value.get('schema_version')=='weekly-adaptive-public-overlay-v1'
+            and logical=='data/weekly-adaptive/'+sha(raw)+'.json','WEEKLY_OVERLAY_IDENTITY')
+    return value
+def weekly_pages(bodies,dispatch):
+    """Recheck the exact modern public graph from actual tar bytes."""
+    names={n for n in bodies if n==WEEKLY_JS or n==WEEKLY_POINTER or WEEKLY_BODY.fullmatch(n)}
+    if not names:return
+    need(WEEKLY_JS in names and weekly_static is not None and bodies[WEEKLY_JS]==weekly_static,'WEEKLY_STATIC_SOURCE')
+    if WEEKLY_POINTER not in names:
+        need(names=={WEEKLY_JS},'WEEKLY_ORPHAN_BODY')
+        return
+    need(weekly_overlay is not None,'WEEKLY_VALIDATOR_NOT_BOUND')
+    pointer=weekly_json(WEEKLY_POINTER,bodies[WEEKLY_POINTER])
+    need(names=={WEEKLY_JS,WEEKLY_POINTER,pointer['path']},'WEEKLY_COMPLETE_GRAPH')
+    raw=bodies[pointer['path']]
+    need(len(raw)==pointer['bytes'] and sha(raw)==pointer['sha256'],'WEEKLY_DESCRIPTOR_BYTES')
+    value=weekly_json(pointer['path'],raw)
+    need(value.get('website_source_sha')==dispatch,'WEEKLY_EXECUTED_SOURCE')
+    need('data/week.json' in bodies and len(bodies['data/week.json'])<=16*MIB,'WEEKLY_BOARD_DEPENDENCY')
+    board_raw=bodies['data/week.json'];board=decoded(board_raw)
+    need(pointer['display_board_sha256']==sha(board_raw),'WEEKLY_POINTER_BOARD')
+    weekly_overlay.validate_overlay(value,board,sha(board_raw))
 def encoded(path,retain=False,limit=ENCODED):
     initial=path.lstat();need(stat.S_ISREG(initial.st_mode) and not path.is_symlink(),'NONREGULAR_FILE')
     need(initial.st_size<=limit,'ENCODED_BOUND')
@@ -133,7 +192,7 @@ def fixed_git(app,*args):
     need(result.returncode==0 and len(result.stdout)<=DECODED,'FIXED_GIT_REJECTED')
     return result.stdout
 def authenticated_bytes(app,dispatch,relative):
-    need(relative in ('tools/source_ci.py','tools/genuine_case_recovery.py'),'FIXED_DEPENDENCY')
+    need(relative in ('tools/source_ci.py','tools/genuine_case_recovery.py','tools/weekly_adaptive_overlay.py','output/weekly-adaptive-overlay.js',WORKFLOW),'FIXED_DEPENDENCY')
     row=fixed_git(app,'ls-tree','-z',dispatch,'--',relative)
     need(row.endswith(b'\0') and row.count(b'\0')==1,'DEPENDENCY_GIT_ENTRY')
     header,name=row[:-1].split(b'\t');mode,kind,oid=header.decode().split()
@@ -151,6 +210,16 @@ def checked_source_ci(app,dispatch):
     module=types.ModuleType('genuine_verified_source_ci');module.__file__=str(app/'tools/source_ci.py')
     exec(compile(raw,module.__file__,'exec'),module.__dict__)
     return module
+def checked_driver(app,dispatch):
+    raw=authenticated_bytes(app,dispatch,WORKFLOW)
+    start=b'          import datetime as dt, gzip, hashlib, json, math, os, re, resource, signal, stat, subprocess, sys, tarfile, time\n'
+    end=b"          if __name__=='__main__':main()\n"
+    need(raw.count(start)==1 and raw.count(end)==1,'CLOSED_DRIVER_MARKERS')
+    block=raw[raw.index(start):raw.index(end)+len(end)]
+    need(all(not row.strip() or row.startswith(b'          ') for row in block.splitlines()),'CLOSED_DRIVER_INDENTATION')
+    value=b''.join((row[10:] if row.startswith(b'          ') else b'')+b'\n' for row in block.splitlines())
+    digest=sha(value);need(DRIVER_BYTES.get(digest)==len(value),'CLOSED_DRIVER_IDENTITY')
+    return digest
 def allowed_leftover(name,tracked):
     if not safe_name(name):return False
     if source_ci.mutable(name):return True
@@ -175,7 +244,7 @@ def source_identity(app):
             need(allowed_leftover(name,tracked),'UNTRACKED_EXECUTABLE_SOURCE')
     return current
 def context():
-    global source_ci
+    global source_ci,weekly_overlay,weekly_static
     need(sys.flags.safe_path,'SAFE_PATH_STARTUP_REQUIRED')
     workspace=Path(os.environ['GITHUB_WORKSPACE']).resolve();app=workspace/'source';prod=workspace/'production'
     need(Path(__file__).resolve()==app/'tools/genuine_case_recovery.py','ACTUAL_HELPER_PATH')
@@ -187,11 +256,18 @@ def context():
     need(source_ci._descendant(app,dispatch,current['commit']),'SOURCE_ANCESTRY')
     original=source_ci.source(app,dispatch,actual=False)
     need(original['source_manifest_sha256']==current['source_manifest_sha256'],'SOURCE_CLOSURE_CHANGED')
+    driver=checked_driver(app,dispatch)
+    if driver==DRIVER:
+        weekly_raw=authenticated_bytes(app,dispatch,'tools/weekly_adaptive_overlay.py')
+        weekly_overlay=types.ModuleType('genuine_verified_weekly_overlay');weekly_overlay.__file__=str(app/'tools/weekly_adaptive_overlay.py')
+        exec(compile(weekly_raw,weekly_overlay.__file__,'exec'),weekly_overlay.__dict__)
+        weekly_static=authenticated_bytes(app,dispatch,'output/weekly-adaptive-overlay.js')
+    else:weekly_overlay=weekly_static=None
     temp=Path(os.environ['RUNNER_TEMP']);need(temp.is_absolute() and temp.resolve()==temp,'TEMP_ROOT')
     transaction=temp/('nfl-capture-transactions-'+run);state=temp/('nfl-genuine-recovery-'+run)
     need(os.environ.get('TMPDIR')==str(transaction) and transaction.is_dir() and not transaction.is_symlink() and transaction.resolve()==transaction,'PRESTART_TMPDIR')
     need(stat.S_IMODE(transaction.stat().st_mode)==0o700 and transaction.stat().st_uid==os.getuid(),'TRANSACTION_OWNERSHIP')
-    return app,prod,transaction,state,{'dispatch_source':dispatch,'executed_commit':current['commit'],'executed_tree':current['tree'],'source_manifest_sha256':current['source_manifest_sha256'],'run_id':run,'driver_sha256':DRIVER}
+    return app,prod,transaction,state,{'dispatch_source':dispatch,'executed_commit':current['commit'],'executed_tree':current['tree'],'source_manifest_sha256':current['source_manifest_sha256'],'run_id':run,'driver_sha256':driver}
 def inactive_units(run):
     need(not any(key in os.environ for key in ('DBUS_SYSTEM_BUS_ADDRESS','SYSTEMD_BUS_ADDRESS')),'SYSTEM_MANAGER_BUS_OVERRIDE')
     result=[]
@@ -224,9 +300,10 @@ def recover(roots,before):
                 item=reference(origin,name)
                 try:
                     need(issue is None,issue or 'NONREGULAR_FILE')
-                    info,_=encoded(path);item.update(info)
+                    kind=role(name)
+                    info,_=encoded(path,limit=4*MIB if kind and kind.startswith('weekly_') else ENCODED);item.update(info)
                     if unchanged(name,info,before):continue
-                    kind=role(name);need(kind is not None,'ATOMIC_JSON_TARGET_UNAVAILABLE' if atomic_json_temp(name) else 'UNCLASSIFIED_ROLE')
+                    need(kind is not None,'ATOMIC_JSON_TARGET_UNAVAILABLE' if atomic_json_temp(name) else 'UNCLASSIFIED_ROLE')
                     queue.append((kind,origin,name,path,info,item))
                 except (OSError,ValueError,TypeError,KeyError,RecursionError,EOFError) as error:
                     item.update(state='UNAVAILABLE_INVALID_INCOMPLETE_OR_UNCLASSIFIED',reason=str(error) if isinstance(error,Rejected) else type(error).__name__)
@@ -235,9 +312,9 @@ def recover(roots,before):
         except (OSError,ValueError) as error:records.append({'origin':origin,'state':'UNAVAILABLE_SCAN','reason':str(error) if isinstance(error,Rejected) else type(error).__name__})
     for kind,origin,name,path,info,item in sorted(queue,key=lambda value:(not value[0].startswith('receipt'),value[1],value[2])):
         try:
-            info2,raw=encoded(path,True);need(info2==info,'INCOMPLETE_OR_CHANGED_WRITE')
+            info2,raw=encoded(path,True,4*MIB if kind.startswith('weekly_') else ENCODED);need(info2==info,'INCOMPLETE_OR_CHANGED_WRITE')
             if kind=='receipt_temporary':need(raw[:2]==b'\x1f\x8b','ATOMIC_RECEIPT_GZIP_REQUIRED')
-            value=decoded(raw,kind.startswith('receipt'));item.update(role=kind,schema_version=value.get('schema_version'),state='UNQUALIFIED_PRESERVED')
+            value=weekly_json(name,raw) if kind.startswith('weekly_') else decoded(raw,kind.startswith('receipt'));item.update(role=kind,schema_version=value.get('schema_version'),state='UNQUALIFIED_PRESERVED')
             if kind.startswith('receipt'):item['payload_sha256']=sha(canonical(value))
             if kind=='receipt_temporary':item['logical_reference_status']='ATOMIC_TEMP_NO_CANONICAL_NATIVE_CREATED'
             match=next((prior for prior in by_hash.get(info['sha256'],[]) if prior[1]==raw),None)
@@ -257,7 +334,7 @@ def recover(roots,before):
     need(stream.tell()<=CAP-META_CAP-FINAL_CAP,'RECOVERY_TAR_BOUND')
     return stream.getvalue(),records
 def public_path(name):
-    return name in STATIC or 'output/'+name in BOARDS-{'output/data/game-status.json','output/data/matchup-proof.json'} or bool(re.fullmatch(r'data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json',name)) or bool(REPORT.fullmatch(name))
+    return name in STATIC or name in (WEEKLY_JS,WEEKLY_POINTER) or bool(WEEKLY_BODY.fullmatch(name)) or 'output/'+name in BOARDS-{'output/data/game-status.json','output/data/matchup-proof.json'} or bool(re.fullmatch(r'data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json',name)) or bool(REPORT.fullmatch(name))
 def tar_entries(raw,public=False,expected=None):
     need(len(raw)<=CAP and len(raw)%512==0,'TAR_BOUND')
     items={};seen=set();position=0;pending=None;count=0
@@ -292,6 +369,11 @@ def controller_archive(raw,dispatch,status):
     need(all(isinstance(meta[name],dict) for name in META-{'NEW_RECEIPTS_MANIFEST.json'}) and isinstance(meta['NEW_RECEIPTS_MANIFEST.json'],list),'CONTROLLER_METADATA_TYPES')
     case=meta['RELEASE_CASE_MANIFEST.json']
     need(case.get('schema_version')=='genuine-current-production-case-v1' and case.get('source')==dispatch and case.get('status')==status and meta['INPUT_DATA_MANIFEST.json'].get('source')==dispatch,'CONTROLLER_METADATA_SOURCE')
+    modern=case.get('controller_contract')==WEEKLY_CONTRACT
+    need('controller_contract' not in case or modern,'CONTROLLER_CONTRACT')
+    if modern:
+        need(case.get('reviewed_main_base')=='315be5e86a1a3a93022b68c453739076487e2077'
+            and case.get('reviewed_main_source_tree')=='dfdc11ac312a6a54c79e7379352106c315e13f5f','CONTROLLER_REVIEWED_MAIN_SOURCE')
     outputs=meta['OUTPUT_DATA_MANIFEST.json'];after=outputs['after'];representations=outputs['representations']
     receipts={}
     for item in meta['NEW_RECEIPTS_MANIFEST.json']:
@@ -305,8 +387,10 @@ def controller_archive(raw,dispatch,status):
             payload=decoded(body,True);need(same(body,receipts[logical]) and same(body,after[logical]) and payload['schema_version']==receipts[logical]['schema_version'],'CONTROLLER_RECEIPT_BYTES');actual.add(logical)
         elif name.startswith('mutable/'):
             logical=name[len('mutable/'):]
-            allowed=bool(CACHE.fullmatch(logical)) or logical in ('output/data/game-status.json','output/data/matchup-proof.json','output/data/selection-grading/hosting.json') or logical.startswith('output/') and public_path(logical[7:])
-            need(allowed,'CONTROLLER_MUTABLE_ROLE');decoded(body)
+            weekly=bool(WEEKLY_AUDIT.fullmatch(logical)) or logical=='output/'+WEEKLY_POINTER or logical.startswith('output/') and bool(WEEKLY_BODY.fullmatch(logical[7:]))
+            allowed=bool(CACHE.fullmatch(logical)) or logical in ('output/data/game-status.json','output/data/matchup-proof.json','output/data/selection-grading/hosting.json') or logical.startswith('output/') and public_path(logical[7:]) or bool(WEEKLY_AUDIT.fullmatch(logical))
+            need(allowed and (not weekly or modern),'CONTROLLER_MUTABLE_ROLE')
+            weekly_json(logical,body) if weekly else decoded(body)
             need(same(body,after[logical]) and same(body,representations[logical]) and representations[logical]['storage']==name,'CONTROLLER_MUTABLE_BYTES')
         else:raise Rejected('CONTROLLER_UNCLASSIFIED_MEMBER')
     need(actual==set(receipts),'CONTROLLER_RECEIPT_MEMBERSHIP')
@@ -315,6 +399,8 @@ def controller_archive(raw,dispatch,status):
     if 'public-pages.tar' in entries:
         bodies=tar_entries(entries['public-pages.tar'],True,pages)
         need(set(bodies)==set(pages) and all(same(body,pages[name]) for name,body in bodies.items()),'CONTROLLER_PAGES_MEMBERSHIP')
+        if any(n==WEEKLY_JS or n==WEEKLY_POINTER or WEEKLY_BODY.fullmatch(n) for n in bodies):
+            need(modern,'WEEKLY_CONTROLLER_REQUIRED');weekly_pages(bodies,dispatch)
     else:need(status!='COMPLETE_GENUINE_NONDEPLOY_CASE','CONTROLLER_COMPLETE_PAGES_MISSING')
     if status=='COMPLETE_GENUINE_NONDEPLOY_CASE':
         for logical,item in representations.items():

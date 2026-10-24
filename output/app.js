@@ -23,6 +23,7 @@ const INJ_SHORT = { Questionable: "Q", Doubtful: "D", Out: "OUT", IR: "IR", PUP:
 
 const S = {
   data: null, track: null, generatedAt: null,
+  weeklyOverlay: null, weeklyOverlayReady: false, weeklyOverlayBoardHash: null, weeklyOverlayRequestBoard: null,
   grading: null, gradingError: null, finalOutcomes: new Map(),
   gradingFilters: {}, gradingGroup: null, gradingShown: 100,
   byId: {}, byKey: {},
@@ -680,7 +681,7 @@ function validateForecastAccuracy(value) {
 function forecastAccuracyHtml(value) {
   if (!value) return "";
   const metric = v => v.n ? `${fmt(v.mae,3)} / ${fmt(v.rmse,3)} / ${fmt(v.bias,3)}` : "Unavailable";
-  return `<section class="card" data-forecast-accuracy><h3>Saved forecast accuracy · cumulative</h3><p class="note">Independent of selection filters. Paired raw/adjusted errors use the same saved observation and supported final outcome. First-observation coverage and earliest-valid-pair coverage can differ. Category units stay separate. Uncertainty and later confirmation are unavailable; this is descriptive evidence, not predictive improvement or a pick probability.</p>${value.cohorts.map(c=>`<details><summary>${esc(c.model_version)} · ${esc(gradingLabel(c.outcome_provenance))} · ${c.coverage.opportunities} saved forecasts</summary><p style="overflow-wrap:anywhere">Engine ${esc(c.engine_sha256)} · ${esc(c.forecast_provenance)} · ${c.coverage.unique_players} players / ${c.coverage.unique_games} games / ${c.coverage.unique_weeks} weeks</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Category</th><th>Saved / paired coverage</th><th>Resolved paired N</th><th>Raw MAE / RMSE / bias</th><th>Adjusted MAE / RMSE / bias</th><th>Other coverage</th></tr></thead><tbody>${Object.entries(c.categories).map(([key,v])=>`<tr><th>${esc(SHORT[key])}</th><td>${v.coverage.opportunities} / ${v.paired_coverage.opportunities}</td><td>${v.paired.raw.n}</td><td>${metric(v.paired.raw)}</td><td>${metric(v.paired.adjusted)}</td><td><details><summary>Coverage and sample</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({outcomes:v.outcome_status,paired_outcomes:v.paired_status,sample:v.paired.sample,unpaired:v.unpaired_coverage,missing:v.unpaired_missingness,adjusted_only:v.adjusted_only},null,2))}</pre></details></td></tr>`).join("")}</tbody></table></div><p>Offensive PPR above is component-derived. Direct saved provider PPR comparator: N ${c.categories.fpts.direct_provider_ppr.raw.n}; provider ${metric(c.categories.fpts.direct_provider_ppr.raw)}; adjusted component ${metric(c.categories.fpts.direct_provider_ppr.adjusted)}. No missing direct total is inferred.</p><h4>Anytime rushing/receiving TD probability</h4>${Object.entries(c.categories.anytime_td.probability).map(([basis,v])=>`<details><summary>${esc(gradingLabel(basis))} · N ${v.n} · events ${v.events} · Brier ${v.n?fmt(v.brier,4):"Unavailable"} · log loss ${v.log_loss_state==="positive_infinity"?"Positive infinity":v.n?fmt(v.log_loss,4):"Unavailable"}</summary><p>Fixed calibration bins are descriptive; no calibrated ticket probability is established.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify(v.calibration,null,2))}</pre></details>`).join("")}<p>Missing TD probability coverage: ${esc(JSON.stringify(c.categories.anytime_td.probability_unavailable))}</p></details>`).join("")}<details><summary>Capture exclusions and scope</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({capture_coverage:value.capture_coverage,uncertainty:value.uncertainty,limitations:value.limitations},null,2))}</pre></details></section>`;
+  return `<section class="card" data-forecast-accuracy><h3>Saved forecast accuracy · cumulative</h3><p class="note">Evaluates saved reference forecasts in the listed model/engine cohorts. Provisional display forecasts are not scored here. Independent of selection filters. Paired raw/adjusted errors use the same saved observation and supported final outcome. First-observation coverage and earliest-valid-pair coverage can differ. Category units stay separate. Uncertainty and later confirmation are unavailable; this is descriptive evidence, not predictive improvement or a pick probability.</p>${value.cohorts.map(c=>`<details><summary>${esc(c.model_version)} · ${esc(gradingLabel(c.outcome_provenance))} · ${c.coverage.opportunities} saved forecasts</summary><p style="overflow-wrap:anywhere">Engine ${esc(c.engine_sha256)} · ${esc(c.forecast_provenance)} · ${c.coverage.unique_players} players / ${c.coverage.unique_games} games / ${c.coverage.unique_weeks} weeks</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Category</th><th>Saved / paired coverage</th><th>Resolved paired N</th><th>Raw MAE / RMSE / bias</th><th>Adjusted MAE / RMSE / bias</th><th>Other coverage</th></tr></thead><tbody>${Object.entries(c.categories).map(([key,v])=>`<tr><th>${esc(SHORT[key])}</th><td>${v.coverage.opportunities} / ${v.paired_coverage.opportunities}</td><td>${v.paired.raw.n}</td><td>${metric(v.paired.raw)}</td><td>${metric(v.paired.adjusted)}</td><td><details><summary>Coverage and sample</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({outcomes:v.outcome_status,paired_outcomes:v.paired_status,sample:v.paired.sample,unpaired:v.unpaired_coverage,missing:v.unpaired_missingness,adjusted_only:v.adjusted_only},null,2))}</pre></details></td></tr>`).join("")}</tbody></table></div><p>Offensive PPR above is component-derived. Direct saved provider PPR comparator: N ${c.categories.fpts.direct_provider_ppr.raw.n}; provider ${metric(c.categories.fpts.direct_provider_ppr.raw)}; adjusted component ${metric(c.categories.fpts.direct_provider_ppr.adjusted)}. No missing direct total is inferred.</p><h4>Anytime rushing/receiving TD probability</h4>${Object.entries(c.categories.anytime_td.probability).map(([basis,v])=>`<details><summary>${esc(gradingLabel(basis))} · N ${v.n} · events ${v.events} · Brier ${v.n?fmt(v.brier,4):"Unavailable"} · log loss ${v.log_loss_state==="positive_infinity"?"Positive infinity":v.n?fmt(v.log_loss,4):"Unavailable"}</summary><p>Fixed calibration bins are descriptive; no calibrated ticket probability is established.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify(v.calibration,null,2))}</pre></details>`).join("")}<p>Missing TD probability coverage: ${esc(JSON.stringify(c.categories.anytime_td.probability_unavailable))}</p></details>`).join("")}<details><summary>Capture exclusions and scope</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({capture_coverage:value.capture_coverage,uncertainty:value.uncertainty,limitations:value.limitations},null,2))}</pre></details></section>`;
 }
 async function validateGradingIndexes(pointer, summary, outcomes) {
   const extended = summary.schema_version === "selection-public-report-v6" && summary.report_schema_version === "selection-report-v4" && pointer.schema_version === "selection-publication-pointer-v4";
@@ -1293,9 +1294,25 @@ async function checkMeta() {
 
 // ---------------------------------------------------------------- load
 
+function startWeeklyOverlay() {
+  const api = globalThis.WeeklyAdaptiveOverlay, board = S.data;
+  if (!S.weeklyOverlayReady || !board || typeof api?.load !== "function" || S.weeklyOverlayRequestBoard === board) return;
+  S.weeklyOverlayRequestBoard = board;
+  const boardHash = S.weeklyOverlayBoardHash;
+  Promise.resolve().then(() => api.load(board, boardHash)).then(overlay => {
+    if (S.data !== board || S.weeklyOverlayRequestBoard !== board || !S.weeklyOverlayReady) return;
+    S.weeklyOverlay = overlay;
+    if (overlay && S.gameView) renderGame();
+    else if (overlay && S.tab === "props") renderProps();
+  }).catch(() => { /* The current reference remains usable if the optional helper fails. */ });
+}
+globalThis.addEventListener("weekly-adaptive-overlay-ready", () => startWeeklyOverlay());
+
 async function load() {
   const board = await boundJSON(`data/week.json?t=${Date.now()}`);
   S.data = board.value;
+  S.weeklyOverlay = null; S.weeklyOverlayReady = false;
+  S.weeklyOverlayBoardHash = board.hash;
   S.rosKey = null; S.gradeKey = null;
   S.future = null; S.futureLoading = null; S.ideas = null; S.teamWeeksMap = null; S.teamOppsMap = null;
   S.generatedAt = S.data.generated_at;
@@ -1608,7 +1625,7 @@ function pickCard(pick) {
     <div>
       <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)}</div>
       <div class="what">${pick.direction === "over" ? "Over" : "Under"} <b class="num">${pick.line}</b> ${label} <span class="muted">${oppText(p)}</span></div>
-      <div class="small">${LINE_FROM[pick.line_from] || "Our"} line, locked at kickoff · ${adj != null ? `our pregame proj <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}</div>
+      <div class="small">${LINE_FROM[pick.line_from] || "Our"} line, locked at kickoff · ${adj != null ? `reference pregame proj <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}</div>
       ${progress(st, pick.line, pick.direction, pick.key)}
     </div>
     <div class="side">
@@ -1618,21 +1635,41 @@ function pickCard(pick) {
   </div>`;
 }
 
+// Display only: typed eligibility belongs to the existing validated overlay.
+// Reference values remain the inputs to leans, rankings and saved selections.
+function selectedPropForecast(p, key, now = Date.now()) {
+  try {
+    const api = globalThis.WeeklyAdaptiveOverlay, overlay = S.weeklyOverlay;
+    if (typeof api?.card !== "function" || !api.card(overlay, p, key, now)) return null;
+    const row = overlay.rows.get(JSON.stringify([p.game_id, p.id, key]));
+    const labels = { point_mean: "mean", point_median: "median", binary_probability: "TD probability" };
+    if (!row || !Object.hasOwn(labels, row.product) || !Number.isFinite(row.forecast_value)) return null;
+    return { value: row.forecast_value, label: labels[row.product], binary: row.product === "binary_probability",
+      text: row.product === "binary_probability" ? `${(100 * row.forecast_value).toFixed(1)}%` : row.forecast_value.toFixed(2),
+      frozen: now >= Date.parse(row.kickoff_utc) };
+  } catch (_) { return null; }
+}
+
 function propChip(p, raw) {
   const prop = pv(p, raw);
-  const line = S.lines[`${p.id}|${prop.key}`] ?? prop.line;
+  const selected = selectedPropForecast(p, prop.key);
+  const customLine = S.lines[`${p.id}|${prop.key}`];
+  const edited = customLine != null && customLine !== prop.line;
+  const line = customLine ?? prop.line;
   const st = propStatus(p, prop.key, line, prop.lean);
   const arrow = prop.key === "anytime_td"
-    ? `<span class="muted"> ${tdChanceText(prop)}</span>`
+    ? selected ? "" : `<span class="muted"> ${tdChanceText(prop)}</span>`
     : prop.lean ? `<span class="arrow">${prop.lean === "over" ? "▲" : "▼"}</span>` : "";
   const cls = [prop.lean ? `lean-${prop.lean}` : "", st && prop.lean && (st.res === "hit" || st.res === "miss") ? st.res : ""].join(" ");
-  const lineText = prop.key === "anytime_td" ? "" : `<b>${line}</b><span class="src ${prop.line_from || "ours"}">${LINE_TAG[prop.line_from] || "est"}</span>`;
+  const lineText = prop.key === "anytime_td" ? "" : `<b>${line}</b><span class="src ${selected && edited ? "" : prop.line_from || "ours"}">${selected && edited ? "custom" : LINE_TAG[prop.line_from] || "est"}</span>`;
   const cur = st && st.v != null ? `<span class="cur">${fmtStat(prop.key, st.v)}</span>` : "";
+  if (selected) return `<span class="pchip ${cls}" data-weekly-primary title="Selected forecast assumes participation; leans and ranking use the current reference">${SHORT[prop.key]}<b>${selected.text}</b><span class="src">${selected.frozen ? "frozen" : "provisional"} ${selected.label}</span>${lineText ? `<span class="muted"> · ${edited ? "Your line" : prop.line_from === "ours" || !prop.line_from ? "Reference line" : "book line"}</span>${lineText}` : ""}${arrow ? `<span class="muted"> Reference lean</span>${arrow}` : ""}${cur}</span>`;
   return `<span class="pchip ${cls}">${SHORT[prop.key]}${lineText}${arrow}${cur}</span>`;
 }
 
 function catCard(p, raw) {
   const prop = pv(p, raw);
+  const selected = selectedPropForecast(p, prop.key);
   const from = prop.line_from || "ours";
   const cat = S.data.categories[prop.key];
   const k = `${p.id}|${prop.key}`;
@@ -1651,8 +1688,10 @@ function catCard(p, raw) {
     const d = prop.adj - line;
     lean = d > cat.lean ? "over" : d < -cat.lean ? "under" : null;
   }
+  const referenceTd = prop.key === "anytime_td" ? tdChanceText(prop) : null;
   const leanPill = prop.key === "anytime_td"
-    ? `<span class="lean ${prop.lean ? "over" : "none"}">${tdChanceText(prop)} TD chance</span>`
+    ? selected ? `<span class="lean none">${selected.text} ${selected.frozen ? "frozen provisional" : "provisional"} TD probability</span>`
+      : `<span class="lean ${prop.lean ? "over" : "none"}">${referenceTd} TD chance</span>`
     : from === "ours"
       ? `<span class="lean none" title="Leans are only called against real sportsbook lines">No book line</span>`
       : `<span class="lean ${lean || "none"}">${lean ? `Lean ${lean}` : "No lean"}</span>`;
@@ -1675,12 +1714,13 @@ function catCard(p, raw) {
     ? ` Matchup vs ${p.opp}: <b>${prop.mf >= 1 ? "+" : ""}${fmt(100 * (prop.mf - 1))}%</b> (similar ${p.pos}s against them this season, ${prop.mf_n} game${prop.mf_n === 1 ? "" : "s"}).`
     : prop.mf != null ? ` No similar ${p.pos}s have faced ${p.opp} yet, so no matchup adjustment.` : "";
   const note = prop.key === "anytime_td"
-    ? `${vals.length ? `Scored in ${vals.filter((x) => x.v > 0).length} of ${gamesText}. ` : ""}Chance comes from Sleeper's projected TDs.`
+    ? `${vals.length ? `Scored in ${vals.filter((x) => x.v > 0).length} of ${gamesText}. ` : ""}${selected ? "Reference TD chance" : "Chance"} comes from Sleeper's projected TDs.`
     : (vals.length ? `Over in <b>${over}</b> of ${gamesText}${edited ? ` at your line (the ${LINE_FROM[from]} line is ${prop.line})` : ""}.` : "No games yet this season.")
         + mfText
         + (from === "ours" && prop.key !== "fpts" ? " No sportsbook line yet, so this line is our projection." : "")
         + (prop.sleeper?.over ? ` Sleeper Picks shows leg multipliers: ${prop.sleeper.over}x over, ${prop.sleeper.under}x under. Full payouts depend on the contest entry.` : "");
 
+  const selectedNote = selected ? ` Selected ${selected.label} assumes participation and remains provisional. ${selected.binary ? "" : "It does not give a bet-win probability. "}Lines, leans, ranking and saved selections use the reference model.` : "";
   return `<div class="cat" data-cat="${k}">
     <div class="cat-h"><span>${prop.key === "fpts" ? `Fantasy Points (${scoringName()})` : cat.label}</span>${leanPill}</div>
     ${prop.key !== "anytime_td" ? `<div class="cat-add">${["over", "under"].map((d) => {
@@ -1688,15 +1728,17 @@ function catCard(p, raw) {
       return `<button class="add ${d} ${on ? "on" : ""}" data-add="${p.id}|${prop.key}|${d}|${line}" title="${on ? "Remove from" : "Add to"} My Picks">${on ? "\u2713" : "+"} ${d === "over" ? "Over" : "Under"} ${line}</button>`;
     }).join("")}</div>` : ""}
     <div class="cat-nums">
+      ${selected ? `<div data-weekly-primary>${selected.frozen ? "Frozen provisional" : "Provisional"} ${selected.label}${selected.binary ? "" : " forecast"}<span class="n">${selected.text}</span></div>` : ""}
       ${lineCell}
-      ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment, made before kickoff">Our proj (pregame)<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
+      ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment, made before kickoff">${selected ? "Current reference forecast" : "Our proj (pregame)"}<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
+      ${selected?.binary ? `<div>Current reference probability<span class="n">${referenceTd}</span></div>` : ""}
       ${st && !st.final && st.v != null && prop.adj != null && prop.key !== "anytime_td" ? `<div title="What he has so far plus our pregame projection for the time left">On pace<span class="n" style="color:var(--amber)">${fmt(st.v + prop.adj * remaining(S.games[p.game_id]), prop.key === "fpts" ? 2 : 1)}</span></div>` : ""}
       ${prop.proj != null ? `<div>Sleeper proj<span class="n">${fmtStat(prop.key, prop.proj)}</span></div>` : ""}
       ${avg != null ? `<div>Season avg<span class="n">${fmt(avg)}</span></div>` : ""}
       ${st ? `<div>${st.final ? "Final statistic" : S.games[p.game_id]?.state === "post" ? "Final evidence" : "Now"}<span class="n" style="color:var(--cyan)">${st.v == null ? st.res === "dnp" ? "DNP" : "Unresolved" : fmtStat(prop.key, st.v)}</span>${resBadge(st)}</div>` : ""}
     </div>
     ${vals.length ? `<div class="bars">${bars}<div class="lineat" style="bottom:${(100 * line) / top}%"></div></div><div class="bars-x">${xs}</div>` : ""}
-    <div class="foot-n">${note}</div>
+    <div class="foot-n">${note}${selectedNote}</div>
   </div>`;
 }
 
@@ -1777,7 +1819,8 @@ function renderProps() {
       <div class="picks"><h3>Top Overs <span class="tag over">${picksFor("over").length}</span></h3>${pickList("over")}</div>
       <div class="picks"><h3>Top Unders <span class="tag under">${picksFor("under").length}</span></h3>${pickList("under")}</div>
     </div>
-    <p class="note">Top picks are the biggest gaps between our projection (Sleeper's, adjusted for how similar players have done against this defense this season) and the real DraftKings line, for players with 2+ games this season who aren't ruled out. They lock at kickoff with the pregame line; during the game you'll also see DraftKings' live line. <a href="#" data-goto="about">How it works</a></p>
+    <p class="note">Top picks use the current reference: the biggest gaps between its projection (Sleeper's, adjusted for how similar players have done against this defense this season) and the real DraftKings line, for players with 2+ games this season who aren't ruled out. They lock at kickoff with the pregame line; during the game you'll also see DraftKings' live line. <a href="#" data-goto="about">How it works</a></p>
+    <p class="note">Category forecasts marked provisional show the selected mean, median or TD probability, conditional on participation. Reference values are labeled separately. Top Picks, leans, rankings, fantasy points and game forecasts use the current reference. Historical R0 records retain their original source identity.</p>
 
     <h2>Players <small>${list.length} shown</small></h2>
     <div class="filters">
@@ -1785,9 +1828,9 @@ function renderProps() {
       <select id="f-game" aria-label="Game"><option value="">All games</option>${gameOpts}</select>
       <select id="f-cat" aria-label="Prop"><option value="">All props</option>${catOpts}</select>
       <select id="f-sort" aria-label="Sort">
-        <option value="proj" ${f.sort === "proj" ? "selected" : ""}>Sort: Projected points</option>
+        <option value="proj" ${f.sort === "proj" ? "selected" : ""}>Sort: Reference projected points</option>
         <option value="live" ${f.sort === "live" ? "selected" : ""}>Sort: Live points</option>
-        <option value="edge" ${f.sort === "edge" ? "selected" : ""}>Sort: Biggest lean</option>
+        <option value="edge" ${f.sort === "edge" ? "selected" : ""}>Sort: Reference biggest lean</option>
         <option value="name" ${f.sort === "name" ? "selected" : ""}>Sort: Name</option>
       </select>
       <input type="search" id="f-q" placeholder="Search player or team" value="${esc(f.q)}">
@@ -3536,6 +3579,7 @@ function renderAbout() {
   const cats = Object.entries(S.data.categories).filter(([k]) => k !== "anytime_td");
   $("#main").innerHTML = `<div class="about">
     <h2>Forecast comparison · Phase 2</h2>
+    <div class="card note"><p>Supported category forecasts display a selected provisional mean, signed median or touchdown event probability when a valid overlay is available. They assume participation; accuracy is still being evaluated. Missing or expired selected forecasts use the current reference display. Point forecasts do not give a bet-win probability. Exact website PPR, Top Picks, leans, rankings, fantasy and game forecasts remain on the current reference; historical R0 records keep their original source identity.</p></div>
     <div class="card note"><p><b>Production picks use the retained baseline.</b> Raw Sleeper projections, matchup adjustments, and top-pick selection rules remain unchanged. Statistical grading and saved forecast comparisons do not establish greater predictive accuracy or profitability.</p>
     <p>Top picks are projection-gap rankings, not calibrated win probabilities or positive-EV recommendations. DraftKings player-prop prices are not captured. A recent build does not verify the age of each quote.</p>
     <p>The comparison scorecard pairs raw Sleeper and the unchanged clone for receptions, rushing attempts and passing yards at the same forecast time. Repeated captures count once per player, game and statistic. Final games and confirmed participation are required for accuracy metrics.</p>
@@ -5773,6 +5817,7 @@ $("#reload").addEventListener("click", async () => {
   $("#banner").hidden = true;
   await load();
   render();
+  S.weeklyOverlayReady = true; startWeeklyOverlay();
   liveTick();
 });
 
@@ -5798,6 +5843,7 @@ $("#reload").addEventListener("click", async () => {
   $("#sc-btn").textContent = `${scoringName()} \u25be`;
   setTopHeight();
   render();
+  S.weeklyOverlayReady = true; startWeeklyOverlay();
   syncHash(false);
   liveTick();
   setInterval(() => { if (!document.hidden) checkMeta(); }, META_MS);

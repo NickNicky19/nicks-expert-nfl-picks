@@ -431,6 +431,44 @@ class Campaign(unittest.TestCase):
         fp=self.fixture();(self.root/'config/unchanged.json').write_text('{"same":false}\n')
         with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
             with self.assertRaisesRegex(RuntimeError,'configuration difference'):c.install_execution_source(self.code,self.root)
+    def weekly_fixture(self):
+        """Tiny Git/copy control; patched hash registry is not source qualification."""
+        fp=self.fixture();registered={}
+        for name in c.WEEKLY_EXECUTION_ADDITIONS:
+            raw=('// fictional copy control\n' if name.endswith('.js') else '{"fictional_copy_control":true}\n').encode()
+            path=self.code/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(raw)
+            registered[name]=c.sha(raw)
+        c.git(self.code,'add','.');c.git(self.code,'commit','-qm','Wholly fictional registered-copy controls')
+        fp['commit']=c.git(self.code,'rev-parse','HEAD');fp['tree']=c.git(self.code,'rev-parse','HEAD^{tree}')
+        fp['files'] += [dict(path=name,mode='100644',bytes=(self.code/name).stat().st_size,
+            sha256=registered[name],blob=c.git(self.code,'hash-object',str(self.code/name))) for name in registered]
+        return fp,registered
+    def test_weekly_absent_only_source_bound_additions_preserve_originals_and_are_committed(self):
+        fp,registered=self.weekly_fixture();before=c._evidence_inventory(self.root);config=(self.root/'config/phase2.json').read_bytes()
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp),patch.dict(c.WEEKLY_EXECUTION_ADDITIONS,registered):
+            c.install_execution_source(self.code,self.root);c.execution_identity(self.code,self.root,packaged=False)
+        self.assertEqual(c._evidence_inventory(self.root),before);self.assertEqual((self.root/'config/phase2.json').read_bytes(),config)
+        tracked=set(c.git(self.root,'ls-tree','-r','--name-only','HEAD').splitlines())
+        self.assertTrue(set(registered)<=tracked)
+        self.assertEqual((self.root/'output/app.js').read_text(),'// retained old\n')
+    def test_weekly_existing_different_policy_is_not_replaced(self):
+        fp,registered=self.weekly_fixture();name='config/weekly-derived-selected-policy-v1.json'
+        original=b'{"fictional_existing_different":true}\n';(self.root/name).write_bytes(original)
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp),patch.dict(c.WEEKLY_EXECUTION_ADDITIONS,registered):
+            with self.assertRaisesRegex(RuntimeError,'configuration difference'):c.install_execution_source(self.code,self.root)
+        self.assertEqual((self.root/name).read_bytes(),original)
+    def test_weekly_changed_candidate_same_size_restored_mtime_is_not_copied(self):
+        fp,registered=self.weekly_fixture();path=self.code/'config/weekly-derived-selected-policy-v1.json';info=path.stat()
+        raw=bytearray(path.read_bytes());raw[0]^=1;path.write_bytes(raw);os.utime(path,ns=(info.st_atime_ns,info.st_mtime_ns))
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp),patch.dict(c.WEEKLY_EXECUTION_ADDITIONS,registered):
+            with self.assertRaisesRegex(RuntimeError,'configuration changed before copying'):c.install_execution_source(self.code,self.root)
+        self.assertFalse((self.root/'config/weekly-derived-selected-policy-v1.json').exists())
+    def test_weekly_installed_static_mutation_is_rejected_independently(self):
+        fp,registered=self.weekly_fixture()
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp),patch.dict(c.WEEKLY_EXECUTION_ADDITIONS,registered):
+            c.install_execution_source(self.code,self.root)
+            path=self.root/'output/weekly-adaptive-overlay.js';info=path.stat();raw=bytearray(path.read_bytes());raw[0]^=1;path.write_bytes(raw);os.utime(path,ns=(info.st_atime_ns,info.st_mtime_ns))
+            with self.assertRaisesRegex(RuntimeError,'bytes differ'):c.execution_identity(self.code,self.root,packaged=False)
     def test_added_dependency_after_install_is_not_trusted(self):
         fp=self.fixture()
         with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp):
@@ -1021,10 +1059,18 @@ class ProductionCacheLifetimeBoundary(unittest.TestCase):
     def test_capture_and_validation_keep_original_functions_and_context_lifetimes(self):
         with tempfile.TemporaryDirectory() as directory:
             root,result,m,events,production=self.fixture(directory)
-            with patch.object(c,'require_offline'),patch.object(c,'execution_identity',return_value={'schema_version':'diagnostic-execution-source-v3','phase2_transition':{}}),patch.object(c,'_sample_context',return_value=(m,SimpleNamespace(calls=0))),patch.object(c,'external',side_effect=lambda *a:contextlib.nullcontext()),patch.object(c.seed_v1,'correction_declaration',return_value=({},[],[])),patch.object(c.seed_v1,'check_correction',return_value={'status':'CONTROL_ONLY'}),patch.object(c.subprocess,'run',side_effect=lambda *a,**kw:events.append('preserve')),patch.object(c,'_advisories',side_effect=production('advisory')),patch.object(c,'operation_lifetime',side_effect=AssertionError('adapter entered measured capture')):
+            with patch.object(c,'require_offline'),patch.object(c,'execution_identity',return_value={'schema_version':'diagnostic-execution-source-v3','phase2_transition':{}}),patch.object(c,'_sample_context',return_value=(m,SimpleNamespace(calls=0))),patch.object(c,'external',side_effect=lambda *a:contextlib.nullcontext()),patch.object(c.seed_v1,'correction_declaration',return_value=({},[],[])),patch.object(c.seed_v1,'check_correction',return_value={'status':'CONTROL_ONLY'}),patch.object(c.subprocess,'run',side_effect=lambda *a,**kw:events.append('preserve')),patch.object(c,'_advisories',side_effect=production('advisory')),patch.object(c,'_weekly_display',side_effect=production('weekly')),patch.object(c,'operation_lifetime',side_effect=AssertionError('adapter entered measured capture')):
                 c.sample_capture(Path(directory),root,result)
-            self.assertEqual(events,['preserve','capture','validate','advisory'])
+            self.assertEqual(events,['preserve','capture','validate','advisory','weekly'])
             self.assertEqual(json.loads(result.read_bytes())['status'],'CAPTURE_COMPLETE_PRECOMMIT_CI_PENDING')
+            self.assertIn('actual_weekly_display_writer_and_graph',json.loads(result.read_bytes())['stages'])
+    def test_weekly_failure_stops_before_precommit_and_is_not_replaced_by_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root,result,m,events,production=self.fixture(directory)
+            with patch.object(c,'require_offline'),patch.object(c,'execution_identity',return_value={'schema_version':'diagnostic-execution-source-v3','phase2_transition':{}}),patch.object(c,'_sample_context',return_value=(m,SimpleNamespace(calls=0))),patch.object(c,'external',side_effect=lambda *a:contextlib.nullcontext()),patch.object(c.seed_v1,'correction_declaration',return_value=({},[],[])),patch.object(c.seed_v1,'check_correction',return_value={'status':'CONTROL_ONLY'}),patch.object(c.subprocess,'run',side_effect=lambda *a,**kw:events.append('preserve')),patch.object(c,'_advisories',side_effect=production('advisory')),patch.object(c,'_weekly_display',side_effect=production('weekly',True)),patch.object(c,'operation_lifetime',side_effect=AssertionError('adapter entered measured capture')):
+                with self.assertRaisesRegex(RuntimeError,'actual production weekly failure'):c.sample_capture(Path(directory),root,result)
+            self.assertEqual(events,['preserve','capture','validate','advisory','weekly'])
+            self.assertEqual(json.loads(result.read_bytes())['status'],'CAPTURE_RUNNING')
     def test_capture_failure_is_not_replaced_by_diagnostic_success(self):
         with tempfile.TemporaryDirectory() as directory:
             root,result,m,events,production=self.fixture(directory);m['capture'].run_capture=production('capture',True)
@@ -1055,5 +1101,73 @@ class ProductionCacheLifetimeBoundary(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'actual production stage failure'):c.sample_commit(Path(directory),root,result)
                 collector.assert_not_called()
             self.assertEqual(events,['commit','stage']);self.assertEqual(json.loads(result.read_bytes())['status'],'CAPTURE_COMPLETE_PRECOMMIT_CI_PENDING')
+
+
+class WeeklyDisplayExecution(unittest.TestCase):
+    """Wrapper/typed-reader controls; not a full updater or selected-feed PASS."""
+    def test_closed_weekly_additions_and_each_deficient_descriptor(self):
+        files=[dict(path=name,mode='100644',bytes=1,sha256=digest) for name,digest in c.WEEKLY_EXECUTION_ADDITIONS.items()]
+        self.assertEqual(set(c._weekly_execution_additions({'files':files})),set(c.WEEKLY_EXECUTION_ADDITIONS))
+        self.assertEqual(c._weekly_execution_additions({'files':[]}),{})
+        for i in range(len(files)):
+            bad=copy.deepcopy(files);bad.pop(i)
+            with self.subTest(missing=i),self.assertRaisesRegex(RuntimeError,'Incomplete'):c._weekly_execution_additions({'files':bad})
+        for field,value in [('sha256','0'*64),('mode','100755'),('bytes',True),('bytes',0),('bytes',(1<<20)+1)]:
+            bad=copy.deepcopy(files);bad[0][field]=value
+            with self.subTest(field=field,value=value),self.assertRaisesRegex(RuntimeError,'Unsupported'):c._weekly_execution_additions({'files':bad})
+    def test_weekly_wrapper_uses_actual_root_head_and_fixed_clock_then_validates_graph(self):
+        from urllib.request import OpenerDirector,Request
+        from urllib.error import HTTPError
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'config').mkdir();(root/'output/data').mkdir(parents=True)
+            raw=b'{"fictional_wrapper_control":true}';(root/c.WEEKLY_POLICY).write_bytes(raw)
+            board=b'{"fictional_board_control":true}';(root/'output/data/week.json').write_bytes(board)
+            events=[];source='2'*40;clock=object()
+            pointer={'display_board_sha256':c.sha(board),'sha256':'3'*64};doc={'website_source_sha':source,'rows':[],'state':'DISABLED_USE_R0'}
+            module=SimpleNamespace(validate_public_root=lambda path:events.append(('validate',path)),read_public=lambda path:(pointer,doc))
+            def script(path,args,actual_clock):
+                self.assertEqual(path,root/'tools/weekly_adaptive_overlay.py');self.assertIs(actual_clock,clock)
+                self.assertEqual(args[args.index('--website-source-sha')+1],source)
+                self.assertEqual(args[args.index('--feed-policy')+1],c.WEEKLY_POLICY)
+                with self.assertRaises(HTTPError):OpenerDirector().open(Request('https://example.invalid/fictional-control'))
+                events.append(('writer',path));return module
+            with patch.object(c,'git',side_effect=lambda path,*args:source if path==root and args==('rev-parse','HEAD') else self.fail('Wrong execution identity')),patch.object(c,'WEEKLY_POLICY_SHA256',c.sha(raw)),patch.object(c,'_advisory_script',side_effect=script):
+                value=c._weekly_display(root,{'capture':SimpleNamespace(datetime=clock)})
+            self.assertEqual(value['website_source_sha'],source);self.assertEqual(value['mocked_missing_feed_requests'],1)
+            self.assertEqual(value['accepted_selected_feed'],'NOT_EXERCISED_NO_MATCHING_FICTIONAL_LAB_PUBLICATION')
+            self.assertEqual(events,[('writer',root/'tools/weekly_adaptive_overlay.py'),('validate',root/'output')])
+            self.assertEqual((root/'output/data/week.json').read_bytes(),board)
+    def test_actual_browser_graph_function_and_reviewed_decoder_controls(self):
+        script=r"""
+const fs=require('node:fs'),assert=require('node:assert/strict'),crypto=require('node:crypto'),vm=require('node:vm'),path=require('node:path');
+const root=process.argv[1],sourceText=fs.readFileSync(path.join(root,'tools/release_browser.cjs'),'utf8');
+const block=sourceText.split('// BEGIN WEEKLY DISPLAY GRAPH CONTRACT\n')[1].split('// END WEEKLY DISPLAY GRAPH CONTRACT')[0];
+const sha=b=>crypto.createHash('sha256').update(b).digest('hex'),scope={assert,sha,Buffer};vm.createContext(scope);vm.runInContext(block+'\nglobalThis.graph=weeklyDisplayGraph;globalThis.read=readWeeklyAsset;',scope);
+const helperBytes=fs.readFileSync(path.join(root,'output/weekly-adaptive-overlay.js')),helperModule={exports:{}};
+assert.equal(sha(helperBytes),'d6657e82639aa001f64701672e25cc72bd6e55142127669a59396f9efe485a68');vm.runInNewContext(helperBytes.toString('utf8'),{module:helperModule},{timeout:2000});
+const helper=helperModule.exports,hash='2'.repeat(64),source='1'.repeat(40);
+const board={season:2026,week:6,games:[{id:'fictional-game',kickoff:'2026-10-15T00:15:00Z'}],players:[{id:'fictional-player',game_id:'fictional-game',team:'AAA',opp:'BBB',props:[{key:'rec'}]}]},boardHash=sha(Buffer.from(JSON.stringify(board)));
+const row={player_id:'fictional-player',game_id:'fictional-game',category:'rec',method_id:'FICTIONAL_TEST_ONLY',model_version:hash,procedure_version:hash,product:'point_mean',prediction_functional:'expected_mean',forecast_value:5.25,horizon:'player_game',source_cutoff_utc:'2026-10-14T09:00:00Z',issued_at:'2026-10-14T08:00:00Z',persistence_completed_at:'2026-10-14T08:01:00Z',kickoff_utc:'2026-10-15T00:15:00Z',valid_until_utc:'2026-10-15T00:15:00Z',selection_sha256:hash,source_policy_sha256:hash,query_source_sha256:hash,first_prepared_at:'2026-10-14T10:00:00Z'};
+const doc={schema_version:'weekly-adaptive-public-overlay-v1',registration_id:'weekly-adaptive-release-v1',state:'PROVISIONAL',season:2026,week:6,canonical_board_sha256:boardHash,display_board_sha256:boardHash,board_contract_sha256:hash,prepared_at:'2026-10-14T10:00:00Z',packaged_at:'2026-10-14T10:00:00Z',website_source_sha:source,publication_review_sha256:hash,rows:[row],frozen_rows:[],fallback_counts:{}};
+const encode=d=>{const body=Buffer.from(JSON.stringify(d));return {body,pointer:{schema_version:'weekly-adaptive-overlay-pointer-v1',path:'data/weekly-adaptive/'+sha(body)+'.json',sha256:sha(body),bytes:body.length,display_board_sha256:boardHash}}};
+let good=encode(doc);scope.graph(good.pointer,good.body,board,boardHash,source,helper);let count=1;
+for(const change of [x=>{x.pointer.display_board_sha256='0'.repeat(64)},x=>{x.pointer.bytes++},x=>{x.body=Buffer.from(x.body);x.body[0]^=1},x=>{x.pointer.path='data/weekly-adaptive/other.json'},x=>{x.pointer.extra=true},x=>{x.pointer.schema_version='unknown'}]){const v=encode(doc);change(v);assert.throws(()=>scope.graph(v.pointer,v.body,board,boardHash,source,helper));count++;}
+for(const change of [x=>{x.website_source_sha='0'.repeat(40)},x=>{x.rows[0].category='fpts'},x=>{x.rows[0].forecast_value=null},x=>{x.week=7}]){const d=structuredClone(doc);change(d);const v=encode(d);assert.throws(()=>scope.graph(v.pointer,v.body,board,boardHash,source,helper));count++;}
+function readerControl(options={}){const data=Buffer.from(options.data||'abc');let cursor=0,stats=0,closed=false,opened=false,maxRead=0;
+  const stat=(size,ino=1,symbolic=false,regular=true)=>({size,ino,dev:1,isFile:()=>regular,isSymbolicLink:()=>symbolic});
+  const io={constants:options.unsupported?{}:fs.constants,openSync:(_name,flags)=>{opened=true;assert.ok(flags&fs.constants.O_NOFOLLOW);assert.ok(flags&fs.constants.O_NONBLOCK);return 7;},
+    fstatSync:()=>++stats===1?stat(options.firstSize??3,1,false,options.regular!==false):stat(options.afterSize??data.length),
+    lstatSync:()=>stat(options.currentSize??data.length,options.replaced?2:1,!!options.symbolic),
+    readSync:(_fd,buffer,offset,size)=>{maxRead=Math.max(maxRead,size);if(options.ioError)throw Error('fictional read failure');const n=Math.min(size,data.length-cursor);data.copy(buffer,offset,cursor,cursor+n);cursor+=n;return n;},
+    closeSync:fd=>{assert.equal(fd,7);closed=true;}};
+  return {io,state:()=>({closed,opened,maxRead})};}
+let io=readerControl();assert.equal(scope.read('fictional',4,io.io).toString(),'abc');assert.equal(io.state().closed,true);count++;
+for(const options of [{firstSize:5,data:'abcde'},{firstSize:3,data:'abcde'},{regular:false},{replaced:true},{symbolic:true},{firstSize:3,data:'ab'},{ioError:true},{unsupported:true}]){
+  io=readerControl(options);assert.throws(()=>scope.read('fictional',4,io.io));assert.ok(!io.state().opened||io.state().closed);assert.ok(io.state().maxRead<=5);count++;}
+assert.throws(()=>scope.read('fictional',false,readerControl().io));count++;
+console.log(JSON.stringify({checks:count,browser:false,provider_requests:0}));
+"""
+        result=subprocess.run(['node','-e',script,str(HERE)],capture_output=True,text=True,timeout=15,check=True)
+        self.assertEqual(json.loads(result.stdout),{'checks':21,'browser':False,'provider_requests':0})
 
 if __name__=='__main__':unittest.main(verbosity=2)

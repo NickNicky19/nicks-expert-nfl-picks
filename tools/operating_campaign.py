@@ -47,6 +47,16 @@ ENTRY_LIMIT=20000
 EVIDENCE_ENTRIES=200000
 HEX40=re.compile(r'[0-9a-f]{40}')
 HEX64=re.compile(r'[0-9a-f]{64}')
+# Closed website-only additions to a separate B3-derived execution copy. These
+# do not repin the original seed, engine, historical policy or registration.
+WEEKLY_POLICY='config/weekly-derived-selected-policy-v3.json'
+WEEKLY_POLICY_SHA256='2580c2a9243061b039b7460aab5cc7b9cf53404d8dc299ade85acda346679eb9'
+WEEKLY_EXECUTION_ADDITIONS={
+    'config/weekly-derived-selected-policy-v1.json':'0bcdf8505d2f0d268ea97e5c17c26f2a8d7cb91ef2e089cd9e410f27eb36f1ae',
+    'config/weekly-derived-selected-policy-v2.json':'45e51a07a077ce0aedede608fcef2ddb3592828a0734843d37a3991e6673a546',
+    WEEKLY_POLICY:WEEKLY_POLICY_SHA256,
+    'output/weekly-adaptive-overlay.js':'d6657e82639aa001f64701672e25cc72bd6e55142127669a59396f9efe485a68',
+}
 
 
 def _stage_clock(start,tick):
@@ -446,6 +456,16 @@ def launch_job(code,root,result,sample_number):
 def _execution_files(fingerprint):
     return {f['path']:f for f in fingerprint['files']
         if f['path'].startswith(('pull/','tools/')) or f['path'].startswith('output/') and not f['path'].startswith('output/data/')}
+
+
+def _weekly_execution_additions(fingerprint):
+    additions={f['path']:f for f in fingerprint['files'] if f['path'] in WEEKLY_EXECUTION_ADDITIONS}
+    if additions and set(additions)!=set(WEEKLY_EXECUTION_ADDITIONS):
+        raise RuntimeError('Incomplete registered weekly execution additions')
+    if any(f.get('mode')!='100644' or f.get('sha256')!=WEEKLY_EXECUTION_ADDITIONS[name]
+            or type(f.get('bytes')) is not int or not 0<f['bytes']<=1<<20 for name,f in additions.items()):
+        raise RuntimeError('Unsupported registered weekly execution addition')
+    return additions
 
 
 def _walk(root,lanes,*,source=False):
@@ -870,19 +890,28 @@ def install_execution_source(code,root):
             or (root/'config/phase2.json').stat().st_size!=seed_config['bytes']):
         raise RuntimeError('Fictional configuration differs from the approved frozen seed')
     current=_source_ci_cli(code,'fingerprint');files=_execution_files(current)
+    additions=_weekly_execution_additions(current)
     before=_evidence_inventory(root)
     actual=_installed_names(root,('pull','tools','output'))
     if not actual<=set(files):raise RuntimeError('Unsupported extra executable/static source in fixture')
     for f in current['files']:
         name=f['path']
         if name.startswith('config/') and name!='config/phase2.json' and (not (root/name).is_file() or _hash_file(root/name)!=_hash_file(code/name)):
-            raise RuntimeError('Undeclared fictional/candidate configuration difference: '+name)
+            if name not in additions or (root/name).exists() or (root/name).is_symlink():
+                raise RuntimeError('Undeclared fictional/candidate configuration difference: '+name)
+            raw=_bounded_file(code/name,1<<20)
+            if len(raw)!=f['bytes'] or sha(raw)!=f['sha256']:
+                raise RuntimeError('Registered weekly configuration changed before copying')
+            (root/name).parent.mkdir(parents=True,exist_ok=True)
+            (root/name).write_bytes(raw);(root/name).chmod(0o644)
     for name,d in files.items():
         p=code/name
         if p.is_symlink() or _hash_file(p)!=d['sha256']:raise RuntimeError('Candidate changed before copying')
         if name.startswith('pull/') or name.startswith('output/'):
             if not (root/name).is_file() or _hash_file(root/name)!=_hash_file(p):
-                if name not in ('output/app.js','output/index.html'):raise RuntimeError('Unsupported model/static transition: '+name)
+                if name not in ('output/app.js','output/index.html') and not (
+                        name in additions and not (root/name).exists() and not (root/name).is_symlink()):
+                    raise RuntimeError('Unsupported model/static transition: '+name)
         if name in ('output/app.js','output/index.html'):continue  # Existing saved-packaging route owns this transition.
         (root/name).parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,root/name)
         (root/name).chmod(0o755 if d['mode']=='100755' else 0o644)
@@ -895,7 +924,8 @@ def install_execution_source(code,root):
         fictional_phase2_sha256=_hash_file(root/'config/phase2.json'),
         candidate_phase2_sha256=next(f['sha256'] for f in current['files'] if f['path']=='config/phase2.json'),
         retained_evidence_inventory_sha256=sha(encoded(before)),saved_seed_manifest_sha256=os.environ['SEED_MANIFEST_SHA256'],packaging_pending=True))
-    names=[name for name in files if name not in ('output/app.js','output/index.html')]
+    names=[name for name in files if name not in ('output/app.js','output/index.html')]+[
+        name for name in additions if name.startswith('config/')]
     git(root,'add','--',*names,'DIAGNOSTIC_EXECUTION_SOURCE.json')
     git(root,'commit','-qm','Wholly fictional derived execution source; B3 origins retained')
     execution_identity(code,root,packaged=False)
@@ -1733,6 +1763,7 @@ def _advisory_script(path,args,clock):
         if hasattr(module,'datetime'):
             with patch.object(module,'datetime',clock):module.main()
         else:module.main()
+    return module
 
 
 def _advisories(root,m,provider):
@@ -1756,6 +1787,46 @@ def _advisories(root,m,provider):
     health.update({name:value['outcome'] for name,value in outcomes.items()});put(root/'output/data/health.json',health)
     return dict(outcomes=outcomes,unsupported_raw_http_calls=unavailable,
         remote_continuation='UNMEASURED' if unavailable else 'NOT_REQUESTED',live_provider_requests=0)
+
+
+def _weekly_display(root,m):
+    """Actual writer and graph validation; no matching lab feed is fabricated.
+
+    The fixture's missing remote feed is an explicit HTTP-404 source mock. The
+    real policy/source checks must reach that lookup before the result counts
+    as coverage. This only exercises current-reference fallback, not accepted
+    selected-feed qualification. No original or corrected forecast is changed.
+    """
+    from urllib.error import HTTPError
+    from urllib.request import OpenerDirector
+    path=root/WEEKLY_POLICY
+    raw=_bounded_file(path,1<<20)
+    if sha(raw)!=WEEKLY_POLICY_SHA256:raise RuntimeError('Registered weekly policy changed')
+    source=git(root,'rev-parse','HEAD')
+    if not _hex(source,HEX40):raise RuntimeError('Actual derived execution HEAD required')
+    board_before=_bounded_file(root/'output/data/week.json',SOURCE_FILE_LIMIT)
+    missing=0
+    def absent(_opener,request,*args,**kwargs):
+        nonlocal missing
+        missing+=1
+        # No response from another population may be borrowed for this fixture.
+        raise HTTPError(request.full_url,404,'No fictional lab publication',{},None)
+    with patch.object(OpenerDirector,'open',new=absent):
+        module=_advisory_script(root/'tools/weekly_adaptive_overlay.py',
+            ['--root',str(root),'--website-source-sha',source,'--feed-policy',WEEKLY_POLICY,
+             '--feed-policy-sha256',WEEKLY_POLICY_SHA256],m['capture'].datetime)
+    module.validate_public_root(root/'output')
+    pointer,doc=module.read_public(root/'output')
+    if (_bounded_file(root/'output/data/week.json',SOURCE_FILE_LIMIT)!=board_before
+            or doc['website_source_sha']!=source or pointer['display_board_sha256']!=sha(board_before)):
+        raise RuntimeError('Weekly display changed its reference board/source binding')
+    if missing!=1 or doc['rows'] or doc['state']!='DISABLED_USE_R0':
+        raise RuntimeError('Fictional weekly missing-feed branch was not exercised')
+    return dict(state=doc['state'],selected_rows=len(doc['rows']),website_source_sha=source,
+        policy_file_sha256=WEEKLY_POLICY_SHA256,overlay_sha256=pointer['sha256'],
+        mocked_missing_feed_requests=missing,provider_requests=0,
+        coverage='ACTUAL_REGISTERED_WRITER_AND_GRAPH_CURRENT_REFERENCE_FALLBACK_ONLY',
+        accepted_selected_feed='NOT_EXERCISED_NO_MATCHING_FICTIONAL_LAB_PUBLICATION')
 
 
 def sample_capture(code,root,result):
@@ -1784,6 +1855,7 @@ def sample_capture(code,root,result):
         if contracts!={g['id']:m['partial'].game_contract(board,g['id']) for g in board['games']}:raise RuntimeError('Outcome correction altered frozen contracts')
         if any(not (root/name).is_file() or _hash_file(root/name,SEED_BYTES_LIMIT)!=digest for name,digest in before.items()):raise RuntimeError('Prior original evidence changed')
         r['advisories']=step('actual_advisory_scripts_and_health',lambda:_advisories(root,m,provider))
+        r['weekly_display']=step('actual_weekly_display_writer_and_graph',lambda:_weekly_display(root,m))
     execution_identity(code,root)
     r.update(status='CAPTURE_COMPLETE_PRECOMMIT_CI_PENDING',fake_http_responses=provider.calls,provider_requests=0)
     put(result,r)
