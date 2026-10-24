@@ -628,8 +628,27 @@ def actual_identity(profile=None):
     return artifact
 
 
+def retrieval_budget(work, profile=None):
+    """Only the closed preparation22 caller may use its fixed setup allowance."""
+    confirmation = 'NFL-WEB-CONTINUE-CHECKPOINT-22-OF-24-12540324398-20261024'
+    if os.environ.get('PREPARATION_ID') != confirmation:
+        return 240
+    expected = dict(CONTINUATION_ID=confirmation, GITHUB_ACTIONS='true',
+        GITHUB_JOB='prepare-continuation', GITHUB_REPOSITORY='NickNicky19/nicks-expert-nfl-picks',
+        GITHUB_WORKFLOW_REF='NickNicky19/nicks-expert-nfl-picks/.github/workflows/prepare-diagnostic-seed.yml@refs/heads/upgrade/phase2-reproducible-comparison')
+    require(profile == PROFILE22 and all(os.environ.get(k) == v for k, v in expected.items()),
+        'Closed22 preparation-only retrieval budget')
+    require(re.fullmatch('[1-9][0-9]*', os.environ.get('GITHUB_RUN_ID', '')),
+        'Canonical preparation retrieval run')
+    hosted(work, 'retrieve')  # Existing actor/attempt/ref, actual Git source and run-path checks.
+    require(os.environ.get('GITHUB_WORKFLOW_SHA') == os.environ.get('GITHUB_SHA'),
+        'Actual preparation workflow source')
+    return 900
+
+
 def retrieve(work, profile=None):
     selected = profile_identity(profile)
+    seconds = retrieval_budget(work, profile)
     require(not work.exists(), 'New run-specific retrieval required')
     fs = os.statvfs(work.parent)
     require(fs.f_bavail * fs.f_frsize - (2 * DECODED_LIMIT + 6 * GIB)
@@ -638,7 +657,7 @@ def retrieve(work, profile=None):
         if line.startswith(('MemTotal:', 'MemAvailable:'))}
     require(mem['MemAvailable'] >= 8 * GIB + max(2 * GIB, mem['MemTotal'] // 5), 'Conservative read-only memory preflight')
     before = actual_identity(profile); work.mkdir(mode=0o700); archive = work / 'artifact.zip'
-    deadline = time.monotonic() + 240
+    deadline = time.monotonic() + seconds
     transport._download(dict(artifact_id=selected['artifact'], archive_bytes=selected['size'], archive_sha256=selected['digest']), archive, deadline=deadline)
     expected_parents = PARENTS if profile is None else _outer_parents(work, profile)
     transport._zip_inventory(archive); inventory = {}; total = 0; metadata = {}

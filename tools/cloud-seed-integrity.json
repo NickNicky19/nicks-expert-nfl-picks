@@ -10,7 +10,7 @@
     "diagnostic_seed.py": "f58d53398855846ae811a70103c152ad1108bea820140e3dd91b953db09cb9a5",
     "operating_diagnostic.py": "441f0ccaa1b274708419643d993896b5ff6f2c4118e0016719c80a1746289328",
     "operating_seed_transport.py": "af91057585dca30d4038b10dc2e1ffae16ff0b420feb26033b4bce344525b9f6",
-    "seed_checkpoint_frontier.py": "309de400d3ba77a679af8be54397117b239017b6f69a0ea16150eebf97aaa0e1",
+    "seed_checkpoint_frontier.py": "75738791bc467f3cf32296ca415bbb9389efde35c54c321959753f4ca354da42",
     "source_ci.py": "f7bb054c9299a226ae9f30aa71b8f5afeca07b2ee37c853aad7abc40360e59cd"
   },
   "schema_version": "cloud-seed-code-integrity-v1"

@@ -1,5 +1,7 @@
 """Pure/mocked root-control regressions, NOT privileged/backend qualification."""
 import copy
+import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -156,16 +158,25 @@ class SourceClosure(unittest.TestCase):
         value=self.check()
         self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.CONTINUED_SEED_INTEGRITY)
 
-    def test_latest_twelve_file_contract_binds_finished_helpers(self):
+    def test_latest_twelve_file_contract_binds_retrieval_helpers(self):
         value=self.check()
-        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.FINISHED22_SEED_INTEGRITY)
+        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.PREPARATION22_RETRIEVAL_INTEGRITY)
         self.assertEqual(len(b.SEED_CONTRACTS[b.FINISHED22_SEED_INTEGRITY]),12)
 
-    def test_only_three_exact_contracts_are_recognized(self):
+    def test_retained_finished22_contract_uses_actual_5eb_source_bytes(self):
+        old='5eb4a2f07750951df8a6e348eb46d08f8fe7fd3d'
+        for name in b.SEED_CONTRACTS[b.FINISHED22_SEED_INTEGRITY]|{'cloud-seed-integrity.json'}:
+            raw=subprocess.check_output(['git','-C',str(SOURCE),'show',old+':tools/'+name])
+            (self.code/'tools'/name).write_bytes(raw);self.objects['tools/'+name]=raw
+        value=self.check()
+        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.FINISHED22_SEED_INTEGRITY)
+
+    def test_only_four_exact_contracts_are_recognized(self):
         self.assertEqual(set(b.SEED_CONTRACTS),{
             'bfb48f36d1db5b2980235238e1b869efb183f23095ff72cee33c1d88e84a3b26',
             'ed5b6773c3d4e642bf4346aa2b9de89a2b580a1f34e97bddc6172b068a388611',
-            '636b3cd2a966346df02ad30c516dc805e40ae082e1b4f5e7b757162c29e6459f'})
+            '636b3cd2a966346df02ad30c516dc805e40ae082e1b4f5e7b757162c29e6459f',
+            b.PREPARATION22_RETRIEVAL_INTEGRITY})
         self.assertTrue(all(isinstance(v,frozenset) for v in b.SEED_CONTRACTS.values()))
     def test_newly_required_frontier_same_size_mutation_rejected(self):
         path=self.code/'tools/seed_checkpoint_frontier.py';raw=path.read_bytes();old=path.stat()
@@ -383,4 +394,352 @@ class CommandAndRun(unittest.TestCase):
         self.assertFalse(value['workload_started'])
 
 
+
+class GenuineRoute(unittest.TestCase):
+    """Closed control tests; actual privileged/cgroup/provider execution is NOT run."""
+    def test_argument_route_is_explicit_and_reader_cannot_select_legacy(self):
+        raw=Arguments().raw();self.assertTrue(b.arguments(raw+['--genuine-case']).genuine_case)
+        with self.assertRaisesRegex(RuntimeError,'exclusive'):b.arguments(raw+['--read-unit-lifetime'])
+        self.assertFalse(b.arguments(raw).genuine_case)
+    def test_actual_reviewed_inline_source_bytes_and_changed_source_rejected(self):
+        commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
+        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),30854);self.assertEqual(b.sha(raw),b.GENUINE_DRIVER)
+        with patch.object(b,'git',return_value=b'not the actual source'):
+            with self.assertRaisesRegex(RuntimeError,'actual source'):b.genuine_driver(ROOT,commit)
+    def test_direct_data_only_descendant_and_unchanged_source(self):
+        def git(code,*argv):
+            if argv==('rev-parse','HEAD'):return b'2'*40
+            if argv[0]=='show':return b'1'*40
+            if argv[0]=='diff':return b'data/outcomes/fictional.json.gz\0'
+            return b''
+        with patch.object(b,'git',side_effect=git):self.assertEqual(b.genuine_data_head(Path('/unit'),'1'*40),'2'*40)
+        def invalid(code,*argv):return b'tools/scorecard.py\0' if argv[0]=='diff' else git(code,*argv)
+        with patch.object(b,'git',side_effect=invalid):
+            with self.assertRaisesRegex(RuntimeError,'changes source'):b.genuine_data_head(Path('/unit'),'1'*40)
+        def wrong_parent(code,*argv):return b'3'*40 if argv[0]=='show' else git(code,*argv)
+        with patch.object(b,'git',side_effect=wrong_parent):
+            with self.assertRaisesRegex(RuntimeError,'direct data'):b.genuine_data_head(Path('/unit'),'1'*40)
+    def test_closed_genuine_argv_and_legacy_no_new_seed_semantics(self):
+        stream=io.BytesIO()
+        class Sink(io.BytesIO):
+            def close(self):pass
+            def fileno(self):return 12
+        stream=Sink()
+        with patch.dict(os.environ,RUNNER_TEMP='/fictional/temp',GITHUB_SHA='1'*40),patch.object(b.pwd,'getpwuid',return_value=SimpleNamespace(pw_dir='/fictional/home')),patch.object(b,'genuine_driver',return_value=b'reviewed'),patch.object(b.os,'open',return_value=12),patch.object(b.os,'fdopen',return_value=stream),patch.object(b.os,'fsync'):
+            supervisor,worker,paths=b.commands(args(Path('/fictional/parent/source'),genuine_case=True),Path('/protected/report'))
+        self.assertIn('GITHUB_WORKSPACE=/fictional/parent',worker);self.assertIn('/protected/report/GENUINE_CONTROLLER.py',worker)
+        self.assertNotIn('job',worker);self.assertIn('--timeout',supervisor);self.assertEqual(supervisor[supervisor.index('--timeout')+1],'1200')
+        self.assertNotIn('/fictional/temp/operating-artifact-approval.json',paths);self.assertIn('/fictional/parent/production',paths)
+    def read(self,*,bad_state=False,bad_namespace=False,oom=0,capability=False,changed_final=False,bad_peak=False,read_race=False,low_peak=False,control_group=None):
+        unit=Path('/sys/fs/cgroup/system.slice/nfl-operating-123-1.service');limit=8*1024**3
+        cg={'scopes':[{},dict(path=str(unit),device=7,inode=8)],'cgroup_namespace':'cg','mount_namespace':'mnt','properties':{'InvocationID':'a'*32,'ExecMainPID':'42'},'kernel_lifetime_backend':{'version':b.LIFETIME_BACKEND,'invocation_id':'a'*32,'exec_main_pid':42,'initial_memory_peak_bytes':100}}
+        outer=dict(source={'commit':'1'*40},run_id=123,sample=1,run_attempt=1,root_uid=0,worker_uid=1001,workflow_path=b.GENUINE_WORKFLOW,resource_report={'hash':'unit'},seed_manifest_sha256=None,status='CAPABILITY_READY' if capability else 'GENUINE_COMPLETE_LIFETIME_READ_REQUIRED',cgroup=cg,mode='genuine-capability' if capability else 'genuine',repository=b.REPOSITORY,repository_id=1411185749,actor_id=208912933,supervised_subprocess_verdict='PASS',genuine_result={'sha256':'a'*64},resource_supervisor_pid=42,monitored_leaf_path=str(unit/'nfl-diagnostic-123-1-42'))
+        resource={'status':'CAPABILITY_READY','resource_verdict':'NOT_RUN_CAPABILITY_ONLY'} if capability else {'kernel_peaks':{str(unit):{'kernel_peak':256},str(unit/'nfl-diagnostic-123-1-42'):{'kernel_peak':512}}}
+        state={'ControlGroup':'/system.slice/nfl-operating-123-1.service' if control_group is None else control_group,'ActiveState':'active','SubState':'running' if bad_state else 'exited','MainPID':'0','RemainAfterExit':'yes','MemoryAccounting':'yes','InvocationID':'a'*32,'MemoryPeak':str(2**64-1) if bad_peak else '1' if low_peak else str(1024**3),'MemorySwapPeak':'0','MemoryMax':str(limit),'MemorySwapMax':'0','Result':'success','ExecMainStatus':'0'}
+        values={'memory.peak':str(1024**3),'memory.current':'0','memory.swap.peak':'0','memory.swap.current':'0','memory.max':str(limit),'memory.swap.max':'0','cgroup.events':'populated 0\n','cgroup.procs':'','cgroup.threads':''}
+        module=SimpleNamespace(events=lambda p:dict(oom=oom,oom_kill=0,oom_group_kill=0),peak_ok=lambda limit,peak:limit-peak>=max(2*1024**3,.2*limit),report_verdict=lambda value:'FAIL' if oom else 'PASS')
+        def info(path,*a,**k):return SimpleNamespace(st_uid=0,st_mode=stat.S_IFDIR|(0o1777 if path==b.ROOT_BASE else 0o755),st_dev=7,st_ino=8)
+        output=io.StringIO()
+        with patch.object(b,'genuine_result',return_value={'sha256':('b' if changed_final else 'a')*64}),patch.object(b,'environment'),patch.object(b,'closure',return_value={'commit':'1'*40}),patch.object(b,'regular_bytes',return_value=json.dumps(outer).encode()),patch.object(b,'protected_resource',return_value=(resource,{'hash':'unit'})),patch.object(b,'checked_resource_module',return_value=module),patch.object(Path,'lstat',info),patch.object(Path,'stat',info),patch.object(Path,'resolve',lambda p:p),patch.object(Path,'is_symlink',return_value=False),patch.object(Path,'read_text',lambda p:values[p.name]),patch.object(b.os,'access',return_value=False),patch.object(b.os,'readlink',side_effect=lambda p:'bad' if bad_namespace else 'mnt' if str(p).endswith('/mnt') else 'cg'),patch.object(b.subprocess,'check_output',side_effect=['\n'.join(k+'='+v for k,v in state.items()),'\n'.join(k+'='+('b'*32 if read_race and k=='InvocationID' else v) for k,v in state.items())]),contextlib.redirect_stdout(output):
+            code=b.read_unit_lifetime(args(genuine_case=True,read_unit_lifetime=True))
+        return code,json.loads(output.getvalue().splitlines()[0].split('=',1)[1])
+    def test_lifetime_unit_only_never_whole_job_or_vm_pass(self):
+        code,value=self.read();self.assertEqual(code,0);self.assertEqual(value['unit_headroom'],'PASS');self.assertEqual(value['resource_verdict'],'UNKNOWN');self.assertEqual(value['whole_gha_job_memory'],'NOT_MEASURED')
+    def test_retained_empty_unit_capability_is_not_workload_evidence(self):
+        code,value=self.read(capability=True);self.assertEqual(code,0);self.assertEqual(value['status'],'CAPABILITY_READY_NO_WORKLOAD')
+    def test_running_or_untrusted_namespace_cannot_qualify(self):
+        with self.assertRaisesRegex(RuntimeError,'exited manager'):self.read(bad_state=True)
+        with self.assertRaisesRegex(RuntimeError,'namespaces'):self.read(bad_namespace=True)
+    def test_changed_postroot_result_cannot_borrow_prior_success(self):
+        with self.assertRaisesRegex(RuntimeError,'changed after'):self.read(changed_final=True)
+    def test_actual_small_final_and_tar_fresh_hashes_fail_closed(self):
+        # Real unprivileged regular files, only tiny wholly fictional bytes.
+        import hashlib
+        with tempfile.TemporaryDirectory() as temp:
+            out=Path(temp)/'nfl-real-production-case';out.mkdir();tar=out/'release-review.tar';tar.write_bytes(b'fictional bytes')
+            value=dict(status='COMPLETE_GENUINE_NONDEPLOY_CASE',source='1'*40,artifact_tar_bytes=tar.stat().st_size,artifact_tar_sha256=hashlib.sha256(tar.read_bytes()).hexdigest(),operating_qualification='NOT_ESTABLISHED',resource_verdict='UNKNOWN')
+            final=out/'FINAL.json';final.write_text(json.dumps(value))
+            with patch.dict(os.environ,RUNNER_TEMP=temp,GITHUB_SHA='1'*40):
+                first=b.genuine_result(args());self.assertEqual(first['root_run_id'],123)
+                # A caught application failure may exit0; typed status must reject.
+                value['status']='FAILED';final.write_text(json.dumps(value))
+                with self.assertRaisesRegex(RuntimeError,'did not complete'):b.genuine_result(args())
+                value['status']='COMPLETE_GENUINE_NONDEPLOY_CASE';final.write_text(json.dumps(value));tar.write_bytes(b'fictional BYTES')
+                with self.assertRaisesRegex(RuntimeError,'changed'):b.genuine_result(args())
+    def test_pycache_does_not_exempt_tracked_or_untracked_python_source(self):
+        def check(name,tracked):
+            def git(code,*a):
+                if a==('rev-parse','HEAD'):return b'1'*40
+                if (a[0]=='diff')==tracked:return name.encode()+b'\0'
+                return b''
+            with patch.object(b,'git',side_effect=git):return b.genuine_data_head(Path('/unit'),'1'*40)
+        for tracked in (False,True):
+            with self.assertRaisesRegex(RuntimeError,'source'):check('pull/__pycache__/untrusted.py',tracked)
+        self.assertEqual(check('pull/__pycache__/grade.cpython-312.pyc',False),'1'*40)
+
+    def test_cached_kernel_unknown_identity_race_and_lower_bound_fail_closed(self):
+        with self.assertRaisesRegex(RuntimeError,'unavailable'):self.read(bad_peak=True)
+        with self.assertRaisesRegex(RuntimeError,'below recorded'):self.read(low_peak=True)
+        with self.assertRaisesRegex(RuntimeError,'changed during read'):self.read(read_race=True)
+    def test_system_bus_override_and_metadata_bounds_rejected(self):
+        with patch.dict(os.environ,DBUS_SYSTEM_BUS_ADDRESS='unix:path=/fictional/untrusted'):
+            with self.assertRaisesRegex(RuntimeError,'overrides'):b.manager_properties(args(),('MemoryPeak',))
+        with patch.object(b.subprocess,'check_output',return_value='MemoryPeak=1\nMemoryPeak=2\n'):
+            with self.assertRaisesRegex(RuntimeError,'properties'):b.manager_properties(args(),('MemoryPeak',))
+    def test_root_setup_records_actual_manager_invocation_and_pid(self):
+        mount=Path('/mock/cgroup');unit=mount/'system.slice'/'nfl-operating-123-1.service';current=unit/'supervisor';limit=8*1024**3
+        values={'cgroup.procs':'','cgroup.threads':'','cgroup.subtree_control':'memory','memory.max':str(limit),'memory.swap.max':'0','cgroup.controllers':'memory'}
+        state={'ControlGroup':'/system.slice/nfl-operating-123-1.service','Delegate':'yes','DelegateSubgroup':'supervisor','User':'root','MemoryMax':str(limit),'MemorySwapMax':'0','RuntimeMaxUSec':'20min 30s','RemainAfterExit':'yes','MemoryAccounting':'yes','InvocationID':'a'*32,'ExecMainPID':str(os.getpid()),'MemoryPeak':'100','MemorySwapPeak':'0'}
+        module=SimpleNamespace(resolve=lambda:(mount,current,[current,unit,mount]));info=SimpleNamespace(st_uid=0,st_mode=stat.S_IFDIR|0o755,st_dev=7,st_ino=8)
+        def read(p,*a,**kw):return 'MemTotal: 8388608 kB\n' if p==Path('/proc/meminfo') else values[p.name]
+        with patch.object(Path,'read_text',read),patch.object(Path,'lstat',return_value=info),patch.object(Path,'stat',return_value=info),patch.object(Path,'is_symlink',return_value=False),patch.object(b.os,'getxattr',return_value=b'1'),patch.object(b.os,'statvfs',return_value=SimpleNamespace(f_flag=0)),patch.object(b.os,'readlink',return_value='unitnamespace'),patch.object(b.subprocess,'check_output',side_effect=lambda *a,**kw:'\n'.join(k+'='+v for k,v in state.items())):
+            value=b.unit_setup(args(genuine_case=True),module)
+            self.assertEqual(value['kernel_lifetime_backend']['exec_main_pid'],os.getpid());self.assertEqual(value['kernel_lifetime_backend']['initial_memory_peak_bytes'],100)
+            state['InvocationID']='g'*32
+            with self.assertRaisesRegex(RuntimeError,'invocation'):b.unit_setup(args(genuine_case=True),module)
+
+    def test_pruned_empty_cgroup_retains_exact_cached_invocation(self):
+        code,value=self.read(control_group='')
+        self.assertEqual(code,0);self.assertEqual(value['backend'],b.LIFETIME_BACKEND)
+        self.assertEqual(value['resource_verdict'],'UNKNOWN');self.assertEqual(value['unit_headroom'],'PASS')
+    def test_cached_invocation_cannot_select_another_cgroup(self):
+        with self.assertRaisesRegex(RuntimeError,'exited manager'):self.read(control_group='/system.slice/unrelated.service')
+
+    def test_lifetime_oom_is_not_hidden_by_leaf_pass(self):
+        with self.assertRaisesRegex(RuntimeError,'did not pass'):self.read(oom=1)
+
 if __name__=='__main__':unittest.main(verbosity=2)
+
+class GenuineRecovery(unittest.TestCase):
+    """Small synthetic data/streams only; no provider or backend qualification."""
+    def setUp(self):
+        import genuine_case_recovery as recovery
+        import source_ci
+        self.r=recovery;self.r.source_ci=source_ci
+    def receipt(self,schema='baseline-capture-v2',mtime=0,**fields):
+        import gzip
+        payload=dict(schema_version=schema,source_sha='a'*40,**fields)
+        return gzip.compress(self.r.canonical(dict(payload=payload,payload_sha256=self.r.sha(self.r.canonical(payload)))),mtime=mtime)
+    def members(self,raw):
+        import io,tarfile
+        with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+            return {item.name:archive.extractfile(item).read() for item in archive}
+    def test_stream_bounds_crc_schema_and_private_inputs(self):
+        r=self.r;good=self.receipt('completion-failure-data-integrity-v2')
+        self.assertEqual(r.decoded(good,True)['schema_version'],'completion-failure-data-integrity-v2')
+        for raw in (good[:-4],self.receipt('http-transcript-v1'),b'{"x":1,"x":2}',b'{"x":Infinity}'):
+            with self.subTest(raw=raw[:16]),self.assertRaises((ValueError,EOFError,OSError)):r.decoded(raw,raw[:2]==b'\x1f\x8b')
+        for fields in (dict(password='CONTROL'),dict(localStorage={}),dict(account_balance=0),dict(message='Bearer CONTROL')):
+            with self.subTest(fields=fields),self.assertRaises(ValueError):r.decoded(self.receipt(**fields),True)
+        with patch.object(r,'DECODED',32),self.assertRaisesRegex(ValueError,'DECODED_BOUND'):
+            r.decoded(self.receipt(large='x'*100))
+    def test_actual_small_encoded_file_is_unchanged_and_symlink_rejected(self):
+        r=self.r
+        with tempfile.TemporaryDirectory() as raw:
+            path=Path(raw)/'receipt';body=self.receipt();path.write_bytes(body)
+            before=path.stat();info,read=r.encoded(path,True)
+            self.assertEqual(read,body);self.assertEqual(info['sha256'],r.sha(body))
+            self.assertEqual((path.stat().st_mtime_ns,path.read_bytes()),(before.st_mtime_ns,body))
+            with patch.object(r,'ENCODED',1):
+                with self.assertRaises(ValueError):r.encoded(path,limit=1)
+            link=path.with_name('link');link.symlink_to(path)
+            with self.assertRaisesRegex(ValueError,'NONREGULAR'):r.encoded(link)
+    def test_union_baseline_skips_both_saved_versions_and_hides_unknown_names(self):
+        r=self.r
+        with tempfile.TemporaryDirectory() as raw:
+            root=Path(raw);a=root/'a';b=root/'b'
+            for folder,body in ((a,b'{"version":1}'),(b,b'{"version":2}')):
+                path=folder/'output/data/week.json';path.parent.mkdir(parents=True);path.write_bytes(body)
+            unknown=a/'data/private-owner.json';unknown.parent.mkdir();unknown.write_bytes(b'{}')
+            before=r.snapshot((('source',a),('production',b)))
+            self.assertEqual(len(before[r.sha(b'output/data/week.json')]['versions']),2)
+            self.assertNotIn(b'private-owner',r.canonical(before))
+            recordings,records=r.recover([('source',a)],before)
+            self.assertEqual(self.members(recordings),{});self.assertEqual(records,[])
+    def test_new_receipts_from_source_and_transaction_preserve_exact_bytes(self):
+        r=self.r
+        with tempfile.TemporaryDirectory() as raw:
+            root=Path(raw);source=root/'source';stage=root/'stage'
+            path=source/'data/verification/new.json.gz';path.parent.mkdir(parents=True);body=self.receipt();path.write_bytes(body)
+            twin=stage/'data/verification/new.json.gz';twin.parent.mkdir(parents=True);os.link(path,twin)
+            different=stage/'data/verification/different.json.gz';different.write_bytes(self.receipt(mtime=1))
+            bad=source/'data/verification/incomplete.json.gz';bad.write_bytes(body[:-4])
+            recordings,records=r.recover([('source',source),('transactions/phase2-coherent-generation-test/generation',stage)],{})
+            members=self.members(recordings);self.assertEqual(len(members),2)
+            self.assertIn(body,members.values());self.assertIn(different.read_bytes(),members.values())
+            kept=[x for x in records if x['state']=='UNQUALIFIED_PRESERVED']
+            self.assertEqual(len(kept),3);self.assertEqual(len({x['archive_member'] for x in kept}),2)
+            self.assertTrue(all(x['physical_path']!=x['logical_path'] for x in kept))
+            self.assertTrue(any(x.get('logical_path','').endswith('incomplete.json.gz') and x['state'].startswith('UNAVAILABLE') for x in records))
+    def test_invalid_modern_output_does_not_hide_primary_receipt(self):
+        r=self.r
+        with tempfile.TemporaryDirectory() as raw:
+            root=Path(raw);path=root/'data/forward/new.json.gz';path.parent.mkdir(parents=True);body=self.receipt();path.write_bytes(body)
+            extra=root/'output/data/optional-http-transcript.json';extra.parent.mkdir(parents=True);extra.write_bytes(b'{"password":"CONTROL"}')
+            recordings,records=r.recover([('source',root)],{})
+            self.assertEqual(list(self.members(recordings).values()),[body])
+            unknown=next(x for x in records if x.get('reason')=='UNCLASSIFIED_ROLE')
+            self.assertNotIn('logical_path',unknown);self.assertNotIn(b'CONTROL',recordings)
+    def test_only_two_exact_quiescent_units_are_read(self):
+        r=self.r
+        state=b'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\n'
+        with patch.object(r.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=state)) as show:
+            units=r.inactive_units('123')
+            self.assertEqual([x['unit'] for x in units],['nfl-operating-123-1.service','nfl-operating-123-2.service'])
+            self.assertEqual(show.call_count,2)
+        with patch.object(r.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=state.replace(b'inactive',b'active'))):
+            with self.assertRaisesRegex(ValueError,'UNIT_NOT_QUIESCENT'):r.inactive_units('123')
+    def test_exact_three_inputs_and_source_job_context(self):
+        r=self.r;source='a'*40
+        env=dict(GITHUB_ACTIONS='true',RUNNER_ENVIRONMENT='github-hosted',GITHUB_REPOSITORY=r.REPO,GITHUB_REPOSITORY_ID='1411185749',GITHUB_ACTOR_ID='208912933',GITHUB_EVENT_NAME='workflow_dispatch',GITHUB_RUN_ATTEMPT='1',GITHUB_REF=r.REF,GITHUB_JOB='genuine-production-case',GITHUB_WORKFLOW_REF=r.REPO+'/.github/workflows/prepare-diagnostic-seed.yml@'+r.REF,GITHUB_SHA=source,GITHUB_WORKFLOW_SHA=source,GITHUB_RUN_ID='123')
+        event=dict(inputs=dict(confirmation=r.CONF,storage_approved=r.CONF,installed_source=source),repository=dict(id=1411185749,full_name=r.REPO),sender=dict(id=208912933))
+        self.assertEqual(r.validate_invocation(env,event,source),(source,'123'))
+        for key in ('GITHUB_JOB','GITHUB_SHA','GITHUB_WORKFLOW_SHA','GITHUB_ACTOR_ID','GITHUB_RUN_ATTEMPT','GITHUB_RUN_ID'):
+            with self.subTest(key=key),self.assertRaises(ValueError):r.validate_invocation(dict(env,**{key:'wrong'}),event,source)
+        changed=copy.deepcopy(event);changed['inputs']['extra']='bad'
+        with self.assertRaises(ValueError):r.validate_invocation(env,changed,source)
+    def test_missing_final_still_exports_first_recordings_and_total_cap(self):
+        r=self.r;recordings=b'bounded synthetic recordings'
+        meta=dict(schema_version='genuine-failure-recovery-v1',claim='UNQUALIFIED_PRESERVATION_ONLY_NEVER_COMPLETION',baseline_sha256='a'*64,identity={},controller_export='OMITTED_NO_MATCHED_CONTROLLER')
+        with tempfile.TemporaryDirectory() as raw:
+            report,original,final=r.controller(Path(raw),'a'*40)
+            self.assertIsNone(original);self.assertIsNone(final)
+        files=r.export_files(meta,recordings)
+        self.assertEqual(set(files),{'failure-first-recordings.tar','RECOVERY.json'})
+        self.assertEqual(files['failure-first-recordings.tar'],recordings)
+        with patch.object(r,'CAP',2048):
+            files=r.export_files(meta,recordings,b'x'*1900)
+            self.assertNotIn('controller-release-review.tar',files)
+            self.assertLessEqual(sum(map(len,files.values())),2048)
+            self.assertEqual(files['failure-first-recordings.tar'],recordings)
+    def test_existing_final_and_controller_tar_remain_byte_identical(self):
+        r=self.r;archive,final=self.controller_fixture()
+        def read(path,retain=False,limit=None):
+            body=final if path.name=='FINAL.json' else archive
+            return dict(bytes=len(body),sha256=r.sha(body),mode=0o644),body if retain else None
+        with patch.object(r,'encoded',side_effect=read):
+            report,path,original_final=r.controller(Path('/synthetic/out'),'a'*40)
+        self.assertEqual(report['status'],'COMPLETE_GENUINE_NONDEPLOY_CASE')
+        self.assertEqual(path,Path('/synthetic/out/release-review.tar'));self.assertEqual(original_final,final)
+        self.assertEqual(r.sha(archive),r.parsed(final)['artifact_tar_sha256'])
+
+    def test_incomplete_data_write_does_not_bypass_actual_source_guard(self):
+        r=self.r
+        with tempfile.TemporaryDirectory() as raw:
+            root=Path(raw);path=root/'helper.py';path.write_bytes(b'# synthetic source\n')
+            current=dict(commit='a'*40,files=[dict(path='helper.py',mode='100644',bytes=path.stat().st_size,sha256=r.sha(path.read_bytes()))])
+            allowed=('data/forward/new.json.gz','output/data/week.json','data/verification/.capture-abcdefgh','output/data/.json-abcdefgh','data/cache/tmpabcdefgh','output/data/selection-grading/tmpabcdefgh','__pycache__/helper.cpython-312.pyc')
+            for name in allowed:
+                with self.subTest(name=name),patch.object(r.source_ci,'source',return_value=current),patch.object(r.source_ci,'git',return_value=name.encode()+b'\0'):
+                    self.assertEqual(r.source_identity(root),current)
+            path.write_bytes(b'# changed source\n')
+            with patch.object(r.source_ci,'source',return_value=current),patch.object(r.source_ci,'git',return_value=b''):
+                with self.assertRaisesRegex(ValueError,'ACTUAL_SOURCE_BYTES_CHANGED'):r.source_identity(root)
+            path.write_bytes(b'# synthetic source\n')
+            denied=('data/forward/evil.py','tools/__pycache__/evil.py','data/cache/evil.py','__pycache__/helper.cpython-311.pyc','__pycache__/evil.cpython-312.pyc','data/verification/receipt.tmp','tools/import-shadow.py','data/forward/.capture-abcdefgh.py')
+            for name in denied:
+                with self.subTest(name=name),patch.object(r.source_ci,'source',return_value=current),patch.object(r.source_ci,'git',return_value=name.encode()+b'\0'):
+                    with self.assertRaisesRegex(ValueError,'UNTRACKED_EXECUTABLE_SOURCE'):r.source_identity(root)
+
+    def test_complete_first_atomic_receipt_survives_without_canonical_link(self):
+        r=self.r
+        with tempfile.TemporaryDirectory() as raw:
+            root=Path(raw);path=root/'data/forward/2026/w07/.capture-abcdefgh';path.parent.mkdir(parents=True)
+            body=self.receipt();path.write_bytes(body)
+            recordings,records=r.recover([('transactions/phase2-coherent-generation-test/generation',root)],{})
+            self.assertEqual(list(self.members(recordings).values()),[body])
+            self.assertEqual(records[0]['role'],'receipt_temporary')
+            self.assertTrue(records[0]['physical_path'].endswith('/.capture-abcdefgh'))
+            self.assertEqual(records[0]['logical_reference_status'],'ATOMIC_TEMP_NO_CANONICAL_NATIVE_CREATED')
+            self.assertEqual(sorted(path.parent.iterdir()),[path])
+            for bad in (body[:-4],self.receipt('unsupported-source-control-v1')):
+                path.write_bytes(bad);recordings,records=r.recover([('source',root)],{})
+                self.assertEqual(self.members(recordings),{})
+                self.assertTrue(records[0]['state'].startswith('UNAVAILABLE'))
+    def tar(self,members,gnu=False):
+        import io,tarfile
+        stream=io.BytesIO()
+        with tarfile.open(fileobj=stream,mode='w',format=tarfile.GNU_FORMAT if gnu else tarfile.USTAR_FORMAT) as archive:
+            for name,body in members.items():
+                item=tarfile.TarInfo(name);item.size=len(body);item.mode=0o644;archive.addfile(item,io.BytesIO(body))
+        return stream.getvalue()
+    def controller_fixture(self,**private):
+        r=self.r;logical='data/forward/2026/w07/'+'e'*64+'.json.gz';receipt=self.receipt(**private)
+        info=dict(bytes=len(receipt),sha256=r.sha(receipt),mode=0o600)
+        pages={'app.js':b'// synthetic public source\n','data/selection-grading/'+'b'*64+'/summary.json':b'{"public":true}'}
+        page_info={name:dict(bytes=len(body),sha256=r.sha(body)) for name,body in pages.items()}
+        metadata={'RELEASE_CASE_MANIFEST.json':dict(schema_version='genuine-current-production-case-v1',source='a'*40,status='COMPLETE_GENUINE_NONDEPLOY_CASE'),'INPUT_DATA_MANIFEST.json':dict(source='a'*40),'OUTPUT_DATA_MANIFEST.json':dict(after={logical:info},representations={}),'NEW_RECEIPTS_MANIFEST.json':[dict(path=logical,schema_version='baseline-capture-v2',**info)],'PAGES_MEMBERS_MANIFEST.json':page_info,'SOURCE_CI_BINDINGS.json':{}}
+        entries={'receipts/'+logical:receipt,'public-pages.tar':self.tar(pages,True),**{name:r.canonical(value) for name,value in metadata.items()}}
+        archive=self.tar(entries)
+        final=r.canonical(dict(status='COMPLETE_GENUINE_NONDEPLOY_CASE',source='a'*40,artifact_tar_bytes=len(archive),artifact_tar_sha256=r.sha(archive),new_receipts=1,operating_qualification='NOT_ESTABLISHED',resource_verdict='UNKNOWN',controller_seconds_including_retention=1.25))
+        return archive,final
+    def test_standard_credentials_rejected_but_owner_marker_preserved(self):
+        r=self.r
+        for key in ('access_token','refresh_token','id_token','Set-Cookie','set_cookie','Proxy-Authorization','X-Api-Key'):
+            with self.subTest(key=key),self.assertRaisesRegex(ValueError,'PRIVATE_FIELD'):r.decoded(self.receipt(**{key:'CONTROL'}),True)
+        value=r.decoded(self.receipt(owner_authorization='FICTIONAL_ONLY_DERIVED_SOURCE_TRANSITION_NOT_REAL_ACTIVATION'),True)
+        self.assertEqual(value['owner_authorization'],'FICTIONAL_ONLY_DERIVED_SOURCE_TRANSITION_NOT_REAL_ACTIVATION')
+    def test_success_tar_with_self_consistent_secret_is_never_exportable(self):
+        r=self.r
+        for fields in (dict(access_token='CONTROL'),{'Set-Cookie':'session=CONTROL'}):
+            archive,final=self.controller_fixture(**fields)
+            def read(path,retain=False,limit=None):
+                body=final if path.name=='FINAL.json' else archive
+                return dict(bytes=len(body),sha256=r.sha(body),mode=0o644),body if retain else None
+            with self.subTest(fields=fields),patch.object(r,'encoded',side_effect=read):
+                report,original,kept_final=r.controller(Path('/synthetic/out'),'a'*40)
+            self.assertIsNone(original);self.assertEqual(kept_final,final)
+            self.assertEqual(report['tar_or_final_unavailable'],'PRIVATE_FIELD')
+            meta=dict(schema_version='genuine-failure-recovery-v1',claim='UNQUALIFIED_PRESERVATION_ONLY_NEVER_COMPLETION',baseline_sha256='a'*64,identity={},controller_export='OMITTED_UNSAFE_CONTROLLER')
+            files=r.export_files(meta,b'bounded safe recordings',final_raw=kept_final)
+            self.assertNotIn('controller-release-review.tar',files);self.assertTrue(all(body!=archive for body in files.values()));self.assertTrue(all(b'\"access_token\"' not in body and b'\"Set-Cookie\"' not in body for body in files.values()))
+            self.assertEqual(r.sha(archive),r.parsed(final)['artifact_tar_sha256'])
+    def test_system_manager_cannot_be_redirected(self):
+        r=self.r
+        for key in ('DBUS_SYSTEM_BUS_ADDRESS','SYSTEMD_BUS_ADDRESS'):
+            with self.subTest(key=key),patch.dict(os.environ,{key:'CONTROL'}),patch.object(r.subprocess,'run') as call:
+                with self.assertRaisesRegex(ValueError,'SYSTEM_MANAGER_BUS_OVERRIDE'):r.inactive_units('123')
+                call.assert_not_called()
+        state=b'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\n'
+        with patch.dict(os.environ,{},clear=True),patch.object(r.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=state)) as call:
+            r.inactive_units('123')
+        self.assertTrue(all(item.args[0][:4]==['/usr/bin/systemctl','--system','--no-pager','show'] for item in call.call_args_list))
+    def test_bad_deflate_excludes_only_that_file_and_preserves_neighbor(self):
+        r=self.r;good=self.receipt();bad=b'\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03'+b'\xff'*10
+        files={'bad.json.gz':bad,'good.json.gz':good}
+        def encoded(path,retain=False,limit=None):
+            raw=files[path.name];return dict(bytes=len(raw),sha256=r.sha(raw),mode=0o600),raw if retain else None
+        candidates=[('data/forward/'+name,Path('/synthetic')/name,None) for name in files]
+        with patch.object(r,'candidates',return_value=iter(candidates)),patch.object(r,'encoded',side_effect=encoded):
+            recordings,records=r.recover([('source',Path('/synthetic'))],{})
+        self.assertEqual(list(self.members(recordings).values()),[good])
+        self.assertTrue(any(item.get('reason')=='INVALID_OR_INCOMPLETE_GZIP' for item in records))
+
+    def test_authenticated_dependency_rejects_same_size_restored_time_before_execution(self):
+        import hashlib
+        r=self.r
+        with tempfile.TemporaryDirectory() as raw:
+            root=Path(raw);path=root/'tools/source_ci.py';path.parent.mkdir();expected=b'FLAG=1\n';path.write_bytes(expected)
+            oid=hashlib.sha1(b'blob '+str(len(expected)).encode()+b'\0'+expected).hexdigest()
+            def git(_root,*args):
+                if args[0]=='ls-tree':return ('100644 blob '+oid+'\ttools/source_ci.py\0').encode()
+                if args[0]=='cat-file' and args[1]=='-s':return str(len(expected)).encode()
+                if args[0]=='cat-file':return expected
+                raise AssertionError(args)
+            with patch.object(r,'fixed_git',side_effect=git):
+                self.assertEqual(r.checked_source_ci(root,'a'*40).FLAG,1)
+                stamp=path.stat();path.write_bytes(b'FLAG=2\n');os.utime(path,ns=(stamp.st_atime_ns,stamp.st_mtime_ns))
+                with patch.object(r.types,'ModuleType') as execution:
+                    with self.assertRaisesRegex(ValueError,'DEPENDENCY_DIFFERS_FROM_DISPATCH'):r.checked_source_ci(root,'a'*40)
+                    execution.assert_not_called()
+    def test_real_local_source_ci_dependency_is_verified_before_use(self):
+        r=self.r;head=subprocess.check_output(['/usr/bin/git','-C',str(SOURCE),'rev-parse','HEAD']).decode().strip()
+        checked=r.checked_source_ci(SOURCE,head)
+        self.assertTrue(checked.mutable('data/forward/control.json.gz'))
+    def test_pages_member_hash_and_unknown_tar_roles_are_rejected(self):
+        r=self.r;archive,_=self.controller_fixture()
+        entries=r.tar_entries(archive);entries['owner-worker.log']=b'CONTROL'
+        with self.assertRaisesRegex(ValueError,'CONTROLLER_UNCLASSIFIED_MEMBER'):r.controller_archive(self.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE')
+        entries.pop('owner-worker.log');pages=r.parsed(entries['PAGES_MEMBERS_MANIFEST.json']);next(iter(pages.values()))['sha256']='0'*64
+        entries['PAGES_MEMBERS_MANIFEST.json']=r.canonical(pages)
+        with self.assertRaisesRegex(ValueError,'CONTROLLER_PAGES_MEMBERSHIP'):r.controller_archive(self.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE')

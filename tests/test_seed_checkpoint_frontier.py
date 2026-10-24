@@ -223,6 +223,48 @@ class GitFrontier(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'missing'): self.restore()
 
 
+class Continued22RetrievalBudget(unittest.TestCase):
+    def setUp(self):
+        self.source = subprocess.check_output(['git', '-C', str(CODE), 'rev-parse', 'HEAD']).decode().strip()
+        self.work = Path('/tmp') / 'nfl-seed-frontier-123456789'
+        self.confirmation = 'NFL-WEB-CONTINUE-CHECKPOINT-22-OF-24-12540324398-20261024'
+        self.env = dict(PREPARATION_ID=self.confirmation, CONTINUATION_ID=self.confirmation,
+            GITHUB_ACTIONS='true', GITHUB_JOB='prepare-continuation',
+            GITHUB_REPOSITORY='NickNicky19/nicks-expert-nfl-picks', GITHUB_REPOSITORY_ID='1411185749',
+            GITHUB_ACTOR_ID='208912933', GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_RUN_ATTEMPT='1',
+            RUNNER_ENVIRONMENT='github-hosted', GITHUB_REF='refs/heads/upgrade/phase2-reproducible-comparison',
+            GITHUB_WORKFLOW_REF='NickNicky19/nicks-expert-nfl-picks/.github/workflows/prepare-diagnostic-seed.yml@refs/heads/upgrade/phase2-reproducible-comparison',
+            GITHUB_SHA=self.source, GITHUB_WORKFLOW_SHA=self.source, GITHUB_RUN_ID='123456789', RUNNER_TEMP='/tmp')
+
+    def test_normal_240_unchanged(self):
+        for profile in (None, f.PROFILE22):
+            with self.subTest(profile=profile), patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(f.retrieval_budget(self.work, profile), 240)
+        with patch.dict(os.environ, dict(self.env, PREPARATION_ID='unapproved'), clear=True):
+            self.assertEqual(f.retrieval_budget(self.work, f.PROFILE22), 240)
+
+    def test_exact_preparation22_is_900(self):
+        # Synthetic invocation context; actual read-only checkout/source guard, no API or retrieval.
+        with patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(f.retrieval_budget(self.work, f.PROFILE22), 900)
+            with self.assertRaises(ValueError):f.retrieval_budget(self.work)
+
+    def test_other_context_cannot_receive_preparation_budget(self):
+        for key in ('CONTINUATION_ID', 'GITHUB_ACTIONS', 'GITHUB_JOB', 'GITHUB_REPOSITORY',
+                    'GITHUB_REPOSITORY_ID', 'GITHUB_ACTOR_ID', 'GITHUB_EVENT_NAME',
+                    'GITHUB_RUN_ATTEMPT', 'RUNNER_ENVIRONMENT', 'GITHUB_REF', 'GITHUB_WORKFLOW_REF',
+                    'GITHUB_SHA', 'GITHUB_WORKFLOW_SHA'):
+            with self.subTest(key=key), patch.dict(os.environ, dict(self.env, **{key:'wrong'}), clear=True):
+                with self.assertRaises(ValueError):f.retrieval_budget(self.work, f.PROFILE22)
+
+    def test_canonical_run_and_actual_run_path_required(self):
+        for run in ('', '0', '01', '-1', '1/../2'):
+            with self.subTest(run=run), patch.dict(os.environ, dict(self.env, GITHUB_RUN_ID=run), clear=True):
+                with self.assertRaises(ValueError):f.retrieval_budget(self.work, f.PROFILE22)
+        with patch.dict(os.environ, self.env, clear=True):
+            with self.assertRaises(ValueError):f.retrieval_budget(self.work.with_name('another-run'), f.PROFILE22)
+
+
 class Continued22Profiles(unittest.TestCase):
     def test_closed_profiles_and_original_constants_unchanged(self):
         old=f.profile_identity();new=f.profile_identity(f.PROFILE22)
