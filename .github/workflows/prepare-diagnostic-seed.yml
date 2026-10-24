@@ -12,6 +12,7 @@ on:
           - CANCEL
           - NFL-WEB-CLOUD-SEED-PREP-20261021-045638Z
           - NFL-WEB-CHECKPOINT-READBACK-12509203616-20261023
+          - NFL-WEB-CHECKPOINT-READBACK-12540324398-20261024
           - NFL-WEB-CHECKPOINT-FRONTIER-12509203616-20261023
           - NFL-WEB-CONTINUE-VERIFIED-13-OF-24-12509203616-20261023
       storage_approved:
@@ -281,7 +282,8 @@ jobs:
       github.actor_id == '208912933' &&
       github.ref == 'refs/heads/upgrade/phase2-reproducible-comparison' &&
       github.run_attempt == 1 &&
-      inputs.confirmation == 'NFL-WEB-CHECKPOINT-READBACK-12509203616-20261023' &&
+      (inputs.confirmation == 'NFL-WEB-CHECKPOINT-READBACK-12509203616-20261023' ||
+       inputs.confirmation == 'NFL-WEB-CHECKPOINT-READBACK-12540324398-20261024') &&
       inputs.storage_approved == 'READ_ONLY_EXISTING_ARTIFACT_NO_UPLOAD' &&
       inputs.installed_source == github.sha
     runs-on: ubuntu-24.04
@@ -306,6 +308,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          CHECKPOINT_READBACK_ID: ${{ inputs.confirmation }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -313,6 +316,8 @@ jobs:
           import gzip
           import hashlib
           import json
+          import math
+          import re
           import os
           from pathlib import Path
           import stat
@@ -323,18 +328,27 @@ jobs:
           import time
           import zipfile
           
+          sys.dont_write_bytecode = True
           sys.path.insert(0, str(Path(os.environ.get('GITHUB_WORKSPACE', '.')) / 'tools'))
           import source_ci
           import operating_seed_transport as transport
           
-          RUN = 39940028362
-          ARTIFACT = 12509203616
-          HEAD = '1b592af659cec56fe87440cf679d69d7fc41590e'
-          TREE = '49ddc936c1ba3f47bb038c7250eb82c6e0a91393'
+          READBACK_ID = os.environ['CHECKPOINT_READBACK_ID']
+          PROFILES = {
+              'NFL-WEB-CHECKPOINT-READBACK-12509203616-20261023': (
+                  39940028362, 12509203616, '1b592af659cec56fe87440cf679d69d7fc41590e',
+                  '49ddc936c1ba3f47bb038c7250eb82c6e0a91393', 998031473,
+                  'e9a1be3a3580d01a51b39375d7d908ba37300b02e83ab6ccf2e2732540b9876c',
+                  '2026-10-30T14:45:09Z', 'bfb48f36d1db5b2980235238e1b869efb183f23095ff72cee33c1d88e84a3b26'),
+              'NFL-WEB-CHECKPOINT-READBACK-12540324398-20261024': (
+                  40017092249, 12540324398, '4855732886ce0da65ccf3af13928049149f33ea8',
+                  '2dfb1d661a073f2cb997d03157beb79b970f818c', 2092241565,
+                  'd5060fb316f4626144b71ebbf6d774f7c644f2568f92b2e5b89efd10c04ac18d',
+                  '2026-10-27T00:21:55Z', 'ed5b6773c3d4e642bf4346aa2b9de89a2b580a1f34e97bddc6172b068a388611'),
+          }
+          RUN, ARTIFACT, HEAD, TREE, SIZE, DIGEST, EXPIRES, INTEGRITY = PROFILES[READBACK_ID]
+          CURRENT = READBACK_ID == 'NFL-WEB-CHECKPOINT-READBACK-12540324398-20261024'
           BASE = 'b3de2fbd88ba3247b407a856972285ad10527b99'
-          SIZE = 998031473
-          DIGEST = 'e9a1be3a3580d01a51b39375d7d908ba37300b02e83ab6ccf2e2732540b9876c'
-          EXPIRES = '2026-10-30T14:45:09Z'
           EXTRA = {'INCOMPLETE_CHECKPOINT.tar.gz', 'INCOMPLETE_SOURCE_CLOSURE.bundle', 'INCOMPLETE_MANIFEST.json'}
           ALLOWED = transport.SEED_FILES | transport.JSON_FILES | EXTRA
           CHUNK = 1024 ** 2
@@ -412,7 +426,7 @@ jobs:
                           envelope.get('files') == {k: v for k, v in inventory.items() if k != 'ARTIFACT_MANIFEST.json'}, 'Complete actual inventory')
                   require((envelope.get('application_source'), envelope.get('installer'), envelope.get('operating_qualification')) ==
                           (BASE, dict(head=HEAD, tree=TREE), 'NOT_RUN'), 'Producer source/qualification')
-                  require(envelope.get('integrity_sha256') == 'bfb48f36d1db5b2980235238e1b869efb183f23095ff72cee33c1d88e84a3b26' and
+                  require(envelope.get('integrity_sha256') == INTEGRITY and
                           metadata['PREFLIGHT.json'].get('installer') == dict(head=HEAD, tree=TREE), 'Actual original installer')
                   result = metadata['PREPARATION_RESULT.json']
                   require(result.get('application_source') == BASE and result.get('status') == 'PREPARATION_FAILED' and
@@ -443,6 +457,78 @@ jobs:
               return metadata, inventory, progress
           
           
+          def aggregate(metadata, inventory, progress, actual):
+              # A nonqualifying projection of authenticated bytes, never raw errors/paths.
+              p, r = metadata['PREPARATION_RESULT.json'], metadata['RESOURCE.json']
+              names = ('frontier', 'construct', 'admit', 'gate', 'freeze', 'restore', 'recheck')
+              stages = p.get('stages'); require(type(stages) is list and len(stages) <= len(names), 'Stage count')
+              projected = []
+              for i, item in enumerate(stages):
+                  require(type(item) is dict and item.get('name') == names[i] and
+                          item.get('status') in ('PASS', 'FAIL', 'RUNNING'), 'Known ordered stage')
+                  seconds = item.get('exclusive_seconds')
+                  require(seconds is None or type(seconds) in (int, float) and math.isfinite(seconds) and
+                          0 <= seconds <= 86400, 'Stage duration')
+                  projected.append(dict(name=names[i], status=item['status'], exclusive_seconds=seconds))
+              failure = p.get('failure'); require(type(failure) is str, 'Failure record')
+              failure_raw = failure.encode(); error = failure.partition(':')[0]
+              allowed_errors = {'RuntimeError', 'TimeoutError', 'ValueError', 'OSError', 'MemoryError',
+                                'CalledProcessError', 'KeyboardInterrupt', 'FileNotFoundError'}
+              error = error if error in allowed_errors else 'OTHER_ERROR'
+              code = {'TimeoutError: Fixed preparation core deadline exhausted': 'CORE_DEADLINE',
+                      'RuntimeError: Bounded private stage log exceeded': 'PRIVATE_LOG_CAP'}.get(failure, 'UNCLASSIFIED')
+              failed_stage = exit_code = None
+              match = re.fullmatch(r'RuntimeError: (frontier|construct|admit|gate|freeze|restore|recheck) failed with exit (-?[0-9]{1,10}); raw diagnostic log retained locally', failure)
+              if match:
+                  code, failed_stage, exit_code = 'STAGE_EXIT', match[1], int(match[2])
+              require(r.get('status') in ('PREFLIGHT_FAILED', 'COMPLETE', 'CAPABILITY_READY',
+                      'CAPABILITY_OR_MONITOR_FAILURE', 'HOSTED_PREFLIGHT_STOP') and
+                      r.get('resource_verdict') in ('PASS', 'FAIL', 'UNKNOWN', 'NOT_RUN_CAPABILITY_ONLY'), 'Resource status')
+              flags = {k: r.get(k) for k in ('complete_tree', 'peak_reset_verified', 'scope_closure_verified', 'privilege_drop_verified')}
+              require(all(v is None or type(v) is bool for v in flags.values()), 'Resource flags')
+              failures = r.get('failures', [])
+              allowed_failures = {'DISK_HEADROOM', 'SUPERVISOR_TIMEOUT', 'DESCENDANTS_REMAIN_AFTER_CLEANUP',
+                  'CHANGED_ANCESTOR_LIMIT', 'ANCESTOR_MEMORY_HEADROOM', 'CHANGED_RESOURCE_SCOPE',
+                  'WORKLOAD_MEMORY_HEADROOM', 'OOM', 'WORKLOAD_FAILURE'}
+              require(type(failures) is list and len(failures) <= len(allowed_failures) and
+                      all(type(v) is str and v in allowed_failures for v in failures), 'Known resource failures')
+              peaks, events = r.get('kernel_peaks', {}), r.get('event_deltas', {})
+              require(type(peaks) is dict and type(events) is dict and len(peaks) <= 8 and len(events) <= 8, 'Scope bounds')
+              scopes = []; require(len(set(peaks) | set(events)) <= 8, 'Complete scope bound')
+              for i, name in enumerate(sorted(set(peaks) | set(events))):
+                  peak = peaks.get(name, {}); event = events.get(name, {})
+                  require(type(peak) is dict and type(event) is dict, 'Scope records')
+                  values = {k: peak.get(k) for k in ('kernel_peak', 'limit')}
+                  values.update({k: event.get(k) for k in ('oom', 'oom_kill', 'oom_group_kill')})
+                  require(all(v is None or type(v) is int and 0 <= v < 2**63 for v in values.values()), 'Scope integer')
+                  scopes.append(dict(scope=i, **values))
+              disks = r.get('filesystem_minima', {}); require(type(disks) is dict and len(disks) <= 8, 'Filesystem bound')
+              minima = [{k: v.get(k) for k in ('total', 'free')} for _, v in sorted(disks.items())]
+              require(all(type(v['total']) is int and type(v['free']) is int and
+                          0 <= v['free'] <= v['total'] < 2**63 for v in minima), 'Filesystem integers')
+              counters = [v[k] for v in scopes for k in ('oom', 'oom_kill', 'oom_group_kill')]
+              durations = {k: p.get(k) for k in ('driver_seconds', 'core_limit_seconds', 'total_limit_seconds')}
+              durations['supervisor_seconds'] = r.get('supervisor_seconds')
+              require(all(v is None or type(v) in (int, float) and math.isfinite(v) and 0 <= v <= 86400 for v in durations.values()), 'Timing scalars')
+              preservation = (p.get('preservation') or {}).get('status')
+              require(preservation in (None, 'INCOMPLETE_NOT_ADMITTED_NOT_RESUME_AUTHORIZED', 'NO_FIXTURE_CREATED', 'RETENTION_FAILED'), 'Preservation status')
+              progress = None if progress is None else {k: progress[k] for k in ('generation', 'target')}
+              return dict(schema_version='fictional-seed-failure-readback-v2', status='READBACK_INTEGRITY_PASS_PREPARATION_FAILED',
+                  readback_source=actual, preparation_source=HEAD, application_source=BASE,
+                  preparation_run=RUN, artifact_id=ARTIFACT, artifact_bytes=SIZE, artifact_sha256=DIGEST,
+                  expires_at=EXPIRES, preparation_status=p['status'], stages=projected, progress=progress,
+                  failure=dict(error_class=error, code=code, stage=failed_stage, exit_code=exit_code,
+                               bytes=len(failure_raw), sha256=hashlib.sha256(failure_raw).hexdigest()),
+                  preservation_status=preservation, durations=durations,
+                  preserved_file_count=len((metadata.get('INCOMPLETE_MANIFEST.json') or {}).get('files') or {}),
+                  verified_members=len(inventory), resource=dict(status=r['status'], verdict=r['resource_verdict'],
+                      flags=flags, failures=failures, scopes=scopes, filesystem_minima=minima,
+                      any_oom=any(v > 0 for v in counters) if counters and all(v is not None for v in counters) else None),
+                  preparation_result_sha256=inventory['PREPARATION_RESULT.json']['sha256'],
+                  resource_sha256=inventory['RESOURCE.json']['sha256'],
+                  generation_count_claim='CHECKPOINT_PROGRESS_ONLY_NOT_REPLAYED', full_seed='NOT_ESTABLISHED',
+                  operating_qualification='NOT_RUN', application_or_evidence_writes=False, new_artifact_upload=False)
+
           def main():
               started = time.monotonic()
               deadline = started + 240
@@ -454,6 +540,7 @@ jobs:
                       os.environ.get('GITHUB_REF') == 'refs/heads/upgrade/phase2-reproducible-comparison', 'Trusted readback context')
               actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
               require(actual == os.environ['GITHUB_SHA'], 'Actual readback source')
+              binding = source_ci.source(Path(os.environ['GITHUB_WORKSPACE']))
               location = Path(os.environ['RUNNER_TEMP'])
               fs = os.statvfs(location)
               require(fs.f_bavail * fs.f_frsize - SIZE - transport.JSON_LIMIT >=
@@ -468,24 +555,28 @@ jobs:
                   metadata, inventory, progress = contents(archive, deadline)
                   require(identity(api) == before and transport._hash(archive, deadline) == dict(bytes=SIZE, sha256=DIGEST), 'Final actual identity/bytes')
                   preparation, resource = metadata['PREPARATION_RESULT.json'], metadata['RESOURCE.json']
-                  report = dict(schema_version='fictional-seed-failure-readback-v1', status='READBACK_INTEGRITY_PASS_PREPARATION_FAILED',
-                                readback_source=actual, preparation_source=HEAD, application_source=BASE,
-                                preparation_run=RUN, artifact_id=ARTIFACT, artifact_bytes=SIZE, artifact_sha256=DIGEST,
-                                expires_at=EXPIRES, preparation_status=preparation['status'], failure=preparation.get('failure'),
-                                stages=preparation.get('stages'), progress=progress, member_inventory=inventory,
-                                preservation_status=(preparation.get('preservation') or {}).get('status'),
-                                preserved_file_count=len((metadata.get('INCOMPLETE_MANIFEST.json') or {}).get('files') or {}),
-                                resource={k: resource.get(k) for k in ('status', 'resource_verdict', 'complete_tree', 'supervisor_seconds',
-                                    'failures', 'returncode', 'attributable_scope', 'peak_reset_verified', 'scope_closure_verified', 'privilege_drop_verified')},
-                                kernel_peaks=list((resource.get('kernel_peaks') or {}).values()),
-                                event_deltas=list((resource.get('event_deltas') or {}).values()),
-                                filesystem_minima=[{k: v.get(k) for k in ('total', 'free')} for v in (resource.get('filesystem_minima') or {}).values()],
-                                operating_qualification='NOT_RUN', full_seed='NOT_ADMITTED', application_or_evidence_writes=False,
-                                new_artifact_upload=False)
+                  if CURRENT:
+                      report = aggregate(metadata, inventory, progress, actual)
+                  else:
+                      report = dict(schema_version='fictional-seed-failure-readback-v1', status='READBACK_INTEGRITY_PASS_PREPARATION_FAILED',
+                                    readback_source=actual, preparation_source=HEAD, application_source=BASE,
+                                    preparation_run=RUN, artifact_id=ARTIFACT, artifact_bytes=SIZE, artifact_sha256=DIGEST,
+                                    expires_at=EXPIRES, preparation_status=preparation['status'], failure=preparation.get('failure'),
+                                    stages=preparation.get('stages'), progress=progress, member_inventory=inventory,
+                                    preservation_status=(preparation.get('preservation') or {}).get('status'),
+                                    preserved_file_count=len((metadata.get('INCOMPLETE_MANIFEST.json') or {}).get('files') or {}),
+                                    resource={k: resource.get(k) for k in ('status', 'resource_verdict', 'complete_tree', 'supervisor_seconds',
+                                        'failures', 'returncode', 'attributable_scope', 'peak_reset_verified', 'scope_closure_verified', 'privilege_drop_verified')},
+                                    kernel_peaks=list((resource.get('kernel_peaks') or {}).values()),
+                                    event_deltas=list((resource.get('event_deltas') or {}).values()),
+                                    filesystem_minima=[{k: v.get(k) for k in ('total', 'free')} for v in (resource.get('filesystem_minima') or {}).values()],
+                                    operating_qualification='NOT_RUN', full_seed='NOT_ADMITTED', application_or_evidence_writes=False,
+                                    new_artifact_upload=False)
+              require(source_ci.source(Path(os.environ['GITHUB_WORKSPACE'])) == binding, 'Readback source changed')
               report['cleanup_complete'] = True
               report['readback_seconds'] = time.monotonic() - started
               raw = source_ci.canonical(report)
-              require(len(raw) <= 128 * 1024, 'Bounded technical result')
+              require(len(raw) <= (8192 if CURRENT else 128 * 1024), 'Bounded technical result')
               print('CHECKPOINT_READBACK_JSON=' + raw.decode())
               print('CHECKPOINT_READBACK_SHA256=' + hashlib.sha256(raw).hexdigest())
           
