@@ -21,9 +21,9 @@ parameter versions require that frozen catalog and those exact recipes.
 The physical policy hash is pinned in the optional writer command and recorded
 in the matching current static receipt. A later source/policy requires fresh
 checks; earlier policy receipts do not transfer.
-The final V5 preparation registers policy physical/canonical SHA256
-`7f350bb869d82ad9c822e7163d6e2b42f4867ba60f3f9aea5a92a9c18d944628`
-and lab source `bea4fd96f9ae057b393cbe9b746febd09302547f`, with the reviewed
+The final V6 preparation registers policy physical/canonical SHA256
+`45e51a07a077ce0aedede608fcef2ddb3592828a0734843d37a3991e6673a546`
+and lab source `93e2019144be7b51248ce548fe247c6dcd949b71`, with the reviewed
 catalog freezer and eleven recipes derived for that exact source. These are
 registration identities. Protected installation, the matching current static
 receipt and actual hosted/public activation remain separate requirements.
