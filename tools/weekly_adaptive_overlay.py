@@ -283,20 +283,26 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     p.add_argument("--website-source-sha", required=True)
+    p.add_argument("--feed-policy", type=Path)
+    p.add_argument("--feed-policy-sha256")
     args = p.parse_args(); root = args.root
     # This import is only used by the website's existing leased writer entrypoint.
     from reliability import atomic_json
     now = datetime.now(timezone.utc).isoformat()
     source = root / "output/data/weekly-adaptive-overlay.json"
     descriptor = root / "data/weekly-adaptive-input/approved-input.json"
-    if not source.exists() and not descriptor.exists():
+    if not source.exists() and not descriptor.exists() and args.feed_policy is None:
         return  # Inert default: normal R0 build/publication needs no overlay input.
     board, board_sha = read_bound(root / "output/data/week.json", limit=16 * 1024 * 1024)
     selected, review, previous = {}, {}, None
     if source.exists():
         try: pointer, previous = read_public(root / "output")
         except (OSError, ValueError, TypeError, KeyError): previous = None
-    if descriptor.exists():
+    if args.feed_policy is not None:
+        from weekly_public_feed import prepare_writer
+        selected, review = prepare_writer(root, args.feed_policy, args.feed_policy_sha256, board,
+            website_source_sha=args.website_source_sha, now=now, atomic_json=atomic_json)
+    elif descriptor.exists():
         try:
             spec, _ = read_bound(descriptor)
             selected, _ = read_bound(private_input_path(root, spec["selected_path"]), spec["selected_sha256"])

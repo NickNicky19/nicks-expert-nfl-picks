@@ -101,8 +101,8 @@
     const kickoff=clock(row.kickoff_utc), expiry=clock(row.valid_until_utc);
     if(now<kickoff&&now>=expiry || now>=kickoff&&expiry<kickoff)return "";
     const binary=row.product==="binary_probability", value=binary?`${(100*row.forecast_value).toFixed(1)}%`:row.forecast_value.toFixed(2);
-    const label=binary?"Rush/receive TD probability":row.product==="point_mean"?"Mean point estimate":"Median point estimate";
-    return `<div class="card note" data-weekly-provisional><b>${now>=kickoff?"Frozen provisional forecast":"Provisional selected forecast"}: ${esc(value)}</b> · ${esc(label)}<div>${esc(row.method_id)} · experimental, not scientifically qualified. R0 reference and recorded lines remain unchanged.${binary?" Calibration is not established.":" This point is not a prop win probability."}</div></div>`;
+    const label=binary?"Rushing or receiving TD probability":row.product==="point_mean"?"Mean forecast":"Median forecast";
+    return `<div class="card note" data-weekly-provisional><b>${now>=kickoff?"Frozen provisional forecast":"Provisional selected forecast"}: ${esc(value)}</b> · ${esc(label)}<div>Assumes the player participates. Accuracy is still being evaluated. Reference forecast and recorded lines are shown separately.${binary?"":" Point forecasts do not give a bet-win probability."}</div></div>`;
   }
   return Object.freeze({validate,load,card,bound,DEADLINE_MS});
 });

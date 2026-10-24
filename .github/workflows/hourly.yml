@@ -87,7 +87,7 @@ jobs:
           p.write_text(json.dumps(d, separators=(',', ':'), allow_nan=False))
           PY
       - name: Prepare isolated provisional overlay (default R0)
-        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)"
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v1.json --feed-policy-sha256 0bcdf8505d2f0d268ea97e5c17c26f2a8d7cb91ef2e089cd9e410f27eb36f1ae
       - name: Commit validated data and immutable receipts
         id: commit
         run: |
@@ -96,6 +96,7 @@ jobs:
           git fetch origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || { echo "Main changed during build; refusing to merge generated evidence. Re-run on new main."; exit 1; }
           git add output/data data/cache
+          if [ -d data/weekly-adaptive-audit ]; then git add data/weekly-adaptive-audit; fi
           for dir in data/forward data/history; do
             if [ -d "$dir" ]; then git add "$dir"; fi
           done
