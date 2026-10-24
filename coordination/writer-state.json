@@ -1,42 +1,5 @@
 {
-  "active": {
-    "acquired_at": "2026-10-24T15:53:14.920632Z",
-    "authorized_coordination_sha": "858f94765655fbb4853f2562eea8eaf2ab028818",
-    "kind": "manual_owner",
-    "manual_gate_sha256": "4b651a5f19bf2cdbc32bb4de6528a746fa7c9e81f77ba1630fb549492ae98104",
-    "manual_gate_version": "phase2-manual-writer-v1",
-    "owner": {
-      "id": 208912933,
-      "login": "NickNicky19"
-    },
-    "request_comment": {
-      "author": {
-        "id": 208912933,
-        "login": "NickNicky19"
-      },
-      "body_sha256": "bb0061d0f19faca1374fc85bf1fe6627bd1f802e29667f6a5f120ff1343099e4",
-      "created_at": "2026-10-24T15:53:11Z",
-      "id": 6386278939,
-      "marker": "MANUAL_OWNER_AUTHORIZATION",
-      "updated_at": "2026-10-24T15:53:11Z",
-      "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6386278939"
-    },
-    "request_id": "NFL-WEB-DIAGNOSTIC-LIFETIME-BROWSER-20261024-160000Z-REQUEST",
-    "run_id": "NFL-WEB-DIAGNOSTIC-LIFETIME-BROWSER-20261024-160000Z",
-    "scope": [
-      "tests/test_cloud_seed_continuation.py",
-      "tests/test_operating_campaign.py",
-      "tests/test_operating_resource_bootstrap.py",
-      "tests/test_seed_checkpoint_frontier.py",
-      "tools/cloud-seed-integrity.json",
-      "tools/cloud_seed_prepare.py",
-      "tools/operating_campaign.py",
-      "tools/operating_resource_bootstrap.py",
-      "tools/release_browser.cjs",
-      "tools/seed_checkpoint_frontier.py"
-    ],
-    "source_head": "f1303ee9dfac61fb47fb6820eabd1d04b36f173c"
-  },
+  "active": null,
   "audit_ids": [
     "manual-gate-review-P01-20261014-174819Z",
     "manual-gate-correction-plan-20261014-200233Z",
@@ -1431,6 +1394,22 @@
         "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6384595675"
       },
       "run_id": "NFL-WEEKLY-PUBLIC-FEED-20261024-V1"
+    },
+    {
+      "end_sha": "5aac59d7d3c1a5ed4736531796f1e80f37f6e75f",
+      "result_comment": {
+        "author": {
+          "id": 208912933,
+          "login": "NickNicky19"
+        },
+        "body_sha256": "7c0124f7dc2d34011400ba4ef7cdb65740d7f03f57532cfdb0e56ec259bf1991",
+        "created_at": "2026-10-24T15:55:53Z",
+        "id": 6386307683,
+        "marker": "CODEX_RESULT",
+        "updated_at": "2026-10-24T15:55:53Z",
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6386307683"
+      },
+      "run_id": "NFL-WEB-DIAGNOSTIC-LIFETIME-BROWSER-20261024-160000Z"
     }
   ],
   "finding_attempts": {
@@ -1923,6 +1902,7 @@
     },
     "NFL-WEB-DIAGNOSTIC-LIFETIME-BROWSER-20261024-160000Z-REQUEST": {
       "audit_id": "NFL-WEB-DIAGNOSTIC-LIFETIME-BROWSER-20261024-160000Z-AUDIT",
+      "end_sha": "5aac59d7d3c1a5ed4736531796f1e80f37f6e75f",
       "kind": "manual_owner",
       "request_comment": {
         "author": {
@@ -1936,8 +1916,21 @@
         "updated_at": "2026-10-24T15:53:11Z",
         "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6386278939"
       },
+      "result_comment": {
+        "author": {
+          "id": 208912933,
+          "login": "NickNicky19"
+        },
+        "body_sha256": "7c0124f7dc2d34011400ba4ef7cdb65740d7f03f57532cfdb0e56ec259bf1991",
+        "created_at": "2026-10-24T15:55:53Z",
+        "id": 6386307683,
+        "marker": "CODEX_RESULT",
+        "updated_at": "2026-10-24T15:55:53Z",
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6386307683"
+      },
       "run_id": "NFL-WEB-DIAGNOSTIC-LIFETIME-BROWSER-20261024-160000Z",
-      "status": "ACTIVE"
+      "start_sha": "f1303ee9dfac61fb47fb6820eabd1d04b36f173c",
+      "status": "COMPLETED"
     },
     "NFL-WEB-FINAL-WORKLOAD-REQUEST-20261024-032000Z": {
       "audit_id": "NFL-WEB-FINAL-WORKLOAD-AUDIT-20261024-032000Z",
@@ -3299,7 +3292,7 @@
       "status": "COMPLETED"
     }
   },
-  "revision": 138,
+  "revision": 139,
   "schema_version": "implementation-writer-state-v1",
   "sibling_probe_candidate": "winner_candidate",
   "transport_validation": {
@@ -3339,5 +3332,5 @@
     "source_head": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6",
     "tests_at": "2026-10-14T03:07:10.736645Z"
   },
-  "updated_at": "2026-10-24T15:53:14.920632Z"
+  "updated_at": "2026-10-24T15:55:54.641309Z"
 }
