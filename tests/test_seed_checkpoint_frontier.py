@@ -148,7 +148,8 @@ class Checkpoint(unittest.TestCase):
         (root / 'FICTIONAL_ONLY.json').write_text(json.dumps(dict(reviewed_source=f.BASE, dimensions=h.FULL)))
         (root / 'FICTIONAL_PHASES.json').write_text(json.dumps(dict(contract=h.phase_contract(),
             contract_sha256=hashlib.sha256(h.encoded(h.phase_contract())).hexdigest())))
-        capture = SimpleNamespace(_public_archive_commit=lambda *args: None, validate_generation=lambda _: {'generation_sha256': 'a' * 64})
+        capture = SimpleNamespace(_manifest=lambda *a, **kw: ({}, {}), _git_archive=lambda *a, **kw: {},
+            _public_archive_commit=lambda *args: None, validate_generation=lambda _: {'generation_sha256': 'a' * 64})
         def mutate(*_):
             old = bundle.stat(); bundle.write_bytes(b'bb'); os.utime(bundle, ns=(old.st_atime_ns, old.st_mtime_ns))
             return dict(complete_generations=13, public_semantics_sha256='b' * 64, rows=1, groups=1, outcomes=1, native=1)
@@ -320,8 +321,10 @@ class Continued22Residuals(unittest.TestCase):
     def evidence(self,lane='verification/partial-failures',payload=None):
         value=payload or dict(schema_version='completion-failure-data-integrity-v2',season=2026,week=6,
             completion_sha256='a'*64,failed_at='2026-11-09T05:01:55+00:00',reason='FINAL_COMPLETION_BOUNDARY_FAILED')
+        if lane=='forward':value.update(input_sha256='1'*64,engine_sha256='2'*64,mode='live')
         digest=hashlib.sha256(f.ci.canonical(value)).hexdigest()
-        name='data/'+lane+'/2026/w06/'+digest+'.json.gz';p=self.raw/name;p.parent.mkdir(parents=True,exist_ok=True)
+        locator=hashlib.sha256(f.ci.canonical(dict(data=value['input_sha256'],engine=value['engine_sha256'],mode=value['mode']))).hexdigest() if lane=='forward' else digest
+        name='data/'+lane+'/2026/w06/'+locator+'.json.gz';p=self.raw/name;p.parent.mkdir(parents=True,exist_ok=True)
         p.write_bytes(gzip.compress(f.ci.canonical(dict(payload=value,payload_sha256=digest)),mtime=0));self.scope[name]=f.descriptor(p)
         return name
 
@@ -366,7 +369,8 @@ class Continued22Residuals(unittest.TestCase):
         self.assertEqual(calls,[(self.raw/marker).read_bytes()])
 
     def test_copied_root_rechecks_actual_inventory_and_mode(self):
-        name=self.evidence();root,_,_=self.restore()
+        name=self.evidence();root,heads,_=self.restore()
+        f._preserve_carried(root,heads['HEAD'],self.raw,self.scope,f.PROFILE22)
         self.raw.rename(self.work/'raw-checkpoint');self.raw=self.work/'raw-checkpoint'
         (self.work/f.MANIFEST).write_text(json.dumps(dict(status='INCOMPLETE_NOT_ADMITTED_NOT_RESUME_AUTHORIZED',
             application_source=self.source,input_contract_sha256=f.INPUTS,files=self.scope)))
@@ -374,9 +378,9 @@ class Continued22Residuals(unittest.TestCase):
             checked=f.verify_copied_frontier(self.work,root,f.PROFILE22)
             self.assertIn(name,checked['inventory']);self.assertEqual(parents.call_count,2)
             target=root/'config/phase2.json';old=target.stat();raw=target.read_bytes();target.write_bytes(b'x'*len(raw));os.utime(target,ns=(old.st_atime_ns,old.st_mtime_ns))
-            with self.assertRaisesRegex(ValueError,'inventory changed'):f.verify_copied_frontier(self.work,root,f.PROFILE22)
+            with self.assertRaisesRegex(ValueError,'tracked bytes|inventory changed'):f.verify_copied_frontier(self.work,root,f.PROFILE22)
             target.write_bytes(raw);target.chmod(0o755)
-            with self.assertRaisesRegex(ValueError,'mode changed'):f.verify_copied_frontier(self.work,root,f.PROFILE22)
+            with self.assertRaisesRegex(ValueError,'mode'):f.verify_copied_frontier(self.work,root,f.PROFILE22)
 
     def test_actual_b3_data_aliases_keep_committed22_and_raw23_separate(self):
         names=['output/data/'+name for name in ('matchup-proof.json','game-status.json','offer-capture.json',
@@ -547,3 +551,431 @@ print(paths[0].relative_to(root).as_posix())
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class DiagnosticOperationLifetime(unittest.TestCase):
+    """Tiny delegate/lifetime controls; no seed, provider, kernel or fit claim."""
+    def setUp(self):
+        import operating_diagnostic as h
+        self.h = h;self.head = 'a' * 40;self.calls = [];self.run_calls = [];self.refs = []
+        self.root = Path('/workspace/diagnostic-lifetime-unit/root')
+        self.real_run = subprocess.run
+        import weakref
+        class Value:pass
+        def manifest(base, descriptor, *, root=None, _checked=None):
+            self.assertEqual(_checked, {});value = Value()
+            _checked['payload'] = value;self.refs.append(weakref.ref(value))
+            self.calls.append(('manifest', descriptor, root));return descriptor, {}
+        def archive(root, records, excluded, *, verify_public=True, _checked=None):
+            self.assertEqual(_checked, {});value = Value()
+            _checked['payload'] = value;self.refs.append(weakref.ref(value))
+            self.calls.append(('archive', frozenset(excluded), verify_public))
+            return {rid: {'git_ref': self.head, 'manifest': records[rid]} for rid in excluded}
+        self.capture = SimpleNamespace(_manifest=manifest, _git_archive=archive)
+        self.modules = {'capture': self.capture};self.originals = (manifest, archive)
+        def run(command, *args, **kwargs):
+            self.run_calls.append((command, args, kwargs));return SimpleNamespace(returncode=0)
+        self.stack = contextlib.ExitStack()
+        self.stack.enter_context(patch.object(h, 'bind', new=lambda root: self.modules))
+        self.stack.enter_context(patch.object(h.subprocess, 'run', new=run))
+        self.stack.enter_context(patch.object(f, 'git', new=lambda root,*args: (self.head+'\n').encode()))
+    def tearDown(self):self.stack.close()
+    def context(self, **kw):return f.operation_lifetime(self.h, **kw)
+    def assert_restored(self):
+        self.assertIs(self.capture._manifest, self.originals[0])
+        self.assertIs(self.capture._git_archive, self.originals[1])
+        self.assertFalse(hasattr(self.h, '_installer_generation_lifetime'))
+    def test_fresh_context_delegation_and_no_retained_payload(self):
+        import gc,types
+        shared = {'caller_state': 'untouched'}
+        with self.context(modules=(self.modules,)):
+            self.assertIsInstance(self.capture._manifest, types.FunctionType)
+            for i in range(4):
+                descriptor = {'report': str(i)}
+                self.assertEqual(self.capture._manifest(self.root, descriptor,
+                    root=self.root, _checked=shared), (descriptor, {}))
+                gc.collect();self.assertTrue(all(ref() is None for ref in self.refs))
+            self.assertEqual(shared, {'caller_state': 'untouched'})
+        self.assert_restored();self.assertEqual(len(self.calls), 4)
+    def test_archive_exact_single_report_full_union_and_fresh_contexts(self):
+        records = {str(i): {'path': str(i)} for i in range(3)}
+        with self.context(modules=(self.modules,)):
+            result = self.capture._git_archive(self.root, records, set(records), verify_public=False)
+            self.assertEqual(result, {rid:{'git_ref':self.head,'manifest':v} for rid,v in records.items()})
+            self.assertEqual(self.calls, [('archive',frozenset({str(i)}),False) for i in range(3)])
+            self.assertTrue(all(ref() is None for ref in self.refs))
+        self.assert_restored()
+    def test_empty_archive_still_delegates_exact_original(self):
+        with self.context(modules=(self.modules,)):
+            self.assertEqual(self.capture._git_archive(self.root, {}, set()), {})
+        self.assertEqual(self.calls,[('archive',frozenset(),True)]);self.assert_restored()
+    def test_bind_hook_and_nested_context_use_one_plain_adapter(self):
+        with self.context():
+            self.assertIs(self.h.bind(self.root), self.modules);outer = self.capture._manifest
+            with self.context(modules=(self.modules,)):
+                self.assertIs(self.capture._manifest, outer)
+                self.capture._manifest(self.root, {'report':'x'})
+            self.assertIs(self.capture._manifest, outer)
+        self.assert_restored()
+    def test_original_validation_error_propagates_and_restores(self):
+        def fail(*args,**kwargs):raise RuntimeError('COLD_VALIDATION_FAILED')
+        self.capture._manifest = fail
+        with self.assertRaisesRegex(RuntimeError,'COLD_VALIDATION_FAILED'):
+            with self.context(modules=(self.modules,)):
+                self.capture._manifest(self.root,{})
+        self.assertIs(self.capture._manifest,fail);self.assertIs(self.capture._git_archive,self.originals[1])
+        self.assertFalse(hasattr(self.h,'_installer_generation_lifetime'))
+    def test_archive_omission_extra_wrong_ref_and_changed_descriptor_fail(self):
+        records={'x':{'path':'original'}}
+        for label in ('missing','extra','wrong_ref','changed'):
+            def bad(root, records, excluded, **kwargs):
+                if label=='missing':return {}
+                if label=='extra':return {'x':{'git_ref':self.head,'manifest':records['x']},'extra':{}}
+                if label=='changed':records['x']['path']='changed'
+                return {'x':{'git_ref':'b'*40 if label=='wrong_ref' else self.head,'manifest':records['x']}}
+            with self.subTest(label=label),patch.object(self.capture,'_git_archive',new=bad):
+                with self.assertRaisesRegex(ValueError,'Exact cold archive'):
+                    with self.context(modules=(self.modules,)):
+                        self.capture._git_archive(self.root,records,{'x'})
+            records['x']['path']='original'
+        self.assert_restored()
+    def test_archive_head_drift_fails_before_next_batch(self):
+        reads=iter([self.head,self.head,self.head,'b'*40])
+        with patch.object(f,'git',new=lambda *args:(next(reads)+'\n').encode()):
+            with self.assertRaisesRegex(ValueError,'HEAD changed'):
+                with self.context(modules=(self.modules,)):
+                    self.capture._git_archive(self.root,{'x':{},'y':{}},{'x','y'})
+        self.assertEqual(len(self.calls),1);self.assert_restored()
+    def test_archive_original_failure_is_not_a_partial_success(self):
+        def fail(*args,**kw):raise RuntimeError('ORIGINAL_GIT_BOUNDARY_FAILED')
+        with patch.object(self.capture,'_git_archive',new=fail):
+            with self.assertRaisesRegex(RuntimeError,'ORIGINAL_GIT_BOUNDARY_FAILED'):
+                with self.context(modules=(self.modules,)):
+                    self.capture._git_archive(self.root,{'x':{}},{'x'})
+        self.assert_restored()
+    def test_missing_excluded_record_rejected_before_original(self):
+        with self.context(modules=(self.modules,)):
+            with self.assertRaisesRegex(ValueError,'coverage inputs'):
+                self.capture._git_archive(self.root,{}, {'missing'})
+        self.assertEqual(self.calls,[]);self.assert_restored()
+    def test_actual_harness_hash_guard_rejects_other_source(self):
+        wrong=SimpleNamespace(__file__=f.__file__)
+        with self.assertRaisesRegex(ValueError,'Actual frozen'):
+            with f.operation_lifetime(wrong):self.fail('wrong harness entered')
+    def test_exact_cold_modern_and_recheck_are_new_interpreter_commands(self):
+        roots=[['modern','--code',str(self.root),'--root',str(self.root)],
+            ['modern','--code',str(self.root),'--root',str(self.root),'--small'],
+            ['recheck','--code','/workspace/diagnostic-lifetime-unit/restart-checkout',
+             '--root','/workspace/diagnostic-lifetime-unit/restart-checkout',
+             '--result','/workspace/diagnostic-lifetime-unit/RESTART.json']]
+        for tail in roots:
+            command=[sys.executable,str(Path(self.h.__file__).resolve()),*tail]
+            with self.context():self.h.subprocess.run(command,check=True,stdout=subprocess.DEVNULL)
+            actual,_,kw=self.run_calls[-1]
+            self.assertEqual(actual[:2],[sys.executable,'-c']);self.assertEqual(actual[3:],tail)
+            self.assertIn('f.frozen_harness_child()',actual[2]);self.assertEqual(kw,{'check':True,'stdout':subprocess.DEVNULL})
+        self.assert_restored()
+    def test_other_commands_are_delegated_unchanged(self):
+        for command in (['git','rev-parse','HEAD'],
+                [sys.executable,str(Path(self.h.__file__).resolve()),'legacy','--code','/a','--root','/b'],
+                [sys.executable,'tools/source_ci.py','verify']):
+            with self.context():self.h.subprocess.run(command,check=True)
+            self.assertIs(self.run_calls[-1][0],command)
+    def test_malformed_closed_child_cannot_add_routes_or_destinations(self):
+        good=['modern','--code',str(self.root),'--root',str(self.root)]
+        variants=[good+['--unknown'],good[:3]+['--root','/workspace/different'],
+            ['recheck','--code','/workspace/r','--root','/workspace/r','--result','/workspace/R.json']]
+        for tail in variants:
+            with self.subTest(tail=tail),self.assertRaises(ValueError):
+                with self.context():self.h.subprocess.run([sys.executable,str(Path(self.h.__file__).resolve()),*tail],check=True)
+        self.assertEqual(self.run_calls,[]);self.assert_restored()
+    def test_cold_child_checks_offline_then_calls_unchanged_main(self):
+        calls=[]
+        tail=['modern','--code',str(self.root),'--root',str(self.root)]
+        def main():
+            self.assertTrue(hasattr(self.h,'_installer_generation_lifetime'))
+            self.assertEqual(sys.argv[1:],tail);calls.append('main')
+        with patch.object(self.h,'require_offline',new=lambda:calls.append('offline')),\
+                patch.object(self.h,'main',new=main),patch.object(sys,'argv',['-c',*tail]):
+            f.frozen_harness_child()
+        self.assertEqual(calls,['offline','main']);self.assert_restored()
+    def test_cold_child_offline_failure_stops_before_main(self):
+        calls=[]
+        def denied():raise RuntimeError('KERNEL_ISOLATION_REQUIRED')
+        with patch.object(self.h,'require_offline',new=denied),patch.object(self.h,'main',new=lambda:calls.append('main')),\
+                patch.object(sys,'argv',['-c','modern','--code',str(self.root),'--root',str(self.root)]):
+            with self.assertRaisesRegex(RuntimeError,'KERNEL_ISOLATION_REQUIRED'):f.frozen_harness_child()
+        self.assertEqual(calls,[]);self.assert_restored()
+    def test_all_seed_prepare_stages_share_adapter_entry(self):
+        import cloud_seed_prepare as p
+        stages=[]
+        def worker(args):
+            m=self.h.bind(self.root)
+            self.assertIsNot(m['capture']._manifest,self.originals[0])
+            stages.append(args.stage);return args.stage
+        with patch.object(p,'_worker',new=worker):
+            for name in ('frontier','construct','admit','gate','freeze','restore','recheck'):
+                self.assertEqual(p.worker(SimpleNamespace(stage=name)),name)
+        self.assertEqual(len(stages),7);self.assert_restored()
+    def test_connected_caller_scopes_and_dependency_are_present(self):
+        import ast
+        tools=Path(f.__file__).parent
+        source=ast.parse((tools/'seed_checkpoint_frontier.py').read_text())
+        saved=next(n for n in source.body if isinstance(n,ast.FunctionDef) and n.name=='check_saved')
+        self.assertTrue(any(isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='operation_lifetime' for n in ast.walk(saved)))
+        campaign=ast.parse((tools/'operating_campaign.py').read_text())
+        for name in ('transition_execution_plan','package_execution_source','sample_capture','sample_commit','main'):
+            fn=next(n for n in campaign.body if isinstance(n,ast.FunctionDef) and n.name==name)
+            self.assertTrue(any(isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='operation_lifetime' for n in ast.walk(fn)),name)
+        import operating_campaign as c
+        self.assertIn('tools/seed_checkpoint_frontier.py',c.DEPENDENCIES)
+    def test_actual_installer_identity_never_claims_measured_capacity(self):
+        value=f.operation_identity()
+        self.assertEqual(value['installer_helper_sha256'],hashlib.sha256(Path(f.__file__).read_bytes()).hexdigest())
+        self.assertEqual(value['frozen_harness_sha256'],f.HARNESS)
+        self.assertIn('NOT_MEASURED',value['claim'])
+
+    def test_actual_new_interpreter_retains_root_helper_import_order(self):
+        # Real new Python interpreters and original441f bind; tiny synthetic
+        # app modules only. Offline guard is substituted IN THIS CONTROL ONLY;
+        # no kernel/sourceCI/model/fixture/operating qualification is claimed.
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory);installer=base/'installer';root=base/'root'
+            installer.mkdir();(root/'tools').mkdir(parents=True)
+            (installer/'operating_diagnostic.py').write_bytes(Path(self.h.__file__).read_bytes())
+            (installer/'reliability.py').write_text("ORIGIN='INSTALLER'\n")
+            (installer/'seed_checkpoint_frontier.py').write_text(
+                "import reliability\n"
+                "def frozen_harness_child():print(reliability.ORIGIN)\n")
+            names=('build','build_recorded','reliability','evidence','partial_week',
+                'phase2_capture','selection_publication','scorecard','source_evidence')
+            for name in names:(root/'tools'/(name+'.py')).write_text("ORIGIN='RETAINED_ROOT'\n")
+            tail=['modern','--code',str(root),'--root',str(root)]
+            with patch.object(f,'__file__',str(installer/'seed_checkpoint_frontier.py')):
+                with self.context():
+                    self.h.subprocess.run([sys.executable,str(Path(self.h.__file__).resolve()),*tail],check=True)
+            command=self.run_calls[-1][0]
+            self.assertEqual(command[:2],[sys.executable,'-c'])
+            program=command[2].replace('h.require_offline();','')
+            self.assertIn('h.bind(Path(sys.argv[3]).resolve());',program)
+            environment=dict(os.environ,PYTHONDONTWRITEBYTECODE='1')
+            positive=self.real_run([sys.executable,'-B','-c',program,*tail],
+                check=True,capture_output=True,text=True,env=environment)
+            self.assertEqual(positive.stdout.strip(),'RETAINED_ROOT')
+            control=program.replace('h.bind(Path(sys.argv[3]).resolve());','')
+            negative=self.real_run([sys.executable,'-B','-c',control,*tail],
+                check=True,capture_output=True,text=True,env=environment)
+            self.assertEqual(negative.stdout.strip(),'INSTALLER')
+
+    def test_final_union_rejects_later_batch_mutating_earlier_record(self):
+        records={'a':{'path':'original-a'},'b':{'path':'original-b'}}
+        def archive(root, records, excluded, **kwargs):
+            rid=next(iter(excluded))
+            if rid=='b':records['a']['path']='changed-later'
+            return {rid:{'git_ref':self.head,'manifest':records[rid]}}
+        with patch.object(self.capture,'_git_archive',new=archive):
+            with self.assertRaisesRegex(ValueError,'Final cold archive descriptors'):
+                with self.context(modules=(self.modules,)):
+                    self.capture._git_archive(self.root,records,set(records))
+        self.assert_restored()
+    def test_final_union_rejects_later_batch_mutating_detached_return(self):
+        records={'a':{'path':'original-a'},'b':{'path':'original-b'}};returned=[]
+        def archive(root, records, excluded, **kwargs):
+            rid=next(iter(excluded))
+            if rid=='b':returned[0]['manifest']['path']='changed-detached-return'
+            value={'git_ref':self.head,'manifest':dict(records[rid])};returned.append(value)
+            return {rid:value}
+        with patch.object(self.capture,'_git_archive',new=archive):
+            with self.assertRaisesRegex(ValueError,'Final cold archive descriptors'):
+                with self.context(modules=(self.modules,)):
+                    self.capture._git_archive(self.root,records,set(records))
+        self.assertEqual(records['a']['path'],'original-a');self.assert_restored()
+    def test_final_union_rejects_later_batch_mutating_earlier_locator(self):
+        records={'a':{},'b':{}};returned=[]
+        def archive(root, records, excluded, **kwargs):
+            rid=next(iter(excluded))
+            if rid=='b':returned[0]['git_ref']='b'*40
+            value={'git_ref':self.head,'manifest':records[rid]};returned.append(value)
+            return {rid:value}
+        with patch.object(self.capture,'_git_archive',new=archive):
+            with self.assertRaisesRegex(ValueError,'Final cold archive descriptors'):
+                with self.context(modules=(self.modules,)):
+                    self.capture._git_archive(self.root,records,set(records))
+        self.assert_restored()
+    def test_final_union_rechecks_head_after_all_batches(self):
+        reads=iter([self.head]*5+['b'*40])
+        with patch.object(f,'git',new=lambda *args:(next(reads)+'\n').encode()):
+            with self.assertRaisesRegex(ValueError,'HEAD changed before complete union'):
+                with self.context(modules=(self.modules,)):
+                    self.capture._git_archive(self.root,{'a':{},'b':{}},{'a','b'})
+        self.assertEqual(len(self.calls),2);self.assert_restored()
+
+
+class CarriedEvidenceRecovery(unittest.TestCase):
+    """Real tiny local Git and synthetic envelopes; never a fixture qualification."""
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name)
+        self.root=self.base/'root';self.root.mkdir();self.work=self.base/'work';self.work.mkdir()
+        self.raw=self.work/'raw-checkpoint';self.raw.mkdir()
+        f.git(self.root,'init','--template=','-q')
+        for k,v in [('user.name','FictionalUnit'),('user.email','fictional@example.invalid'),
+                    ('core.logAllRefUpdates','false')]:f.git(self.root,'config',k,v)
+        import operating_diagnostic as h
+        values={'tools/helper.py':b'# fixed source\n','config/phase2.json':b'{"fixed":true}\n',
+            'output/data/week.json':b'{"generation":22}\n',
+            'FICTIONAL_ONLY.json':h.encoded(dict(reviewed_source=f.BASE,dimensions=h.FULL)),
+            'FICTIONAL_PHASES.json':h.encoded(dict(contract=h.phase_contract(),
+                contract_sha256=hashlib.sha256(h.encoded(h.phase_contract())).hexdigest()))}
+        for n,b in values.items():
+            q=self.root/n;q.parent.mkdir(parents=True,exist_ok=True);q.write_bytes(b);q.chmod(0o644)
+        f.git(self.root,'add','.');f.git(self.root,'-c','commit.gpgsign=false','commit','-qm','Tiny original22')
+        self.origin=f.git(self.root,'rev-parse','HEAD').decode().strip()
+        self.tree=f.git(self.root,'rev-parse','HEAD^{tree}').decode().strip()
+        f.git(self.root,'update-ref','refs/fixture/source',self.origin)
+        f.git(self.root,'bundle','create',str(self.work/f.BUNDLE),'HEAD','refs/fixture/source')
+        self.files={}
+        for n in values:
+            q=self.raw/n;q.parent.mkdir(parents=True,exist_ok=True);q.write_bytes(values[n])
+            self.files[n]=f.descriptor(q)
+        progress={'generation':22,'target':24,'wall_clock':'2026-10-24T00:00:00+00:00'}
+        (self.raw/'CONSTRUCTION_PROGRESS.json').write_text(json.dumps(progress))
+        self.files['CONSTRUCTION_PROGRESS.json']=f.descriptor(self.raw/'CONSTRUCTION_PROGRESS.json')
+        self.name=self.receipt()
+    def tearDown(self):self.temp.cleanup()
+    def receipt(self,native=False):
+        payload={'schema_version':'baseline-capture-v2' if native else 'generation-failure-v1',
+            'season':2026,'week':6,'source_sha':self.origin}
+        if native:payload.update(input_sha256='1'*64,engine_sha256='2'*64,mode='live')
+        digest=hashlib.sha256(f.ci.canonical(payload)).hexdigest()
+        locator=hashlib.sha256(f.ci.canonical(dict(data=payload['input_sha256'],
+            engine=payload['engine_sha256'],mode='live'))).hexdigest() if native else digest
+        n='data/'+('forward' if native else 'verification/partial-failures')+'/2026/w06/'+locator+'.json.gz'
+        b=gzip.compress(f.ci.canonical(dict(payload=payload,payload_sha256=digest)),mtime=0)
+        for root in (self.raw,self.root):
+            q=root/n;q.parent.mkdir(parents=True,exist_ok=True);q.write_bytes(b);q.chmod(0o644)
+        self.files[n]=f.descriptor(self.raw/n);return n
+    def preserve(self):return f._preserve_carried(self.root,self.origin,self.raw,self.files,f.PROFILE22)
+    def head(self):return f.git(self.root,'rev-parse','HEAD').decode().strip()
+    def test_normal_forward_evidence_commit_and_no_op_retry(self):
+        before=f.tree_inventory(self.root);value=self.preserve();head=self.head()
+        self.assertNotEqual(head,self.origin);self.assertEqual(value['parent'],self.origin)
+        self.assertEqual(value['origin_bundle_head'],self.origin);self.assertEqual(value['recovery_head'],head)
+        self.assertEqual(value['addition_count'],1);self.assertFalse(value['forecast_generation_created'])
+        self.assertEqual(f.git(self.root,'diff','--name-only',self.origin,head).decode().splitlines(),[self.name])
+        self.assertEqual(f.tree_inventory(self.root),before)
+        self.assertEqual((self.root/'output/data/week.json').read_bytes(),b'{"generation":22}\n')
+        self.assertEqual(self.preserve(),value);self.assertEqual(self.head(),head)
+        self.assertEqual(f.git(self.root,'rev-list','--count',self.origin+'..HEAD').strip(),b'1')
+        self.assertIsNotNone(datetime.fromisoformat(value['git_committer_at']).tzinfo)
+    def test_no_carried_additions_has_no_commit(self):
+        (self.root/self.name).unlink();(self.raw/self.name).unlink();self.files.pop(self.name)
+        value=self.preserve();self.assertEqual(value['operation'],'NO_ADDITIONS_NO_COMMIT')
+        self.assertEqual(value['addition_count'],0);self.assertEqual(self.head(),self.origin)
+    def test_mutated_original_same_size_restored_time_is_rejected(self):
+        q=self.root/'tools/helper.py';old=q.stat();q.write_bytes(b'X'*old.st_size)
+        os.utime(q,ns=(old.st_atime_ns,old.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError,'tracked bytes'):self.preserve()
+        self.assertEqual(self.head(),self.origin)
+    def test_tracked_deletion_and_mode_change_are_rejected(self):
+        q=self.root/'tools/helper.py';body=q.read_bytes();q.unlink()
+        with self.assertRaises(ValueError):self.preserve()
+        q.write_bytes(body);q.chmod(0o755)
+        with self.assertRaisesRegex(ValueError,'modes'):self.preserve()
+        self.assertEqual(self.head(),self.origin)
+    def test_unexpected_index_and_unexpected_source_are_rejected(self):
+        q=self.root/'tools/helper.py';old=q.read_bytes();q.write_bytes(b'# staged source\n')
+        f.git(self.root,'add','tools/helper.py');q.write_bytes(old)
+        with self.assertRaisesRegex(ValueError,'index'):self.preserve()
+        f.git(self.root,'reset','-q',self.origin,'--','tools/helper.py')
+        (self.root/'tools/extra.py').write_bytes(b'# unexpected\n')
+        with self.assertRaisesRegex(ValueError,'namespace'):self.preserve()
+        self.assertEqual(self.head(),self.origin)
+    def test_second_or_wrong_parent_commit_is_not_accepted(self):
+        self.preserve();f.git(self.root,'-c','commit.gpgsign=false','commit','--allow-empty','-qm','Wrong extra parent')
+        with self.assertRaisesRegex(ValueError,'one evidence-only descendant'):self.preserve()
+    def test_source_field_mutation_cannot_change_original_native_bytes(self):
+        name=self.receipt(native=True);q=self.root/name
+        value=json.loads(gzip.decompress(q.read_bytes()));value['payload']['source_sha']='b'*40
+        value['payload_sha256']=hashlib.sha256(f.ci.canonical(value['payload'])).hexdigest()
+        q.write_bytes(gzip.compress(f.ci.canonical(value),mtime=0))
+        with self.assertRaisesRegex(ValueError,'carried bytes'):self.preserve()
+        self.assertEqual(self.head(),self.origin)
+    def test_original_native_locator_and_payload_envelope_are_distinct(self):
+        name=self.receipt(native=True);payload=f._residual_evidence(self.root/name,name)
+        digest=hashlib.sha256(f.ci.canonical(payload)).hexdigest()
+        self.assertNotEqual(Path(name).name,digest+'.json.gz')
+        renamed=name.rsplit('/',1)[0]+'/'+digest+'.json.gz'
+        q=self.root/renamed;q.write_bytes((self.root/name).read_bytes())
+        with self.assertRaisesRegex(ValueError,'Original residual native locator'):
+            f._residual_evidence(q,renamed)
+        self.assertEqual((self.root/name).read_bytes(),(self.raw/name).read_bytes())
+    def test_native_locator_does_not_expand_unsupported_history_shadow_roles(self):
+        name=self.receipt(native=True)
+        for lane in ('history','shadow'):
+            other=name.replace('data/forward/','data/'+lane+'/');q=self.root/other
+            q.parent.mkdir(parents=True,exist_ok=True);q.write_bytes((self.root/name).read_bytes())
+            with self.assertRaisesRegex(ValueError,'Unsupported residual schema/role'):
+                f._residual_evidence(q,other)
+    def test_fresh_copy_derives_actual_origin_and_recovery_head(self):
+        self.preserve();head=self.head()
+        manifest={'status':'INCOMPLETE_NOT_ADMITTED_NOT_RESUME_AUTHORIZED',
+            'application_source':self.origin,'input_contract_sha256':f.INPUTS,'files':self.files}
+        (self.work/f.MANIFEST).write_text(json.dumps(manifest))
+        copy=self.base/'copy'
+        f.git(self.base,'clone','--quiet','--no-hardlinks',str(self.root),str(copy))
+        f.git(copy,'fetch','--no-tags',str(self.root),'refs/fixture/source:refs/fixture/source')
+        with patch.object(f,'BASE',self.origin),patch.object(f,'TREE',self.tree),patch.object(f,'verify_parents'):
+            result=f.verify_copied_frontier(self.work,copy,f.PROFILE22)
+        self.assertEqual(result['origin_fixture_head'],self.origin);self.assertEqual(result['fixture_head'],head)
+        self.assertEqual(result['evidence_recovery']['addition_count'],1)
+        self.assertFalse((copy/'.git/objects/info/alternates').exists())
+        self.assertEqual((copy/self.name).read_bytes(),(self.raw/self.name).read_bytes())
+    def saved_context(self,*,residual_failure=False,history_failure=False):
+        import operating_diagnostic as h
+        capture=SimpleNamespace(_manifest=lambda *a,**kw:({},{}),_git_archive=lambda *a,**kw:{},
+            _public_archive_commit=lambda *a:None,validate_generation=lambda root:dict(generation_sha256='c'*64))
+        modules={'capture':capture};stack=contextlib.ExitStack()
+        stack.enter_context(patch.object(f,'verify_parents'));stack.enter_context(patch.object(f,'unpack_checkpoint',return_value=self.files))
+        stack.enter_context(patch.object(f,'decoded',side_effect=lambda path:json.loads(path.read_bytes())))
+        (self.work/f.MANIFEST).write_bytes(b'{}')
+        stack.enter_context(patch.object(f,'restore_committed',return_value=(self.root,{'HEAD':self.origin},{})))
+        stack.enter_context(patch.object(h,'require_offline'));stack.enter_context(patch.object(h,'bind',new=lambda root:modules))
+        stack.enter_context(patch.object(h,'Provider',new=lambda *a:SimpleNamespace(at=None)))
+        stack.enter_context(patch.object(h,'external',new=lambda *a:contextlib.nullcontext()))
+        if residual_failure:
+            stack.enter_context(patch.object(f,'_qualify_residual',side_effect=ValueError('LATE_RESIDUAL_VALIDATION_FAILED')))
+        else:stack.enter_context(patch.object(f,'_qualify_residual',return_value={}))
+        if history_failure:stack.enter_context(patch.object(h,'workload',side_effect=ValueError('HISTORY_VALIDATION_FAILED')))
+        return stack
+    def test_late_residual_validation_failure_does_not_commit(self):
+        with self.saved_context(residual_failure=True):
+            with self.assertRaisesRegex(ValueError,'LATE_RESIDUAL_VALIDATION_FAILED'):
+                f.check_saved(self.work,f.PROFILE22)
+        self.assertEqual(self.head(),self.origin);self.assertFalse((self.work/'EVIDENCE_RECOVERY.json').exists())
+        self.assertEqual((self.root/self.name).read_bytes(),(self.raw/self.name).read_bytes())
+    def test_late_history_failure_retains_separate_recovery_identity_without_qualification(self):
+        with self.saved_context(history_failure=True):
+            with self.assertRaisesRegex(ValueError,'HISTORY_VALIDATION_FAILED'):
+                f.check_saved(self.work,f.PROFILE22)
+        value=json.loads((self.work/'EVIDENCE_RECOVERY.json').read_bytes())
+        self.assertEqual(value['origin_bundle_head'],self.origin);self.assertEqual(value['recovery_head'],self.head())
+        self.assertNotEqual(self.head(),self.origin);self.assertFalse(value['forecast_generation_created'])
+        self.assertFalse((self.work/'FRONTIER.json').exists())
+
+    def test_commit_operation_rejects_physical_mode_change(self):
+        original=f.git
+        def changed(root,*args,**kwargs):
+            result=original(root,*args,**kwargs)
+            if args and args[0]=='add':(self.root/'tools/helper.py').chmod(0o600)
+            return result
+        with patch.object(f,'git',new=changed):
+            with self.assertRaisesRegex(ValueError,'before commit'):self.preserve()
+        self.assertEqual(self.head(),self.origin)
+    def test_commit_uses_real_git_clock_despite_caller_date_overrides(self):
+        import time
+        before=int(time.time())
+        with patch.dict(os.environ,{'GIT_AUTHOR_DATE':'2001-01-01T00:00:00Z',
+                'GIT_COMMITTER_DATE':'2001-01-01T00:00:00Z'}):
+            value=self.preserve()
+        self.assertGreaterEqual(datetime.fromisoformat(value['git_committer_at']).timestamp(),before)
+        self.assertEqual(value['git_committer_at'],value['git_author_at'])

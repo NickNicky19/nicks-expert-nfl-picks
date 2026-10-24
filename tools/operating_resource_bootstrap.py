@@ -35,7 +35,7 @@ ROOT_GIT = ('GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0',
 FILES = ('tools/operating_resource_bootstrap.py', 'tools/operating_campaign.py',
          'tools/source_ci.py', 'tools/diagnostic_resources.py',
          'tools/operating_diagnostic.py', 'tools/operating_seed_transport.py',
-         'tools/cloud-seed-integrity.json', WORKFLOW)
+         'tools/cloud-seed-integrity.json', 'tools/seed_checkpoint_frontier.py', WORKFLOW)
 SEED_NAMES = {'cloud-seed-requirements.txt', 'cloud_seed_prepare.py',
               'cloud_seed_resource_bootstrap.py', 'coverage_gate.py',
               'diagnostic-seed-inputs.json', 'diagnostic_network_guard.py',
@@ -43,7 +43,10 @@ SEED_NAMES = {'cloud-seed-requirements.txt', 'cloud_seed_prepare.py',
 CONTINUED_SEED_INTEGRITY = 'ed5b6773c3d4e642bf4346aa2b9de89a2b580a1f34e97bddc6172b068a388611'
 FINISHED22_SEED_INTEGRITY = '636b3cd2a966346df02ad30c516dc805e40ae082e1b4f5e7b757162c29e6459f'
 PREPARATION22_RETRIEVAL_INTEGRITY = '08a9fc62c6707d7385ac8388df8325bd9588f95caad3fdfc48762fdfa4b200a4'
+PREPARATION24_LIFETIME_INTEGRITY = '3c68e0b8e88b458dc5ecb0dce1376160e668e1941e3e2302bce3e35a38a08f77'
 SEED_CONTRACTS = {
+    PREPARATION24_LIFETIME_INTEGRITY: frozenset(SEED_NAMES | {
+        'seed_checkpoint_frontier.py', 'source_ci.py', 'operating_seed_transport.py'}),
     PREPARATION22_RETRIEVAL_INTEGRITY: frozenset(SEED_NAMES | {
         'seed_checkpoint_frontier.py', 'source_ci.py', 'operating_seed_transport.py'}),
     SEED_INTEGRITY: frozenset(SEED_NAMES),

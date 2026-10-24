@@ -180,25 +180,33 @@ class CopyPrefix(unittest.TestCase):
         with patch.object(p.subprocess,'run',side_effect=mutate),self.assertRaisesRegex(RuntimeError,'copy differs'):
             self.prepare()
 
-    def test_new22_copy_keeps_actual_untracked_carried_bytes(self):
+    def test_new22_copy_keeps_actual_evidence_only_descendant(self):
         carried=self.source/'data/verification/carried-unit.json.gz'
         carried.write_bytes(b'unit-only carried bytes; no real qualification claim')
+        self.git('add','--',carried.relative_to(self.source).as_posix())
+        self.git('commit','-qm','Tiny evidence-only descendant; no new generation')
+        recovery_head=self.git('rev-parse','HEAD')
+        lineage={'origin_bundle_head':self.head,'recovery_head':recovery_head,'addition_count':1}
         self.progress=b'{"generation":22,"target":24,"wall_clock":"2026-10-24T00:00:00+00:00"}'
         (self.checkpoint/'raw-checkpoint/CONSTRUCTION_PROGRESS.json').write_bytes(self.progress)
         for name in ('artifact.zip',f.CHECKPOINT,f.BUNDLE,f.MANIFEST):(self.checkpoint/name).write_bytes(b'unit-only authenticated transport double')
         before=p.continuation_inventory(self.source)
-        value={**self.value,'recorded_generations':22,'independently_replayed_committed_generations':22,
+        value={**self.value,'fixture_head':recovery_head,'origin_fixture_head':self.head,'evidence_recovery':lineage,
+            'recorded_generations':22,'independently_replayed_committed_generations':22,
             'origin_profile':f.profile_identity(f.PROFILE22),'residual_evidence_preserved':True,
             'residual_working_files':dict(new=1,changed=0,missing_from_checkpoint=0)}
         def checked(path,root,profile):
             self.assertEqual(profile,f.PROFILE22)
-            return dict(fixture_head=self.head,inventory=before)
+            return dict(fixture_head=recovery_head,origin_fixture_head=self.head,evidence_recovery=lineage,inventory=before)
         with patch.dict(os.environ,{'GITHUB_RUN_ID':'123','CONTINUATION_ID':p.CONTINUATION22_ID}),            patch.object(p,'continuation_path',return_value=self.checkpoint),patch.object(f,'check_saved',return_value=value),            patch.object(f,'verify_parents'),patch.object(f,'verify_copied_frontier',side_effect=checked):
             p.continuation_frontier(self.args)
         root=self.work/'construction/root'
         self.assertEqual((root/carried.relative_to(self.source)).read_bytes(),carried.read_bytes())
         self.assertEqual(p.continuation_inventory(root),before)
         record=p.load(self.work/'CONTINUATION.json')
+        self.assertEqual(record['original_fixture_head'],self.head)
+        self.assertEqual(record['execution_prefix_head'],recovery_head)
+        self.assertEqual(record['evidence_recovery'],lineage)
         self.assertEqual(record['first_remaining_generation'],23)
         self.assertEqual(record['freshly_replayed_prefix_generations'],22)
         self.assertEqual(record['original_artifact'],12540324398)
@@ -228,9 +236,11 @@ class CopyPrefix(unittest.TestCase):
         files={name:f.descriptor(raw/name) for name in p.continuation_inventory(self.source)}
         files['CONSTRUCTION_PROGRESS.json']=f.descriptor(raw/'CONSTRUCTION_PROGRESS.json')
         before=p.continuation_inventory(self.source)
-        modules={'capture':SimpleNamespace(validate_generation=lambda root:dict(generation_sha256='c'*64),
+        modules={'capture':SimpleNamespace(_manifest=lambda *a,**kw:({},{}),_git_archive=lambda *a,**kw:{},validate_generation=lambda root:dict(generation_sha256='c'*64),
             _public_archive_commit=lambda *a:None)}
-        checked=dict(fixture_head=self.head,inventory=before,expected_inventory_sha256=p.rawhash(self.source/'config/phase2.json'))
+        lineage=f._evidence_lineage(self.source,self.head,raw,files,f.PROFILE22)
+        checked=dict(fixture_head=self.head,origin_fixture_head=self.head,evidence_recovery=lineage,
+            inventory=before,expected_inventory_sha256=p.rawhash(self.source/'config/phase2.json'))
         with patch.dict(os.environ,{'GITHUB_RUN_ID':'123','CONTINUATION_ID':p.CONTINUATION22_ID}),            patch.object(p,'continuation_path',return_value=self.checkpoint),patch.object(f,'verify_parents'),            patch.object(f,'unpack_checkpoint',return_value=files),            patch.object(f,'restore_committed',return_value=(self.source,{'HEAD':self.head},dict(new=0,changed=0,missing_from_checkpoint=0))),            patch.object(f,'verify_copied_frontier',return_value=checked),patch.object(f,'_qualify_residual',return_value={}),            patch.object(h,'require_offline'),patch.object(h,'bind',return_value=modules),            patch.object(h,'external',side_effect=lambda *a:contextlib.nullcontext()),            patch.object(h,'workload',return_value=dict(complete_generations=22,public_semantics_sha256='d'*64,rows=1,groups=1,outcomes=1,native=1)):
             p.continuation_frontier(self.args)
         record=p.load(self.work/'CONTINUATION.json')

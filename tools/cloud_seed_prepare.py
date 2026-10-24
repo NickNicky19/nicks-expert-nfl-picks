@@ -203,20 +203,22 @@ def continuation_frontier(args):
         any(not isinstance(value.get(k),str) or len(value[k])!=n or any(c not in '0123456789abcdef' for c in value[k])
             for k,n in (('fixture_head',40),('generation_sha256',64),('semantic_sha256',64)))):
         raise RuntimeError('Only the exact freshly replayed zero-residual or adjudicated closed prefix is supported')
+    origin_head=value['origin_fixture_head'] if profile is not None else value['fixture_head']
     source=path/'committed-frontier';root=w/'construction/root'
     if root.exists():raise RuntimeError('Fresh independent continuation root required')
     before=continuation_inventory(source)
     if profile is not None:
         checked=frontier.verify_copied_frontier(path,source,profile=profile)
-        if checked['fixture_head']!=value['fixture_head'] or checked['inventory']!=before:
+        if (checked['fixture_head']!=value['fixture_head'] or checked['origin_fixture_head']!=origin_head
+            or checked['evidence_recovery']!=value['evidence_recovery'] or checked['inventory']!=before):
             raise RuntimeError('Actual authenticated prefix changed before copying')
     root.parent.mkdir(parents=True,exist_ok=True)
     subprocess.run(['git','-c','core.hooksPath=/dev/null','clone','--quiet','--no-hardlinks',str(source),str(root)],
         check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
     frontier.git(root,'fetch','--no-tags',str(source),'refs/fixture/source:refs/fixture/source')
     frontier.git(root,'remote','set-url','origin','https://github.com/NickNicky19/nicks-expert-nfl-picks.git')
-    # Git clone excludes untracked create-only residual evidence. Copy exactly
-    # the already adjudicated source inventory, never replace a tracked byte.
+    # Clone the freshly verified evidence-only prefix; retain the complete
+    # adjudicated inventory and never replace a tracked byte.
     if profile is not None:
         for name,d in before.items():
             src=source/name;dst=root/name
@@ -232,19 +234,21 @@ def continuation_frontier(args):
         raise RuntimeError('Independent prefix copy differs from actual verified source')
     if profile is not None:
         checked=frontier.verify_copied_frontier(path,root,profile=profile)
-        if checked['fixture_head']!=value['fixture_head'] or checked['inventory']!=before:
+        if (checked['fixture_head']!=value['fixture_head'] or checked['origin_fixture_head']!=origin_head
+            or checked['evidence_recovery']!=value['evidence_recovery'] or checked['inventory']!=before):
             raise RuntimeError('Independent destination differs from authenticated checkpoint')
     _profile_call(frontier.verify_parents,path,profile)
     shutil.copyfile(path/'raw-checkpoint/CONSTRUCTION_PROGRESS.json',root.parent/'progress.json')
     write(w/'CONTINUATION_PREFIX.json',before)
     record=dict(continuation_id=selected,run_id=int(os.environ['GITHUB_RUN_ID']),
         original_artifact=spec['artifact'],original_artifact_sha256=spec['digest'],
-        original_fixture_head=value['fixture_head'],application_source=BASE,harness_sha256=HARNESS,
+        original_fixture_head=origin_head,application_source=BASE,harness_sha256=HARNESS,
         input_contract_sha256=INPUTS,first_remaining_generation=spec['count']+1,target_generations=24,
         freshly_replayed_prefix_generations=spec['count'],prefix_inventory_sha256=rawhash(w/'CONTINUATION_PREFIX.json'),
         installer=load(w/'PREFLIGHT.json')['installer'],originals_unchanged=True)
     if profile is not None:
-        record.update(origin_profile=profile,prefix_generation_sha256=value['generation_sha256'],
+        record.update(origin_profile=profile,execution_prefix_head=value['fixture_head'],
+            evidence_recovery=checked['evidence_recovery'],prefix_generation_sha256=value['generation_sha256'],
             prefix_semantic_sha256=value['semantic_sha256'],residual_evidence_preserved=True,
             retained_checkpoint_parents=[dict(name=n,bytes=(path/n).stat().st_size,allocated_bytes=(path/n).stat().st_blocks*512)
                 for n in ('artifact.zip',frontier.CHECKPOINT,frontier.BUNDLE,frontier.MANIFEST)])
@@ -342,7 +346,8 @@ def preflight(args,initialize=True):
             raise RuntimeError('Insufficient complete preparation disk headroom on device '+str(f['device']))
     mem=dict((x.split(':',1)[0],int(x.split()[1])*1024) for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith(('MemTotal:','MemAvailable:')))
     if mem['MemAvailable']<8*GIB+max(2*GIB,mem['MemTotal']//5):raise RuntimeError('Insufficient conservative preparation memory headroom')
-    report=dict(status='EARLY_CAPACITY_CHECK_PASS_NOT_AGGREGATE_QUALIFICATION',at=now(),
+    import seed_checkpoint_frontier as frontier
+    report=dict(lifetime_adapter=frontier.operation_identity(),status='EARLY_CAPACITY_CHECK_PASS_NOT_AGGREGATE_QUALIFICATION',at=now(),
         application_source=BASE,application_tree=TREE,legacy_source=LEGACY,installer=installer,runtime=runtime,integrity_sha256=digest,
         harness_sha256=HARNESS,input_contract_sha256=INPUTS,filesystems=fs,memory=mem,
         memory_peak_estimate_bytes=8*GIB,core_seconds=CORE_SECONDS,total_seconds=TOTAL_SECONDS,
@@ -353,6 +358,13 @@ def preflight(args,initialize=True):
     return report
 
 def worker(args):
+    import operating_diagnostic as h
+    import seed_checkpoint_frontier as frontier
+    with frontier.operation_lifetime(h):
+        return _worker(args)
+
+
+def _worker(args):
     import operating_diagnostic as h
     import diagnostic_seed as seed
     import coverage_gate
@@ -366,10 +378,12 @@ def worker(args):
             record=load(w/'CONTINUATION.json');prefix=load(w/'CONTINUATION_PREFIX.json')
             import seed_checkpoint_frontier as frontier
             selected,profile,spec=continuation_details()
-            expected_head=PREFIX_HEAD if profile is None else record.get('original_fixture_head')
+            expected_head=PREFIX_HEAD if profile is None else record.get('execution_prefix_head')
             if profile is not None:
                 checked=frontier.verify_copied_frontier(continuation_path(args),root,profile=profile)
-                if checked['fixture_head']!=expected_head or checked['inventory']!=prefix:
+                if (checked['fixture_head']!=expected_head or checked['inventory']!=prefix
+                    or checked['origin_fixture_head']!=record.get('original_fixture_head')
+                    or checked['evidence_recovery']!=record.get('evidence_recovery')):
                     raise RuntimeError('Authenticated copied prefix changed before construction')
             if (record['run_id']!=int(os.environ['GITHUB_RUN_ID']) or record['continuation_id']!=selected
                 or record['installer']!=load(w/'PREFLIGHT.json')['installer']

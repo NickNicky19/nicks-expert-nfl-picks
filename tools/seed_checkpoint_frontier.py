@@ -5,7 +5,7 @@ Progress, independent saved reconstruction, and permission to continue are
 different facts. No original input, plan, receipt, clock or helper is rewritten.
 """
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
@@ -423,9 +423,17 @@ def _residual_evidence(path, name):
     require(type(value) is dict and type(value.get('schema_version')) is str and bool(value['schema_version'])
         and type(value.get('season')) is int and type(value.get('week')) is int
         and value['season'] == int(match[2]) and value['week'] == int(match[3])
-        and hashlib.sha256(ci.canonical(value)).hexdigest() == match[4] == envelope['payload_sha256'], 'Canonical residual evidence identity')
+        and hashlib.sha256(ci.canonical(value)).hexdigest() == envelope['payload_sha256'], 'Canonical residual evidence identity')
     lane = name[5:].rsplit('/', 3)[0]
     require(value['schema_version'] in _RESIDUAL_SCHEMAS.get(lane, set()), 'Unsupported residual schema/role')
+    if lane == 'forward':
+        require(value['schema_version'] == 'baseline-capture-v2' and value.get('mode') == 'live'
+            and all(isinstance(value.get(k), str) and re.fullmatch('[0-9a-f]{64}', value[k])
+                for k in ('input_sha256', 'engine_sha256')), 'Original residual native locator fields')
+        identity = hashlib.sha256(ci.canonical(dict(data=value['input_sha256'],
+            engine=value['engine_sha256'], mode=value['mode']))).hexdigest()
+        require(match[4] == identity, 'Original residual native locator')
+    else:require(match[4] == envelope['payload_sha256'], 'Canonical residual evidence locator')
     return value
 
 
@@ -464,6 +472,104 @@ def _carry_residual(root, raw, files, committed):
     return carried
 
 
+
+def _index_tree(root):
+    result = {}
+    for row in git(root, 'ls-files', '--stage', '-z').split(b'\0'):
+        if not row: continue
+        left, name = row.split(b'\t', 1); mode, blob, stage = left.decode().split()
+        require(stage == '0' and name.decode() not in result, 'Unexpected recovery index stage')
+        result[name.decode()] = (mode, blob)
+    return result
+
+
+def _carried_tree(root, origin, raw, files):
+    """Fresh origin objects plus exact canonical raw additions; no saved PASS."""
+    original = tracked(root, origin); expected = dict(original); additions = {}
+    for name, (mode, blob) in original.items():
+        require(safe_name(name) and name in files, 'Recovery origin role missing from raw manifest')
+        body = git(root, 'cat-file', 'blob', blob)
+        want = dict(bytes=len(body), sha256=hashlib.sha256(body).hexdigest())
+        require(descriptor(root / name) == want
+            and bool((root / name).stat().st_mode & 0o111) == (mode == '100755'),
+            'Recovery changed tracked bytes or modes')
+        require(files[name] == want or _mutable_role(name), 'Recovery changed immutable raw origin')
+    for name, info in files.items():
+        if name in original or name == 'CONSTRUCTION_PROGRESS.json' or _mutable_role(name): continue
+        if not name.startswith('data/'):
+            require(_report_asset(name) and not (root / name).exists(), 'Recovery unexpected report/source')
+            continue
+        _residual_evidence(raw / name, name); _residual_evidence(root / name, name)
+        require(descriptor(raw / name) == info == descriptor(root / name)
+            and not (root / name).stat().st_mode & 0o111, 'Recovery carried bytes or mode changed')
+        body = (root / name).read_bytes()
+        blob = hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest()
+        additions[name] = dict(info, git_blob=blob, git_mode='100644')
+        expected[name] = ('100644', blob)
+    actual = tree_inventory(root)
+    actual.update({name: descriptor(root / name) for name in _MARKERS if (root / name).exists()})
+    require(set(actual) == set(expected), 'Recovery unexpected namespace or deletion')
+    for name, (mode, _) in expected.items():
+        path = root / name
+        require(not path.is_symlink() and bool(path.stat().st_mode & 0o111)
+            == (mode == '100755'), 'Recovery namespace modes')
+    return original, expected, additions
+
+
+def _evidence_lineage(root, origin, raw, files, profile):
+    require(profile == PROFILE22, 'Closed22 evidence recovery only')
+    original, expected, additions = _carried_tree(root, origin, raw, files)
+    head = git(root, 'rev-parse', 'HEAD').decode().strip()
+    require(_index_tree(root) == tracked(root), 'Unexpected recovery index')
+    require(tracked(root) == expected, 'Recovery Git tree differs from exact carried union')
+    require(not git(root, 'ls-files', '--others', '-z'), 'Recovery untracked namespace')
+    parents = git(root, 'rev-list', '--parents', '-n', '1', head).decode().split()
+    if additions:
+        require(head != origin and parents == [head, origin], 'Recovery must be one evidence-only descendant')
+    else:
+        require(head == origin, 'No-addition recovery changed original HEAD')
+    clocks = git(root, 'show', '-s', '--format=%aI%n%cI', head).decode().splitlines()
+    require(len(clocks) == 2 and all(datetime.fromisoformat(c).tzinfo is not None for c in clocks),
+        'Actual recovery Git clock')
+    return dict(schema_version='diagnostic-carried-evidence-lineage-v1',
+        origin_bundle_head=origin, recovery_head=head, parent=origin if additions else None,
+        tree=git(root, 'rev-parse', 'HEAD^{tree}').decode().strip(),
+        addition_count=len(additions), additions_sha256=hashlib.sha256(ci.canonical(additions)).hexdigest(),
+        git_author_at=clocks[0], git_committer_at=clocks[1],
+        operation='LOCAL_EVIDENCE_ONLY_FORWARD_COMMIT' if additions else 'NO_ADDITIONS_NO_COMMIT',
+        forecast_generation_created=False, original_receipts_rewritten=False)
+
+
+def _preserve_carried(root, origin, raw, files, profile):
+    """Called only after original latest and actual residual qualification."""
+    require(profile == PROFILE22, 'Closed22 evidence recovery only')
+    original, expected, additions = _carried_tree(root, origin, raw, files)
+    head = git(root, 'rev-parse', 'HEAD').decode().strip()
+    if head != origin:
+        return _evidence_lineage(root, origin, raw, files, profile)  # Exact retry; no second commit.
+    require(_index_tree(root) == original, 'Unexpected recovery index before staging')
+    others = {n.decode() for n in git(root, 'ls-files', '--others', '-z').split(b'\0') if n}
+    require(others == set(additions), 'Unexpected recovery untracked files')
+    physical_modes = {name: stat.S_IMODE((root / name).stat().st_mode) for name in expected}
+    if additions:
+        paths = b''.join(name.encode() + b'\0' for name in sorted(additions))
+        git(root, 'add', '--pathspec-from-file=-', '--pathspec-file-nul', data=paths)
+        require(_carried_tree(root, origin, raw, files) == (original, expected, additions)
+            and _index_tree(root) == expected
+            and all(stat.S_IMODE((root / n).stat().st_mode) == mode for n, mode in physical_modes.items())
+            and git(root, 'rev-parse', 'HEAD').decode().strip() == origin,
+            'Recovery changed bytes/index/HEAD before commit')
+        git(root, '-c', 'user.name=FictionalDiagnostic', '-c', 'user.email=fictional@example.invalid',
+            '-c', 'commit.gpgsign=false', 'commit', '-qm',
+            'Preserve qualified carried originals; no new forecast generation')
+    result = _evidence_lineage(root, origin, raw, files, profile)
+    require(_carried_tree(root, origin, raw, files) == (original, expected, additions)
+        and all(stat.S_IMODE((root / n).stat().st_mode) == mode for n, mode in physical_modes.items()),
+        'Recovery changed original bytes or physical modes after commit')
+    return result
+
+
+
 def verify_copied_frontier(work, root, profile=None):
     """Fresh actual parents, bundle roots and full copied-byte closure."""
     verify_parents(work, profile)
@@ -475,9 +581,10 @@ def verify_copied_frontier(work, root, profile=None):
         oid, name = line.split(); require(re.fullmatch('[0-9a-f]{40}', oid) and name not in heads, 'Bundle roots')
         heads[name] = oid
     require(set(heads) == {'HEAD', 'refs/fixture/source'} and heads['refs/fixture/source'] == BASE
-        and git(root, 'rev-parse', 'HEAD').decode().strip() == heads['HEAD']
         and git(root, 'rev-parse', BASE + '^{tree}').decode().strip() == TREE
         and not (root / '.git/objects/info/alternates').exists(), 'Copied actual source/Git roots')
+    recovery = _evidence_lineage(root, heads['HEAD'], raw, files, profile) if profile is not None else None
+    if profile is None:require(git(root, 'rev-parse', 'HEAD').decode().strip() == heads['HEAD'], 'Copied original HEAD changed')
     expected = {}
     for name, (mode, blob) in tracked(root).items():
         require(safe_name(name) and name in files, 'Copied tracked role')
@@ -503,7 +610,9 @@ def verify_copied_frontier(work, root, profile=None):
     require(actual == expected, 'Copied committed/residual inventory changed')
     git(root, 'fsck', '--full', '--no-reflogs')
     verify_parents(work, profile)
-    return dict(fixture_head=heads['HEAD'], files=len(expected), carried_files=len(set(expected) - set(tracked(root))),
+    return dict(fixture_head=recovery['recovery_head'] if recovery else heads['HEAD'],
+        origin_fixture_head=heads['HEAD'], evidence_recovery=recovery, files=len(expected),
+        carried_files=recovery['addition_count'] if recovery else len(set(expected) - set(tracked(root))),
         inventory=expected, expected_inventory_sha256=hashlib.sha256(ci.canonical(expected)).hexdigest(),
         profile=profile_identity(profile))
 
@@ -548,6 +657,129 @@ def _qualify_residual(work, root, m, files, at):
         residual_observation_cutoff=at.isoformat())
 
 
+
+def operation_identity():
+    """Actual installer invocation arrangement; never a workload/resource PASS."""
+    return dict(schema_version='diagnostic-generation-lifetime-v1',
+        installer_helper_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        frozen_harness_sha256=HARNESS, manifest_context='FRESH_PER_ORIGINAL_CALL',
+        archive_batch='ONE_EXCLUDED_REPORT_FULL_ORIGINAL_VALIDATION',
+        claim='LIFETIME_BOUNDARY_ONLY_NOT_MEASURED_CAPACITY_OR_QUALIFICATION')
+
+
+def _closed_harness_tail(tail):
+    require(isinstance(tail, (list, tuple)) and all(isinstance(x, str) for x in tail),
+        'Exact frozen child argument types')
+    require(tail and tail[0] in ('modern', 'recheck'), 'Closed frozen child action')
+    modern = tail[0] == 'modern'
+    require(len(tail) in ((5, 6) if modern else (7,))
+        and tail[1] == '--code' and tail[3] == '--root'
+        and (len(tail) == 5 or modern and tail[5] == '--small'
+             or not modern and tail[5] == '--result'), 'Exact frozen child argument shape')
+    code, root = Path(tail[2]), Path(tail[4])
+    require(code == root and root.is_absolute() and root.resolve() == root,
+        'Exact cold child source/root')
+    if not modern:
+        result = Path(tail[6])
+        require(root.name == 'restart-checkout' and result.is_absolute()
+            and result.resolve() == result and result.name == 'RESTART.json',
+            'Exact independent cold replay destination')
+
+
+@contextmanager
+def operation_lifetime(harness, *, modules=()):
+    """Delegate every validator; bound only installer-owned invocation lifetimes.
+
+    No cache/result persists across generation calls or a cold child. Plain
+    callables deliberately avoid Mock call histories retaining checked graphs.
+    """
+    require(hashlib.sha256(Path(harness.__file__).read_bytes()).hexdigest() == HARNESS,
+        'Actual frozen diagnostic harness')
+    active = getattr(harness, '_installer_generation_lifetime', None)
+    if active is not None:
+        for module in modules: active(module['capture'])
+        yield
+        return
+    with ExitStack() as stack:
+        installed = set()
+        def install(capture):
+            if id(capture) in installed:return
+            manifest, archive = capture._manifest, capture._git_archive
+            require(callable(manifest) and callable(archive), 'Original generation validators')
+            def cold_manifest(base, descriptor, *, root=None, _checked=None):
+                return manifest(base, descriptor, root=root, _checked={})
+            def cold_archive(root, records, excluded, *, verify_public=True, _checked=None):
+                require(isinstance(records, dict) and isinstance(excluded, (set, frozenset))
+                    and excluded <= set(records), 'Exact archive coverage inputs')
+                if not excluded:
+                    value = archive(root, records, excluded, verify_public=verify_public, _checked={})
+                    require(value == {}, 'Empty archive coverage')
+                    return value
+                expected = git(root, 'rev-parse', 'HEAD').decode().strip()
+                require(re.fullmatch('[0-9a-f]{40}', expected), 'Actual archival HEAD')
+                descriptors = {rid: ci.canonical(records[rid]) for rid in excluded}
+                result = {}
+                for rid in sorted(excluded):
+                    require(git(root, 'rev-parse', 'HEAD').decode().strip() == expected,
+                        'Archival HEAD changed between cold batches')
+                    value = archive(root, records, {rid}, verify_public=verify_public, _checked={})
+                    require(isinstance(value, dict) and set(value) == {rid}
+                        and value[rid] == {'git_ref': expected, 'manifest': records[rid]}
+                        and ci.canonical(records[rid]) == descriptors[rid],
+                        'Exact cold archive result and original descriptor')
+                    require(git(root, 'rev-parse', 'HEAD').decode().strip() == expected,
+                        'Archival HEAD changed during cold batch')
+                    result.update(value)
+                require(set(result) == set(excluded), 'Complete cold archive union')
+                require(all(ci.canonical(records[rid]) == descriptors[rid]
+                    and result[rid] == {'git_ref': expected, 'manifest': records[rid]}
+                    and ci.canonical(result[rid]['manifest']) == descriptors[rid]
+                    for rid in excluded), 'Final cold archive descriptors changed')
+                require(git(root, 'rev-parse', 'HEAD').decode().strip() == expected,
+                    'Archival HEAD changed before complete union')
+                return result
+            stack.enter_context(harness.patch.object(capture, '_manifest', new=cold_manifest))
+            stack.enter_context(harness.patch.object(capture, '_git_archive', new=cold_archive))
+            installed.add(id(capture))
+        original_bind, original_run = harness.bind, harness.subprocess.run
+        def cold_bind(*args, **kwargs):
+            value = original_bind(*args, **kwargs);install(value['capture']);return value
+        def cold_run(command, *args, **kwargs):
+            if (isinstance(command, (list, tuple)) and len(command) >= 3
+                    and command[0] == sys.executable and command[1] == str(Path(harness.__file__).resolve())
+                    and command[2] in ('modern', 'recheck')):
+                _closed_harness_tail(command[2:])
+                # A real new Python process still executes the frozen CLI. Only
+                # this reviewed installer arrangement is added; argv and kwargs
+                # such as check/stdout/env remain the original caller's values.
+                tools = repr(str(Path(__file__).resolve().parent))
+                # Match the frozen CLI's first bind before the installer imports
+                # source_ci/reliability; never preload installer application
+                # helpers into a retained B3 cold interpreter.
+                trampoline = ('import hashlib,sys;from pathlib import Path;sys.dont_write_bytecode=True;'
+                    + 'sys.path.insert(0,' + tools + ');import operating_diagnostic as h;'
+                    + 'assert hashlib.sha256(Path(h.__file__).read_bytes()).hexdigest()==' + repr(HARNESS) + ';'
+                    + 'h.require_offline();h.bind(Path(sys.argv[3]).resolve());sys.path.insert(0,' + tools + ');'
+                    + 'import seed_checkpoint_frontier as f;f.frozen_harness_child()')
+                command = [sys.executable, '-c', trampoline, *command[2:]]
+            return original_run(command, *args, **kwargs)
+        stack.enter_context(harness.patch.object(harness, '_installer_generation_lifetime',
+            new=install, create=True))
+        stack.enter_context(harness.patch.object(harness, 'bind', new=cold_bind))
+        stack.enter_context(harness.patch.object(harness.subprocess, 'run', new=cold_run))
+        for module in modules:install(module['capture'])
+        yield
+
+
+def frozen_harness_child():
+    """Exact modern/recheck cold child; inherits the existing finite/offline job."""
+    import operating_diagnostic as h
+    _closed_harness_tail(sys.argv[1:])
+    h.require_offline()
+    with operation_lifetime(h):
+        h.main()
+
+
 def check_saved(work, profile=None):
     import operating_diagnostic as h
     h.require_offline()
@@ -570,16 +802,25 @@ def check_saved(work, profile=None):
     before = tree_inventory(root); m = h.bind(root)
     at = h.START + timedelta(hours=h.SEED_HOUR, seconds=5 * n)
     provider = h.Provider(m, h.FULL, at)
-    with retained_source_environment(), h.external(m, provider, root), h.patch.object(m['capture'], '_public_archive_commit',
+    with operation_lifetime(h, modules=(m,)), retained_source_environment(), h.external(m, provider, root), h.patch.object(m['capture'], '_public_archive_commit',
             side_effect=lambda ref, tree: h.assert_local_tree(root, ref, tree)):
         phase('latest_saved_validation')
         generation = m['capture'].validate_generation(root)
-        adjudication = None
+        adjudication = None; recovery = None
         if profile is not None:
             # The saved22 generation is first checked at its own +110 cutoff.
             # The failed next update's real +115 originals stay separately dated.
             provider.at = at + timedelta(seconds=5)
             adjudication = _qualify_residual(work, root, m, files, provider.at)
+            recovery = _preserve_carried(root, heads['HEAD'], raw, files, profile)
+            record = ci.canonical(recovery) + b'\n'; destination = work / 'EVIDENCE_RECOVERY.json'
+            if destination.exists():
+                require(not destination.is_symlink() and destination.read_bytes() == record,
+                    'Existing evidence recovery record differs')
+            else:
+                with destination.open('xb') as output:
+                    output.write(record); output.flush(); os.fsync(output.fileno())
+                destination.chmod(0o600)
         phase('retained_history_validation')
         metrics = h.workload(root, m)
     phase('final_integrity')
@@ -591,7 +832,9 @@ def check_saved(work, profile=None):
     git(root, 'fsck', '--full', '--no-reflogs')
     verify_parents(work, profile)
     return dict(schema_version='failed-seed-frontier-inspection-v1', status='COMMITTED_HISTORY_REPLAYED_RAW_RESIDUAL_UNQUALIFIED',
-        application_source=BASE, application_tree=TREE, fixture_head=heads['HEAD'],
+        application_source=BASE, application_tree=TREE,
+        fixture_head=recovery['recovery_head'] if recovery else heads['HEAD'],
+        origin_fixture_head=heads['HEAD'], evidence_recovery=recovery,
         recorded_generations=n, independently_replayed_committed_generations=metrics['complete_generations'],
         target_generations=24, raw_checkpoint_files=len(files), residual_working_files=residual,
         generation_sha256=generation['generation_sha256'], semantic_sha256=metrics['public_semantics_sha256'],
@@ -606,7 +849,7 @@ def check_saved(work, profile=None):
         residual_evidence_adjudication=adjudication,
         expected_inventory_sha256=verified['expected_inventory_sha256'] if profile is not None else None,
         origin_profile=profile_identity(profile),
-        construction_performed=False, operating_qualification='NOT_RUN', resource_qualification='NOT_MEASURED_BY_THIS_INSPECTION')
+        construction_performed=False, lifetime_adapter=operation_identity(), operating_qualification='NOT_RUN', resource_qualification='NOT_MEASURED_BY_THIS_INSPECTION')
 
 
 def actual_identity(profile=None):

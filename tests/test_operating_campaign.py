@@ -228,7 +228,7 @@ class FinalCandidateWorkload(unittest.TestCase):
             c.put(result,{'status':'CAPTURE_COMPLETE_PRECOMMIT_CI_PENDING','stages':{}})
             value=final_workload_control();value['metrics']['groups']=1;value['decisions']=c._final_workload_decisions(value)
             value['applicability']=c._final_applicability(value)
-            capture=SimpleNamespace(stage_pages=lambda *a:events.append('actual-stage-control'),_public_archive_commit=lambda *a:None)
+            capture=SimpleNamespace(_manifest=lambda *a,**kw:({},{}),_git_archive=lambda *a,**kw:{},stage_pages=lambda *a:events.append('actual-stage-control'),_public_archive_commit=lambda *a:None)
             m={'capture':capture}
             def metrics(*a):events.append('metrics');return value
             with patch.object(c,'require_offline'),patch.object(c,'execution_identity'),patch.object(c,'_sample_context',return_value=(m,None)),patch.object(c,'external',side_effect=lambda *a:contextlib.nullcontext()),patch.object(c,'commit',side_effect=lambda *a:events.append('commit')),patch.object(c,'final_candidate_workload',side_effect=metrics):
@@ -501,7 +501,7 @@ class Campaign(unittest.TestCase):
             marker['phase2_transition']={'path':c.TRANSITION_PATH,'sha256':c.sha(raw),'bytes':len(raw)}
             c.put(self.root/'DIAGNOSTIC_EXECUTION_SOURCE.json',marker)
             c.put(self.root/'config/phase2.json',{'unit':'derived configuration'})
-        capture=SimpleNamespace(_public_archive_commit=lambda *args:None)
+        capture=SimpleNamespace(_manifest=lambda *a,**kw:({},{}),_git_archive=lambda *a,**kw:{},_public_archive_commit=lambda *args:None)
         return fp,packaging,{'capture':capture}
 
     def test_saved_packaging_helper_freshly_checks_generation_and_every_alias(self):

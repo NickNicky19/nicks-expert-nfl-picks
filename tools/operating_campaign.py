@@ -28,6 +28,7 @@ import tempfile
 import time
 from unittest.mock import patch
 import operating_diagnostic as seed_v1
+from seed_checkpoint_frontier import operation_lifetime
 from operating_diagnostic import (BASE, CAMPAIGN, NOTICE, SEED_HOUR, START, Provider,
     Resources, assert_local_tree, bind, bounded, commit, encoded, external, git, put,
     require_offline, sha)
@@ -37,7 +38,8 @@ CAMPAIGN_WORKFLOW='.github/workflows/operating-diagnostic.yml'
 DEPENDENCIES=('tools/operating_diagnostic.py','tools/source_ci.py',
     'tools/diagnostic_network_guard.py','tools/diagnostic_seed.py','tools/diagnostic_resources.py',
     'tools/cloud-seed-integrity.json','tools/diagnostic-seed-inputs.json','tools/cloud-seed-requirements.txt',
-    'tools/operating_seed_transport.py','tools/operating_resource_bootstrap.py')
+    'tools/operating_seed_transport.py','tools/operating_resource_bootstrap.py',
+    'tools/seed_checkpoint_frontier.py')
 JSON_LIMIT=16*1024**2
 SOURCE_FILE_LIMIT=32*1024**2
 SEED_BYTES_LIMIT=8*1024**3
@@ -809,7 +811,7 @@ def transition_execution_plan(code,root):
     try:
         m=bind(root);notice=_load(root/'FICTIONAL_ONLY.json')
         provider=Provider(m,notice['dimensions'],_transition_clock())
-        with external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
+        with operation_lifetime(seed_v1, modules=(m,)),external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
             _saved_packaging_identity(root,m,packaging)
         # Failed/interrupted invocations retain deterministic new receipts. A retry
         # recomputes them, never inherits a PASS record or changes their identity.
@@ -913,7 +915,7 @@ def package_execution_source(code,root):
     if m['rel'].utc(pointer['generated_at'])>=at:
         raise RuntimeError('Saved publication does not precede the fixed packaging clock')
     provider=Provider(m,marker['dimensions'],at)
-    with external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
+    with operation_lifetime(seed_v1, modules=(m,)),external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
         generation=m['capture'].repackage_generation(root,source_root=code)
     execution_identity(code,root)
     put(root/'DIAGNOSTIC_EXECUTION_PACKAGING.json',dict(schema_version='diagnostic-execution-packaging-v2',
@@ -1767,7 +1769,7 @@ def sample_capture(code,root,result):
         tick=time.monotonic()
         try:return action()
         finally:r['stages'][name]=time.monotonic()-tick;put(result,r)
-    with external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
+    with operation_lifetime(seed_v1, modules=(m,)),external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
         declaration,old_rows,old_outcomes=seed_v1.correction_declaration(root,m)
         before_board=m['rel'].load_json(root/'output/data/week.json')
         contracts={g['id']:m['partial'].game_contract(before_board,g['id']) for g in before_board['games']}
@@ -1790,7 +1792,7 @@ def sample_capture(code,root,result):
 def sample_commit(code,root,result):
     require_offline();execution_identity(code,root);m,provider=_sample_context(root);r=_load(result)
     if r.get('status')!='CAPTURE_COMPLETE_PRECOMMIT_CI_PENDING':raise RuntimeError('Wrong split-update frontier')
-    with external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
+    with operation_lifetime(seed_v1, modules=(m,)),external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
         tick=time.monotonic();commit(root);r['stages']['local_git_commit']=time.monotonic()-tick
         tick=time.monotonic();m['capture'].stage_pages(root,root.parent/'sample-pages');r['stages']['pages_staging_archive_checks']=time.monotonic()-tick
         tick=time.monotonic();r['final_candidate_workload']=final_candidate_workload(code,root,m,root.parent/'sample-pages');r['stages']['final_candidate_metrics']=time.monotonic()-tick
@@ -1822,7 +1824,8 @@ def main():
     elif a.action=='restore':seed_v1.restore_seed(code,root)
     elif a.action=='admit':
         # Source construction remains the actual frozen fixture, not candidate.
-        if seed_v1.admit(root,root,a.result,small=False)['status']!='ADMITTED':raise SystemExit(3)
+        with operation_lifetime(seed_v1):
+            if seed_v1.admit(root,root,a.result,small=False)['status']!='ADMITTED':raise SystemExit(3)
     elif a.action=='install-source':install_execution_source(code,root)
     elif a.action=='package-source':package_execution_source(code,root)
     elif a.action=='transition-plan':transition_execution_plan(code,root)

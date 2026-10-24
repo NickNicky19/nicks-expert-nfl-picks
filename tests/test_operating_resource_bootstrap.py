@@ -158,9 +158,9 @@ class SourceClosure(unittest.TestCase):
         value=self.check()
         self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.CONTINUED_SEED_INTEGRITY)
 
-    def test_latest_twelve_file_contract_binds_retrieval_helpers(self):
+    def test_latest_twelve_file_contract_binds_lifetime_helpers(self):
         value=self.check()
-        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.PREPARATION22_RETRIEVAL_INTEGRITY)
+        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.PREPARATION24_LIFETIME_INTEGRITY)
         self.assertEqual(len(b.SEED_CONTRACTS[b.FINISHED22_SEED_INTEGRITY]),12)
 
     def test_retained_finished22_contract_uses_actual_5eb_source_bytes(self):
@@ -171,8 +171,17 @@ class SourceClosure(unittest.TestCase):
         value=self.check()
         self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.FINISHED22_SEED_INTEGRITY)
 
-    def test_only_four_exact_contracts_are_recognized(self):
+    def test_retained_retrieval_contract_uses_actual_f130_source_bytes(self):
+        old='f1303ee9dfac61fb47fb6820eabd1d04b36f173c'
+        for name in b.SEED_CONTRACTS[b.PREPARATION22_RETRIEVAL_INTEGRITY]|{'cloud-seed-integrity.json'}:
+            raw=subprocess.check_output(['git','-C',str(SOURCE),'show',old+':tools/'+name])
+            (self.code/'tools'/name).write_bytes(raw);self.objects['tools/'+name]=raw
+        value=self.check()
+        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.PREPARATION22_RETRIEVAL_INTEGRITY)
+
+    def test_only_five_exact_contracts_are_recognized(self):
         self.assertEqual(set(b.SEED_CONTRACTS),{
+            b.PREPARATION24_LIFETIME_INTEGRITY,
             'bfb48f36d1db5b2980235238e1b869efb183f23095ff72cee33c1d88e84a3b26',
             'ed5b6773c3d4e642bf4346aa2b9de89a2b580a1f34e97bddc6172b068a388611',
             '636b3cd2a966346df02ad30c516dc805e40ae082e1b4f5e7b757162c29e6459f',
@@ -560,7 +569,6 @@ class PublicDeploymentBrowserContract(unittest.TestCase):
         self.assertNotEqual(self.invoke(lambda v:v['hourly'].update(run_attempt=True)),0)
 
 
-if __name__=='__main__':unittest.main(verbosity=2)
 
 class GenuineRecovery(unittest.TestCase):
     """Small synthetic data/streams only; no provider or backend qualification."""
@@ -795,3 +803,117 @@ class GenuineRecovery(unittest.TestCase):
         entries.pop('owner-worker.log');pages=r.parsed(entries['PAGES_MEMBERS_MANIFEST.json']);next(iter(pages.values()))['sha256']='0'*64
         entries['PAGES_MEMBERS_MANIFEST.json']=r.canonical(pages)
         with self.assertRaisesRegex(ValueError,'CONTROLLER_PAGES_MEMBERSHIP'):r.controller_archive(self.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE')
+
+
+class DiagnosticLifetimeDependencyContract(unittest.TestCase):
+    def test_frozen_and_new_seed_contracts_and_direct_child_dependency(self):
+        self.assertIn('tools/seed_checkpoint_frontier.py', b.FILES)
+        self.assertEqual(b.PREPARATION24_LIFETIME_INTEGRITY,
+            '3c68e0b8e88b458dc5ecb0dce1376160e668e1941e3e2302bce3e35a38a08f77')
+        expected=frozenset(b.SEED_NAMES | {
+            'seed_checkpoint_frontier.py','source_ci.py','operating_seed_transport.py'})
+        self.assertEqual(b.SEED_CONTRACTS[b.PREPARATION24_LIFETIME_INTEGRITY],expected)
+        for version in (b.CONTINUED_SEED_INTEGRITY,b.FINISHED22_SEED_INTEGRITY,
+                b.PREPARATION22_RETRIEVAL_INTEGRITY):
+            self.assertEqual(b.SEED_CONTRACTS[version],expected)
+        self.assertEqual(b.SEED_CONTRACTS[b.SEED_INTEGRITY],frozenset(b.SEED_NAMES))
+
+
+class BrowserFailureTelemetryAndCaptureBinding(unittest.TestCase):
+    """Pure source-bound controls; no browser, source-CI run, provider, or backend claim."""
+    def helpers(self):
+        import ast
+        text=(ROOT/'.github/workflows/prepare-diagnostic-seed.yml').read_text()
+        block=text.split('  generated-browser-acceptance:\n',1)[1].split('  public-browser-acceptance:\n',1)[0]
+        block=block.split("python -P - <<'PY'\n",1)[1].split('          PY\n',1)[0]
+        reader='\n'.join(line[10:] if line.startswith('          ') else line for line in block.splitlines())
+        names={'BROWSER_DIAGNOSTIC_PHASES','BROWSER_DIAGNOSTIC_KINDS','BROWSER_READER_CODES','CAPTURE_F130','CAPTURE_F130_MANIFEST','DIAGNOSTIC_SOURCE_PATHS','F130_ARTIFACT_APPROVAL'}
+        functions={'parse_browser_failure','private_browser_failure','browser_reader_code','capture_source_for_approval','require_f130_source_ci','compare_diagnostic_sources'}
+        nodes=[n for n in ast.parse(reader).body if isinstance(n,ast.FunctionDef) and n.name in functions or isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id in names for t in n.targets)]
+        def need(value,reason):
+            if not value:raise ValueError(reason)
+        def pairs(items):
+            value={}
+            for key,item in items:need(key not in value,'DUPLICATE');value[key]=item
+            return value
+        import hashlib
+        namespace=dict(json=json,subprocess=subprocess,need=need,pairs=pairs,
+            canonical=lambda v:json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False).encode(),
+            sha=lambda raw:hashlib.sha256(raw).hexdigest())
+        exec(compile(ast.Module(body=nodes,type_ignores=[]),'actual-browser-reader-controls','exec'),namespace)
+        return namespace
+    def old_source(self):
+        spec=importlib.util.spec_from_file_location('source_ci_for_diagnostic_contract',ROOT/'tools/source_ci.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        return module.source(ROOT,'f1303ee9dfac61fb47fb6820eabd1d04b36f173c',actual=False)
+    def changed_source(self,change=None):
+        h=self.helpers();old=self.old_source();new=copy.deepcopy(old);new['commit']='9'*40
+        if change:change(new)
+        new['source_manifest_sha256']=h['sha'](h['canonical'](new['files']))
+        return h,old,new
+    def test_actual_f130_manifest_allows_only_named_diagnostic_delta(self):
+        def change(value):
+            entry=next(f for f in value['files'] if f['path']=='tools/release_browser.cjs')
+            entry.update(blob='9'*40,sha256='8'*64,bytes=entry['bytes']+1)
+        h,old,new=self.changed_source(change)
+        self.assertEqual(len(old['files']),123)
+        self.assertEqual(h['compare_diagnostic_sources'](old,new)['difference_count'],1)
+    def test_product_blob_or_mode_difference_rejected(self):
+        for field,value in (('sha256','8'*64),('mode','100755')):
+            def change(current):
+                next(f for f in current['files'] if f['path']=='output/app.js')[field]=value
+            h,old,new=self.changed_source(change)
+            with self.assertRaisesRegex(ValueError,'APPLICATION_OR_VALIDATOR'):h['compare_diagnostic_sources'](old,new)
+    def test_unexpected_or_missing_source_path_rejected(self):
+        for change in (lambda v:v['files'].append(dict(path='tools/unapproved_diagnostic.py',mode='100644',blob='1'*40,sha256='2'*64,bytes=1)),lambda v:v['files'].pop()):
+            h,old,new=self.changed_source(change)
+            with self.assertRaisesRegex(ValueError,'NAMESPACES'):h['compare_diagnostic_sources'](old,new)
+    def test_old_source_hash_or_caller_declared_manifest_cannot_substitute(self):
+        h,old,new=self.changed_source();bad=copy.deepcopy(old);bad['source_manifest_sha256']='0'*64
+        with self.assertRaises(ValueError):h['compare_diagnostic_sources'](bad,new)
+        new['files'][0]['sha256']='0'*64
+        with self.assertRaisesRegex(ValueError,'DIGESTS'):h['compare_diagnostic_sources'](old,new)
+    def test_only_exact_immutable_old_artifact_approval_crosses_source(self):
+        h=self.helpers();approval=copy.deepcopy(h['F130_ARTIFACT_APPROVAL'])
+        self.assertEqual(h['capture_source_for_approval'](approval,'9'*40),h['CAPTURE_F130'])
+        for key,value in (('case_run_id',40099428553),('artifact_id',12563140142),('source','8'*40),('artifact_sha256','0'*64)):
+            bad=copy.deepcopy(approval);bad[key]=value
+            with self.assertRaises(ValueError):h['capture_source_for_approval'](bad,'9'*40)
+    def test_legacy_same_source_selection_remains_generic(self):
+        h=self.helpers();value=copy.deepcopy(h['F130_ARTIFACT_APPROVAL']);value.update(source='9'*40,case_run_id=101,artifact_id=202)
+        self.assertEqual(h['capture_source_for_approval'](value,'9'*40),'9'*40)
+    def test_old_qualified_ci_identity_must_be_original_not_new_source(self):
+        h=self.helpers();value=dict(schema_version='source-ci-verification-v1',executed_commit=h['CAPTURE_F130'],executed_tree='13cd5461b81bf775c4fd415640de70d28a5edf69',source_ci_commit=h['CAPTURE_F130'],source_manifest_sha256=h['CAPTURE_F130_MANIFEST'],run_id=40091905641,run_attempt=1,job_id=120866138326,seal_sha256='d15f4084d2e7aad9e7c2282c2864684469106873bd6e8a40c4e53b14d0f88fee')
+        h['require_f130_source_ci'](value)
+        for key,wrong in (('source_ci_commit','9'*40),('seal_sha256','0'*64),('run_id',40091905642),('run_attempt',True)):
+            bad=copy.deepcopy(value);bad[key]=wrong
+            with self.assertRaises(ValueError):h['require_f130_source_ci'](bad)
+    def diagnostic_line(self,**changes):
+        value=dict(schema_version='release-browser-failure-diagnostic-v1',stage='B016',kind='ASSERTION',viewport=1280);value.update(changes)
+        return b'NFL_BROWSER_FAILURE_DIAGNOSTIC_V1='+json.dumps(value,separators=(',',':')).encode()+b'\n'
+    def test_private_log_parser_exports_only_fixed_enum_record(self):
+        h=self.helpers();raw=b'private raw message and player text omitted\n'+self.diagnostic_line()
+        self.assertEqual(h['parse_browser_failure'](raw),dict(browser_failure_stage='B016',browser_failure_kind='ASSERTION',browser_failure_viewport=1280))
+    def test_private_log_parser_rejects_unknown_fields_values_and_duplicates(self):
+        h=self.helpers()
+        for raw in (self.diagnostic_line(secret='PRIVATE_VALUE'),self.diagnostic_line(stage='PRIVATE_VALUE'),self.diagnostic_line(kind='PRIVATE_VALUE'),self.diagnostic_line(viewport=True),self.diagnostic_line()+self.diagnostic_line()):
+            result=h['parse_browser_failure'](raw);self.assertEqual(result['browser_failure_stage'],'INVALID');self.assertNotIn('PRIVATE_VALUE',json.dumps(result))
+    def test_missing_diagnostic_and_raw_exception_never_export_message(self):
+        h=self.helpers();self.assertEqual(h['parse_browser_failure'](b'raw private error')['browser_failure_stage'],'UNAVAILABLE')
+        self.assertEqual(h['browser_reader_code'](ValueError('PRIVATE_URL_OR_PLAYER')),'UNCLASSIFIED')
+        self.assertEqual(h['browser_reader_code'](ValueError('PREINSTALLED_CHROME_UNAVAILABLE')),'PREINSTALLED_CHROME_UNAVAILABLE')
+    def node_diagnostic(self,expression):
+        script=(ROOT/'tools/release_browser.cjs').read_text().split('// BEGIN BOUNDED BROWSER FAILURE TELEMETRY\n',1)[1].split('// END BOUNDED BROWSER FAILURE TELEMETRY',1)[0]
+        code="const output=[];const process={stderr:{write:v=>output.push(v)},on:()=>{}};\n"+script+"\n"+expression+"\nconsole.log(JSON.stringify(output));"
+        result=subprocess.run(['node','-e',code],text=True,capture_output=True,timeout=10,check=True)
+        return json.loads(result.stdout)
+    def test_actual_cjs_fixed_phase_class_and_single_emission(self):
+        lines=self.node_diagnostic("browserPhase='B010';browserViewport=390;reportBrowserFailure(Object.assign(new Error('PRIVATE_URL_OR_PLAYER'),{code:'ENOENT'}));reportBrowserFailure(new Error('SECOND_PRIVATE'));")
+        self.assertEqual(len(lines),1);self.assertNotIn('PRIVATE',lines[0])
+        value=json.loads(lines[0].split('=',1)[1]);self.assertEqual((value['stage'],value['kind'],value['viewport']),('B010','ENOENT',390))
+    def test_actual_cjs_unknown_error_properties_and_forced_values_cannot_leak(self):
+        lines=self.node_diagnostic("browserPhase='PRIVATE_STAGE';browserViewport=42;reportBrowserFailure({name:'__proto__',message:'PRIVATE_MESSAGE',code:'PRIVATE_CODE'},'PRIVATE_FORCED');")
+        self.assertNotIn('PRIVATE',lines[0]);value=json.loads(lines[0].split('=',1)[1]);self.assertEqual((value['stage'],value['kind'],value['viewport']),('B001','OTHER',0))
+
+
+if __name__=='__main__':unittest.main(verbosity=2)

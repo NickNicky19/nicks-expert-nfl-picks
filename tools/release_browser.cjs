@@ -1,5 +1,24 @@
 #!/usr/bin/env node
 'use strict';
+// BEGIN BOUNDED BROWSER FAILURE TELEMETRY
+const BROWSER_FAILURE_PHASES=Object.freeze(['B001','B002','B003','B004','B005','B006','B007','B008','B009','B010','B011','B012','B013','B014','B015','B016','B017','B018','B019','B020','B021','B022','B023','B024','B025','B026','B027','B028','B029']);
+const BROWSER_FAILURE_KINDS=Object.freeze(['ASSERTION','TIMEOUT','TYPE','REFERENCE','SYNTAX','RANGE','ERROR','OTHER','MODULE_NOT_FOUND','ENOENT','EACCES','ENOSPC','ENOMEM','FILESYSTEM_GUARD','BROWSER_DEADLINE']);
+let browserPhase='B001',browserViewport=0,browserDiagnosticIssued=false;
+function browserFailureDiagnostic(error,forced='') {
+  const names={AssertionError:'ASSERTION',TimeoutError:'TIMEOUT',TypeError:'TYPE',ReferenceError:'REFERENCE',SyntaxError:'SYNTAX',RangeError:'RANGE',Error:'ERROR'};
+  const name=error&&typeof error.name==='string'?error.name:'';
+  let kind=Object.hasOwn(names,name)?names[name]:'OTHER';
+  if(error&&['MODULE_NOT_FOUND','ENOENT','EACCES','ENOSPC','ENOMEM'].includes(error.code))kind=error.code;
+  if(BROWSER_FAILURE_KINDS.includes(forced))kind=forced;
+  return {schema_version:'release-browser-failure-diagnostic-v1',stage:BROWSER_FAILURE_PHASES.includes(browserPhase)?browserPhase:'B001',kind,viewport:[1280,390,320].includes(browserViewport)?browserViewport:0};
+}
+function reportBrowserFailure(error,forced='') {
+  if(browserDiagnosticIssued)return;
+  browserDiagnosticIssued=true;
+  try{process.stderr.write('NFL_BROWSER_FAILURE_DIAGNOSTIC_V1='+JSON.stringify(browserFailureDiagnostic(error,forced))+'\n');}catch{}
+}
+process.on('uncaughtExceptionMonitor',error=>reportBrowserFailure(error));
+// END BOUNDED BROWSER FAILURE TELEMETRY
 // Local acceptance of the ACTUAL staged package. Never modifies staged/evidence files.
 // Saved tickets/picks exist only in new disposable browser contexts at actual time.
 const assert = require('node:assert/strict');
@@ -7,6 +26,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
+browserPhase='B002';
 const { chromium } = require('playwright');
 const argv = process.argv.slice(2);
 const arg = (key, fallback) => argv.includes(key) ? argv[argv.indexOf(key) + 1] : fallback;
@@ -25,16 +45,20 @@ function destinationsSafe(protectedRoots,outputs){const roots=protectedRoots.map
 function filesystemGuard(paths,extra=0,reader=p=>fs.statfsSync(existingAncestor(p))){return paths.map(p=>{const s=reader(p),total=s.blocks*s.bsize,available=s.bavail*s.bsize,floor=Math.max(reserve,Math.ceil(total*.2));assert.ok(available>=floor+extra,'CRITICAL_FILESYSTEM_RESERVE');return {path:p,total_bytes:total,free_bytes:available,reserve_bytes:floor};});}
 function latchFailure(state,error){if(!state.failure)state.failure=error;}
 function settleStatus(record,state,success){if(state.failure){record.status='FAIL';record.error='CRITICAL_FILESYSTEM_RESERVE';return false;}if(success)record.status=success;return true;}
+browserPhase='B003';
 assert.equal(require('playwright/package.json').version,'1.62.1','Pinned Playwright required');
+browserPhase='B004';
 const chrome=process.env.NFL_CHROMIUM_PATH||['/usr/bin/google-chrome','/usr/bin/google-chrome-stable','/usr/bin/chromium'].find(p=>fs.existsSync(p));
 assert.ok(chrome&&fs.statSync(chrome).isFile(),'UNSUPPORTED_PREINSTALLED_CHROME_UNAVAILABLE');
 assert.ok(arg('--result'),'Bounded result path required');
 const evidence=path.resolve(arg('--evidence',path.dirname(arg('--result'))));
 assert.ok(arg('--artifact-root'),'Exact extracted artifact root required');
 const artifactRoot=fs.realpathSync(arg('--artifact-root')),resultPath=path.resolve(arg('--result')),profileRoot=path.resolve(arg('--profile-root',resultPath+'.profiles'));
+browserPhase='B005';
 destinationsSafe([root,artifactRoot,path.dirname(markerPath)],[resultPath,evidence,profileRoot]);
 assert.ok(!fs.existsSync(resultPath)&&!fs.existsSync(profileRoot),'Fresh result/profile paths required');
 const criticalPaths=[root,artifactRoot,markerPath,resultPath,evidence,profileRoot,'/tmp',process.env.TMPDIR||'/tmp',process.env.RUNNER_TEMP||'/tmp',process.cwd(),chrome,require.resolve('playwright')];
+browserPhase='B006';
 const initialFilesystems=filesystemGuard(criticalPaths,12*1024*1024);
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const readJSON = filename => JSON.parse(fs.readFileSync(filename));
@@ -84,6 +108,7 @@ function publicMembersDigest(directory) {
   assert.ok(Object.keys(members).length);return sha(Buffer.from(canonical(members)));
 }
 // END PUBLIC DEPLOYMENT REVIEW CONTRACT
+browserPhase='B007';
 const marker = readJSON(markerPath);
 const deploymentReview=marker.schema_version==='public-deployment-review-v1';
 if(!deploymentReview){
@@ -95,6 +120,7 @@ assert.ok(fs.statSync(root).isDirectory(), 'Actual fresh staged root is required
 fs.mkdirSync(evidence,{recursive:true});
 fs.mkdirSync(profileRoot,{mode:0o700});process.env.TMPDIR=profileRoot;process.env.TMP=profileRoot;process.env.TEMP=profileRoot;
 filesystemGuard(criticalPaths,12*1024*1024);
+browserPhase='B008';
 const generationBytes = fs.readFileSync(path.join(root, 'data/release-identity.json'));
 const generation = JSON.parse(generationBytes);
 if(deploymentReview)publicDeploymentContract(marker,publicURL,generation,generationBytes,publicMembersDigest(root));
@@ -122,6 +148,7 @@ const result = {
   ]
 };
 result.target=publicURL?{kind:'ACTUAL_PUBLIC_URL',url:publicURL}:{kind:'ACTUAL_STAGED_BYTES',root};
+result.diagnostic_source=process.env.GITHUB_SHA||null;result.instrumentation_sha256=sha(fs.readFileSync(__filename));
 result.manifest_sha256=sha(fs.readFileSync(markerPath));result.unavailable=[];
 if(deploymentReview){result.review_contract='public-deployment-review-v1';result.runtime_data_commit=marker.runtime_data_commit;result.hourly_run_id=marker.hourly.run_id;}
 result.filesystems=initialFilesystems;result.resource_verdict='UNKNOWN';result.job_aggregate_peak_bytes=null;
@@ -150,7 +177,7 @@ const server = http.createServer((req, res) => {
   } catch { res.writeHead(404); res.end('Unavailable static asset'); }
 });
 let browser;
-const hardStop = setTimeout(() => { result.status = 'FAIL'; result.error = 'Bounded 420-second browser review exhausted'; save(); if (browser) browser.close().finally(() => process.exit(2)); else process.exit(2); }, 420000);
+const hardStop = setTimeout(() => { reportBrowserFailure(null,'BROWSER_DEADLINE');result.status = 'FAIL'; result.error = 'Bounded 420-second browser review exhausted'; save(); if (browser) browser.close().finally(() => process.exit(2)); else process.exit(2); }, 420000);
 const pageState = page => page.evaluate(() => ({ report_id: S.grading?.pointer.report_id, source: S.grading?.summary.source_sha,
   schema: S.grading?.summary.schema_version, report_schema: S.grading?.summary.report_schema_version,
   error: S.gradingError, part_error: S.grading?.partError, filters: { ...S.gradingFilters } }));
@@ -446,15 +473,19 @@ async function missingPartition(page,cdp,blockedURLs,base){
 (async () => {
   save();let diskTimer;const diskState={failure:null};
   try {
+browserPhase='B009';
     if(!publicURL)await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
     const origin=publicURL?(publicURL.endsWith('/')?publicURL:publicURL+'/'):'http://127.0.0.1:'+server.address().port+'/';
     const allowedOrigin=new URL(origin).origin,hostname=new URL(origin).hostname;
     const staticText=fs.readFileSync(path.join(root,'app.js'),'utf8')+fs.readFileSync(path.join(root,'index.html'),'utf8');
     const blockedURLs=[...new Set([...staticText.matchAll(/https?:\/\/([a-zA-Z0-9.-]+)/g)].map(m=>m[1]).filter(h=>h!==hostname))].flatMap(h=>['*://'+h+'/*','*://*.'+h+'/*']);
+browserPhase='B010';
     browser=await chromium.launch({executablePath:chrome,headless:true,args:['--no-sandbox','--disable-dev-shm-usage','--disk-cache-size=1048576','--media-cache-size=1048576','--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE '+hostname]});
     result.browser={playwright:require('playwright/package.json').version,chrome_version:browser.version(),node:process.version,physical_device:false};
-    diskTimer=setInterval(()=>{try{filesystemGuard(criticalPaths,1024*1024);}catch(error){latchFailure(diskState,error);settleStatus(result,diskState);browser.close().catch(()=>{});}},200);
+    diskTimer=setInterval(()=>{try{filesystemGuard(criticalPaths,1024*1024);}catch(error){reportBrowserFailure(error,'FILESYSTEM_GUARD');latchFailure(diskState,error);settleStatus(result,diskState);browser.close().catch(()=>{});}},200);
     for (const width of [1280,390,320]) {
+      browserViewport=width;
+browserPhase='B011';
       const context=await browser.newContext({viewport:{width,height:width===390?844:900},serviceWorkers:'block'});
       const errors=[],external=[],nonGet=[];
       const page=await context.newPage(),cdp=await context.newCDPSession(page),network=[],cacheIds=new Set(),externalResponses=[];
@@ -464,19 +495,29 @@ async function missingPartition(page,cdp,blockedURLs,base){
       cdp.on('Network.responseReceived',e=>{const u=new URL(e.response.url);if(u.origin!==allowedOrigin)externalResponses.push(u.origin);else network.push({id:e.requestId,path:u.pathname.replace(new URL(origin).pathname,''),status:e.response.status,cached:!!e.response.fromDiskCache||cacheIds.has(e.requestId),cache_control:Object.entries(e.response.headers).find(([k])=>k.toLowerCase()==='cache-control')?.[1]||null});});
       const review={width,checks:[]};result.contexts.push(review);save();
       try {
+browserPhase='B012';
         await page.goto(origin+'#/record');review.state=await loaded(page);
+browserPhase='B013';
         const bindings=await page.evaluate(async names=>{const out={};for(const name of names){const r=await fetch(name,{cache:'no-store'});if(!r.ok)throw Error('Required actual binding unavailable');out[name]=await gradingHash(new Uint8Array(await r.arrayBuffer()));}return out;},['data/release-identity.json',...Object.keys(generation.bindings)]);
         assert.equal(bindings['data/release-identity.json'],sha(generationBytes));for(const [name,hash]of Object.entries(generation.bindings))assert.equal(bindings[name],hash);
+browserPhase='B014';
         const schema=await page.evaluate(()=>[S.grading.summary.schema_version,S.grading.summary.report_schema_version,!!S.grading.summary.forecast_accuracy]);
         assert.deepEqual(schema,['selection-public-report-v6','selection-report-v4',true],'Actual complete release must expose the approved accuracy contract');
+browserPhase='B015';
         review.displayed_cells=await checkDisplayedCells(page);
+browserPhase='B016';
         if(width===1280)review.independent_saved_rows=await semanticRows(page);
+browserPhase='B017';
         review.drilldown=await drillDown(page);await assertNoOverflow(page,width);
+browserPhase='B018';
         if(width===1280)review.actual_filter_coverage=await actualFilterCoverage(page);
+browserPhase='B019';
         review.strategy_ui=await strategyUI(page);for(const item of review.strategy_ui)if(item.status.startsWith('UNAVAILABLE'))result.unavailable.push({width,...item});
+browserPhase='B020';
         review.accuracy=await page.evaluate(()=>({cohorts:S.grading.summary.forecast_accuracy.cohorts.map(c=>({model:c.model_version,categories:Object.keys(c.categories).sort(),opportunities:c.coverage.opportunities,paired_counts:Object.fromEntries(Object.entries(c.categories).map(([k,v])=>[k,v.paired.raw.n]))})),rendered:!!document.querySelector('[data-forecast-accuracy]')}));
         assert.ok(review.accuracy.rendered);assert.ok(review.accuracy.cohorts.length>0);assert.ok(review.accuracy.cohorts.every(c=>c.categories.length===12));
         if(argv.includes('--screenshots'))await page.screenshot({path:path.join(evidence,'actual-record-'+width+'.png'),fullPage:false});
+browserPhase='B021';
         await tab(page,'props');
         const pick=await page.locator('[data-add]').evaluateAll(buttons=>buttons.map(b=>b.dataset.add).find(v=>{const[pid]=v.split('|');const p=S.byId[pid],g=p&&S.games[p.game_id];return g?.state==='pre'&&Date.parse(g.kickoff)>Date.now();}) || null);
         let mine=null;if(pick){
@@ -488,24 +529,32 @@ async function missingPartition(page,cdp,blockedURLs,base){
         assert.match(await page.locator('.mine-sum').innerText(),/Final wins\s+0/);assert.match(await page.locator('.mine-sum').innerText(),/Final losses\s+0/);
         await page.reload();await loaded(page);assert.equal(await page.evaluate(()=>localStorage.getItem('nflprops.mine')),mine.bytes);review.my_picks={saved_count:1,personal_line_persisted:true,final_wins:0,final_losses:0,storage_sha256:sha(mine.bytes)};
         }else review.my_picks={status:'UNAVAILABLE_ACTUAL_UPCOMING_DISPLAYED_PICK'};
+browserPhase='B022';
         if(width===1280)review.category_source_side_controls=await categoryControls(page);
+browserPhase='B023';
         review.paper=await paper(page,width);if(mine)assert.equal(await page.evaluate(()=>localStorage.getItem('nflprops.mine')),mine.bytes,'Paper operations never mutate actual My Picks bytes');
-        review.scoring_and_real_rules=await scoringAndRules(page);review.ordinary_cache=await ordinaryCache(page,cdp,network);review.missing_partition_and_recovery=await missingPartition(page,cdp,blockedURLs,origin);
+        browserPhase='B024';review.scoring_and_real_rules=await scoringAndRules(page);
+        browserPhase='B025';review.ordinary_cache=await ordinaryCache(page,cdp,network);
+        browserPhase='B026';review.missing_partition_and_recovery=await missingPartition(page,cdp,blockedURLs,origin);
         for(const item of review.paper.coverage)if(item.status.startsWith('UNAVAILABLE'))result.unavailable.push({width,...item});
         for(const kind of review.scoring_and_real_rules.unavailable)result.unavailable.push({width,kind,status:'UNAVAILABLE_ACTUAL_OUTCOME_POPULATION'});
         result.unavailable.push({width,kind:'natural_future_correction_transition',status:'UNAVAILABLE_NOT_FABRICATED'});
         if(!mine||!review.ordinary_cache.populated_storage)result.unavailable.push({width,kind:'populated_picks_and_tickets',status:'UNAVAILABLE_ACTUAL_POPULATION'});
+browserPhase='B027';
         assert.deepEqual(externalResponses,[]);assert.deepEqual(errors,[],'Actual package has no browser page errors');assert.deepEqual(nonGet,[],'Private picks/tickets never issue network writes');
         review.intercepted_external_requests=external.length;review.external_network_requests=0;review.status='PASS';save();
       } catch(error) {
+        reportBrowserFailure(error);
         review.status='FAIL';review.error=error.message;save();
         try{if(argv.includes('--screenshots'))await page.screenshot({path:path.join(evidence,'actual-failure-'+width+'.png'),fullPage:false});}catch{}
         throw error;
       } finally { await context.close(); }
     }
+browserPhase='B028';
     for(const [filename,hash] of served)assert.equal(sha(fs.readFileSync(filename)),hash,'Actual consumed package bytes must remain unchanged');
     filesystemGuard(criticalPaths,1024*1024);
+browserPhase='B029';
     assert.ok(settleStatus(result,diskState,result.unavailable.length?'PASS_EXECUTED_CHECKS_WITH_EXPLICIT_UNAVAILABLE_CASES':'PASS_EXECUTED_ACTUAL_CHECKS'),'DISK_FAILURE_LATCHED');result.playwright_routing_installed=false;result.served_asset_count=served.size;result.local_response_body_bytes=requests.reduce((n,r)=>n+r.bytes,0);result.provider_requests=0;result.source_package_mutated=false;
-  } catch(error) { result.status='FAIL';result.error=error.message;result.stack=error.stack;throw error; }
+  } catch(error) { reportBrowserFailure(error);result.status='FAIL';result.error=error.message;result.stack=error.stack;throw error; }
   finally {clearInterval(diskTimer);if(!settleStatus(result,diskState))process.exitCode=1;result.finished_at=new Date().toISOString();save();clearTimeout(hardStop);if(browser)await browser.close();if(server.listening)await new Promise(resolve=>server.close(resolve));}
-})().catch(error=>{console.error(error.message);process.exitCode=1;});
+})().catch(error=>{reportBrowserFailure(error);console.error(error.message);process.exitCode=1;});
