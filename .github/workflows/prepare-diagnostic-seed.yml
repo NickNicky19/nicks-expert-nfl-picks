@@ -15,6 +15,7 @@ on:
           - NFL-WEB-CHECKPOINT-READBACK-12540324398-20261024
           - NFL-WEB-CHECKPOINT-FRONTIER-12509203616-20261023
           - NFL-WEB-CONTINUE-VERIFIED-13-OF-24-12509203616-20261023
+          - NFL-WEB-CONTINUE-CHECKPOINT-22-OF-24-12540324398-20261024
       storage_approved:
         description: Repeat the preparation identifier after output-content and available-storage approval
         required: true
@@ -673,8 +674,9 @@ jobs:
       github.actor_id == '208912933' &&
       github.ref == 'refs/heads/upgrade/phase2-reproducible-comparison' &&
       github.run_attempt == 1 &&
-      inputs.confirmation == 'NFL-WEB-CONTINUE-VERIFIED-13-OF-24-12509203616-20261023' &&
-      inputs.storage_approved == 'NFL-WEB-CONTINUE-VERIFIED-13-OF-24-12509203616-20261023' &&
+      (inputs.confirmation == 'NFL-WEB-CONTINUE-VERIFIED-13-OF-24-12509203616-20261023' ||
+       inputs.confirmation == 'NFL-WEB-CONTINUE-CHECKPOINT-22-OF-24-12540324398-20261024') &&
+      inputs.storage_approved == inputs.confirmation &&
       inputs.installed_source == github.sha
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -682,8 +684,8 @@ jobs:
       contents: read
       actions: read
     env:
-      PREPARATION_ID: NFL-WEB-CONTINUE-VERIFIED-13-OF-24-12509203616-20261023
-      CONTINUATION_ID: NFL-WEB-CONTINUE-VERIFIED-13-OF-24-12509203616-20261023
+      PREPARATION_ID: ${{ inputs.confirmation }}
+      CONTINUATION_ID: ${{ inputs.confirmation }}
       APPLICATION_SOURCE: b3de2fbd88ba3247b407a856972285ad10527b99
       APPLICATION_TREE: c0d0d818f8e1266f55851c8c220d44cd94797c78
     steps:
@@ -904,7 +906,7 @@ jobs:
           name: fictional-seed-preparation-${{ github.run_id }}
           path: ${{ runner.temp }}/nfl-seedprep-export-${{ github.run_id }}/*
           if-no-files-found: error
-          retention-days: 3
+          retention-days: ${{ inputs.confirmation == 'NFL-WEB-CONTINUE-CHECKPOINT-22-OF-24-12540324398-20261024' && 1 || 3 }}
           compression-level: 0
           overwrite: false
           include-hidden-files: false
