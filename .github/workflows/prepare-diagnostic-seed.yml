@@ -16,6 +16,8 @@ on:
           - NFL-WEB-CHECKPOINT-FRONTIER-12509203616-20261023
           - NFL-WEB-CONTINUE-VERIFIED-13-OF-24-12509203616-20261023
           - NFL-WEB-CONTINUE-CHECKPOINT-22-OF-24-12540324398-20261024
+          - NFL-WEB-RUNNER-MEMORY-READBACK-20261024
+          - NFL-WEB-GENUINE-PRODUCTION-CASE-20261024
       storage_approved:
         description: Repeat the preparation identifier after output-content and available-storage approval
         required: true
@@ -29,7 +31,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: one-time-fictional-seed-preparation
+  group: ${{ inputs.confirmation == 'NFL-WEB-RUNNER-MEMORY-READBACK-20261024' && 'one-time-runner-memory-readback' || inputs.confirmation == 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024' && 'one-time-genuine-production-case' || 'one-time-fictional-seed-preparation' }}
   cancel-in-progress: false
 
 jobs:
@@ -965,4 +967,570 @@ jobs:
           print('SEED_TRANSPORT_FACTS_JSON='+raw.decode())
           print('SEED_TRANSPORT_FACTS_SHA256='+hashlib.sha256(raw).hexdigest())
           print('ONE_TIME_CONTINUATION_COMPLETE; OPERATING_CAMPAIGN_NOT_RUN')
+          PY
+
+  inspect-runner-memory:
+    if: >-
+      github.repository == 'NickNicky19/nicks-expert-nfl-picks' &&
+      github.actor_id == '208912933' &&
+      github.ref == 'refs/heads/upgrade/phase2-reproducible-comparison' &&
+      github.run_attempt == 1 &&
+      inputs.confirmation == 'NFL-WEB-RUNNER-MEMORY-READBACK-20261024' &&
+      inputs.storage_approved == 'NFL-WEB-RUNNER-MEMORY-READBACK-20261024' &&
+      inputs.installed_source == github.sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Observe read-only Runner.Worker memory topology without running a workload
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          """One read-only topology observation, never memory or operating qualification."""
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import sys
+          import time
+
+          CONFIRMATION = 'NFL-WEB-RUNNER-MEMORY-READBACK-20261024'
+          WORKFLOW = 'NickNicky19/nicks-expert-nfl-picks/.github/workflows/prepare-diagnostic-seed.yml@refs/heads/upgrade/phase2-reproducible-comparison'
+          LIMIT = 16384
+
+          class Unsupported(Exception):
+              pass
+
+          def require(condition, code):
+              if not condition:raise Unsupported(code)
+
+          def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          def sha(value):return hashlib.sha256(value).hexdigest()
+          def pairs(items):
+              result={}
+              for key,value in items:
+                  require(key not in result,'DUPLICATE_JSON_KEY');result[key]=value
+              return result
+
+          def read(path,limit=16384):
+              fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+              try:
+                  require(stat.S_ISREG(os.fstat(fd).st_mode),'NONREGULAR_METADATA')
+                  parts=[];size=0
+                  while True:
+                      data=os.read(fd,min(4096,limit-size+1))
+                      if not data:break
+                      size+=len(data);require(size<=limit,'METADATA_SIZE_BOUND');parts.append(data)
+                  return b''.join(parts)
+              finally:os.close(fd)
+
+          def integer(raw,maximum=None):
+              text=raw.strip()
+              require(re.fullmatch(rb'0|[1-9][0-9]{0,19}',text) is not None,'MALFORMED_COUNTER')
+              value=int(text)
+              require(maximum is None or value<=maximum,'COUNTER_BOUND')
+              return value
+
+          def maximum(raw):return None if raw.strip()==b'max' else integer(raw)
+
+          def identity(raw,pid):
+              require(len(raw)<=16384 and raw.startswith(str(pid).encode()+b' ('),'PROC_IDENTITY')
+              end=raw.rfind(b') ');require(end>0,'PROC_IDENTITY')
+              fields=raw[end+2:].split();require(len(fields)>=20,'PROC_FIELDS')
+              return raw[raw.index(b'(')+1:end],integer(fields[1]),integer(fields[19])
+
+          def membership(raw):
+              rows=raw.decode('ascii').splitlines();require(len(rows)==1 and rows[0].startswith('0::'),'CGROUP_V2_MEMBERSHIP')
+              value=rows[0][3:];path=Path(value)
+              require(path.is_absolute() and not value.startswith('//') and '..' not in path.parts and '\x00' not in value and str(path)==value,'CGROUP_MEMBERSHIP_PATH')
+              return path
+
+          def unescape(value):
+              return re.sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),value)
+
+          def mount(raw):
+              found=[]
+              for line in raw.decode().splitlines():
+                  halves=line.split(' - ')
+                  require(len(halves)==2,'MOUNTINFO_FIELDS')
+                  if halves[1].split()[0]!='cgroup2':continue
+                  fields=halves[0].split();require(len(fields)>=6,'MOUNTINFO_FIELDS')
+                  found.append((Path(unescape(fields[3])),Path(unescape(fields[4]))))
+              require(len(found)==1,'CGROUP_V2_MOUNT')
+              root,location=found[0]
+              require(root==Path('/') and location.is_absolute(),'HIDDEN_CGROUP_ANCESTORS')
+              return root,location
+
+          def memory(raw):
+              values={}
+              for line in raw.decode('ascii').splitlines():
+                  key,rest=line.split(':',1)
+                  if key not in ('MemTotal','MemAvailable','SwapTotal','SwapFree'):continue
+                  require(key not in values,'DUPLICATE_MEMORY_FIELD')
+                  fields=rest.split();require(len(fields)==2 and fields[1]=='kB','MEMORY_UNITS')
+                  values[key]=integer(fields[0].encode())*1024
+              require(set(values)=={'MemTotal','MemAvailable','SwapTotal','SwapFree'} and values['MemTotal']>0 and values['MemAvailable']<=values['MemTotal'] and values['SwapFree']<=values['SwapTotal'],'MEMORY_FIELDS')
+              return values
+
+          def oom(raw):
+              values={}
+              for line in raw.splitlines():
+                  fields=line.split();require(len(fields)==2,'OOM_COUNTER_FIELDS')
+                  key=fields[0].decode('ascii');require(key not in values,'DUPLICATE_OOM_COUNTER')
+                  values[key]=integer(fields[1])
+              required={'oom','oom_kill','oom_group_kill'};require(required<=set(values),'OOM_COUNTER_MISSING')
+              return {key:values[key] for key in sorted(required)}
+
+          def invocation(env,event):
+              fixed={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','GITHUB_REPOSITORY':'NickNicky19/nicks-expert-nfl-picks','GITHUB_REPOSITORY_ID':'1411185749','GITHUB_ACTOR_ID':'208912933','GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_RUN_ATTEMPT':'1','GITHUB_REF':'refs/heads/upgrade/phase2-reproducible-comparison','GITHUB_WORKFLOW_REF':WORKFLOW}
+              require(all(env.get(k)==v for k,v in fixed.items()),'UNTRUSTED_INVOCATION')
+              source=env.get('GITHUB_SHA','')
+              require(re.fullmatch('[0-9a-f]{40}',source) is not None and env.get('GITHUB_WORKFLOW_SHA')==source,'WORKFLOW_SOURCE_BINDING')
+              inputs=event.get('inputs')
+              require(type(inputs) is dict and set(inputs)=={'confirmation','storage_approved','installed_source'} and inputs==dict(confirmation=CONFIRMATION,storage_approved=CONFIRMATION,installed_source=source),'EXACT_INPUTS')
+              require(type(event.get('repository')) is dict and event['repository'].get('id')==1411185749 and event['repository'].get('full_name')=='NickNicky19/nicks-expert-nfl-picks' and type(event.get('sender')) is dict and event['sender'].get('id')==208912933,'EVENT_REPOSITORY_ACTOR')
+              run=env.get('GITHUB_RUN_ID','');require(re.fullmatch('[1-9][0-9]{0,19}',run) is not None,'RUN_IDENTITY')
+              return source,int(run)
+
+          def object_identity(path):
+              require(not path.is_symlink() and path.resolve()==path,'CGROUP_PATH_ALIAS')
+              info=path.stat();require(stat.S_ISDIR(info.st_mode),'CGROUP_DIRECTORY')
+              return dict(object_sha256=sha(str((info.st_dev,info.st_ino)).encode()),owner_uid=info.st_uid,mode=stat.S_IMODE(info.st_mode),job_writable=os.access(path,os.W_OK))
+
+          def proc_record(pid,depth):
+              base=Path('/proc')/str(pid);raw=read(base/'stat');comm,parent,start=identity(raw,pid)
+              exe=Path(os.readlink(base/'exe')).name
+              role='worker' if comm==b'Runner.Worker' and exe=='Runner.Worker' else 'listener' if comm==b'Runner.Listener' and exe=='Runner.Listener' else 'observer' if pid==os.getpid() else 'ancestor'
+              group=membership(read(base/'cgroup'));namespace=os.readlink(base/'ns/cgroup')
+              require(identity(read(base/'stat'),pid)==(comm,parent,start),'PROC_CHANGED_DURING_READ')
+              return dict(pid=pid,parent=parent,start=start,group=group,namespace=namespace,public=dict(role=role,depth=depth,pid_sha256=sha(str(pid).encode()),membership_sha256=sha(str(group).encode()),membership_depth=len(group.parts)-1))
+
+          def observe():
+              root,location=mount(read('/proc/self/mountinfo',1024**2))
+              namespace=os.readlink('/proc/1/ns/cgroup');chain=[];seen=set();pid=os.getpid()
+              for depth in range(24):
+                  require(pid>0 and pid not in seen,'PROC_ANCESTRY_CYCLE');seen.add(pid)
+                  item=proc_record(pid,depth);require(item['namespace']==namespace,'CGROUP_NAMESPACE_MISMATCH');chain.append(item)
+                  if pid==1:break
+                  pid=item['parent']
+              else:raise Unsupported('PROC_ANCESTRY_BOUND')
+              workers=[v for v in chain if v['public']['role']=='worker'];require(len(workers)==1,'RUNNER_WORKER_ANCESTOR')
+              worker=workers[0];own=chain[0]
+              require(own['group']==worker['group'] or own['group'].is_relative_to(worker['group']),'OBSERVER_OUTSIDE_WORKER_CGROUP')
+              target=location/worker['group'].relative_to(root)
+              paths=[target,*[p for p in target.parents if p==location or location in p.parents]]
+              require(paths[-1]==location and len(paths)<=16,'CGROUP_ANCESTOR_BOUND')
+              scopes=[];issues=[];finite=[]
+              for depth,path in enumerate(paths):
+                  before=object_identity(path)
+                  if before['owner_uid']!=0 or before['mode']&0o022 or before['job_writable']:issues.append('SCOPE_NOT_ROOT_PROTECTED')
+                  item=dict(role='worker_scope' if depth==0 else 'cgroup_root' if path==location else 'visible_ancestor',depth=depth,path_sha256=sha(str(path).encode()),identity=before)
+                  try:
+                      counters={}
+                      for key in ('memory.current','memory.peak','memory.max','memory.swap.current','memory.swap.peak','memory.swap.max'):
+                          value=read(path/key);info=(path/key).stat()
+                          counters[key]=maximum(value) if key.endswith('.max') else integer(value)
+                          if info.st_uid!=0 or info.st_mode&0o022 or os.access(path/key,os.W_OK):issues.append('COUNTER_NOT_READ_ONLY_TO_JOB')
+                      require(counters['memory.peak']>=counters['memory.current'] and counters['memory.swap.peak']>=counters['memory.swap.current'],'PEAK_BELOW_CURRENT')
+                      item.update(counters=counters,oom=oom(read(path/'memory.events')),accounting_visible=True)
+                      if counters['memory.max'] is not None:finite.append(counters['memory.max'])
+                  except (OSError,Unsupported):
+                      item['accounting_visible']=False
+                      if path!=location:issues.append('VISIBLE_ANCESTOR_ACCOUNTING_UNAVAILABLE')
+                  require(object_identity(path)==before,'CGROUP_OBJECT_CHANGED');scopes.append(item)
+              # One observation cannot establish unmoved membership for a future job.
+              for prior in chain:
+                  current=proc_record(prior['pid'],prior['public']['depth'])
+                  require((current['parent'],current['start'],current['group'],current['namespace'])==(prior['parent'],prior['start'],prior['group'],prior['namespace']),'PROCESS_MEMBERSHIP_CHANGED')
+              return dict(status='UNKNOWN' if issues else 'TOPOLOGY_OBSERVED',issues=sorted(set(issues)),process_roles=[v['public'] for v in chain],scopes=scopes,physical_memory=memory(read('/proc/meminfo')),actual_finite_ancestor_limit_bytes=min(finite) if finite else None,namespace_sha256=sha(namespace.encode()),full_post_cleanup_observed=False,future_unmoved_subtree_established=False)
+
+          def main():
+              start=time.monotonic();record=dict(schema_version='runner-memory-topology-observation-v1',claim='CAPABILITY_OBSERVATION_ONLY_NOT_OPERATING_PASS',resource_verdict='UNKNOWN',operating_qualification='NOT_RUN',network_calls=0,provider_calls=0,artifact_uploads=0,privileged_operations=0,counter_resets=0)
+              code=0
+              try:
+                  raw=read(os.environ['GITHUB_EVENT_PATH'],131072);event=json.loads(raw,object_pairs_hook=pairs,parse_constant=lambda _:(_ for _ in ()).throw(Unsupported('NONFINITE_EVENT_JSON')))
+                  source,run=invocation(os.environ,event);record.update(source=source,run_id=run,**observe())
+              except Unsupported as error:record.update(status='UNKNOWN',issues=[str(error)]);code=3
+              except (OSError,ValueError,KeyError,TypeError,IndexError):record.update(status='UNKNOWN',issues=['READ_ONLY_OBSERVATION_UNAVAILABLE']);code=3
+              record['observation_seconds']=time.monotonic()-start
+              raw=canonical(record)
+              if len(raw)>LIMIT:
+                  record={k:record[k] for k in ('schema_version','claim','resource_verdict','operating_qualification')};record.update(status='UNKNOWN',issues=['TECHNICAL_RECORD_BOUND']);raw=canonical(record);code=3
+              print('RUNNER_MEMORY_TOPOLOGY_JSON='+raw.decode())
+              print('RUNNER_MEMORY_TOPOLOGY_SHA256='+sha(raw))
+              return code
+
+          if __name__=='__main__':raise SystemExit(main())
+          PY
+
+  genuine-production-case:
+    if: >-
+      github.repository == 'NickNicky19/nicks-expert-nfl-picks' &&
+      github.actor_id == '208912933' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/upgrade/phase2-reproducible-comparison' &&
+      github.run_attempt == 1 &&
+      inputs.confirmation == 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024' &&
+      inputs.storage_approved == 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024' &&
+      inputs.installed_source == github.sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Require one exact genuine nondeploy invocation and standard-runner headroom
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,math,os,re
+          from pathlib import Path
+          e=os.environ
+          fixed={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','GITHUB_REPOSITORY':'NickNicky19/nicks-expert-nfl-picks','GITHUB_REPOSITORY_ID':'1411185749','GITHUB_ACTOR_ID':'208912933','GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_RUN_ATTEMPT':'1','GITHUB_REF':'refs/heads/upgrade/phase2-reproducible-comparison','GITHUB_WORKFLOW_REF':'NickNicky19/nicks-expert-nfl-picks/.github/workflows/prepare-diagnostic-seed.yml@refs/heads/upgrade/phase2-reproducible-comparison'}
+          assert all(e.get(k)==v for k,v in fixed.items()),'INVOCATION_CONTEXT'
+          source=e.get('GITHUB_SHA','');assert re.fullmatch('[0-9a-f]{40}',source) and e.get('GITHUB_WORKFLOW_SHA')==source,'SOURCE_CONTEXT'
+          raw=Path(e['GITHUB_EVENT_PATH']).read_bytes();assert len(raw)<=131072,'EVENT_BOUND'
+          event=json.loads(raw);confirmation='NFL-WEB-GENUINE-PRODUCTION-CASE-20261024'
+          assert event.get('inputs')=={'confirmation':confirmation,'storage_approved':confirmation,'installed_source':source},'EXACT_THREE_INPUTS'
+          assert event.get('repository',{}).get('id')==1411185749 and event.get('repository',{}).get('full_name')=='NickNicky19/nicks-expert-nfl-picks' and event.get('sender',{}).get('id')==208912933,'EVENT_ACTOR_REPOSITORY'
+          memory={}
+          for line in Path('/proc/meminfo').read_text().splitlines():
+              key,rest=line.split(':',1)
+              if key in ('MemTotal','MemAvailable'):memory[key]=int(rest.split()[0])*1024
+          assert memory.get('MemTotal',0)>=14*1024**3 and memory.get('MemAvailable',0)>=max(6*1024**3,math.ceil(memory['MemTotal']*.2)),'STANDARD_VM_MEMORY_HEADROOM'
+          for path in (e['GITHUB_WORKSPACE'],e['RUNNER_TEMP']):
+              v=os.statvfs(path);reserve=max(2*1024**3,math.ceil(v.f_blocks*v.f_frsize*.2));assert v.f_bavail*v.f_frsize>=reserve+2*1024**3,'EARLY_DISK_HEADROOM'
+          print(json.dumps({'source':source,'early_capacity':'OBSERVED','resource_verdict':'UNKNOWN','operating_qualification':'NOT_RUN','sudo_operations':0},sort_keys=True))
+          PY
+      - name: Retrieve exact accepted application source without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.installed_source }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: source
+      - name: Retrieve actual current production main with its full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+          path: production
+      - name: Use declared Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Use declared Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Install existing declared dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-real-pip-pyc.XXXXXX")" python -m pip install --no-compile -r source/requirements.txt
+      - name: Build the one genuine current-production case and preserve typed results
+        id: real_case
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import datetime as dt, gzip, hashlib, json, math, os, re, resource, signal, stat, subprocess, sys, tarfile, time
+          from pathlib import Path, PurePosixPath
+
+          CONF='NFL-WEB-GENUINE-PRODUCTION-CASE-20261024'
+          REPO='NickNicky19/nicks-expert-nfl-picks'
+          BASE='7156c6cf7f97eb25501a4f084e8060d6fe52e6bb'
+          WORKFLOW=REPO+'/.github/workflows/prepare-diagnostic-seed.yml@refs/heads/upgrade/phase2-reproducible-comparison'
+          MIB=1024**2; GIB=1024**3; CAP=127*MIB
+          FIXED={
+           'data/verification/partial-schedule-baselines/2026/w07/c2036324dd1579eebb5e82f66ea24dc86814e2e23f1c0bab15a5fe53352ba0d7.json.gz':'1cb6268893eb51bbff981057f24d6d069d3e5af3dbc9f2b455ebffc62bc029cc',
+           'data/verification/partial-registrations/2026/w07/c9efac65418ff586a6d96ddffffab3501a126204d4b5702346061106b44aaacd.json.gz':'b31f8f064780d22f2249d511b845b13e2a1d7f62d7936a3d2e93056ab7700a95'}
+          LANE=re.compile(r'data/(?:forward|history|verification|shadow|offers|outcomes)/')
+          HASHED=re.compile(r'output/data/selection-grading/[0-9a-f]{64}/')
+          REPORT=re.compile(r'data/selection-grading/(?:latest\.json|hosting\.json|[0-9a-f]{64}/(?:summary|outcomes|rows|rows-[0-9]{4}|manifest|registry|archive)\.json|[0-9a-f]{64}/snapshot-(?:app\.js|index\.html|data_(?:week|meta|verification-scope|forecast-scorecard|health|release-identity)\.json|data_selection-grading_latest\.json))\Z')
+          ALIASES=set('week meta future teams track_record dk_backtest forecast-scorecard offer-capture health release-identity verification-scope'.split())
+          STATIC={'app.js','index.html','style.css','reliability-ui.js','recovery.html'}
+          SCHEMAS=set('baseline-capture-v2 matchup-inputs-v3 sleeper-selection-offers-v1 forecast-outcomes-v1 forecast-outcomes-v2 descriptive-statistic-outcomes-v1 descriptive-statistic-outcomes-v2 matchup-verification-v1 partial-schedule-baseline-v1 partial-registration-data-integrity-v2 partial-scope-data-integrity-v2 partial-completion-data-integrity-v2 completion-failure-data-integrity-v2 partial-completion-failure-v1 ranked-selection-observation-v1 ranked-selection-completion-v1 ranked-selection-decision-ledger-v1 derived-selection-ledger-v1 rich-scorecard-evidence-v1 selection-publication-run-v1 point-candidate-evaluation-v1 hosting-generation-proof-v1 generation-failure-v1 unqualified-native-preservation-v1 ranked-selection-failure-v1'.split())
+          FIELDS=('proj','adj','mf','mf_n','values','line','line_from','lean','our_line','td_chance','source','sleeper','adj_h','line_h','proj_h')
+          META={'RELEASE_CASE_MANIFEST.json','INPUT_DATA_MANIFEST.json','OUTPUT_DATA_MANIFEST.json','NEW_RECEIPTS_MANIFEST.json','PAGES_MEMBERS_MANIFEST.json','SOURCE_CI_BINDINGS.json'}
+
+          def require(value, message):
+              if not value: raise RuntimeError(message)
+          def canonical(value): return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
+          def sha(raw): return hashlib.sha256(raw).hexdigest()
+          def now(): return dt.datetime.now(dt.timezone.utc).isoformat()
+          def utc(value): return dt.datetime.fromisoformat(value.replace('Z','+00:00'))
+          def pairs(items):
+              result={}
+              for k,v in items: require(k not in result,'DUPLICATE_JSON_KEY');result[k]=v
+              return result
+          def parse(raw): return json.loads(raw,object_pairs_hook=pairs,parse_constant=lambda _:(_ for _ in ()).throw(ValueError('NONFINITE_JSON')))
+          def invocation(env,event):
+              fixed={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','GITHUB_REPOSITORY':REPO,'GITHUB_REPOSITORY_ID':'1411185749','GITHUB_ACTOR_ID':'208912933','GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_RUN_ATTEMPT':'1','GITHUB_REF':'refs/heads/upgrade/phase2-reproducible-comparison','GITHUB_WORKFLOW_REF':WORKFLOW}
+              require(all(env.get(k)==v for k,v in fixed.items()),'INVOCATION_CONTEXT')
+              source=env.get('GITHUB_SHA','');require(re.fullmatch('[0-9a-f]{40}',source) and env.get('GITHUB_WORKFLOW_SHA')==source,'SOURCE_CONTEXT')
+              require(event.get('inputs')=={'confirmation':CONF,'storage_approved':CONF,'installed_source':source},'EXACT_THREE_INPUTS')
+              require(event.get('repository',{}).get('id')==1411185749 and event.get('repository',{}).get('full_name')==REPO and event.get('sender',{}).get('id')==208912933,'EVENT_ACTOR_REPOSITORY')
+              require(re.fullmatch('[1-9][0-9]*',env.get('GITHUB_RUN_ID','')),'RUN_ID')
+              return source
+          def capacity(paths):
+              mem={}
+              for line in Path('/proc/meminfo').read_text().splitlines():
+                  key,rest=line.split(':',1)
+                  if key in ('MemTotal','MemAvailable','SwapTotal','SwapFree'): mem[key]=int(rest.split()[0])*1024
+              require(mem.get('MemTotal',0)>=14*GIB and mem.get('MemAvailable',0)>=max(6*GIB,math.ceil(mem['MemTotal']*.2)),'STANDARD_VM_MEMORY_HEADROOM')
+              disks=[]
+              for path in paths:
+                  v=os.statvfs(path);total=v.f_blocks*v.f_frsize;free=v.f_bavail*v.f_frsize;reserve=max(2*GIB,math.ceil(total*.2))
+                  require(free>=reserve+2*GIB,'DISK_HEADROOM')
+                  disks.append({'capacity_bytes':total,'free_bytes':free,'reserve_bytes':reserve})
+              return {'physical_memory':mem,'filesystems':disks,'resource_verdict':'UNKNOWN','job_aggregate_peak_bytes':None}
+          def file_hash(path):
+              require(path.is_file() and not path.is_symlink(),'NONREGULAR_PAYLOAD');h=hashlib.sha256()
+              with path.open('rb') as f:
+                  for block in iter(lambda:f.read(65536),b''):h.update(block)
+              return h.hexdigest()
+          def inventory(root):
+              result={};total=0
+              for folder in ('data','output/data'):
+                  for p in sorted((root/folder).rglob('*')):
+                      require(not p.is_symlink(),'INPUT_SYMLINK')
+                      if not p.is_file():continue
+                      size=p.stat().st_size;total+=size;require(len(result)<20000 and size<=128*MIB and total<=768*MIB,'DATA_INVENTORY_BOUND')
+                      result[p.relative_to(root).as_posix()]={'bytes':size,'sha256':file_hash(p),'mode':stat.S_IMODE(p.stat().st_mode)}
+              return result
+          def public_path(name):
+              return name in STATIC or name.startswith('data/') and name[5:].removesuffix('.json') in ALIASES and name.endswith('.json') or bool(re.fullmatch(r'data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json',name)) or bool(REPORT.fullmatch(name))
+          def safe_json(path, receipt=False):
+              raw=path.read_bytes();decoded=gzip.decompress(raw) if raw[:2]==b'\x1f\x8b' else raw
+              require(len(decoded)<=32*MIB,'DECODED_BOUND');value=parse(decoded);require(isinstance(value,dict),'JSON_OBJECT')
+              if receipt:
+                  require(set(value)=={'payload','payload_sha256'} and sha(canonical(value['payload']))==value['payload_sha256'],'RECEIPT_ENVELOPE')
+                  require(value['payload'].get('schema_version') in SCHEMAS,'RECEIPT_SCHEMA');value=value['payload']
+              secret=re.compile(r'\b(?:gh[pousr]_|github_pat_|sk-proj-|AKIA[A-Z0-9]{16}|xox[baprs]-)|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+\S+',re.I)
+              require(not secret.search(decoded.decode('utf-8')),'CREDENTIAL_INDICATOR')
+              def walk(item):
+                  if isinstance(item,dict):
+                      for key,v in item.items():
+                          require(not re.search(r'^(?:authorization|cookie|password|credentials?|tokens?|secret|api[_-]?key|localStorage|device_id|session_id|account_balance)$',key,re.I),'PRIVATE_FIELD')
+                          walk(v)
+                  elif isinstance(item,list):
+                      for v in item:walk(v)
+              walk(value);return value
+          def contract(board,gid):
+              players=[{'id':p['id'],'game_id':gid,'team':p['team'],'opp':p['opp'],'pos':p['pos'],'late':p.get('late',False),'props':sorted([{k:q.get(k) for k in ('key',*FIELDS)} for q in p['props']],key=lambda q:q['key'])} for p in board['players'] if p['game_id']==gid]
+              picks={side:sorted([p for p in rows if p['game_id']==gid],key=lambda p:(p['player_id'],p['key'])) for side,rows in board['picks'].items()}
+              return sha(canonical({'players':sorted(players,key=lambda p:p['id']),'picks':picks}))
+          def failure_summary(log):
+              with log.open('rb') as stream:
+                  stream.seek(0,2);size=stream.tell();stream.seek(max(0,size-16384));text=stream.read().decode('utf-8','replace')
+              known=set('IntegrityError RuntimeError ValueError TypeError TimeoutError Rejected AssertionError FileNotFoundError PermissionError HTTPError ConnectionError ReadTimeout JSONDecodeError UnicodeDecodeError KeyError OSError ModuleNotFoundError ImportError URLError CalledProcessError BrokenPipeError'.split())
+              frames=[]
+              for file,line,function in re.findall(r'File "([^"\n]+)", line ([0-9]+), in ([A-Za-z0-9_<>]+)',text):
+                  basename=Path(file).name
+                  if re.fullmatch(r'[A-Za-z0-9_.-]{1,80}\.py',basename):frames.append({'file':basename,'function':function[:80],'line':int(line)})
+              result={'exception_class':'UNKNOWN','public_message':'UNKNOWN','public_code_frames':frames[-8:],'private_log_sha256':file_hash(log)}
+              for line in reversed(text.splitlines()):
+                  match=re.fullmatch(r'([A-Za-z_][A-Za-z0-9_.]{0,100}): (.{0,1000})',line)
+                  if not match or match[1].split('.')[-1] not in known:continue
+                  message=match[2]
+                  if re.search(r'authorization|cookie|password|credential|token|secret|api[_-]?key|\bgh[pousr]_|\bgithub_pat_|\bsk-proj-',message,re.I):message='REDACTED_SENSITIVE_ERROR_MESSAGE'
+                  message=re.sub(r'https?://\S+','<url>',message)
+                  message=re.sub(r'/(?:workspace|tmp|home|runner|opt)/[^\s"\']+','<path>',message)
+                  message=''.join(c if ord(c)>=32 else ' ' for c in message)[:240]
+                  result.update(exception_class=match[1].split('.')[-1],public_message=message);break
+              return result
+          def collect_receipts(app,before,after):
+              payload=[];receipts=[];errors=[]
+              for name,info in sorted(after.items()):
+                  if not LANE.match(name) or before.get(name,{}).get('sha256')==info['sha256']:continue
+                  try:
+                      require(name not in before,'IMMUTABLE_OVERWRITE');require(name.endswith('.json.gz'),'RECEIPT_EXTENSION');require(not name.startswith('data/shadow/'),'UNEXPECTED_EXPERIMENTAL_OBSERVATION')
+                      value=safe_json(app/name,True);payload.append(('receipts/'+name,app/name));receipts.append({'path':name,**info,'schema_version':value['schema_version'],'original_source_sha':value.get('code_commit',value.get('source_sha'))})
+                  except (RuntimeError,ValueError,KeyError,OSError) as error:errors.append({'path':name,'sha256':info['sha256'],'failure_code':str(error) if re.fullmatch('[A-Z0-9_]+',str(error)) else type(error).__name__})
+              return payload,receipts,errors
+          def immutable_violations(before,after):
+              return [{'path':name,'before_sha256':info['sha256'],'after_sha256':after.get(name,{}).get('sha256')} for name,info in before.items() if (LANE.match(name) or HASHED.match(name)) and after.get(name,{}).get('sha256')!=info['sha256']]
+          def new_payloads(app,before,after,pages):
+              payload=[];new_receipts=[];representations={}
+              for name,info in sorted(after.items()):
+                  if before.get(name,{}).get('sha256')==info['sha256']:continue
+                  path=app/name
+                  if LANE.match(name):
+                      require(name not in before,'IMMUTABLE_OVERWRITE');require(name.endswith('.json.gz'),'RECEIPT_EXTENSION')
+                      require(not name.startswith('data/shadow/'),'UNEXPECTED_EXPERIMENTAL_OBSERVATION')
+                      value=safe_json(path,True);new_receipts.append({'path':name,**info,'schema_version':value['schema_version'],'original_source_sha':value.get('code_commit',value.get('source_sha'))})
+                      payload.append(('receipts/'+name,path));continue
+                  if name.startswith('output/') and name[7:] in pages and pages[name[7:]]['sha256']==info['sha256']:
+                      representations[name]={'storage':'public-pages.tar::'+name[7:],**info};continue
+                  cache=bool(re.fullmatch(r'data/cache/(?:espn_athletes|injury_timeline|stats_[0-9]{4}_[0-9]{2})\.json',name))
+                  source_alias=name in ('output/data/game-status.json','output/data/matchup-proof.json','output/data/selection-grading/hosting.json')
+                  pub=name.startswith('output/') and public_path(name[7:])
+                  require(cache or source_alias or pub,'UNCLASSIFIED_OUTPUT_DELTA')
+                  safe_json(path);payload.append(('mutable/'+name,path));representations[name]={'storage':'mutable/'+name,**info}
+              return payload,new_receipts,representations
+          def retention_delta(app,before,after,pages,complete_pages_tar):
+              primary,receipts,receipt_errors=collect_receipts(app,before,after)
+              try:
+                  require(not receipt_errors,'RECEIPT_VALIDATION_ERRORS')
+                  require(complete_pages_tar is not None and complete_pages_tar.is_file(),'NO_COMPLETE_PAGES_TAR')
+                  payload,receipts,representations=new_payloads(app,before,after,pages)
+                  return payload+[('public-pages.tar',complete_pages_tar)],receipts,representations,None,receipt_errors
+              except (RuntimeError,ValueError,KeyError,OSError) as error:
+                  code=str(error) if re.fullmatch('[A-Z0-9_]+',str(error)) else type(error).__name__
+                  return primary,receipts,{},code,receipt_errors
+          def write_tar(target,payload,metadata):
+              require(set(metadata)==META,'TYPED_METADATA_ALLOWLIST')
+              for name,p in payload:
+                  require(not PurePosixPath(name).is_absolute() and '..' not in PurePosixPath(name).parts and name.startswith(('receipts/','mutable/','public-pages.tar')),'PAYLOAD_MEMBER_PATH')
+              members=[(name,p,p.stat().st_size) for name,p in payload];encoded={name:canonical(value)+b'\n' for name,value in metadata.items()}
+              estimate=sum(512+math.ceil(n/512)*512 for _,_,n in members)+sum(512+math.ceil(len(b)/512)*512 for b in encoded.values())+20480
+              require(estimate<=CAP,'RETENTION_CAP')
+              with tarfile.open(target,'w',format=tarfile.USTAR_FORMAT) as tar:
+                  for name,p,size in members:
+                      require(not p.is_symlink() and p.is_file(),'PAYLOAD_CHANGED');info=tarfile.TarInfo(name);info.size=size;info.mode=0o644;info.mtime=0
+                      with p.open('rb') as f:tar.addfile(info,f)
+                  import io
+                  for name,body in encoded.items():
+                      info=tarfile.TarInfo(name);info.size=len(body);info.mode=0o644;info.mtime=0;tar.addfile(info,io.BytesIO(body))
+              require(target.stat().st_size<=CAP,'ACTUAL_RETENTION_CAP')
+          def git(root,*args):return subprocess.check_output(['git','--no-replace-objects','-c','core.hooksPath=/dev/null','-C',str(root),*args],stderr=subprocess.PIPE)
+          def main():
+              started=time.monotonic();source=invocation(os.environ,parse(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes()))
+              app=Path(os.environ['GITHUB_WORKSPACE'])/'source';prod=Path(os.environ['GITHUB_WORKSPACE'])/'production';out=Path(os.environ['RUNNER_TEMP'])/'nfl-real-production-case';out.mkdir(exist_ok=False);logs=out/'private-logs';logs.mkdir()
+              result={'schema_version':'genuine-current-production-case-v1','status':'FAILED','source':source,'run_id':int(os.environ['GITHUB_RUN_ID']),'attempt':1,'started_at':now(),'steps':[],'provider_case_attempts':0,'deployed':False,'main_written':False,'operating_qualification':'NOT_ESTABLISHED','resource_verdict':'UNKNOWN','job_aggregate_peak_bytes':None,'application_budget_seconds':1200,'termination_grace_seconds':90}
+              before={};after={};pages={};ci={};main_files={};deadline=None;payload=[];receipts=[];representations={};pages_tar_valid=False
+              wrapper=out/'entry.py';wrapper.write_text("import runpy,signal,sys\nfrom pathlib import Path\ndef stop(*_): raise TimeoutError('BOUNDED_APPLICATION_DEADLINE')\nsignal.signal(signal.SIGTERM,stop)\np=Path(sys.argv[1]);sys.argv=sys.argv[1:];sys.path.insert(0,str(p.parent));runpy.run_path(str(p),run_name='__main__')\n")
+              def run(tag,args,token=False,limit=180):
+                  env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',PYTHONPYCACHEPREFIX=str(out/('pyc-'+tag)),GITHUB_SHA=source)
+                  if not token:
+                      for key in ('GH_TOKEN','GITHUB_TOKEN','ACTIONS_RUNTIME_TOKEN','ACTIONS_ID_TOKEN_REQUEST_TOKEN'):env.pop(key,None)
+                  timeout=min(limit,max(.01,deadline-time.monotonic())) if deadline is not None else limit
+                  command=[str(a).replace(str(app),'<app>').replace(str(out),'<case>').replace(sys.executable,'<python>') for a in args]
+                  public_function={'build-capture':'phase2_capture.run_capture(build_first=True)','validate':'phase2_capture.validate_generation','stage':'phase2_capture.stage_pages','pages-tar':'tar uploader-equivalent','source-ci-before':'source_ci.verify','source-ci-after-generation':'source_ci.verify','source-ci-after-stage':'source_ci.verify'}.get(tag,tag)
+                  require(timeout>.1,'APPLICATION_DEADLINE_EXHAUSTED');t=time.monotonic();log=logs/(tag+'.log');item={'name':tag,'public_function':public_function,'command':command,'started_at':now()};result['steps'].append(item)
+                  with log.open('wb') as f:
+                      p=subprocess.Popen(args,cwd=app,env=env,stdout=f,stderr=subprocess.STDOUT,start_new_session=True)
+                      try:code=p.wait(timeout=timeout)
+                      except BaseException:
+                          try:os.killpg(p.pid,signal.SIGTERM)
+                          except ProcessLookupError:pass
+                          try:p.wait(timeout=90)
+                          except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);p.wait()
+                          item.update(status='TIMEOUT_OR_INTERRUPTION',seconds=time.monotonic()-t,returncode=p.returncode,failure_summary=failure_summary(log));raise
+                  item.update(status='PASS' if code==0 else 'FAIL',seconds=time.monotonic()-t,returncode=code,log_sha256=file_hash(log),largest_individual_child_peak_rss_kib=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
+                  if code:item['failure_summary']=failure_summary(log)
+                  require(code==0,'STAGE_FAILED_'+tag.upper().replace('-','_'))
+                  if token:ci[tag]=parse(log.read_bytes());return ci[tag]
+              def fresh_main():
+                  value=git(prod,'ls-remote','origin','refs/heads/main').decode().strip().split()
+                  require(len(value)==2 and value[1]=='refs/heads/main','MAIN_READBACK');return value[0]
+              try:
+                  result['early_headroom']=capacity((app,out));require(git(app,'rev-parse','HEAD').decode().strip()==source,'APPLICATION_HEAD')
+                  require(git(app,'remote','get-url','origin').decode().strip() in ('https://github.com/'+REPO,'https://github.com/'+REPO+'.git'),'SOURCE_ORIGIN')
+                  main=git(prod,'rev-parse','HEAD').decode().strip();require(main==git(prod,'rev-parse','refs/remotes/origin/main').decode().strip()==fresh_main(),'ACTUAL_MAIN_BRANCH_PIN')
+                  require(subprocess.run(['git','-C',str(prod),'merge-base','--is-ancestor',BASE,main],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0,'MAIN_BASE_ANCESTRY')
+                  changes=git(prod,'diff','--name-only',BASE,main).decode().splitlines();require(all(n.startswith(('data/','output/data/')) for n in changes),'MAIN_HAS_UNREVIEWED_SOURCE_CHANGE')
+                  for raw in git(prod,'ls-tree','-r','-l','-z',main,'--','data','output/data').split(b'\0'):
+                      if not raw:continue
+                      meta,name=raw.split(b'\t',1);mode,kind,blob,size=meta.decode().split();name=name.decode();require(kind=='blob' and mode=='100644' and not PurePosixPath(name).is_absolute() and '..' not in PurePosixPath(name).parts,'MAIN_DATA_PATH')
+                      p=prod/name;require(p.is_file() and not p.is_symlink() and p.stat().st_size==int(size) and int(size)<=128*MIB,'MAIN_DATA_TYPE');body=p.read_bytes();require(hashlib.sha1(b'blob '+str(len(body)).encode()+b'\0'+body).hexdigest()==blob,'MAIN_DATA_BLOB')
+                      target=app/name
+                      if (LANE.match(name) or HASHED.match(name)) and target.exists():require(file_hash(target)==sha(body),'MAIN_IMMUTABLE_COLLISION')
+                      target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(body);main_files[name]={'blob':blob,'bytes':len(body),'sha256':sha(body)}
+                  result['production_main']=main;result['production_tree']=git(prod,'rev-parse','HEAD^{tree}').decode().strip()
+                  for name,expected in FIXED.items():
+                      require((app/name).is_file() and not (app/name).is_symlink(),'REQUIRED_FIXED_INPUT_MISSING')
+                      require(file_hash(app/name)==expected,'REQUIRED_FIXED_INPUT_CHANGED')
+                  config=parse((app/'config/phase2.json').read_bytes());require(sha((app/'config/phase2.json').read_bytes())=='a1499395a4fcdc48b9eff94acc7743d845288c45980a3318e9f7b52404bcf465' and config['experimental_recording_enabled'] is False,'FIXED_CONFIG')
+                  for name in ('selection-grading/hosting.json','selection-grading/latest.json','matchup-proof.json','release-identity.json'):require(not (app/'output/data'/name).exists(),'OLD_OR_CONCURRENT_PHASE2_ALIAS')
+                  board=parse((app/'output/data/week.json').read_bytes());at=utc(now());frozen={g['id']:contract(board,g['id']) for g in board['games'] if g['state']!='pre' or utc(g['kickoff'])<=at};result['frozen_before']=frozen
+                  before=inventory(app);result['native_before']=sum(n.startswith('data/forward/') for n in before)
+                  first=run('source-ci-before',[sys.executable,'tools/source_ci.py','verify'],True,240);require(type(first.get('run_id')) is int and first['run_id']>0,'SOURCE_CI_RUN')
+                  require(fresh_main()==main,'MAIN_MOVED_BEFORE_PROVIDER');capacity((app,out));deadline=time.monotonic()+1200;result['application_started_at']=now()
+                  for tag,cmd in [('compile',[sys.executable,'-m','compileall','-q','pull','tools']),('js-app',['node','--check','output/app.js']),('js-reliability',['node','--check','output/reliability-ui.js']),('ui',['node','tests/test-ui.cjs']),('about',['node','tests/test-about.cjs']),('legacy',[sys.executable,'tools/preserve_legacy.py'])]:run(tag,cmd,limit=1200)
+                  result['provider_case_attempts']=1;run('build-capture',[sys.executable,str(wrapper),str(app/'tools/phase2_capture.py'),'--mode','live','--build-and-capture'],limit=1200)
+                  run('validate',[sys.executable,str(wrapper),str(app/'tools/phase2_capture.py'),'--mode','live','--validate-generation'],limit=1200)
+                  run('source-ci-after-generation',[sys.executable,'tools/source_ci.py','verify','--run-id',str(first['run_id'])],True,240)
+                  page_root=out/'pages';run('stage',[sys.executable,str(wrapper),str(app/'tools/phase2_capture.py'),'--mode','live','--stage-pages',str(page_root)],limit=1200)
+                  run('source-ci-after-stage',[sys.executable,'tools/source_ci.py','verify','--run-id',str(first['run_id'])],True,240)
+                  run('pages-tar',['tar','--dereference','--hard-dereference','--directory',str(page_root),'-cf',str(out/'public-pages.tar'),'--exclude=.git','--exclude=.github','.'],limit=1200)
+                  with tarfile.open(out/'public-pages.tar') as tar:
+                      for member in tar:
+                          name=member.name.removeprefix('./')
+                          if member.isdir():continue
+                          require(member.isfile() and public_path(name) and name not in pages and '..' not in PurePosixPath(name).parts and not PurePosixPath(name).is_absolute(),'PAGES_TAR_MEMBER')
+                          with tar.extractfile(member) as f:pages[name]={'bytes':member.size,'sha256':sha(f.read())}
+                  pages_tar_valid=True
+                  final_board=parse((app/'output/data/week.json').read_bytes());require(all(contract(final_board,gid)==h for gid,h in frozen.items()),'FROZEN_CONTRACT_CHANGED')
+                  require(fresh_main()==main,'MAIN_MOVED_DURING_CASE');result['generation']=parse((app/'output/data/release-identity.json').read_bytes());result['verification_scope']=parse((app/'output/data/verification-scope.json').read_bytes())
+                  require(result['generation']['source_sha']==source,'GENERATED_SOURCE_BINDING')
+                  require(result['verification_scope']['complete_week_qualified'] is False and result['verification_scope']['full_board_verified'] is False,'FALSE_COMPLETE_WEEK_CLAIM')
+                  result['status']='COMPLETE_GENUINE_NONDEPLOY_CASE'
+              except BaseException as error:result['failure_type']=type(error).__name__;result['failure_code']=str(error) if re.fullmatch('[A-Z0-9_]+',str(error)) else 'SEE_STAGE_RETURN_CODES_AND_RETAINED_RECEIPTS'
+              result['application_wall_seconds_including_failure_grace']=None if deadline is None else time.monotonic()-(deadline-1200)
+              try:
+                  after=inventory(app);result['native_after']=sum(n.startswith('data/forward/') for n in after)
+                  violations=immutable_violations(before,after);result['inherited_immutable_violations']=violations
+                  if result['provider_case_attempts']:
+                      payload,receipts,representations,output_error,receipt_errors=retention_delta(app,before,after,pages if pages_tar_valid and not violations else {},out/'public-pages.tar' if pages_tar_valid and not violations else None)
+                      result['receipt_validation_errors']=receipt_errors
+                      if output_error:result['status']='FAILED_INHERITED_IMMUTABLE_CHANGED' if violations else 'FAILED_OUTPUT_CLASSIFICATION';result['retention_mode']='VALID_NEW_ORIGINAL_RECEIPTS_AND_TYPED_FAILURE_ONLY';result['output_failure_code']=output_error
+                  result.update(finished_at=now(),controller_seconds_before_retention=time.monotonic()-started,new_receipt_count=len(receipts),largest_individual_child_peak_rss_kib=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,per_process_peak_is_not_aggregate=True)
+                  try:result['late_headroom']=capacity((app,out))
+                  except RuntimeError:result['late_headroom']={'status':'HEADROOM_THRESHOLD_NOT_MET','resource_verdict':'UNKNOWN'};result['status']='FAILED_HEADROOM'
+                  meta={'RELEASE_CASE_MANIFEST.json':result,'INPUT_DATA_MANIFEST.json':{'source':source,'production_main':result.get('production_main'),'production_files':main_files,'before':before,'fixed_inputs':FIXED},'OUTPUT_DATA_MANIFEST.json':{'after':after,'representations':representations},'NEW_RECEIPTS_MANIFEST.json':receipts,'PAGES_MEMBERS_MANIFEST.json':pages,'SOURCE_CI_BINDINGS.json':ci}
+                  try:write_tar(out/'release-review.tar',payload,meta)
+                  except RuntimeError as error:
+                      require(str(error)=='RETENTION_CAP','PACKAGING_ERROR');result['status']='FAILED_RETENTION_CAP';result['retention_mode']='ORIGINAL_NEW_RECEIPTS_AND_TYPED_FAILURE_ONLY';payload=[(n,p) for n,p in payload if n.startswith('receipts/')];write_tar(out/'release-review.tar',payload,meta)
+                  final={'status':result['status'],'source':source,'artifact_tar_bytes':(out/'release-review.tar').stat().st_size,'artifact_tar_sha256':file_hash(out/'release-review.tar'),'new_receipts':len(receipts),'operating_qualification':'NOT_ESTABLISHED','resource_verdict':'UNKNOWN'}
+              except BaseException as error:
+                  final={'status':'FAILED_RETENTION','failure_type':type(error).__name__,'operating_qualification':'NOT_ESTABLISHED','resource_verdict':'UNKNOWN'}
+              final['controller_seconds_including_retention']=time.monotonic()-started
+              (out/'FINAL.json').write_bytes(canonical(final)+b'\n')
+              with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('payload_ready='+str((out/'release-review.tar').is_file() and (out/'release-review.tar').stat().st_size<=CAP).lower()+'\n')
+              print('REAL_CASE_RESULT_JSON='+canonical(final).decode())
+
+          if __name__=='__main__':main()
+          PY
+      - name: Retain only the one typed bounded genuine release-review payload
+        id: real_artifact
+        if: ${{ always() && steps.real_case.outputs.payload_ready == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: genuine-production-review-${{ github.run_id }}
+          path: ${{ runner.temp }}/nfl-real-production-case/release-review.tar
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+      - name: Require the complete genuine case while retaining failures honestly
+        if: ${{ always() }}
+        shell: bash
+        env:
+          REVIEW_ARTIFACT_OUTCOME: ${{ steps.real_artifact.outcome }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'nfl-real-production-case/FINAL.json'
+          assert p.is_file(),'No complete typed genuine-case result exists'
+          value=json.loads(p.read_bytes())
+          assert os.environ.get('REVIEW_ARTIFACT_OUTCOME')=='success','The bounded review artifact was not successfully retained'
+          assert value['status']=='COMPLETE_GENUINE_NONDEPLOY_CASE',value['status']
+          assert value['artifact_tar_bytes']<=127*1024**2,'RETENTION_CAP'
+          assert value['operating_qualification']=='NOT_ESTABLISHED' and value['resource_verdict']=='UNKNOWN','HONEST_LIMITED_CLAIM'
+          print('One genuine nondeploy case completed; operating qualification and deployment remain unestablished.')
           PY
