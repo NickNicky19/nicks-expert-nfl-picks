@@ -11,6 +11,7 @@ player with no games yet, at least the category's smallest pickable line, so bac
 Last season is never used: rosters, coaches and schemes change too much.
 """
 from collections import defaultdict
+import math
 
 import scoring
 
@@ -20,7 +21,8 @@ LIMITS = (0.75, 1.25)
 
 def played(entry):
     s = entry["stats"]
-    return (s.get("gp") or 0) > 0 or (s.get("off_snp") or 0) > 0
+    return any(type(s.get(key)) in (int, float) and math.isfinite(s[key]) and s[key] > 0
+               for key in ("gp", "off_snp"))
 
 
 class Matchups:
@@ -52,7 +54,11 @@ class Matchups:
             if len(gl) < 2:
                 continue  # no other games to say what was expected
             values = [scoring.stat_value(key, s) for _, s in gl]
-            avg = (sum(values) - values[i]) / (len(values) - 1)
+            others = [value for j, value in enumerate(values) if j != i and value is not None]
+            if values[i] is None or not others:
+                continue
+            avg = ((sum(values) - values[i]) / (len(values) - 1) if all(value is not None for value in values)
+                   else sum(others) / len(others))
             if avg <= 0 or not lo <= avg <= hi:
                 continue
             did += values[i]

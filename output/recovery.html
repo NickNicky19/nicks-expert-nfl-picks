@@ -2,10 +2,11 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Restore the original — Nick's NFL Picks</title><link rel="stylesheet" href="style.css?v=38"></head>
 <body><main class="about" style="max-width:900px;margin:30px auto;padding:20px">
-<h1>Restore the original</h1><p><a href="./#/about">Back to About</a></p>
+<h1>Recover an earlier version</h1><p><a href="./#/about">Back to About</a></p>
+<h2>Return to working Phase 1</h2><p>After Phase 2 is merged, open Actions → Restore working Phase 1 → Run workflow. Select main and RESTORE_PHASE1. The pinned backup is <code>backup/pre-phase2-20261014-3149663447b2</code>. It restores Phase 1 app, grader and verifier files and disables new capture, while keeping every saved forecast, offer and outcome. Check the subsequent Hourly update and Pages deployment.</p>
 <div class="card note"><h2>Your original benchmark is retained</h2><p>The recovery target is Nick's edition before Phase 1, commit <code>6c33224b90d32ac2e005fff140662f114f97eb14</code>. It is not Joshua's older data snapshot.</p></div>
 <h2>After this upgrade is installed</h2><p>In the GitHub repository, open Actions → Restore original code → Run workflow. Select main and RESTORE_ORIGINAL. Check both the recovery run and the following Hourly update deployment.</p>
-<p>This restores the original grader, application and page shell, and switches the retained update runner to original mode without editing workflow definitions. Captured evidence, caches, historical predictions and Git history are retained. The workflow needs normal repository write permissions and does not bypass branch or environment protection.</p>
+<p>This restores the original grader, application, page shell and verifier, and switches the retained update runner to original mode without editing workflow definitions. Captured evidence, caches, historical predictions and Git history are retained. The workflow needs normal repository write permissions and does not bypass branch or environment protection.</p>
 <h2>When recovery is blocked</h2><p>Keep the current published snapshot. Check the Actions error and repository access; do not force-push, delete archives, or reset all data. A stuck earlier update may need cancellation before the recovery workflow can run.</p>
 <h2>What the downloaded backup contains</h2><p>The backup from October 10, 2026 at 19:01:53 UTC contains the original static website and its published data. It does not contain browser-local league settings or external service secrets. An old backup's lines are not current offers.</p>
 <p>Detailed local recovery instructions are in ROLLBACK.md in the upgrade package/repository.</p>

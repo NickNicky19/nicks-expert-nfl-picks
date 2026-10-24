@@ -8,6 +8,7 @@ history uses only weeks strictly before this one, so a line never sees the game 
 """
 import argparse
 import json
+import math
 import statistics
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -54,12 +55,18 @@ def dump(path, data):
 # ---------------------------------------------------------------- loading
 
 
-def trim_stats(rows):
+def trim_stats(rows, *, source_context=None):
     out = {}
     for r in rows:
         s = r.get("stats") or {}
-        kept = {k: s[k] for k in scoring.STAT_KEYS if s.get(k)}
-        if kept:
+        kept = {k: scoring.retained_value(s[k]) for k in scoring.STAT_KEYS if k in s}
+        if isinstance(r.get("stats"), dict):
+            original = {"player_id": r.get("player_id"), "team": r.get("team"),
+                        "opponent": r.get("opponent"), "stats": dict(kept)}
+            kept["_presence"] = {"version": scoring.PRESENCE_VERSION, "kind": "actual",
+                                 "sparse_contract": scoring.LEGACY_SPARSE_ASSUMPTION,
+                                 "source_context": source_context, "original_row": original,
+                                 "claim": "LEGACY_ADAPTER_ASSUMPTION_NOT_REPORTED_ZERO_AUTHENTICATION"}
             out[r["player_id"]] = {"team": r.get("team"), "opp": r.get("opponent"), "stats": kept}
             pos = (r.get("player") or {}).get("position")
             if pos in ("K", "DEF"):
@@ -72,7 +79,8 @@ def week_stats(season, week, refresh):
     path = CACHE / f"stats_{season}_{week:02d}.json"
     if path.exists() and not refresh:
         return json.loads(path.read_text())
-    data = trim_stats(sources.week_stats(season, week))
+    data = trim_stats(sources.week_stats(season, week), source_context={
+        "adapter": "sleeper-week-stats-v1", "season": season, "week": week})
     dump(path, data)
     return data
 
@@ -136,13 +144,22 @@ def load_games(season, week):
     return sorted(games, key=lambda g: (g["kickoff"], g["id"]))
 
 
+def projection_components(s):
+    """Normalize each retained input once; absent components remain absent."""
+    values = {k: round(v, 2) if type(v) in (int, float) and math.isfinite(v) else None
+              for k, v in s.items() if k in scoring.STAT_KEYS}
+    values["_presence"] = {"version": scoring.PRESENCE_VERSION, "kind": "projection",
+                           "present_fields": sorted(k for k in s if k in scoring.STAT_KEYS),
+                           "invalid_fields": sorted(k for k in s if k in scoring.STAT_KEYS and s[k] is not None
+                                                    and (type(s[k]) not in (int, float) or not math.isfinite(s[k])))}
+    return values
+
+
 def projections(season, week):
     out = {}
     for r in sources.week_projections(season, week):
         s = r.get("stats") or {}
-        if s.get("pts_ppr") is None:
-            continue
-        out[r["player_id"]] = {k: round(v, 2) for k, v in s.items() if k in scoring.STAT_KEYS or k in ("pts_ppr",)}
+        out[r["player_id"]] = projection_components(s)
     return out
 
 
@@ -151,7 +168,8 @@ def projections(season, week):
 
 def played(entry):
     s = entry["stats"]
-    return (s.get("gp") or 0) > 0 or (s.get("off_snp") or 0) > 0
+    return any(type(s.get(key)) in (int, float) and math.isfinite(s[key]) and s[key] > 0
+               for key in ("gp", "off_snp"))
 
 
 def build_history(weeks_by_key):
@@ -171,7 +189,9 @@ def defense_ranks(this_season_weeks, players):
         for pid, entry in rows.items():
             pos = players.get(pid, {}).get("pos")
             if pos and entry.get("opp") and played(entry):
-                totals[(entry["opp"], pos)][week] += scoring.ppr_points(entry["stats"])
+                value = scoring.ppr_points(entry["stats"])
+                if value is not None:
+                    totals[(entry["opp"], pos)][week] += value
     ranks = defaultdict(dict)
     for pos in scoring.POSITION_CATEGORIES:
         per_game = {d: statistics.mean(w.values()) for (d, p), w in totals.items() if p == pos and w}
@@ -198,12 +218,14 @@ def player_props(player, proj, games, season, opp, mx):
     this = [g for g in games if g["season"] == season]
     props = []
     for key in scoring.POSITION_CATEGORIES[player["pos"]]:
-        projection = round(scoring.stat_value(key, proj), 2) if proj else None
-        values = [{"s": g["season"], "w": g["week"], "opp": g["opp"], "v": round(scoring.stat_value(key, g["stats"]), 2)} for g in this]
+        raw = scoring.stat_value(key, proj, projection=True) if proj else None
+        projection = round(raw, 2) if raw is not None else None
+        known_games = [g for g in this if scoring.stat_value(key, g["stats"]) is not None]
+        values = [{"s": g["season"], "w": g["week"], "opp": g["opp"], "v": round(scoring.stat_value(key, g["stats"]), 2)} for g in known_games]
         season_avg = statistics.mean(x["v"] for x in values) if values else None
         if key == "anytime_td":
-            chance = round(scoring.td_probability(projection or 0), 3)
-            props.append({"key": key, "line": 0.5, "proj": projection, "adj": None, "lean": "over" if chance >= 0.5 else None,
+            chance = round(scoring.td_probability(projection), 3) if projection is not None else None
+            props.append({"key": key, "line": 0.5, "proj": projection, "adj": None, "lean": "over" if chance is not None and chance >= 0.5 else None,
                           "source": "fixed", "over": sum(1 for x in values if x["v"] > 0.5), "n": len(values), "values": values,
                           "td_chance": chance})
             continue
@@ -220,15 +242,16 @@ def player_props(player, proj, games, season, opp, mx):
         }
         if key == "fpts":
             # half PPR versions, for the page's PPR / Half PPR switch
-            for x, g in zip(values, this):
+            for x, g in zip(values, known_games):
                 x["h"] = scoring.fantasy_points(g["stats"], player["pos"], half=True)
             half_proj = proj.get("pts_half_ppr") if proj else None
-            half_base = half_proj if half_proj is not None else (statistics.mean(x["h"] for x in values) if len(values) >= 2 else None)
+            half_values = [x["h"] for x in values if x["h"] is not None]
+            half_base = half_proj if half_proj is not None else (statistics.mean(half_values) if len(half_values) >= 2 else None)
             if half_base is not None:
                 prop["adj_h"] = round(half_base * factor, 2)
                 prop["proj_h"] = half_proj
                 prop["line_h"] = scoring.round_to_half(prop["adj_h"])
-                prop["over_h"] = sum(1 for x in values if x["h"] > prop["line_h"])
+                prop["over_h"] = sum(1 for x in half_values if x > prop["line_h"])
         props.append(prop)
     return props
 
@@ -276,10 +299,16 @@ def game_log(pos, games):
     """This season's games, Sleeper game log style: week, opponent, snaps, the position's main stats, points."""
     keys = LOG_STATS[pos]
     return [{"w": g["week"], "opp": g["opp"], "snp": g["stats"].get("off_snp"), "tsnp": g["stats"].get("tm_off_snp"),
-             "s": [g["stats"].get(k) or 0 for k in keys], "pts": scoring.ppr_points(g["stats"]),
+             "s": [scoring.component(g["stats"], k)["value"] for k in keys], "pts": scoring.ppr_points(g["stats"]),
              "h": scoring.fantasy_points(g["stats"], pos, half=True),
              # the full scoring stat line, so the page can score any league's settings
-             "st": {k: v for k, v in g["stats"].items() if v and k in SCORING_STATS}} for g in games]
+             "st": {k: v for k, v in g["stats"].items() if k in SCORING_STATS or k == "_presence"}} for g in games]
+
+
+def known_average(games, pos, *, half=False):
+    values = [scoring.fantasy_points(game["stats"], pos, half=half) for game in games]
+    known = [value for value in values if value is not None]
+    return round(statistics.mean(known), 2) if known else None
 
 
 SCORING_STATS = set(scoring.PPR) | {"pass_cmp", "pass_att", "rush_att", "rec_tgt", "idp_fum_rec"}
@@ -287,8 +316,9 @@ SCORING_STATS = set(scoring.PPR) | {"pass_cmp", "pass_att", "rush_att", "rec_tgt
 
 def snap_share(games):
     """Average share of the team's offensive snaps over his last 4 games played (None without snap data)."""
-    shares = [g["stats"]["off_snp"] / g["stats"]["tm_off_snp"] for g in games[-4:]
-              if g["stats"].get("tm_off_snp") and g["stats"].get("off_snp") is not None]
+    counts = [(scoring.component(g["stats"], "off_snp")["value"],
+               scoring.component(g["stats"], "tm_off_snp")["value"]) for g in games[-4:]]
+    shares = [snaps / total for snaps, total in counts if snaps is not None and total is not None and total > 0]
     return round(statistics.mean(shares), 2) if shares else None
 
 
@@ -358,7 +388,7 @@ def assemble(season, week, players, games, proj, history, ranks, weeks_played, p
             entry["log"] = game_log(p["pos"], this_games)
             entry.setdefault("snap_share", snap_share(this_games))
             if this_games:
-                entry.setdefault("avg_half", round(statistics.mean(scoring.fantasy_points(x["stats"], p["pos"], half=True) for x in this_games), 2))
+                entry.setdefault("avg_half", known_average(this_games, p["pos"], half=True))
             if proj.get(pid):
                 entry.setdefault("proj_half", proj[pid].get("pts_half_ppr"))
             if any("line_from" not in x for x in entry["props"] if x["key"] != "anytime_td"):
@@ -373,7 +403,7 @@ def assemble(season, week, players, games, proj, history, ranks, weeks_played, p
         this_n = sum(1 for x in hist if x["season"] == season)
         if not pr and this_n == 0:
             continue  # nobody expects him to play
-        if pr and (pr.get("pts_ppr") or 0) < 0.5 and this_n == 0:
+        if pr and pr.get("pts_ppr") is not None and pr["pts_ppr"] < 0.5 and this_n == 0:
             continue
         props = apply_book(player_props(p, pr, hist, season, opp, mx), book.get(pid, {}), picks_lines.get(pid, {}))
         if not props:
@@ -384,11 +414,11 @@ def assemble(season, week, players, games, proj, history, ranks, weeks_played, p
             "injury": p["injury"], "injury_part": p["injury_part"], "depth": p["depth"],
             "proj_ppr": pr.get("pts_ppr") if pr else None,
             "proj_half": pr.get("pts_half_ppr") if pr else None,
-            "proj": {k: v for k, v in (pr or {}).items() if k != "pts_ppr" and v},
+            "proj": {k: v for k, v in (pr or {}).items() if k != "pts_ppr"},
             "games_this_season": this_n,
             "snap_share": snap_share([x for x in hist if x["season"] == season]),
-            "avg_ppr": round(statistics.mean(scoring.ppr_points(x["stats"]) for x in hist if x["season"] == season), 2) if this_n else None,
-            "avg_half": round(statistics.mean(scoring.fantasy_points(x["stats"], p["pos"], half=True) for x in hist if x["season"] == season), 2) if this_n else None,
+            "avg_ppr": known_average([x for x in hist if x["season"] == season], p["pos"]),
+            "avg_half": known_average([x for x in hist if x["season"] == season], p["pos"], half=True),
             "log": game_log(p["pos"], [x for x in hist if x["season"] == season]),
             "matchup": matchup(ranks, opp, p["pos"], weeks_played),
             "props": props,
@@ -456,12 +486,13 @@ def future_weeks(season, week, entries, everyone, free_agents=None):
             pid = r.get("player_id")
             if pid not in ids or not r.get("opponent"):
                 continue
-            st = {k: round(v, 2) for k, v in (r.get("stats") or {}).items() if k in FUTURE_KEYS and v}
+            normalized = projection_components(r.get("stats") or {})
+            st = {k: v for k, v in normalized.items() if k in FUTURE_KEYS or k == "_presence"}
             row = {"w": w, "opp": r["opponent"], "st": st}
             # Sleeper's own totals, so its projections match the Sleeper app exactly (it scores projected fumbles
             # slightly differently from real games); other scorings score the stats
-            if r.get("stats", {}).get("pts_ppr") is not None:
-                row["pp"], row["ph"] = r["stats"]["pts_ppr"], r["stats"].get("pts_half_ppr")
+            if normalized.get("pts_ppr") is not None:
+                row["pp"], row["ph"] = normalized["pts_ppr"], normalized.get("pts_half_ppr")
             out[pid].append(row)
     weeks = set(range(week + 1, REGULAR_SEASON_WEEKS + 1))
     byes = {team: sorted(weeks - ws) for team, ws in played_weeks.items()}
@@ -520,7 +551,7 @@ def past_week(season, week, stats):
             continue
         gid, home = by_team[e["team"]]
         rows[pid] = {"id": pid, "name": who["name"], "pos": who["pos"], "team": e["team"], "opp": e.get("opp"), "home": home,
-                     "game_id": gid, "st": {k: v for k, v in e["stats"].items() if v and k in keep}}
+                     "game_id": gid, "st": {k: v for k, v in e["stats"].items() if k in keep or k == "_presence"}}
         if who.get("espn_id"):
             rows[pid]["espn_id"] = str(who["espn_id"])
     finished = [g["id"] for g in games if g["state"] == "post"]

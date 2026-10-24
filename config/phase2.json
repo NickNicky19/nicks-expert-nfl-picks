@@ -1,0 +1,144 @@
+{
+  "capture_enabled": true,
+  "production_model": "sleeper-matchup-data-integrity-v2",
+  "challenger_production_enabled": false,
+  "experimental_recording_enabled": false,
+  "verification_mode": "partial-week-data-integrity-v2",
+  "partial_week": {
+    "plan": {
+      "schema_version": "partial-week-data-integrity-plan-v2",
+      "plan_id": "NFL-WEB-W07-CORRECTED-CUTOVER-20261023-001617Z",
+      "model": "sleeper-matchup-data-integrity-v2",
+      "validator_contract": "partial-week-data-integrity-v2",
+      "season": 2026,
+      "week": 7,
+      "plan_prepared_at": "2026-10-23T00:16:17.802980Z",
+      "effective_not_before": "2026-10-23T00:16:17.802980Z",
+      "expires_at": "2026-10-28T00:00:00Z",
+      "authorization_status": "OWNER_APPROVED_CONTROLLED_TRANSITION_NOT_COMPLETE_WEEK_QUALIFICATION",
+      "source_start": "f4715c44a467eb21b790f0d058e8375621c0a6d2",
+      "initial_data_pin": "a57b529862a6ea84b57eae77758cf3a95714a3b9",
+      "initial_complete_board_sha256": "492992bd8670e23db267f0c5284540177a6f461bc6976fa32c195a5603dcf822",
+      "engine_files": {
+        "pull/build.py": "d8a1094af872c84e0fe092662a1241afc0eceaca8c27f7bea687e6a1be2f576c",
+        "pull/matchup.py": "eaf627730041060ad16dd9930accfe54a54cf5fb49bb42d18680b5c572ddd7a5",
+        "pull/scoring.py": "473e8fa2601d75eab8a223edda53555c51ce145c6426e570df9ae918c3f9eee0",
+        "pull/books.py": "0b89744960136a4f2e594b61e6df754d357706d8c66a8ae359d8eb02bbfa53f8",
+        "pull/gamemodel.py": "2a2519a12ad4993da02ae6bdcdb6c86f2b5a6554ce93a702b550ecde17fb7d1f",
+        "pull/sources.py": "36555cdbc55d73ba632d5adae1130288f4f532073857c642ac3ebc7e626b0061",
+        "pull/news.py": "17ce1b3b6b72694e6b543bd767e287c26a9d1f6dd5dba2de6c873543036842e9",
+        "pull/grade.py": "cf4bccf4fd960d5cc896d5e8bbef216a7d84cd20ca938ce1c60ca7942c307d2f"
+      },
+      "games": [
+        {
+          "id": "401873010",
+          "home": "CHI",
+          "away": "NE",
+          "kickoff": "2026-10-23T00:15Z"
+        },
+        {
+          "id": "401873011",
+          "home": "NO",
+          "away": "PIT",
+          "kickoff": "2026-10-25T13:30Z"
+        },
+        {
+          "id": "401873012",
+          "home": "BAL",
+          "away": "CIN",
+          "kickoff": "2026-10-25T17:00Z"
+        },
+        {
+          "id": "401873013",
+          "home": "TEN",
+          "away": "CLE",
+          "kickoff": "2026-10-25T17:00Z"
+        },
+        {
+          "id": "401873014",
+          "home": "MIN",
+          "away": "IND",
+          "kickoff": "2026-10-25T17:00Z"
+        },
+        {
+          "id": "401873015",
+          "home": "NYJ",
+          "away": "MIA",
+          "kickoff": "2026-10-25T17:00Z"
+        },
+        {
+          "id": "401873016",
+          "home": "HOU",
+          "away": "NYG",
+          "kickoff": "2026-10-25T17:00Z"
+        },
+        {
+          "id": "401873017",
+          "home": "ATL",
+          "away": "SF",
+          "kickoff": "2026-10-25T17:00Z"
+        },
+        {
+          "id": "401873018",
+          "home": "CAR",
+          "away": "TB",
+          "kickoff": "2026-10-25T17:00Z"
+        },
+        {
+          "id": "401873019",
+          "home": "ARI",
+          "away": "DEN",
+          "kickoff": "2026-10-25T20:05Z"
+        },
+        {
+          "id": "401873020",
+          "home": "DET",
+          "away": "GB",
+          "kickoff": "2026-10-25T20:25Z"
+        },
+        {
+          "id": "401873021",
+          "home": "LV",
+          "away": "LAR",
+          "kickoff": "2026-10-25T20:25Z"
+        },
+        {
+          "id": "401873022",
+          "home": "SEA",
+          "away": "KC",
+          "kickoff": "2026-10-26T00:20Z"
+        },
+        {
+          "id": "401873009",
+          "home": "PHI",
+          "away": "DAL",
+          "kickoff": "2026-10-27T00:15Z"
+        }
+      ],
+      "legacy_exemptions": [
+        {
+          "game_id": "401873010",
+          "forecast_contract_sha256": "e15373a8cc92b394614742d3913466ff83e9beb1c4aadeb63bd8fcbe21a51f09",
+          "reason": "started_at_actual_fixed_cutover;production_has_no_matching_retained_original_input_proof_or_completed_bundle",
+          "exemption": "retain_exact_production_contract_unverified_never_retroactively_pregame_or_complete_week_qualified"
+        }
+      ],
+      "schedule_status_payload_sha256": "d77b6a59f35fb087ffc819b19b77dc6082b8ca3e69f849e0ddd1dbcda8043f4b",
+      "schedule_status_observed_at": "2026-10-23T00:16:17.787545Z",
+      "completion_status_max_age_seconds": 60,
+      "nonexempt_rule": "matching_original_inputs_and_completed_origin_for_frozen_contracts;new_eligible_inputs_and_completion_strictly_pregame_or_fail",
+      "eligibility_rule": "explicit_pre_not_completed_and_all_generation_inputseal_native_scope_completion_clocks_strictly_before_kickoff",
+      "schedule_changes": "fail_requires_explicit_fixed_plan_transition_no_dynamic_exemptions",
+      "retry_rule": "retain_first_valid_original_recording_and_exact_pinned_completion;never_backdate_or_substitute_evidence",
+      "transition": "another_season_or_week_requires_its_own_explicit_source_plan_transition;expiry_fails_closed",
+      "full_board_verified": false,
+      "complete_week_qualified": false,
+      "experimental_recording_enabled": false,
+      "previous_plan_sha256": "fbd74ed0809e178481492517f0fbf3d15f2ef0b2a679ca9f519d011873cefbfe",
+      "previous_plan_preservation": "original_configuration_git_history_and_original_evidence_remain_unchanged"
+    },
+    "plan_sha256": "434ec66659f80ad3bd924c64f250169becb2f436dc77ab4e5d663f345951b966",
+    "validator_sha256": "f60798eca7071525727bd883e6bd230fdb5422297efb6a7748a3457a212ab3e7",
+    "owner_authorization": "NFL-WEB-RECORDER-RESPONSE-HASH-20261023-004402Z-CONFIG"
+  }
+}

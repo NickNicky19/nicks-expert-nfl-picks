@@ -1,0 +1,3461 @@
+"""Fictional replay: recorded builder through saved forecasts and final scoring.
+
+No network, remote writes, public release or real prediction-performance claims.
+"""
+import copy
+from datetime import datetime, timedelta, timezone
+import hashlib
+import gzip
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "pull")]
+import data_integrity_v2 as corrected
+import build
+import build_recorded
+import verify
+from evidence import read, write
+from phase2_capture import probability_report, run_capture
+from reliability import ENGINE_PATHS, IntegrityError, atomic_json, digest, load_json, stamp, utc
+from scorecard import build_scorecard
+import phase2_capture
+import point_challenger
+import selection_publication
+from selection_publication import publish_selection_report, validate_publication
+from selection_report import run_report, summarize
+from test_offers import offer_fixture
+from test_reliability import NOW, fixture as reliability_fixture
+from reliability import capture as capture_baseline, engine_hashes, immutable_write
+from test_point_challenger import saved_outcome
+from test_scorecard import setup
+from test_source_evidence import fictional_response, fictional_status
+
+
+def fixture_part(base, descriptor, filename):
+    return selection_publication._partition_asset(base, descriptor, filename, encoded=descriptor.get("encoding") == "gzip")
+
+
+def replace_fixture_part(base, descriptor, filename, payload):
+    raw = selection_publication.canonical(payload) + b"\n"
+    checksum = hashlib.sha256(raw).hexdigest()
+    stored = gzip.compress(raw, mtime=0) if descriptor.get("encoding") == "gzip" else raw
+    physical = hashlib.sha256(stored).hexdigest()
+    selection_publication._create_file(base / physical / filename, stored)
+    descriptor.update(path=physical + "/" + filename, sha256=checksum, decoded_bytes=len(raw))
+    if descriptor.get("encoding") == "gzip":
+        descriptor.update(encoded_sha256=physical, encoded_bytes=len(stored))
+
+
+class RetainedCorrectedDependencyTests(unittest.TestCase):
+    def test_actual_receipt_source_commit_is_freshly_hashed_after_warm_inventory(self):
+        # Inventory control only: this minimal source observation is not a
+        # qualified forecast or a substitute for a completed-bundle fixture.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            commit = "e7308bca4e9fce2b45aa3539603b6ebe9901a607"
+            write(root, "verification", {"schema_version":corrected.INPUTS,
+                "season":2026,"week":7,"code_commit":commit})
+            first = phase2_capture._dependency_closure(root)
+            self.assertEqual(first, phase2_capture._dependency_closure(root))
+            actual_git = corrected._git
+            def changed_object(repository, *args):
+                raw = actual_git(repository, *args)
+                if args == ("cat-file", "commit", commit):
+                    return raw[:-1] + (b"x" if raw[-1:] != b"x" else b"y")
+                return raw
+            with patch.object(corrected, "_git", side_effect=changed_object):
+                with self.assertRaisesRegex(IntegrityError, "commit/tree identity mismatch"):
+                    phase2_capture._dependency_closure(root)
+
+    def test_capture_closure_passes_actual_evidence_root_to_source_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventories = []
+            def inventory(*, evidence_root):
+                self.assertEqual(evidence_root, root.resolve())
+                inventories.append(evidence_root)
+                return {"fresh_actual_object_closure": len(inventories)}
+            with patch.object(corrected, "legacy_dependency_inventory", side_effect=inventory):
+                first = phase2_capture._dependency_closure(root)
+                second = phase2_capture._dependency_closure(root)
+            self.assertEqual(len(inventories), 2)
+            self.assertNotEqual(first, second)
+
+
+class ReplayClock(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return NOW
+
+
+def prepare(root, source_unavailable=False, *, mode="replay", at=NOW, kickoff_hours=1, all_ten=False, week=5):
+    (root / "tools").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ROOT / "tools/selection-strategies-v1.json", root / "tools/selection-strategies-v1.json")
+    for path in ENGINE_PATHS:
+        target = root / path; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(corrected._legacy_blob(path, ROOT))
+    (root / "output").mkdir(exist_ok=True)
+    for name in ("app.js", "index.html"):
+        shutil.copyfile(ROOT / "output" / name, root / "output" / name)
+    (root / "config").mkdir(exist_ok=True)
+    for path in ("phase2.json", "release-mode.json", "sleeper-rules-provenance.json", "timing-policy.json"):
+        shutil.copyfile(ROOT / "config" / path, root / "config" / path)
+    # Legacy positive controls explicitly exercise the retained strict/candidate
+    # interface; production cutover activation is tested separately below.
+    atomic_json(root / "config/phase2.json", {"capture_enabled": True,
+                "production_model": "original_sleeper_matchup_baseline", "challenger_production_enabled": False,
+                "verification_mode": "strict-full-board-v1", "experimental_recording_enabled": True})
+    data, _, policy = setup()
+    data["week"] = week
+    data["generated_at"] = stamp(at)
+    data["games"][0]["kickoff"] = stamp(at + timedelta(hours=kickoff_hours))
+    if at != NOW:
+        policy["registered_at"] = stamp(at - timedelta(days=2))
+    atomic_json(root / "config/evaluation-policy.json", policy)
+    player, prop = data["players"][0], data["players"][0]["props"][0]
+    player.update(opp="BBB", snap_share=.8, games_this_season=2)
+    prop.update(mf=1, mf_n=0, adj=prop["proj"])
+    data["picks"]["over"][0]["adj"] = prop["proj"]
+    projected_stats = {"rec": 4.8}
+    actual_stats = {"gp": 1, "rec": 5}
+    if all_ten:
+        projected_stats.update(pass_yd=250.2, pass_td=1.8, pass_cmp=22.2, pass_att=33.2, pass_int=.6,
+                               rush_yd=55.2, rush_att=12.2, rec_yd=52.3)
+        actual_stats.update(pass_yd=251, pass_td=2, pass_cmp=23, pass_att=34, pass_int=0,
+                            rush_yd=56, rush_att=13, rec_yd=55)
+        for category in json.loads((ROOT / "config/timing-policy.json").read_text())["categories"]:
+            if category == "rec":
+                continue
+            value = 107.5 if category == "rush_rec_yd" else projected_stats[category]
+            extra = copy.deepcopy(prop)
+            extra.update(key=category, proj=value, adj=value, line=int(value) - .5,
+                         lean=None if category == "pass_int" else "over", values=[])
+            player["props"].append(extra)
+            data["categories"][category] = {"label": category}
+    _, observed, meta, _ = offer_fixture()
+    source_rows = [{"player_id": "fictional-1", **meta["fictional-1"], "stats": projected_stats}]
+    def responses(url, *args, **kwargs):
+        if url == build.sources.ESPN + "/scoreboard":
+            return fictional_response(data["games"], week=week)
+        if "/projections/nfl/" in url:
+            rows = copy.deepcopy(source_rows)
+            if url.endswith(f"/{week + 1}"):
+                rows[0]["game_id"] = "future-game-that-must-not-overwrite-current-mapping"
+            return rows
+        if source_unavailable:
+            raise TimeoutError("fictional unavailable source")
+        return observed["markets"]
+    def fake_build():
+        build.sources.get_json(build.sources.ESPN + "/scoreboard", {"dates": 2026, "week": week, "seasontype": 2})
+        build.sources.get_json(f"https://api.sleeper.app/projections/nfl/2026/{week}")
+        try:
+            build.sources.get_json("https://api.sleeper.app/lines/available")
+        except TimeoutError:
+            pass  # Mirrors the retained builder's explicit fallback, recorded above.
+        build.Matchups({4: {"fictional-1": {"opp": "CCC", "stats": {"gp": 1, "rec": 3}}}}, {"fictional-1": "WR"})
+        build.sources.get_json(f"https://api.sleeper.app/projections/nfl/2026/{week + 1}")
+        atomic_json(root / "output/data/week.json", data)
+        atomic_json(root / "output/data/meta.json", {k: data[k] for k in ("season", "week", "generated_at")})
+        atomic_json(root / f"data/cache/stats_2026_{week:02d}.json", {"fictional-1": {"team": "AAA", "opp": "BBB", "stats": actual_stats}})
+    class BuildClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return at
+    with patch.object(build.sources, "get_json", side_effect=responses), patch.object(build_recorded, "datetime", BuildClock):
+        build_recorded.record_build(root, run=fake_build, mode=mode)
+    return data, policy
+
+
+class PipelineTests(unittest.TestCase):
+    def test_full_replay_then_final_then_correction_preserves_all_forecasts(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); data, policy = prepare(root)
+            before = (root / "output/data/week.json").read_bytes()
+            proof = load_json(root / "output/data/matchup-proof.json")
+            with patch.object(verify, "ROOT", root):
+                verify.problems.clear(); verify.check_point_in_time(data, proof); verify.check_shape(data)
+                self.assertEqual(verify.problems, [])
+            report, health = run_capture(root, mode="replay", replay_at=stamp(NOW))
+            self.assertEqual(report["evidence"], "REPLAY_TEST_NOT_PROSPECTIVE")
+            self.assertEqual(report["outcome_status"], {"pending": 1})
+            self.assertEqual(report["offers"]["coverage"], {"complete_selection_capture": 1, "no_offer": 1})
+            self.assertEqual(report["shadow"]["unique_matched_opportunities"], 1)
+            self.assertEqual((root / "output/data/week.json").read_bytes(), before)
+            self.assertFalse((root / "output/data/forecast-scorecard.json").exists())
+            baseline = root / health["receipt"]
+            shadow = root / health["phase2"]["shadow_receipt"]
+            forecast_bytes = baseline.read_bytes(), shadow.read_bytes()
+            again, retry = run_capture(root, mode="replay", replay_at=stamp(NOW + timedelta(minutes=1)))
+            self.assertFalse(retry["capture_created"])
+            self.assertIsNone(retry["phase2"]["shadow_receipt"])
+            self.assertEqual((baseline.read_bytes(), shadow.read_bytes()), forecast_bytes)
+            data["games"][0]["state"] = "post"
+            data["games"][0]["detail"] = "Final"
+            atomic_json(root / "output/data/game-status.json", {"weeks": {"2026_05": {"games": {
+                "fictional-game": {"kickoff": data["games"][0]["kickoff"], "state": "post", "completed": True}}}}})
+            atomic_json(root / "output/data/week.json", data)
+            final, _ = build_scorecard(root, NOW + timedelta(hours=5), mode="replay", allow_replay=True)
+            probabilities = probability_report(root, policy, mode="replay")
+            self.assertEqual(final["outcome_status"], {"resolved": 1})
+            self.assertEqual(probabilities["categories"]["rec"]["challenger"]["n"], 1)
+            atomic_json(root / "data/cache/stats_2026_05.json", {"fictional-1": {"team": "AAA", "stats": {"gp": 1, "rec": 6}}})
+            corrected, _ = build_scorecard(root, NOW + timedelta(hours=6), mode="replay", allow_replay=True)
+            self.assertAlmostEqual(corrected["categories"]["rec"]["raw_sleeper"]["mae"], 1.2)
+            self.assertEqual((baseline.read_bytes(), shadow.read_bytes()), forecast_bytes)
+            self.assertEqual(len(list((root / "data/outcomes_replay").rglob("*.json.gz"))), 4)
+
+    def test_original_recovery_mode_and_live_supplied_clock_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); prepare(root)
+            with self.assertRaises(ValueError): run_capture(root, mode="live", replay_at=stamp(NOW))
+            atomic_json(root / "config/release-mode.json", {"mode": "original"})
+            with self.assertRaises(ValueError): run_capture(root, mode="replay", replay_at=stamp(NOW))
+            self.assertFalse((root / "data/replay").exists())
+
+    def test_source_outage_is_saved_without_changing_production_forecast(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); prepare(root, source_unavailable=True)
+            before = (root / "output/data/week.json").read_bytes()
+            report, health = run_capture(root, mode="replay", replay_at=stamp(NOW))
+            self.assertEqual(report["offers"]["coverage"], {"source_unavailable": 2})
+            offer = read(root / health["phase2"]["offer_receipt"])
+            self.assertEqual(offer["source_error"], "TimeoutError")
+            self.assertEqual((root / "output/data/week.json").read_bytes(), before)
+
+    def test_changed_retained_engine_stops_capture(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); prepare(root)
+            with (root / "pull/matchup.py").open("a") as handle:
+                handle.write("\n# fictional changed engine\n")
+            with self.assertRaises(ValueError): run_capture(root, mode="replay", replay_at=stamp(NOW))
+            self.assertFalse((root / "data/replay").exists())
+
+    def test_frozen_game_keeps_original_receipt_after_stats_correction(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); data, _ = prepare(root)
+            first = load_json(root / "output/data/matchup-proof.json")
+            def later_build():
+                data["games"][0]["state"] = "post"
+                data["generated_at"] = stamp(NOW + timedelta(hours=5))
+                build.sources.get_json(build.sources.ESPN + "/scoreboard", {"dates": 2026, "week": 5, "seasontype": 2})
+                build.Matchups({4: {"fictional-1": {"opp": "CCC", "stats": {"gp": 1, "rec": 999}}}}, {"fictional-1": "WR"})
+                atomic_json(root / "output/data/week.json", data)
+            class LaterClock(datetime):
+                @classmethod
+                def now(cls, tz=None):
+                    return NOW + timedelta(hours=5)
+            with patch.object(build_recorded, "datetime", LaterClock), patch.object(
+                    build.sources, "get_json", side_effect=lambda *a, **k: fictional_response(data["games"])):
+                build_recorded.record_build(root, run=later_build, mode="replay")
+            second = load_json(root / "output/data/matchup-proof.json")
+            self.assertEqual(second["game_origins"], first["game_origins"])
+            self.assertNotEqual(second["latest_inputs"], first["latest_inputs"])
+            with patch.object(verify, "ROOT", root):
+                verify.problems.clear(); verify.check_point_in_time(data, second)
+                self.assertEqual(verify.problems, [])
+
+    def assert_rejected_without_writes(self, root, **kwargs):
+        before = {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        with self.assertRaises(ValueError):
+            run_capture(root, **({"mode": "replay", "replay_at": stamp(NOW)} | kwargs))
+        after = {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        self.assertEqual(after, before)
+
+    def test_missing_game_origin_stops_all_capture_writes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); prepare(root)
+            path = root / "output/data/matchup-proof.json"
+            pointer = load_json(path); pointer["game_origins"]["fictional-game"] = None
+            atomic_json(path, pointer)
+            self.assert_rejected_without_writes(root)
+
+    def test_wrong_latest_input_hash_leaves_no_partial_baseline(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); prepare(root)
+            path = root / "output/data/matchup-proof.json"
+            pointer = load_json(path); inputs = read(root / pointer["latest_inputs"])
+            inputs["output_sha256"] = "0" * 64
+            pointer["latest_inputs"] = write(root, "verification", inputs).relative_to(root).as_posix()
+            atomic_json(path, pointer)
+            self.assert_rejected_without_writes(root)
+
+    def test_game_without_modeled_props_still_requires_a_valid_original_origin(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); data, _ = prepare(root)
+            data["games"].append({"id": "fictional-no-props", "home": "CCC", "away": "DDD",
+                                  "state": "pre", "kickoff": stamp(NOW + timedelta(hours=2))})
+            path = root / "output/data/matchup-proof.json"
+            pointer = load_json(path); inputs = read(root / pointer["latest_inputs"])
+            inputs.update(week_data=copy.deepcopy(data), output_sha256=digest(data))
+            inputs["game_status"]["2026_05"] = fictional_status(data["games"], mode="replay", collected_at=NOW)
+            name = write(root, "verification", inputs).relative_to(root).as_posix()
+            pointer.update(output_sha256=digest(data), latest_inputs=name, game_origins={
+                "fictional-game": name, "fictional-no-props": "data/verification/2026/w05/" + "0" * 64 + ".json.gz"})
+            atomic_json(path, pointer); atomic_json(root / "output/data/week.json", data)
+            self.assert_rejected_without_writes(root)
+
+    def test_invalid_latest_schema_engine_mode_clock_and_source_fail_before_writes(self):
+        for alteration in ("legacy", "engine", "mode", "clock", "source"):
+            with self.subTest(alteration=alteration), tempfile.TemporaryDirectory() as d:
+                root = Path(d); prepare(root)
+                path = root / "output/data/matchup-proof.json"
+                pointer = load_json(path); inputs = read(root / pointer["latest_inputs"])
+                if alteration == "legacy":
+                    inputs["schema_version"] = "matchup-inputs-v1"
+                elif alteration == "engine":
+                    inputs["engine_files"]["pull/matchup.py"] = "0" * 64
+                elif alteration == "mode":
+                    inputs["mode"] = "live"
+                elif alteration == "clock":
+                    inputs["recorded_at"] = stamp(NOW + timedelta(seconds=1))
+                else:
+                    inputs["game_status"]["2026_05"]["response_sha256"] = "0" * 64
+                pointer["latest_inputs"] = write(root, "verification", inputs).relative_to(root).as_posix()
+                atomic_json(path, pointer)
+                self.assert_rejected_without_writes(root)
+
+    def test_qualifying_origin_must_match_original_kickoff_even_with_current_hash(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); data, _ = prepare(root)
+            data["games"][0]["kickoff"] = stamp(NOW + timedelta(hours=2))
+            atomic_json(root / "output/data/week.json", data)
+            path = root / "output/data/matchup-proof.json"
+            pointer = load_json(path); pointer["output_sha256"] = digest(data)
+            self.assertIsNotNone(pointer["game_origins"]["fictional-game"])
+            atomic_json(path, pointer)
+            self.assert_rejected_without_writes(root)
+
+    def test_future_offer_clock_fails_before_baseline(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); prepare(root)
+            path = root / "output/data/matchup-proof.json"
+            pointer = load_json(path); inputs = read(root / pointer["latest_inputs"])
+            inputs["offer_observation"]["collected_at"] = stamp(NOW + timedelta(seconds=1))
+            pointer["latest_inputs"] = write(root, "verification", inputs).relative_to(root).as_posix()
+            atomic_json(path, pointer)
+            self.assert_rejected_without_writes(root)
+
+    def test_full_offline_ppr_check_is_required_before_capture(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); prepare(root)
+            atomic_json(root / "data/cache/stats_2026_04.json", {
+                "fictional-1": {"stats": {"gp": 1, "rec": 3, "pts_ppr": 42}}})
+            self.assert_rejected_without_writes(root)
+
+    def test_full_offline_shape_check_is_required_before_capture(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); data, _ = prepare(root)
+            data["players"][0]["props"][0]["our_line"] = 4.4
+            path = root / "output/data/matchup-proof.json"
+            pointer = load_json(path); inputs = read(root / pointer["latest_inputs"])
+            inputs.update(week_data=copy.deepcopy(data), output_sha256=digest(data))
+            name = write(root, "verification", inputs).relative_to(root).as_posix()
+            pointer.update(output_sha256=digest(data), latest_inputs=name, game_origins={"fictional-game": name})
+            atomic_json(path, pointer); atomic_json(root / "output/data/week.json", data)
+            self.assert_rejected_without_writes(root)
+
+    def test_verification_receipt_links_exact_inputs_and_baseline_in_replay_lane(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); data, _ = prepare(root)
+            _, health = run_capture(root, mode="replay", replay_at=stamp(NOW))
+            name = health["phase2"]["matchup_verification_receipt"]
+            self.assertIn("data/matchup_checks_replay/", name)
+            check = read(root / name)
+            baseline = read(root / health["receipt"])
+            self.assertEqual(check["baseline_payload_sha256"], digest(baseline))
+            self.assertEqual(check["output_sha256"], digest(data))
+            self.assertEqual(check["latest_inputs_sha256"], digest(read(root / check["latest_inputs"])))
+            self.assertEqual(check["checked_factors"], 1)
+            self.assertFalse((root / "data/forward").exists())
+            self.assertFalse((root / "data/matchup_checks").exists())
+            self.assertFalse((root / "data/verification/matchup-checks").exists())
+
+    def test_replay_original_inputs_are_not_live_qualification(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); prepare(root)
+            self.assert_rejected_without_writes(root, mode="live", replay_at=None)
+
+    def test_build_completed_at_kickoff_cannot_invent_an_original_origin(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); data, _ = prepare(root)
+            (root / "output/data/matchup-proof.json").unlink()
+            class AtKickoffClock(datetime):
+                @classmethod
+                def now(cls, tz=None):
+                    return NOW + timedelta(hours=1)
+            def fake_build():
+                build.Matchups({}, {"fictional-1": "WR"})
+                atomic_json(root / "output/data/week.json", data)
+            with patch.object(build_recorded, "datetime", AtKickoffClock):
+                build_recorded.record_build(root, run=fake_build, mode="replay")
+            self.assertIsNone(load_json(root / "output/data/matchup-proof.json")["game_origins"]["fictional-game"])
+            self.assert_rejected_without_writes(root)
+
+    def test_ambiguous_repeated_matchup_initialization_restores_original_hooks(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); prepare(root)
+            original, original_get = build.Matchups, build.sources.get_json
+            def fake_build():
+                build.Matchups({}, {"fictional-1": "WR"})
+                build.Matchups({}, {"fictional-1": "WR"})
+            with self.assertRaises(ValueError):
+                build_recorded.record_build(root, run=fake_build, mode="replay")
+            self.assertIs(build.Matchups, original)
+            self.assertIs(build.sources.get_json, original_get)
+
+
+class PublicSelectionPipelineTests(unittest.TestCase):
+    # Existing publisher/checkpoint fixtures deliberately precede registration
+    # of the prospective ranked strategies. Post-registration qualification,
+    # native loss and source closure are exercised by the connected class below.
+    AT = datetime(2026, 10, 17, 11, tzinfo=timezone.utc)
+
+    def test_real_updater_requests_machine_only_report_without_skipping_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(selection_publication, "run_report", wraps=run_report) as analysis:
+                self.run_live(root)
+            self.assertEqual(analysis.call_count, 1)
+            self.assertIs(analysis.call_args.kwargs["diagnostic_exports"], False)
+            pointer = load_json(root / "output/data/selection-grading/latest.json")
+            summary, rows, outcomes = selection_publication.publication_contents(root / "output/data/selection-grading", pointer)
+            self.assertEqual(summary["row_count"], len(rows))
+            self.assertTrue(rows)
+            phase2_capture.validate_generation(root)
+
+    def run_live(self, root, at=None, *, registered_policy=None):
+        at = at or self.AT
+        kickoff_hours = (self.AT + timedelta(hours=25) - at).total_seconds() / 3600
+        prepare(root, mode="live", at=at, kickoff_hours=kickoff_hours, all_ten=True)
+        if registered_policy is not None:
+            atomic_json(root / "config/evaluation-policy.json", registered_policy)
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return at
+        # ROOT supplies the executed application; this fixture may initialize
+        # an independent data-only Git history during its staging checks. That
+        # data HEAD is not the application source identity, including in CI.
+        actual_source = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+        with patch.dict(os.environ, {"GITHUB_SHA": actual_source}), patch.object(phase2_capture, "datetime", Clock), patch("requests.sessions.Session.request", side_effect=AssertionError("No live HTTP")):
+            result = run_capture(root, mode="live")
+        import selection_strategies as strategies
+        self.assertLess(at, utc(strategies.policy()["registered_at"]))
+        self.assertFalse(list((root / "data" / strategies.COMPLETE_LANE).rglob("*.json.gz")), "legacy fixture must not create retrospective ranked membership")
+        return result
+
+    def assert_saved_matchup_check(self, root, health):
+        name = health["phase2"]["matchup_verification_receipt"]
+        self.assertTrue(name.startswith("data/verification/matchup-checks/2026/w05/"), name)
+        path = root / name
+        check = read(path)
+        self.assertEqual(path.name, digest(check) + ".json.gz")
+        self.assertEqual(check["schema_version"], "matchup-verification-v1")
+        self.assertEqual(check["mode"], "live")
+        self.assertEqual((check["season"], check["week"]), (2026, 5))
+        pointer = load_json(root / "output/data/matchup-proof.json")
+        inputs = read(root / check["latest_inputs"])
+        self.assertEqual(check["latest_inputs"], pointer["latest_inputs"])
+        self.assertEqual(check["latest_inputs_sha256"], digest(inputs))
+        self.assertEqual(check["engine_files"], inputs["engine_files"])
+        self.assertEqual(check["engine_files"], engine_hashes(root))
+        self.assertEqual(check["game_origins"], pointer["game_origins"])
+        for origin in check["game_origins"].values():
+            self.assertEqual(read(root / origin)["engine_files"], check["engine_files"])
+        self.assertEqual(check["output_sha256"], pointer["output_sha256"])
+        self.assertEqual(check["output_sha256"], digest(load_json(root / "output/data/week.json")))
+        self.assertEqual(check["baseline_receipt"], health["receipt"])
+        self.assertEqual(check["baseline_payload_sha256"], digest(read(root / health["receipt"])))
+        self.assertEqual(check["checked_factors"], 10)
+        return path
+
+    def test_live_matchup_checks_preserve_bindings_forecasts_and_all_old_receipts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, first = self.run_live(root)
+            first_path = self.assert_saved_matchup_check(root, first)
+            # Fictional pre-existing live/replay receipts stay at their old paths.
+            legacy = write(root, "matchup_checks", read(first_path))
+            replay = write(root, "matchup_checks_replay", dict(read(first_path), mode="replay"))
+            saved = {path: path.read_bytes() for path in (root / "data").rglob("*.json.gz")}
+            forecasts = load_json(root / "output/data/week.json")
+            engine = {path: (root / path).read_bytes() for path in ENGINE_PATHS}
+            registered = load_json(root / "config/evaluation-policy.json")
+            _, second = self.run_live(root, self.AT + timedelta(minutes=5), registered_policy=registered)
+            second_path = self.assert_saved_matchup_check(root, second)
+            self.assertNotEqual(second_path, first_path)
+            for path, original in saved.items():
+                self.assertEqual(path.read_bytes(), original, str(path))
+            self.assertTrue(legacy.exists())
+            self.assertTrue(replay.exists())
+            later = load_json(root / "output/data/week.json")
+            for key in ("players", "picks", "games"):
+                self.assertEqual(later[key], forecasts[key], key)
+            self.assertEqual({path: (root / path).read_bytes() for path in ENGINE_PATHS}, engine)
+
+    def test_actual_updater_staging_keeps_health_checks_in_successive_clean_checkouts(self):
+        # Run the actual staging block, not an independently maintained lane list.
+        workflow = (ROOT / ".github/workflows/hourly.yml").read_text()
+        start = workflow.index("          git add output/data data/cache\n")
+        end = workflow.index("          if ! git diff --cached --quiet;", start)
+        staging = textwrap.dedent(workflow[start:end])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "writer"
+            root.mkdir()
+            _, first = self.run_live(root)
+            first_path = self.assert_saved_matchup_check(root, first)
+            legacy = write(root, "matchup_checks", read(first_path))
+            original_legacy = legacy.read_bytes()
+
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=root, check=True,
+                                      capture_output=True, text=True).stdout
+
+            git("init", "-q")
+            git("config", "user.name", "Fictional persistence test")
+            git("config", "user.email", "fixture@example.invalid")
+            git("add", "--", *ENGINE_PATHS, "config", legacy.relative_to(root).as_posix())
+            git("commit", "-qm", "Fictional existing code and historical receipt")
+            saved = {}
+            registered = load_json(root / "config/evaluation-policy.json")
+            for index, at in enumerate((self.AT, self.AT + timedelta(minutes=5))):
+                if index:
+                    self.run_live(root, at, registered_policy=registered)
+                health = load_json(root / "output/data/health.json")
+                name = self.assert_saved_matchup_check(root, health).relative_to(root).as_posix()
+                subprocess.run(["bash", "-eu", "-c", staging], cwd=root, check=True,
+                               capture_output=True, text=True)
+                self.assertIn(name, git("diff", "--cached", "--name-only").splitlines())
+                git("commit", "-qm", f"Fictional generated update {index + 1}")
+                checkout = Path(directory) / f"checkout-{index}"
+                git("clone", "--quiet", "--no-hardlinks", str(root), str(checkout))
+                restored = load_json(checkout / "output/data/health.json")
+                restored_path = self.assert_saved_matchup_check(checkout, restored)
+                self.assertEqual(restored_path.read_bytes(), (root / name).read_bytes())
+                self.assertEqual((checkout / legacy.relative_to(root)).read_bytes(), original_legacy)
+                for previous, original in saved.items():
+                    self.assertEqual((checkout / previous).read_bytes(), original, previous)
+                saved.update({path.relative_to(checkout).as_posix(): path.read_bytes()
+                              for path in (checkout / "data").rglob("*.json.gz")})
+                self.assertEqual(git("status", "--porcelain", "--untracked-files=no"), "")
+
+    def assets(self, root):
+        base = root / "output/data/selection-grading"
+        pointer = load_json(base / "latest.json")
+        summary, rows, outcomes = selection_publication.publication_contents(base, pointer)
+        return pointer, summary, rows, outcomes
+
+    def test_existing_live_pipeline_updates_all_ten_and_freezes_checkpoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, _ = self.run_live(root)
+            pointer, _, _, outcomes = self.assets(root)
+            original_assets = {path: path.read_bytes() for path in (root / "output/data/selection-grading" / pointer["report_id"]).glob("*.json")}
+            self.assertEqual(set(first["categories"]), {"rec", "rush_att", "pass_yd"})
+            self.assertEqual(len(outcomes), 10)
+            self.assertIn("pass_int", {row["category"] for row in outcomes})  # Recorded No Lean is still observed.
+            normal = [read(path) for path in (root / "data/outcomes").rglob("*.json.gz")]
+            self.assertEqual(sorted(len(payload["rows"]) for payload in normal), [3, 7])
+            self.assertEqual([payload["week_game_populations"] for payload in normal if len(payload["rows"]) == 7], [[]])
+            second, health = self.run_live(root, self.AT + timedelta(minutes=90))
+            latest, summary, rows, _ = self.assets(root)
+            self.assertNotEqual(pointer["report_id"], latest["report_id"])
+            self.assertEqual(health["phase2"]["selection_report_sha256"], latest["report_id"])
+            self.assertEqual(second["coverage"]["unique_opportunities"], 3)
+            self.assertEqual(summary["input_binding"], "NOT_YET_GIT_COMMITTED")
+            self.assertTrue(all(path.read_bytes() == raw for path, raw in original_assets.items()))
+            frozen = [row for path in (root / "data/verification/selection-grading/decisions").rglob("*.json.gz") for row in read(path)["rows"]]
+            self.assertEqual(len(frozen), 20)
+            self.assertEqual({row["checkpoint"] for row in frozen}, {"24h"})
+            self.assertTrue(all(row["observation_age_seconds"] == 3600 for row in frozen))
+            self.assertTrue(all(row["checkpoint"] != "history" for row in frozen))
+            self.assertEqual(sum(row["checkpoint"] == "24h" for row in rows), 20)
+            self.assertFalse((root / "data/week_populations").exists())
+
+    def test_all_ten_saved_finals_and_no_lean_appear_in_minimal_outcome_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root)
+            data = load_json(root / "output/data/week.json")
+            data["games"][0].update(state="post", detail="Final")
+            atomic_json(root / "output/data/week.json", data)
+            final_at = self.AT + timedelta(hours=30)
+            atomic_json(root / "output/data/game-status.json", {"weeks": {"2026_05": fictional_status(data["games"], collected_at=final_at)}})
+            identities = selection_publication.all_ten_outcome_identities(root, final_at)
+            report, _ = build_scorecard(root, final_at, additional_outcome_pairs=identities)
+            self.assertEqual(set(report["categories"]), {"rec", "rush_att", "pass_yd"})
+            publish_selection_report(root, final_at)
+            _, summary, rows, outcomes = self.assets(root)
+            self.assertEqual(len(outcomes), 10)
+            self.assertTrue(all(row["status"] == "resolved" for row in outcomes))
+            self.assertTrue(all(row["final_confirmed"] is True and row["outcome_conflict"] is False for row in outcomes))
+            self.assertTrue(all(row["selected_outcome_row_sha256"] for row in outcomes))
+            self.assertTrue(any(row["category"] == "pass_int" for row in outcomes))
+            self.assertTrue(any(row["result"] in ("win", "loss", "push") for row in rows))
+            self.assertEqual(summary["coverage"]["independently_qualified_completed_weeks"], [])
+
+    def test_dirty_generated_git_inputs_use_exact_staged_bytes(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as external:
+            root = Path(directory); self.run_live(root)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "output/data/week.json"], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Fictional Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "Fictional input pin"], check=True)
+            data = load_json(root / "output/data/week.json"); data["fixture_uncommitted"] = True
+            atomic_json(root / "output/data/week.json", data)
+            before = (root / "output/data/week.json").read_bytes()
+            with self.assertRaisesRegex(ValueError, "declared Git pin"):
+                run_report([root], Path(external), now=self.AT)
+            publish_selection_report(root, self.AT)
+            _, summary, _, _ = self.assets(root)
+            self.assertEqual(summary["input_binding"], "NOT_YET_GIT_COMMITTED")
+            self.assertEqual((root / "output/data/week.json").read_bytes(), before)
+
+    def test_frozen_decisions_remain_reportable_when_original_input_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root); self.run_live(root, self.AT + timedelta(minutes=90))
+            before = self.assets(root)[2]
+            frozen_ids = {row["decision_sha256"] for row in before if row["checkpoint"] == "24h"}
+            for path in (root / "data/forward").rglob("*.json.gz"):
+                path.unlink()  # Fictional loss simulation, never real evidence.
+            publish_selection_report(root, self.AT + timedelta(hours=2))
+            after = self.assets(root)[2]
+            self.assertEqual({row["decision_sha256"] for row in after}, frozen_ids)
+
+    def test_unreadable_mandatory_outcome_keeps_latest_bytes_and_clock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root)
+            pointer = root / "output/data/selection-grading/latest.json"
+            before = pointer.read_bytes()
+            (root / "data/outcomes/2026/w05/unreadable.json.gz").write_bytes(b"FICTIONAL invalid gzip")
+            with self.assertRaises((ValueError, OSError, EOFError)):
+                publish_selection_report(root, self.AT + timedelta(minutes=1))
+            self.assertEqual(pointer.read_bytes(), before)
+
+    def test_nested_private_metadata_is_never_exported_and_poisoned_fields_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root)
+            pointer = root / "output/data/selection-grading/latest.json"
+            before = pointer.read_bytes()
+            original = selection_publication.run_report
+            def poisoned(*args, **kwargs):
+                report, path = original(*args, **kwargs)
+                report["rows"][0]["outcome_observations"] = [{"cookie": "FICTIONAL_PRIVATE_VALUE"}]
+                return report, path
+            with patch.object(selection_publication, "run_report", side_effect=poisoned):
+                with self.assertRaises(ValueError):
+                    publish_selection_report(root, self.AT)
+            self.assertEqual(pointer.read_bytes(), before)
+            exported = b"".join(path.read_bytes() for path in (root / "output/data/selection-grading").rglob("*.json"))
+            self.assertNotIn(b"FICTIONAL_PRIVATE_VALUE", exported)
+            self.assertNotIn(b"/workspace/", exported)
+            self.assertNotIn(b"stats_entry", exported)
+            self.assertNotIn(b"source_observations", exported)
+
+    def test_rehashed_future_frozen_state_cannot_advance_latest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root); self.run_live(root, self.AT + timedelta(minutes=90))
+            latest = root / "output/data/selection-grading/latest.json"; before = latest.read_bytes()
+            path = next((root / "data/verification/selection-grading/decisions").rglob("*.json.gz"))
+            payload = read(path)
+            payload["rows"][0]["collected_at"] = stamp(self.AT + timedelta(days=10))
+            payload["rows"][0].pop("decision_sha256")
+            payload["rows"][0]["decision_sha256"] = digest(payload["rows"][0])
+            write(root, "verification/selection-grading/decisions", payload)
+            with self.assertRaises(ValueError):
+                publish_selection_report(root, self.AT + timedelta(hours=2))
+            self.assertEqual(latest.read_bytes(), before)
+
+    def test_asset_path_traversal_and_rehashed_bad_summary_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root)
+            base = root / "output/data/selection-grading"; pointer = load_json(base / "latest.json")
+            altered = copy.deepcopy(pointer); altered["summary"]["path"] = "../private.json"
+            with self.assertRaises(ValueError): validate_publication(base, altered)
+            altered = copy.deepcopy(pointer)
+            path = base / pointer["summary"]["path"]; original = path.read_bytes()
+            summary = load_json(path)
+            part = summary["summary_partitions"][0]
+            value = fixture_part(base, part, "summary.json"); value["tables"][0]["unique_games"] += 1
+            replace_fixture_part(base, part, "summary.json", value)
+            atomic_json(path, summary)
+            altered["summary"].update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), decoded_bytes=len(path.read_bytes()))
+            with self.assertRaises(ValueError): validate_publication(base, altered)
+            path.write_bytes(original)  # Restore disposable malicious-fixture bytes only.
+
+    def test_symlinked_state_or_publication_parents_cannot_escape_root(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            root = Path(directory); prepare(root, mode="live", at=self.AT, all_ten=True)
+            target = root / "data/verification/selection-grading"
+            target.symlink_to(Path(outside), target_is_directory=True)
+            with self.assertRaises(ValueError): publish_selection_report(root, self.AT)
+            self.assertEqual(list(Path(outside).iterdir()), [])
+
+    def test_rehashed_state_cannot_change_category_evidence_membership_or_period(self):
+        for alteration in ("category", "evidence", "period", "boolean_membership", "clock_basis"):
+            with self.subTest(alteration=alteration), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); self.run_live(root); self.run_live(root, self.AT + timedelta(minutes=90))
+                latest = root / "output/data/selection-grading/latest.json"; before = latest.read_bytes()
+                payload = read(next((root / "data/verification/selection-grading/decisions").rglob("*.json.gz")))
+                row = next(row for row in payload["rows"] if row["action"] == "SELECT")
+                if alteration == "category": row["category"] = "not_pickable"
+                elif alteration == "evidence":
+                    row.update(observation_receipt_sha256=None, observation_row_sha256=None, observation_receipt_refs=[])
+                elif alteration == "period": payload["week"] = 9
+                elif alteration == "boolean_membership": row["top_over"] = "true"
+                else: row["selection_clock_basis"] = "ARCHIVE_COMMIT_TIME"
+                row.pop("decision_sha256"); row["decision_sha256"] = digest(row)
+                write(root, "verification/selection-grading/decisions", payload)
+                with self.assertRaises(ValueError): publish_selection_report(root, self.AT + timedelta(hours=2))
+                self.assertEqual(latest.read_bytes(), before)
+
+    def test_final_index_without_selected_evidence_cannot_advance_latest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root)
+            latest = root / "output/data/selection-grading/latest.json"; before = latest.read_bytes()
+            original = selection_publication.run_report
+            def unbound(*args, **kwargs):
+                report, path = original(*args, **kwargs)
+                record = report["final_outcomes"][0]
+                record.update(status="resolved", actual=1, game_state="post", final_confirmed=True,
+                              outcome_conflict=False, outcome_selection="confirmed",
+                              selected_outcome_provenance_sha256=None,
+                              collected_at=stamp(self.AT + timedelta(hours=30)))
+                return report, path
+            with patch.object(selection_publication, "run_report", side_effect=unbound):
+                with self.assertRaises(ValueError): publish_selection_report(root, self.AT)
+            self.assertEqual(latest.read_bytes(), before)
+
+    def test_realistic_population_uses_compact_exact_membership_and_bounded_chunks(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as analysis:
+            root = Path(directory); self.run_live(root)
+            report, _ = run_report([root], Path(analysis), now=self.AT,
+                                   expected_hashes=selection_publication.engine_hashes(root))
+            template = next(row for row in report["rows"] if row["action"] == "SELECT")
+            categories = json.loads((ROOT / "config/timing-policy.json").read_text())["categories"]
+            rows = []
+            for index in range(18292):
+                row = dict(template, player_id=f"fictional-population-{index}",
+                           game_id=f"fictional-game-{index % 14}", category=categories[index % 10],
+                           checkpoint=("history", "24h", "6h", "90m")[index % 4],
+                           side="over" if index % 2 else "under", top_at_decision=index % 12 == 0)
+                row["decision_sha256"] = digest(row)
+                rows.append(row)
+            report.update(rows=rows, summary=summarize(rows))
+            summary, projected, _, chunks, _ = selection_publication._projection(
+                report, source_sha="1" * 40, input_digest="2" * 64)
+            self.assertEqual(len(projected), 18292)
+            self.assertLess(len(selection_publication.canonical(summary)), 12 * 1024 * 1024)
+            self.assertTrue(all(len(selection_publication.canonical(chunk)) < 2 * 1024 * 1024 for chunk in chunks))
+            for table in summary["summary"]["tables"]:
+                self.assertNotIn("row_ids", table)
+                refs = [projected[position]["decision_sha256"] for position in table["row_positions"]]
+                self.assertEqual(digest(refs), table["row_ids_sha256"])
+                self.assertEqual(len(refs), table["rows"])
+                self.assertEqual(table["row_positions"], sorted(set(table["row_positions"])))
+                self.assertEqual(sum(table["coverage_reason_counts"].values()), table["no_action"])
+
+    def test_equivalent_saved_clock_formats_preserve_frozen_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root); self.run_live(root, self.AT + timedelta(minutes=90))
+            payload = read(next((root / "data/verification/selection-grading/decisions").rglob("*.json.gz")))
+            row = next(row for row in payload["rows"] if row["action"] == "SELECT")
+            row["observation_saved_kickoff"] = row["kickoff"].replace("Z", "+00:00")
+            row.pop("decision_sha256"); row["decision_sha256"] = digest(row)
+            selection_publication._ledger(payload, load_json(root / "config/timing-policy.json"),
+                                          selection_publication.engine_hashes(root), self.AT + timedelta(hours=2))
+
+    def test_unbound_additional_identities_do_not_block_valid_siblings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root)
+            original = selection_publication.build_decisions
+            def unbound(*args, **kwargs):
+                decisions, coverage = original(*args, **kwargs)
+                template = decisions[0]
+                bad = [dict(template, player_id="fictional-ambiguous", kickoff=None),
+                       dict(template, player_id="fictional-team-unknown", team=None),
+                       dict(template, player_id="fictional-unbound", observation_receipt_sha256=None,
+                            observation_row_sha256=None)]
+                return decisions + bad, coverage
+            coverage = {}
+            with patch.object(selection_publication, "build_decisions", side_effect=unbound):
+                identities = selection_publication.all_ten_outcome_identities(root, self.AT, coverage=coverage)
+            self.assertEqual(len(identities), 10)
+            self.assertEqual(coverage["unique_recorded_identities"], 13)
+            self.assertEqual(coverage["excluded_unbound_identities"], {
+                "ambiguous_saved_kickoff": 1, "unknown_recorded_team": 1, "no_bound_original_observation": 1})
+
+    def locality_report(self, root, analysis):
+        self.run_live(root)
+        report, _ = run_report([root], analysis, now=self.AT,
+                               expected_hashes=selection_publication.engine_hashes(root))
+        template = next(row for row in report["rows"] if row["action"] == "SELECT")
+        rows = []
+        # Twenty logical blocks, forty opportunities each: exercise
+        # every key field and 250-row boundaries without a large test population.
+        for index in range(800):
+            block, member = divmod(index, 40)
+            result = ("win", "loss", "push", "dnp", "pending", "unresolved", "no_action")[member % 7]
+            side = None if result == "no_action" else ("over" if member % 2 else "under")
+            top = block % 3 == 0 and side is not None
+            row = dict(template, player_id=f"fictional-layout-{index}",
+                       game_id=f"fictional-layout-game-{block % 14}",
+                       provenance_class=("local_pregame_membership_observation" if block < 10
+                                         else "inherited_archive_decision"),
+                       model_version=f"fictional-layout-model-{block % 2}",
+                       engine_sha256=None if block % 5 == 0 else digest({"fictional_engine": block % 2}),
+                       season=2025 + block % 2, week=5 + block % 3,
+                       cohort="top_picks" if block % 3 == 0 else "all_qualifying_leans",
+                       checkpoint=("history", "24h", "6h", "90m")[block % 4],
+                       category=("rec", "rush_att", "pass_yd")[block % 3],
+                       side=side, top_over=bool(top and side == "over"),
+                       top_under=bool(top and side == "under"), top_at_decision=top,
+                       action="NO_ACTION" if result == "no_action" else "SELECT",
+                       reason="source_unavailable" if result == "no_action" else "recorded_membership",
+                       result=result, line=None if side is None else 4.0 if result == "push" else 4.5,
+                       actual=(4 if result == "push" else
+                               (6 if side == "over" else 3) if result == "win" else
+                               (3 if side == "over" else 6) if result == "loss" else None))
+            row.pop("decision_sha256")
+            row["decision_sha256"] = digest(row)
+            rows.append(row)
+        report.update(rows=rows, summary=summarize(rows))
+        return report
+
+    @staticmethod
+    def legacy_layout(projected):
+        """Independent test-only re-encoding of the retained decision-ID layout."""
+        summary, original_rows, outcomes, _, _ = copy.deepcopy(projected)
+        rows = sorted(original_rows, key=lambda row: row["decision_sha256"])
+        positions = {row["decision_sha256"]: index for index, row in enumerate(rows)}
+        for table in summary["summary"]["tables"]:
+            members = [original_rows[position]["decision_sha256"] for position in table["row_positions"]]
+            table["row_positions"] = sorted(positions[member] for member in members)
+            table["row_chunks"] = sorted({position // selection_publication.CHUNK_SIZE
+                                           for position in table["row_positions"]})
+            table["row_ids_sha256"] = digest([rows[position]["decision_sha256"]
+                                               for position in table["row_positions"]])
+        chunks = [rows[index:index + selection_publication.CHUNK_SIZE]
+                  for index in range(0, len(rows), selection_publication.CHUNK_SIZE)]
+        public_id = digest({"summary": summary, "rows": rows, "outcomes": outcomes})
+        return summary, rows, outcomes, chunks, public_id
+
+    @staticmethod
+    def write_layout(base, projected, at):
+        """Write ordinary v1 assets; validation is the unchanged real reader."""
+        summary, rows, outcomes, chunks, public_id = projected
+        def save(name, value):
+            raw = selection_publication.canonical(value) + b"\n"
+            selection_publication._create_file(base / public_id / name, raw)
+            return {"path": public_id + "/" + name, "sha256": hashlib.sha256(raw).hexdigest()}
+        descriptors = [dict(save(f"rows-{index:04d}.json", {
+            "schema_version": selection_publication.ROWS_VERSION,
+            "report_id": public_id, "rows": chunk}), count=len(chunk))
+            for index, chunk in enumerate(chunks)]
+        pointer = {"schema_version": selection_publication.POINTER_VERSION,
+                   "report_id": public_id, "generated_at": stamp(at), "row_count": len(rows),
+                   "summary": save("summary.json", dict(summary, report_id=public_id)),
+                   "rows": descriptors,
+                   "outcomes": save("outcomes.json", {
+                       "schema_version": selection_publication.OUTCOMES_VERSION,
+                       "report_id": public_id, "outcomes": outcomes})}
+        validate_publication(base, pointer)
+        return pointer
+
+    def test_logical_layout_is_deterministic_and_v1_memberships_are_equivalent(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as analysis:
+            root = Path(directory)
+            report = self.locality_report(root, Path(analysis))
+            kwargs = {"source_sha": "1" * 40, "input_digest": "2" * 64}
+            grouped = selection_publication._projection(report, **kwargs)
+            for permutation in (list(reversed(report["rows"])), report["rows"][237:] + report["rows"][:237]):
+                permuted = dict(report, rows=permutation, summary=summarize(permutation))
+                self.assertEqual(selection_publication._projection(permuted, **kwargs), grouped)
+            legacy = self.legacy_layout(grouped)
+            summary, rows, outcomes, chunks, public_id = grouped
+            self.assertEqual(len(rows), 800)
+            self.assertEqual([len(chunk) for chunk in chunks], [250, 250, 250, 50])
+            self.assertNotEqual([row["decision_sha256"] for row in rows],
+                                [row["decision_sha256"] for row in legacy[1]])
+            self.assertNotEqual(public_id, legacy[4])
+            self.assertEqual({row["decision_sha256"]: row for row in rows},
+                             {row["decision_sha256"]: row for row in legacy[1]})
+            self.assertTrue(any(row["engine_sha256"] is None for row in rows))
+            self.assertTrue(any(row["side"] is None for row in rows))
+            source_by_id = {row["decision_sha256"]: row for row in report["rows"]}
+            for row in rows:
+                self.assertEqual(row, {key: value for key, value in source_by_id[row["decision_sha256"]].items()
+                                       if key in selection_publication.ROW_FIELDS})
+            self.assertEqual(outcomes, legacy[2])
+            old_tables = {table["summary_id"]: table for table in legacy[0]["summary"]["tables"]}
+            physical = {"row_positions", "row_chunks", "row_ids_sha256"}
+            for table in summary["summary"]["tables"]:
+                old = old_tables[table["summary_id"]]
+                self.assertEqual({key: value for key, value in table.items() if key not in physical},
+                                 {key: value for key, value in old.items() if key not in physical})
+                expected = {legacy[1][position]["decision_sha256"] for position in old["row_positions"]}
+                retrieved = [rows[position] for position in table["row_positions"]]
+                self.assertEqual({row["decision_sha256"] for row in retrieved}, expected)
+                self.assertEqual(digest([row["decision_sha256"] for row in retrieved]), table["row_ids_sha256"])
+                self.assertEqual(table["row_chunks"], sorted({position // 250 for position in table["row_positions"]}))
+                # Read precisely the declared chunks, as the browser does; then
+                # select positions. Physical order cannot change a group grade.
+                loaded = {chunk_id * 250 + offset: row
+                          for chunk_id in table["row_chunks"]
+                          for offset, row in enumerate(chunks[chunk_id])}
+                self.assertEqual([loaded[position] for position in table["row_positions"]], retrieved)
+                self.assertLessEqual(len(table["row_chunks"]), 4)
+            base = root / "fictional-layout-assets"
+            old_pointer = self.write_layout(base, legacy, self.AT)
+            old_bytes = {path: path.read_bytes() for path in (base / legacy[4]).glob("*.json")}
+            new_pointer = self.write_layout(base, grouped, self.AT)
+            validate_publication(base, old_pointer)
+            validate_publication(base, new_pointer)
+            self.assertTrue(all(path.read_bytes() == raw for path, raw in old_bytes.items()))
+
+    def test_real_publisher_retains_legacy_assets_and_pointer_when_advancing_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.run_live(root)
+            actual_projection = selection_publication._projection
+            def legacy_projection(*args, **kwargs):
+                return self.legacy_layout(actual_projection(*args, **kwargs))
+            with patch.object(selection_publication, "_projection", side_effect=legacy_projection):
+                publish_selection_report(root, self.AT, source_sha="1" * 40)
+            base = root / "output/data/selection-grading"
+            old_pointer = load_json(base / "latest.json")
+            old_bytes = {path: path.read_bytes() for path in (base / old_pointer["report_id"]).glob("*.json")}
+            _, _, old_rows, old_outcomes = self.assets(root)
+            publish_selection_report(root, self.AT, source_sha="1" * 40)
+            pointer, _, rows, outcomes = self.assets(root)
+            self.assertNotEqual(pointer["report_id"], old_pointer["report_id"])
+            self.assertEqual({row["decision_sha256"]: row for row in rows},
+                             {row["decision_sha256"]: row for row in old_rows})
+            self.assertEqual(outcomes, old_outcomes)
+            self.assertTrue(all(path.read_bytes() == raw for path, raw in old_bytes.items()))
+            validate_publication(base, old_pointer)
+
+    def test_representative_groups_have_exact_bounded_logical_chunk_requests(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as analysis:
+            root = Path(directory)
+            report = self.locality_report(root, Path(analysis))
+            template = report["rows"][0]
+            rows = []
+            for checkpoint in ("history", "24h"):
+                for category in ("rec", "rush_att", "pass_yd"):
+                    for index in range(100):
+                        side = "over" if index % 2 else "under"
+                        win = index % 3 != 0
+                        top = index < 12
+                        row = dict(template, player_id=f"fictional-bounded-{checkpoint}-{category}-{index}",
+                                   season=2026, week=6, provenance_class="local_pregame_membership_observation",
+                                   model_version="original_sleeper_matchup_baseline", engine_sha256=digest({"fictional_engine": 1}),
+                                   cohort="all_qualifying_leans", checkpoint=checkpoint, category=category,
+                                   action="SELECT", reason="recorded_membership", side=side, line=4.5,
+                                   result="win" if win else "loss", actual=6 if (side == "over") == win else 3,
+                                   top_at_decision=top, top_over=top and side == "over", top_under=top and side == "under")
+                        row.pop("decision_sha256")
+                        row["decision_sha256"] = digest(row)
+                        rows.append(row)
+            report.update(rows=rows, summary=summarize(rows))
+            grouped = selection_publication._projection(report, source_sha="1" * 40, input_digest="2" * 64)
+            legacy = self.legacy_layout(grouped)
+            old = {table["summary_id"]: table for table in legacy[0]["summary"]["tables"]}
+            self.assertEqual([len(chunk) for chunk in grouped[3]], [250, 250, 100])
+            dimensions, improved = set(), 0
+            for table in grouped[0]["summary"]["tables"]:
+                if (table["view"] != "all_qualifying_leans" or table["period"] != "2026-w06"
+                        or table["dimension"] not in ("overall", "category", "side", "checkpoint")):
+                    continue
+                dimensions.add(table["dimension"])
+                self.assertLessEqual(len(table["row_chunks"]), 2)
+                improved += len(table["row_chunks"]) < len(old[table["summary_id"]]["row_chunks"])
+                loaded = {chunk_id * 250 + offset: row
+                          for chunk_id in table["row_chunks"]
+                          for offset, row in enumerate(grouped[3][chunk_id])}
+                retrieved = [loaded[position] for position in table["row_positions"]]
+                self.assertEqual(len(retrieved), table["rows"])
+                self.assertEqual({row["decision_sha256"] for row in retrieved},
+                                 {legacy[1][position]["decision_sha256"]
+                                  for position in old[table["summary_id"]]["row_positions"]})
+                self.assertEqual(digest([row["decision_sha256"] for row in retrieved]), table["row_ids_sha256"])
+            self.assertEqual(dimensions, {"overall", "category", "side", "checkpoint"})
+            self.assertGreater(improved, 0)
+
+
+class PartitionedPublicationTests(unittest.TestCase):
+    AT = PublicSelectionPipelineTests.AT
+    run_live = PublicSelectionPipelineTests.run_live
+    locality_report = PublicSelectionPipelineTests.locality_report
+    assets = PublicSelectionPipelineTests.assets
+    # Inherit fixtures only; unittest's normal discovery also retains all original
+    # end-to-end checks on the production publisher above.
+    def projection(self, directory):
+        root = Path(directory) / "inputs"
+        report = self.locality_report(root, Path(directory) / "analysis")
+        return root, selection_publication._projection(report, source_sha="1" * 40, input_digest="2" * 64)
+
+    def test_partition_roundtrip_exact_semantics_determinism_and_legacy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, projected = self.projection(directory)
+            summary, rows, outcomes, chunks, _ = projected
+            base = root / "output/data/selection-grading"
+            old = selection_publication.prepare_publication(base, summary, rows, outcomes, chunks, self.AT, partitioned=False)
+            retained = {p: p.read_bytes() for p in base.rglob("*.json")}
+            new = selection_publication.prepare_publication(base, summary, rows, outcomes, chunks, self.AT)
+            self.assertNotEqual(old["report_id"], new["report_id"])
+            expected = dict(validate_publication(base, old)); expected.pop("report_id")
+            actual = dict(validate_publication(base, new)); actual.pop("report_id")
+            self.assertEqual(actual, expected)
+            permuted = dict(summary, summary=dict(summary["summary"], tables=list(reversed(summary["summary"]["tables"]))))
+            self.assertEqual(selection_publication.prepare_publication(base, permuted, rows, list(reversed(outcomes)), chunks, self.AT), new)
+            self.assertTrue(all(p.read_bytes() == raw for p, raw in retained.items()))
+            index = load_json(base / new["summary"]["path"])
+            for part in index["summary_partitions"]:
+                self.assertEqual(part["path"], part["sha256"] + "/summary.json")
+                self.assertLessEqual(part["decoded_bytes"], selection_publication.SUMMARY_LIMIT)
+            self.assertLessEqual(new["summary"]["decoded_bytes"], selection_publication.INDEX_LIMIT)
+            # Exercise the legacy no-working-set allowlist on a public-only
+            # fixture. The active updater fixture has a separate sealed pointer;
+            # replacing that pointer here would manufacture a mixed generation.
+            public_root = root / "legacy-public"
+            public_base = public_root / "output/data/selection-grading"
+            shutil.copytree(base, public_base)
+            (public_base / "hosting.json").unlink(missing_ok=True)
+            with patch.object(phase2_capture, "read_phase2", return_value=False):
+                staged = phase2_capture.stage_pages(public_root, root / "pages")
+            for path in public_base.rglob("*.json"):
+                self.assertEqual((staged / path.relative_to(public_root / "output")).read_bytes(), path.read_bytes())
+            cold = root / "clean-copy"; shutil.copytree(base, cold)
+            self.assertEqual(validate_publication(cold, new), validate_publication(base, new))
+
+    def test_producer_checks_every_partition_and_rejects_tampered_contexts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, projected = self.projection(directory); base = root / "assets"
+            pointer = selection_publication.prepare_publication(base, *projected[:4], self.AT)
+            descriptor = pointer["summary"]; path = base / descriptor["path"]
+            original = path.read_bytes(); index = load_json(path)
+            # A cold producer must reject corruption even in a non-default part.
+            part = index["summary_partitions"][-1]; target = base / part["path"]; raw = target.read_bytes()
+            for replacement in (b"{}", raw + b" "):
+                target.write_bytes(replacement)
+                with self.assertRaises(IntegrityError): validate_publication(base, pointer)
+            target.unlink()
+            with self.assertRaises((FileNotFoundError, IntegrityError)): validate_publication(base, pointer)
+            target.write_bytes(raw)
+            for change in ("duplicate", "period", "context", "generation", "membership"):
+                altered = copy.deepcopy(index)
+                if change == "duplicate": altered["summary_partitions"].append(altered["summary_partitions"][0])
+                else:
+                    part = altered["summary_partitions"][-1]
+                    payload = load_json(base / part["path"])
+                    if change == "period": payload["period"] = "2026-w18"
+                    elif change == "context": payload["context_id"] = "0" * 64
+                    elif change == "generation": payload["report_id"] = "0" * 64
+                    else: payload["tables"][0]["row_positions"] = []
+                    body = selection_publication.canonical(payload) + b"\n"; sha = hashlib.sha256(body).hexdigest()
+                    selection_publication._create_file(base / sha / "summary.json", body)
+                    part.update(path=sha + "/summary.json", sha256=sha, decoded_bytes=len(body))
+                atomic_json(path, altered); changed = copy.deepcopy(pointer)
+                changed["summary"].update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), decoded_bytes=len(path.read_bytes()))
+                with self.assertRaises(IntegrityError): validate_publication(base, changed)
+            path.write_bytes(original)
+            validate_publication(base, pointer)
+
+    def test_outcome_period_indexes_validate_all_records_and_exact_types(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root)
+            pointer, _, _, _ = self.assets(root); base = root / "output/data/selection-grading"
+            indexpath = base / pointer["outcomes"]["path"]; original = indexpath.read_bytes(); index = load_json(indexpath)
+            self.assertTrue(index["periods"])
+            for change in ("duplicate", "wrong_week", "bool_week", "wrong_generation", "wrong_count"):
+                altered = copy.deepcopy(index)
+                if change == "duplicate": altered["periods"].append(altered["periods"][0])
+                elif change == "wrong_count": altered["outcome_count"] += 1
+                else:
+                    part = altered["periods"][0]; payload = fixture_part(base, part, "outcomes.json")
+                    if change == "wrong_week": payload["week"] = 18
+                    elif change == "bool_week": payload["week"] = True
+                    else: payload["report_id"] = "0" * 64
+                    replace_fixture_part(base, part, "outcomes.json", payload)
+                atomic_json(indexpath, altered); changed = copy.deepcopy(pointer)
+                changed["outcomes"].update(sha256=hashlib.sha256(indexpath.read_bytes()).hexdigest(), decoded_bytes=len(indexpath.read_bytes()))
+                with self.assertRaises(IntegrityError): validate_publication(base, changed)
+            indexpath.write_bytes(original); validate_publication(base, pointer)
+
+    def test_partition_bounds_do_not_advance_previous_coherent_pointer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.run_live(root)
+            base = root / "output/data/selection-grading"; pointer = (base / "latest.json").read_bytes()
+            for constant in ("INDEX_LIMIT", "SUMMARY_LIMIT", "ROW_LIMIT"):
+                with patch.object(selection_publication, constant, 128), self.assertRaises(IntegrityError):
+                    publish_selection_report(root, self.AT + timedelta(seconds=1), source_sha="1" * 40)
+                self.assertEqual((base / "latest.json").read_bytes(), pointer)
+            summary = validate_publication(base, load_json(base / "latest.json"))
+            with self.assertRaisesRegex(IntegrityError, "chunk count"):
+                selection_publication.prepare_publication(base, summary, [], [], [[]] * 4001, self.AT)
+            validate_publication(base, load_json(base / "latest.json"))
+
+
+class CandidateRecordingPipelineTests(unittest.TestCase):
+    """Fictional native-file updater integration; no live collection or release."""
+    AT = datetime(2026, 10, 20, 12, tzinfo=timezone.utc)
+    KICKOFF = datetime(2026, 10, 23, 0, 15, tzinfo=timezone.utc)
+    REGISTRATION_SHA256 = "0ffd81a0d2708418d1d1b072cf9ce7750f42c554f04c2456f2a5206be199e0c6"
+
+    def setUp(self):
+        retained = self.enterContext(corrected.legacy_source(ROOT))
+        self.enterContext(patch.object(point_challenger, "ROOT", retained))
+
+    def registration(self, root):
+        path = root / "tools/rec_half_registration_v1.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "tools/rec_half_registration_v1.json", path)
+        return load_json(path)
+
+    def native(self, root, *, at=None, kickoff=None, week=7, raw=4.8, adjusted=5.2, no_lean=False):
+        """Use the retained real fixture and real native capture, never rename."""
+        for name in (*ENGINE_PATHS, "config/evaluation-policy.json"):
+            target = root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(corrected._legacy_blob(name, ROOT)) if name in ENGINE_PATHS else shutil.copyfile(ROOT / name, target)
+        at = at or self.AT
+        data, _ = reliability_fixture()
+        data.update(week=week, generated_at=stamp(at - timedelta(minutes=1)))
+        data["games"][0]["kickoff"] = stamp(kickoff or self.KICKOFF)
+        prop = data["players"][0]["props"][0]
+        prop.update(proj=raw, adj=adjusted)
+        data["picks"]["over"][0].update(proj=raw, adj=adjusted)
+        if no_lean:
+            prop.update(lean=None, line=None, line_from="ours")
+            data["picks"] = {"over": [], "under": []}
+        meta = {key: data[key] for key in ("season", "week", "generated_at")}
+        path, health = capture_baseline(data, meta, root, at, corrected.legacy_engine_hashes(ROOT), mode="live")
+        return path, health, data
+
+    def run_hook(self, root, path, *, created=True, at=None, completed=None):
+        at = at or self.AT + timedelta(seconds=1)
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return completed or at
+        with patch.object(phase2_capture, "datetime", Clock), patch.object(point_challenger, "datetime") as clock, \
+                patch("requests.sessions.Session.request", side_effect=AssertionError("No live HTTP")):
+            clock.now.side_effect = [at, completed or at]
+            return phase2_capture.run_point_candidate(root, path, baseline_created=created,
+                                                      code_commit="a" * 40)
+
+    def run_live(self, root, at=None):
+        at = at or self.AT
+        self.registration(root)
+        prepare(root, mode="live", at=at, kickoff_hours=(self.KICKOFF - at).total_seconds() / 3600,
+                all_ten=True, week=7)
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return at
+        with patch.object(phase2_capture, "datetime", Clock), patch.object(point_challenger, "datetime", Clock), \
+                patch("requests.sessions.Session.request", side_effect=AssertionError("No live HTTP")):
+            return run_capture(root, mode="live")
+
+    def candidate_paths(self, root):
+        return sorted((root / "data/verification/point-candidates/2026/w07").glob("*.json.gz"))
+
+    def test_official_registration_is_unchanged_not_regenerated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            registry = self.registration(Path(directory))
+            self.assertEqual(digest(registry), self.REGISTRATION_SHA256)
+            self.assertEqual(registry["registered_at"], "2026-10-16T19:36:46.224755Z")
+            self.assertEqual(registry["protocol"]["window"]["weeks"], list(range(7, 15)))
+            self.assertEqual(registry["recording_status"], "OFFLINE_NOT_ACTIVATED")
+            self.assertEqual(registry["protocol"]["recording"], "OFFLINE_ONLY_NO_UPDATER_HOOK")
+
+    def test_cli01_native_filename_reproduces_but_supported_saved_file_hook_works(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root)
+            path, health, _ = self.native(root)
+            original = path.read_bytes()
+            payload = read(path)
+            native_name = digest({"data": payload["input_sha256"], "engine": payload["engine_sha256"],
+                                  "mode": payload["mode"]}) + ".json.gz"
+            self.assertEqual(path.name, native_name)
+            self.assertNotEqual(path.name, digest(payload) + ".json.gz")
+            with self.assertRaisesRegex(ValueError, "Receipt filename digest mismatch"):
+                point_challenger._receipt(path)  # Frozen standalone CLI limitation stays visible.
+            self.assertEqual(phase2_capture.read_native_baseline(path, root, expected_hashes=corrected.legacy_engine_hashes(ROOT),
+                                                               now=self.AT), payload)
+            report, status = self.run_hook(root, path, created=health["capture_created"])
+            self.assertEqual(status["status"], "RECORDED")
+            candidate = read(root / status["candidate_receipt"])
+            self.assertEqual(candidate["baseline_payload_sha256"], digest(payload))
+            self.assertEqual(candidate["rows"][0]["candidate_projection"], 5.0)
+            self.assertEqual(report["coverage"]["unique_opportunities"], 1)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertFalse(status["continuous_recording_operational"])
+
+    def test_retry_reuses_first_saved_recording_and_actual_calculation_clocks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+            _, first = self.run_hook(root, path)
+            candidate_path = root / first["candidate_receipt"]; before = candidate_path.read_bytes()
+            with patch.object(point_challenger, "make_candidate", side_effect=AssertionError("Must not recalculate retry")):
+                _, retry = self.run_hook(root, path, created=False, at=self.AT + timedelta(minutes=5))
+            self.assertEqual(retry["status"], "REUSED_FIRST_RECORDING")
+            self.assertEqual(retry["candidate_receipt"], first["candidate_receipt"])
+            self.assertEqual(candidate_path.read_bytes(), before)
+            self.assertEqual(len(self.candidate_paths(root)), 1)
+            self.assertEqual(read(candidate_path)["calculation_started_at"], stamp(self.AT + timedelta(seconds=1)))
+
+    def test_restart_gap_is_explicitly_missed_and_next_new_observation_can_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+            with patch.object(point_challenger, "make_candidate", side_effect=AssertionError("Never backfill old baseline")):
+                report, missed = self.run_hook(root, path, created=False, at=self.AT + timedelta(minutes=5))
+            self.assertEqual(missed["status"], "MISSED_NOT_BACKFILLED")
+            self.assertIsNone(missed["candidate_receipt"])
+            self.assertEqual(report["status"], "NOT_RECORDED")
+            later_path, health, _ = self.native(root, at=self.AT + timedelta(minutes=10))
+            self.assertTrue(health["capture_created"])
+            _, recorded = self.run_hook(root, later_path, at=self.AT + timedelta(minutes=10, seconds=1))
+            self.assertEqual(recorded["status"], "RECORDED")
+            self.assertEqual(len(self.candidate_paths(root)), 1)
+            self.assertEqual(read(root / recorded["candidate_receipt"])["captured_at"], stamp(self.AT + timedelta(minutes=10)))
+
+    def test_successive_real_updater_entrypoints_persist_forecasts_without_rank_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, health = self.run_live(root)
+            prediction_bytes = (root / "output/data/week.json").read_bytes()
+            old_baseline = (root / health["receipt"]).read_bytes()
+            first_candidate = root / health["phase2"]["point_candidate"]["candidate_receipt"]
+            before = first_candidate.read_bytes()
+            self.assertEqual(first["point_candidate"]["coverage"]["unique_opportunities"], 1)
+            self.assertEqual(set(first["categories"]), {"rec", "rush_att", "pass_yd"})
+            expected_picks = load_json(root / "output/data/week.json")["picks"]
+            _, retry = self.run_hook(root, root / health["receipt"], created=False,
+                                     at=self.AT + timedelta(minutes=1))
+            self.assertEqual(retry["status"], "REUSED_FIRST_RECORDING")
+            self.assertEqual((root / "output/data/week.json").read_bytes(), prediction_bytes)
+            second, latest = self.run_live(root, self.AT + timedelta(minutes=10))
+            self.assertEqual(len(self.candidate_paths(root)), 2)
+            self.assertEqual(first_candidate.read_bytes(), before)
+            self.assertEqual((root / health["receipt"]).read_bytes(), old_baseline)
+            self.assertEqual(load_json(root / "output/data/week.json")["picks"], expected_picks)
+            self.assertEqual(second["point_candidate"]["coverage"]["unique_opportunities"], 1)
+            self.assertEqual(second["point_candidate"]["coverage"]["repeated_capture_rows"], 1)
+            self.assertFalse(latest["phase2"]["point_candidate"]["continuous_recording_operational"])
+            self.assertFalse(second["point_candidate"]["predictive_improvement_established"])
+            self.assertEqual(engine_hashes(root), corrected.legacy_engine_hashes(ROOT))
+
+    def test_saved_outcome_and_correction_re_evaluate_without_new_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+            _, first = self.run_hook(root, path)
+            candidate_path = root / first["candidate_receipt"]; original = candidate_path.read_bytes()
+            final_at = self.KICKOFF + timedelta(hours=5)
+            snapshot = saved_outcome(read(path), actual=6, collected=final_at)
+            write(root, "outcomes", snapshot)
+            report, status = self.run_hook(root, path, created=False, at=final_at)
+            self.assertEqual(status["status"], "REUSED_FIRST_RECORDING")
+            self.assertEqual(report["categories"]["rec"]["candidate"]["n"], 1)
+            self.assertEqual(report["categories"]["rec"]["candidate"]["mae"], 1.0)
+            self.assertEqual(read(root / status["report_receipt"]), report)
+            write(root, "outcomes", saved_outcome(read(path), actual=7, collected=final_at + timedelta(minutes=5)))
+            changed, newer = self.run_hook(root, path, created=False, at=final_at + timedelta(minutes=5))
+            self.assertEqual(changed["categories"]["rec"]["candidate"]["mae"], 2.0)
+            self.assertNotEqual(newer["report_receipt"], status["report_receipt"])
+            self.assertTrue((root / status["report_receipt"]).exists())
+            self.assertEqual(candidate_path.read_bytes(), original)
+            self.assertEqual(len(self.candidate_paths(root)), 1)
+
+    def test_missing_registration_preserves_baseline_only_behavior(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); path, _, _ = self.native(root); original = path.read_bytes()
+            report, status = self.run_hook(root, path)
+            self.assertIsNone(report)
+            self.assertEqual(status["status"], "NOT_CONFIGURED")
+            self.assertIsNone(status["candidate_receipt"])
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(self.candidate_paths(root), [])
+
+    def test_missing_registration_does_not_interrupt_existing_live_pipeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); prepare(root, mode="live", at=self.AT, all_ten=True, week=7)
+            class Clock(datetime):
+                @classmethod
+                def now(cls, tz=None): return CandidateRecordingPipelineTests.AT
+            with patch.object(phase2_capture, "datetime", Clock), patch("requests.sessions.Session.request", side_effect=AssertionError("No live HTTP")):
+                report, health = run_capture(root, mode="live")
+            self.assertEqual(health["phase2"]["point_candidate"]["status"], "NOT_CONFIGURED")
+            self.assertEqual(report["coverage"]["unique_opportunities"], 3)
+            self.assertTrue((root / "output/data/selection-grading/latest.json").exists())
+
+    def test_present_but_altered_or_malformed_registration_fails_closed(self):
+        for malformed in (False, True):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); registry = self.registration(root); path, _, _ = self.native(root)
+                target = root / "tools/rec_half_registration_v1.json"
+                if malformed:
+                    target.write_text("{broken", encoding="utf-8")
+                else:
+                    registry["recording_status"] = "ACTIVATED"
+                    atomic_json(target, registry)
+                with self.assertRaises(ValueError): self.run_hook(root, path)
+                self.assertEqual(self.candidate_paths(root), [])
+
+    def test_native_generic_filename_and_wrong_lane_are_not_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+            payload = read(path)
+            generic = path.with_name(digest(payload) + ".json.gz")
+            immutable_write(generic, payload)
+            with self.assertRaises(ValueError):
+                phase2_capture.read_native_baseline(generic, root, expected_hashes=corrected.legacy_engine_hashes(ROOT), now=self.AT)
+            replay_path = root / "data/replay/2026/w07" / path.name
+            replay_path.parent.mkdir(parents=True); shutil.copyfile(path, replay_path)
+            with self.assertRaises(ValueError):
+                phase2_capture.read_native_baseline(replay_path, root, expected_hashes=corrected.legacy_engine_hashes(ROOT), now=self.AT)
+
+    def test_native_envelope_and_missing_file_fail_without_candidate(self):
+        for broken in (False, True):
+            with self.subTest(broken=broken), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+                if broken: path.write_bytes(b"FICTIONAL invalid gzip")
+                else: path.unlink()  # Disposable fixture simulates interrupted evidence persistence.
+                with self.assertRaises((ValueError, OSError, EOFError)):
+                    self.run_hook(root, path)
+                self.assertEqual(self.candidate_paths(root), [])
+
+    def test_native_rehashed_wrong_engine_duplicate_identity_and_future_clock_rejected(self):
+        for alteration in ("engine", "duplicate", "future", "schema"):
+            with self.subTest(alteration=alteration), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+                payload = read(path)
+                if alteration == "engine": payload.update(engine_files={"foreign": "engine"}, engine_sha256=digest({"foreign": "engine"}))
+                elif alteration == "duplicate": payload["rows"].append(copy.deepcopy(payload["rows"][0]))
+                elif alteration == "future": payload["captured_at"] = stamp(self.AT + timedelta(days=1))
+                else: payload["schema_version"] = "unknown-baseline"
+                path.unlink()  # Rehashed malicious fixture, never a real historical receipt.
+                bad = path.with_name(digest({"data": payload["input_sha256"], "engine": payload["engine_sha256"],
+                                            "mode": payload["mode"]}) + ".json.gz")
+                immutable_write(bad, payload)
+                with self.assertRaises(ValueError): self.run_hook(root, bad)
+                self.assertEqual(self.candidate_paths(root), [])
+
+    def test_exact_or_after_kickoff_completion_is_retained_as_exclusion_not_forecast(self):
+        for late in (timedelta(), timedelta(seconds=1)):
+            with self.subTest(late=late), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+                report, status = self.run_hook(root, path, at=self.KICKOFF - timedelta(seconds=1),
+                                              completed=self.KICKOFF + late)
+                self.assertEqual(status["status"], "RECORDED_NO_ELIGIBLE_RECEPTIONS")
+                candidate = read(root / status["candidate_receipt"])
+                self.assertEqual(candidate["rows"], [])
+                self.assertEqual(candidate["coverage"]["excluded"], {"calculation_not_pregame": 1})
+                self.assertEqual(candidate["calculation_completed_at"], stamp(self.KICKOFF + late))
+                self.assertEqual(report["coverage"]["unique_opportunities"], 0)
+
+    def test_outside_window_does_not_silently_shift_registered_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); registry = self.registration(root)
+            path, _, _ = self.native(root, week=6)
+            _, status = self.run_hook(root, path)
+            self.assertEqual(status["status"], "OUTSIDE_FIXED_WINDOW")
+            self.assertEqual(self.candidate_paths(root), [])
+            self.assertEqual(load_json(root / "tools/rec_half_registration_v1.json"), registry)
+
+    def test_corrupted_saved_candidate_or_unavailable_original_blocks_evaluation(self):
+        for missing_source in (False, True):
+            with self.subTest(missing_source=missing_source), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+                _, status = self.run_hook(root, path)
+                if missing_source:
+                    path.unlink()
+                else:
+                    (root / status["candidate_receipt"]).write_bytes(b"FICTIONAL invalid saved candidate")
+                with self.assertRaises((ValueError, OSError, EOFError)):
+                    self.run_hook(root, path, created=False, at=self.AT + timedelta(minutes=1))
+
+    def test_replay_pipeline_never_calls_or_activates_point_hook(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); prepare(root)
+            with patch.object(phase2_capture, "run_point_candidate", side_effect=AssertionError("Replay must not record candidate")):
+                report, health = run_capture(root, mode="replay", replay_at=stamp(NOW))
+            self.assertEqual(report["evidence"], "REPLAY_TEST_NOT_PROSPECTIVE")
+            self.assertEqual(self.candidate_paths(root), [])
+            self.assertFalse((root / "data/forward").exists())
+
+    def test_no_lean_reference_forecast_retains_fraction_and_same_original_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root)
+            path, _, data = self.native(root, raw=.25, adjusted=1.0, no_lean=True)
+            report, status = self.run_hook(root, path)
+            row = read(root / status["candidate_receipt"])["rows"][0]
+            self.assertEqual(row["candidate_projection"], .625)
+            self.assertEqual(report["coverage"]["unique_opportunities"], 1)
+            self.assertIsNone(read(path)["rows"][0]["lean"])
+            self.assertEqual(read(path)["input_sha256"], digest(data))
+
+    def test_pre_registration_observation_is_not_relabelled_prospective(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root)
+            path, _, _ = self.native(root, at=datetime(2026, 10, 15, 12, tzinfo=timezone.utc))
+            report, status = self.run_hook(root, path)
+            self.assertEqual(status["status"], "PRIOR_REGISTRATION_OBSERVATION")
+            self.assertEqual(report["status"], "NOT_RECORDED")
+            self.assertEqual(self.candidate_paths(root), [])
+
+    def test_competing_substantive_candidate_for_same_observation_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); registry = self.registration(root); path, _, _ = self.native(root)
+            _, status = self.run_hook(root, path)
+            first = root / status["candidate_receipt"]; original = first.read_bytes()
+            with patch.object(point_challenger, "datetime") as clock:
+                clock.now.side_effect = [self.AT + timedelta(seconds=2), self.AT + timedelta(seconds=3)]
+                competing = point_challenger.make_candidate(read(path), registry, code_commit="a" * 40)
+            write(root, "verification/point-candidates", competing)
+            with self.assertRaisesRegex(ValueError, "Multiple candidate recordings"):
+                self.run_hook(root, path, created=False, at=self.AT + timedelta(seconds=4))
+            self.assertEqual(first.read_bytes(), original)
+
+    def test_candidate_is_calculated_before_shadow_and_heavy_outcome_reporting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); events = []
+            original_hook, original_shadow = phase2_capture.run_point_candidate, phase2_capture.make_shadow
+            original_scorecard = phase2_capture.build_scorecard
+            def hook(*args, **kwargs):
+                events.append("point")
+                self.assertFalse(kwargs["evaluate_saved"])
+                return original_hook(*args, **kwargs)
+            def shadow(*args, **kwargs):
+                events.append("shadow")
+                return original_shadow(*args, **kwargs)
+            def scorecard(*args, **kwargs):
+                events.append("outcomes")
+                return original_scorecard(*args, **kwargs)
+            with patch.object(phase2_capture, "run_point_candidate", side_effect=hook), \
+                    patch.object(phase2_capture, "make_shadow", side_effect=shadow), \
+                    patch.object(phase2_capture, "build_scorecard", side_effect=scorecard):
+                self.run_live(root)
+            self.assertEqual(events[:3], ["point", "shadow", "outcomes"])
+
+    def test_saved_unreadable_outcome_prevents_new_comparison_without_recalculating(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+            _, status = self.run_hook(root, path)
+            candidate = root / status["candidate_receipt"]; original = candidate.read_bytes()
+            bad = root / "data/outcomes/2026/w07" / ("0" * 64 + ".json.gz")
+            bad.parent.mkdir(parents=True); bad.write_bytes(b"FICTIONAL invalid outcome gzip")
+            with patch.object(point_challenger, "make_candidate", side_effect=AssertionError("Never recalculate")):
+                with self.assertRaises((ValueError, OSError, EOFError)):
+                    self.run_hook(root, path, created=False, at=self.KICKOFF + timedelta(hours=5))
+            self.assertEqual(candidate.read_bytes(), original)
+
+    def test_rehashed_invalid_candidate_sibling_cannot_hide_behind_valid_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.registration(root); path, _, _ = self.native(root)
+            _, status = self.run_hook(root, path)
+            original = read(root / status["candidate_receipt"])
+            invalid = copy.deepcopy(original)
+            invalid["protocol_version"] = "unsupported-protocol"
+            write(root, "verification/point-candidates", invalid)
+            with self.assertRaises(ValueError):
+                self.run_hook(root, path, created=False, at=self.AT + timedelta(minutes=1))
+            self.assertEqual(read(root / status["candidate_receipt"]), original)
+
+    def test_public_candidate_summary_is_bound_but_excludes_private_row_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); report, health = self.run_live(root)
+            local = read(root / health["phase2"]["point_candidate"]["report_receipt"])
+            public = report["point_candidate"]
+            self.assertEqual(public["report_payload_sha256"], digest(local))
+            self.assertEqual(public["coverage"], local["coverage"])
+            self.assertEqual(len(local["rows"]), 1)
+            self.assertNotIn("rows", public)  # Aggregate sample_context.rows is an allowed count.
+            self.assertEqual(public["schema_version"], "point-candidate-evaluation-summary-v1")
+            self.assertEqual(public["source_report_schema_version"], local["schema_version"])
+            for forbidden in ("outcome_observations", "selected_outcome_provenance", "cache_path", "source_observations"):
+                self.assertNotIn('"' + forbidden + '"', json.dumps(public))
+            self.assertNotIn("/workspace/", json.dumps(public))
+            # v1 aggregate publication deliberately excludes research records;
+            # the complete earlier comparison remains durable evidence.
+            aggregate = load_json(root / "output/data/forecast-scorecard.json")
+            self.assertEqual(aggregate["schema_version"], "forecast-scorecard-public-summary-v1")
+            self.assertNotIn("point_candidate", aggregate)
+            rich = read(root / health["phase2"]["rich_scorecard_receipt"])
+            self.assertEqual(rich["report"]["point_candidate"], public)
+
+
+    def test_supported_void_remains_visible_in_public_aggregate_counts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.registration(root)
+            path, health, _ = self.native(root)
+            self.run_hook(root, path, created=health["capture_created"])
+            final_at = self.KICKOFF + timedelta(hours=5)
+            write(root, "outcomes", saved_outcome(read(path), status="void", collected=final_at))
+            report, _ = self.run_hook(root, path, created=False, at=final_at)
+            public = phase2_capture._point_summary(report)
+            self.assertEqual(report["outcome_status"], {"void": 1})
+            self.assertEqual(public["outcome_status"], report["outcome_status"])
+            self.assertEqual(public["weekly"][0]["outcome_status"], {"void": 1})
+            self.assertEqual(public["categories"]["rec"]["candidate"]["n"], 0)
+
+
+class PartialOperationalPipelineTests(unittest.TestCase):
+    def configure(self, root):
+        (root / "tools").mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "tools/selection-strategies-v1.json", root / "tools/selection-strategies-v1.json")
+        from test_partial_week import fixture
+        data, proof, spec, registration = fixture(root)
+        for name in ("release-mode.json", "timing-policy.json", "sleeper-rules-provenance.json"):
+            target = root / "config" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / "config" / name, target)
+        _, _, policy = setup()
+        atomic_json(root / "config/evaluation-policy.json", policy)
+        spec["initial_board_receipt"] = read(root / registration)["initial_board_receipt"]
+        config = {"capture_enabled": True, "production_model": "original_sleeper_matchup_baseline",
+                  "challenger_production_enabled": False, "experimental_recording_enabled": False,
+                  "verification_mode": phase2_capture.partial_week.VERSION, "partial_week": spec}
+        atomic_json(root / "config/phase2.json", config)
+        for name in ("app.js", "index.html", "style.css", "reliability-ui.js", "recovery.html"):
+            shutil.copyfile(ROOT / "output" / name, root / "output" / name)
+        (root / "data/cache").mkdir(exist_ok=True)
+        atomic_json(root / "data/cache/stats_2026_06.json", {})
+        return data, proof, spec, registration
+
+    def run_partial(self, root, at=NOW):
+        from test_partial_week import status
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return at
+        data = load_json(root / "output/data/week.json")
+        with patch.object(phase2_capture, "datetime", Clock), \
+                patch.object(phase2_capture, "_closing_status", return_value=status(data, at)), \
+                patch.object(phase2_capture, "run_point_candidate", side_effect=AssertionError("Recording is inactive")), \
+                patch.object(phase2_capture, "make_shadow", side_effect=AssertionError("Shadow recording is inactive")):
+            return run_capture(root)
+
+    def test_complete_partial_updater_and_retry_are_coherent_and_experiments_inactive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, proof, spec, _ = self.configure(root)
+            board = (root / "output/data/week.json").read_bytes()
+            report, first = self.run_partial(root)
+            generation = phase2_capture.validate_generation(root)
+            self.assertEqual(generation["board_sha256"], digest(data))
+            self.assertEqual((root / "output/data/week.json").read_bytes(), board)
+            self.assertEqual(first["phase2"]["verification_mode"], "partial")
+            self.assertFalse(first["phase2"]["strict_full_board_verified"])
+            self.assertEqual(first["phase2"]["point_candidate"]["status"], "INACTIVE_OWNER_ACTIVATION_REQUIRED")
+            self.assertIsNone(first["phase2"]["shadow_receipt"])
+            originals = {path.relative_to(root): path.read_bytes() for path in (root / "data").rglob("*.json.gz")}
+            _, again = self.run_partial(root, NOW + timedelta(seconds=5))
+            self.assertFalse(again["capture_created"])
+            for name, raw in originals.items():
+                self.assertEqual((root / name).read_bytes(), raw)
+            summary = validate_publication(root / "output/data/selection-grading",
+                                           load_json(root / "output/data/selection-grading/latest.json"))
+            self.assertEqual((summary["schema_version"], summary["report_schema_version"]),
+                             ("selection-public-report-v6", "selection-report-v4"))
+            from accuracy_publication import validate_accuracy
+            validate_accuracy(summary["forecast_accuracy"])
+            aggregate = load_json(root / "output/data/forecast-scorecard.json")
+            rich = read(root / again["phase2"]["rich_scorecard_receipt"])
+            self.assertEqual(aggregate["report_sha256"], digest(rich["report"]))
+            self.assertEqual(set(aggregate["categories"]), {"rec", "rush_att", "pass_yd"})
+            self.assertNotIn("rows", aggregate)
+
+    def test_source_check_equivalence_does_not_qualify_changed_generation_data(self):
+        """Real source manifest and generation validators; no GitHub CI claim."""
+        import source_ci
+        # These static source bytes are checked independently of the fictional
+        # generation. API/runtime attestation is tested in test_source_ci.
+        before_source = source_ci.source(ROOT)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.configure(root)
+            _, health = self.run_partial(root)
+            phase2_capture.validate_generation(root)
+            previous = (root / "output/data/selection-grading/latest.json").read_bytes()
+            native = root / health["receipt"]
+            original = native.read_bytes()
+            native.write_bytes(b"FICTIONAL corrupt required native bytes")
+            # Identical passing source checks never substitute for current
+            # original/native/scope/completion/generation integrity checks.
+            self.assertEqual(source_ci.source(ROOT), before_source)
+            with self.assertRaises((IntegrityError, OSError, EOFError)):
+                phase2_capture.validate_generation(root)
+            self.assertEqual((root / "output/data/selection-grading/latest.json").read_bytes(), previous)
+            native.write_bytes(original)
+            phase2_capture.validate_generation(root)
+
+    def test_live_invalid_ranked_registry_fails_and_preserves_publication(self):
+        import selection_strategies as strategies
+        for variant in ("unknown_schema",):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.configure(root)
+                self.run_partial(root)
+                mutable = {name: (root / name).read_bytes() for name in
+                           ("output/data/health.json", "output/data/release-identity.json", "output/data/selection-grading/latest.json")}
+                originals = {p.relative_to(root): p.read_bytes() for p in (root / "data").rglob("*.json.gz")}
+                registry = root / strategies.POLICY_PATH
+                if variant == "missing": registry.unlink()
+                else:
+                    rules = load_json(registry); rules["schema_version"] = "unrecognized-selection-policy"
+                    atomic_json(registry, rules)
+                # Uses actual saved input/native/completion validators; only
+                # HTTP/status and the declared fictional clocks are substituted.
+                with self.assertRaises((IntegrityError, FileNotFoundError)):
+                    self.run_partial(root, NOW + timedelta(seconds=5))
+                for name, raw in mutable.items(): self.assertEqual((root / name).read_bytes(), raw)
+                for name, raw in originals.items(): self.assertEqual((root / name).read_bytes(), raw)
+
+    def test_failed_active_generation_retains_last_publication_and_failed_originals(self):
+        from test_partial_week import save_build
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, _, _, _ = self.configure(root)
+            self.run_partial(root)
+            original_health = (root / "output/data/health.json").read_bytes()
+            pointer = (root / "output/data/selection-grading/latest.json").read_bytes()
+            # A genuine new recorded board with an invalid active contract.
+            at = NOW + timedelta(seconds=5)
+            data["generated_at"] = stamp(at)
+            data["players"][0]["props"][0]["mf"] = 1.3
+            save_build(root, data, at)
+            with self.assertRaises(IntegrityError):
+                self.run_partial(root, at)
+            self.assertEqual((root / "output/data/health.json").read_bytes(), original_health)
+            self.assertEqual((root / "output/data/selection-grading/latest.json").read_bytes(), pointer)
+            self.assertTrue(list((root / "data/verification/partial-failures").rglob("*.json.gz")))
+
+    def test_actual_staging_then_clean_git_checkout_revalidates_required_originals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "writer"
+            root.mkdir()
+            _, _, spec, _ = self.configure(root)
+            _, health = self.run_partial(root)
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+            git("init", "-q"); git("config", "user.name", "Fictional test"); git("config", "user.email", "fixture@example.invalid")
+            git("add", "pull", "config", "output/app.js", "output/index.html", "output/style.css", "output/reliability-ui.js", "output/recovery.html")
+            workflow = (ROOT / ".github/workflows/hourly.yml").read_text()
+            start = workflow.index("          git add output/data data/cache\n")
+            end = workflow.index("          if ! git diff --cached --quiet;", start)
+            subprocess.run(["bash", "-eu", "-c", textwrap.dedent(workflow[start:end])], cwd=root, check=True)
+            git("commit", "-qm", "Fictional durable generation")
+            checkout = Path(directory) / "clean"
+            git("clone", "--quiet", "--no-hardlinks", str(root), str(checkout))
+            shutil.rmtree(root)
+            phase2_capture.validate_generation(checkout)
+            completion = health["phase2"]["partial_completion_receipt"]
+            phase2_capture.partial_week.read_bundle(checkout, completion, spec, phase2_capture.read_native_baseline)
+
+    def test_pages_copy_excludes_backend_originals_and_rejects_unclassified_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            root.mkdir()
+            self.configure(root)
+            self.run_partial(root)
+            originals = {name: (root / "output/data" / name).read_bytes() for name in ("matchup-proof.json", "game-status.json")}
+            destination = Path(directory) / "pages"
+            phase2_capture.stage_pages(root, destination)
+            for name, raw in originals.items():
+                self.assertFalse((destination / "data" / name).exists())
+                self.assertEqual((root / "output/data" / name).read_bytes(), raw)
+            self.assertTrue((destination / "data/verification-scope.json").exists())
+            atomic_json(root / "output/data/private-transcript.json", {"not": "a public contract"})
+            with self.assertRaises(IntegrityError):
+                phase2_capture.stage_pages(root, Path(directory) / "rejected")
+
+    def test_legacy_and_new_public_contracts_use_unchanged_rows_with_explicit_validation(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as analysis:
+            root = Path(directory)
+            self.configure(root)
+            self.run_partial(root)
+            new, _ = run_report([root], Path(analysis) / "new", now=NOW, expected_hashes=engine_hashes(root))
+            old, _ = run_report([root], Path(analysis) / "old", now=NOW, expected_hashes=engine_hashes(root),
+                                report_version="selection-report-v2")
+            self.assertEqual(new["rows"], old["rows"])
+            self.assertEqual(new["primary_raw_vs_adjusted"], old["primary_raw_vs_adjusted"])
+            for report, version in ((old, "selection-public-report-v1"), (new, "selection-public-report-v2")):
+                projected = selection_publication._projection(report, source_sha="a" * 40, input_digest="b" * 64)
+                self.assertEqual(projected[0]["schema_version"], version)
+            bad = dict(new, schema_version="selection-report-unknown")
+            with self.assertRaises(IntegrityError):
+                selection_publication._projection(bad, source_sha="a" * 40, input_digest="b" * 64)
+
+    def test_summary_size_failure_preserves_latest_and_immutable_assets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.configure(root)
+            self.run_partial(root)
+            pointer = root / "output/data/selection-grading/latest.json"
+            original = pointer.read_bytes()
+            with patch.object(selection_publication, "SUMMARY_LIMIT", 128), self.assertRaises(IntegrityError):
+                publish_selection_report(root, NOW + timedelta(seconds=1), source_sha="a" * 40)
+            self.assertEqual(pointer.read_bytes(), original)
+            current = load_json(pointer)
+            summary = root / "output/data/selection-grading" / current["summary"]["path"]
+            raw = summary.read_bytes()
+            # Exercise the actual 12 MiB reader bound, independently of JSON or hash checks.
+            summary.write_bytes(raw + b" " * selection_publication.SUMMARY_LIMIT)
+            changed = copy.deepcopy(current)
+            changed["summary"]["sha256"] = hashlib.sha256(summary.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(IntegrityError, "size limit"):
+                validate_publication(root / "output/data/selection-grading", changed)
+            summary.write_bytes(raw)
+            validate_publication(root / "output/data/selection-grading", current)
+
+    def test_unknown_source_or_policy_cannot_publish_an_unreadable_new_summary(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as analysis:
+            root = Path(directory)
+            self.configure(root)
+            self.run_partial(root)
+            report, _ = run_report([root], Path(analysis), now=NOW, expected_hashes=engine_hashes(root))
+            for field, value in (("line_from", "unrecognized_source"), ("policy_sha256", None), ("policy_version", "")):
+                altered = copy.deepcopy(report)
+                altered["rows"][0][field] = value
+                altered["summary"] = summarize(altered["rows"])
+                with self.subTest(field=field), self.assertRaises(IntegrityError):
+                    selection_publication._projection(altered, source_sha="a" * 40, input_digest="b" * 64)
+
+    def test_week_rollover_remains_strict_and_new_experimental_recording_stays_off(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, _, spec, _ = self.configure(root)
+            prepare(root, mode="live", at=NOW, week=7)
+            config = load_json(root / "config/phase2.json")
+            config.update(verification_mode=phase2_capture.partial_week.VERSION, partial_week=spec, experimental_recording_enabled=False)
+            atomic_json(root / "config/phase2.json", config)
+            class Clock(datetime):
+                @classmethod
+                def now(cls, tz=None): return NOW
+            with patch.object(phase2_capture, "datetime", Clock), \
+                    patch.object(phase2_capture, "_closing_status", side_effect=AssertionError("Rollover must select strict")), \
+                    patch.object(phase2_capture, "run_point_candidate", side_effect=AssertionError("Inactive")):
+                _, health = run_capture(root)
+            self.assertTrue(health["phase2"]["strict_full_board_verified"])
+            self.assertEqual(health["phase2"]["point_candidate"]["status"], "INACTIVE_OWNER_ACTIVATION_REQUIRED")
+            self.assertIsNone(health["phase2"]["shadow_receipt"])
+
+    def test_connected_builder_registers_before_forecasts_and_rebinds_every_output_cache(self):
+        from test_partial_week import status
+        import partial_week
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, _, _, _ = self.configure(root)
+            shutil.rmtree(root / "data/verification/partial-registrations")
+            old_paths = {key: getattr(build, key) for key in ("ROOT", "OUT", "CACHE", "ARCHIVE", "WEEKS")}
+            old_athletes = build.books.ATHLETES
+            def recorded(stage, mode, *, model):
+                self.assertEqual(mode, "live")
+                self.assertEqual(model, "original_sleeper_matchup_baseline")
+                self.assertTrue(list((stage / "data/verification/partial-registrations").rglob("*.json.gz")))
+                self.assertEqual(build.ROOT, stage)
+                self.assertEqual(build.OUT, stage / "output/data")
+                self.assertEqual(build.ARCHIVE, stage / "output/data/archive")
+                self.assertEqual(build.WEEKS, stage / "output/data/weeks")
+                self.assertEqual(build.books.ATHLETES, stage / "data/cache/espn_athletes.json")
+                self.assertEqual(build.sources.nfl_state()["week"], 6)
+                atomic_json(build.books.ATHLETES, {"fictional": "stage-only lookup"})
+            class Clock(datetime):
+                @classmethod
+                def now(cls, tz=None): return NOW
+            with patch.object(phase2_capture, "datetime", Clock), \
+                    patch.object(build.sources, "nfl_state", return_value={"season": "2026", "week": 6, "season_type": "regular"}) as selector, \
+                    patch.object(build_recorded, "record_build", side_effect=recorded), \
+                    patch.object(phase2_capture, "_closing_status", return_value=status(data, NOW)):
+                run_capture(root, build_first=True)
+                self.assertEqual(selector.call_count, 1)
+            self.assertEqual({key: getattr(build, key) for key in old_paths}, old_paths)
+            self.assertEqual(build.books.ATHLETES, old_athletes)
+            self.assertEqual(load_json(root / "data/cache/espn_athletes.json"), {"fictional": "stage-only lookup"})
+
+
+class FailedNativeRecoveryConsumerTests(unittest.TestCase):
+    configure = PartialOperationalPipelineTests.configure
+    run_partial = PartialOperationalPipelineTests.run_partial
+
+    def test_failed_native_is_preserved_but_never_becomes_a_report_observation(self):
+        from test_partial_week import status
+        from selection_report import build_decisions
+        for barrier in (2, 4):
+            with self.subTest(barrier=barrier), tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as analysis:
+                root = Path(directory)
+                data, _, _, _ = self.configure(root)
+                original = phase2_capture.partial_week.record_bundle
+                captured = []
+                def crossed(*args, **kwargs):
+                    times = iter([NOW] * barrier + [NOW + timedelta(hours=2)] * 10)
+                    kwargs["clock"] = lambda: next(times)
+                    try:
+                        return original(*args, **kwargs)
+                    finally:
+                        captured.extend(path.read_bytes() for path in (args[0] / "data/forward").rglob("*.json.gz"))
+                class Clock(datetime):
+                    @classmethod
+                    def now(cls, tz=None): return NOW
+                with patch.object(phase2_capture, "datetime", Clock), \
+                        patch.object(phase2_capture, "_closing_status", return_value=status(data, NOW)), \
+                        patch.object(phase2_capture.partial_week, "record_bundle", side_effect=crossed):
+                    with self.assertRaises(IntegrityError): run_capture(root)
+                self.assertEqual(list((root / "data/forward").rglob("*.json.gz")), [])
+                saved = list((root / "data/verification/partial-unqualified-native").rglob("*.json.gz"))
+                self.assertEqual(len(saved), 1)
+                self.assertEqual(saved[0].read_bytes(), captured[0])
+                records, coverage = build_decisions([], load_json(root / "config/timing-policy.json"),
+                                                   NOW + timedelta(hours=3), engine_hashes(root))
+                self.assertEqual(coverage["unique_observed_opportunities"], 0)
+                self.assertEqual(records, [])
+                report, _ = run_report([root], Path(analysis), now=NOW + timedelta(hours=3),
+                                        expected_hashes=engine_hashes(root))
+                self.assertEqual(report["rows"], [])
+                self.assertEqual(report["primary_raw_vs_adjusted"]["coverage"]["unique_opportunities"], 0)
+
+    def test_completed_native_remains_usable_when_only_report_publication_fails(self):
+        from test_partial_week import status
+        from selection_report import build_decisions
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, _, _, _ = self.configure(root)
+            class Clock(datetime):
+                @classmethod
+                def now(cls, tz=None): return NOW
+            with patch.object(phase2_capture, "datetime", Clock), \
+                    patch.object(phase2_capture, "_closing_status", return_value=status(data, NOW)), \
+                    patch.object(phase2_capture, "publish_selection_report", side_effect=IntegrityError("fictional report-only failure")):
+                with self.assertRaisesRegex(IntegrityError, "report-only"):
+                    run_capture(root)
+            paths = list((root / "data/forward").rglob("*.json.gz"))
+            self.assertEqual(len(paths), 1)
+            self.assertEqual(list((root / "data/verification/partial-unqualified-native").rglob("*.json.gz")), [])
+            rows, coverage = build_decisions([read(paths[0])], load_json(root / "config/timing-policy.json"),
+                                             NOW + timedelta(minutes=1), engine_hashes(root))
+            self.assertEqual(coverage["unique_observed_opportunities"], 1)
+            self.assertTrue(any(row["action"] == "SELECT" for row in rows))
+
+    def test_failed_native_clean_checkout_keeps_bytes_outside_canonical_consumers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "writer"; root.mkdir()
+            data, _, spec, registration = self.configure(root)
+            # Deliberately incomplete NEW native; the failure-only persistence
+            # path must not turn it into a completed forecast on restart.
+            stage = Path(directory) / "stage"
+            shutil.copytree(root, stage)
+            path, _ = capture_baseline(data, load_json(stage / "output/data/meta.json"), stage, NOW,
+                                       engine_hashes(stage), mode="live")
+            original = path.read_bytes()
+            phase2_capture._copy_evidence(stage, root, failed_generation=True)
+            git = lambda *args: subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+            git("init", "-q"); git("config", "user.name", "Fictional test"); git("config", "user.email", "fixture@example.invalid")
+            git("add", "pull", "config")
+            workflow = (ROOT / ".github/workflows/hourly.yml").read_text()
+            start = workflow.index("          git add output/data data/cache\n")
+            end = workflow.index("          if ! git diff --cached --quiet;", start)
+            subprocess.run(["bash", "-eu", "-c", textwrap.dedent(workflow[start:end])], cwd=root, check=True)
+            git("commit", "-qm", "Fictional failed evidence only")
+            clone = Path(directory) / "clean"; git("clone", "--quiet", "--no-hardlinks", str(root), str(clone))
+            shutil.rmtree(root); shutil.rmtree(stage)
+            self.assertEqual(list((clone / "data/forward").rglob("*.json.gz")), [])
+            saved = list((clone / "data/verification/partial-unqualified-native").rglob("*.json.gz"))
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(saved[0].read_bytes(), original)
+
+    def test_new_failed_native_does_not_move_or_rewrite_existing_observations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "saved"; root.mkdir()
+            data, _, _, _ = self.configure(root)
+            old = copy.deepcopy(data)
+            old["generated_at"] = stamp(NOW - timedelta(minutes=5))
+            old_path, _ = capture_baseline(old, {key: old[key] for key in ("season", "week", "generated_at")},
+                                          root, NOW - timedelta(minutes=5), engine_hashes(root), mode="live")
+            original = old_path.read_bytes()
+            stage = Path(directory) / "failed-generation"; shutil.copytree(root, stage)
+            new_path, _ = capture_baseline(data, load_json(stage / "output/data/meta.json"), stage, NOW,
+                                          engine_hashes(stage), mode="live")
+            failed_bytes = new_path.read_bytes()
+            phase2_capture._copy_evidence(stage, root, failed_generation=True)
+            self.assertEqual(old_path.read_bytes(), original)
+            self.assertEqual(list((root / "data/forward").rglob("*.json.gz")), [old_path])
+            preserved = list((root / "data/verification/partial-unqualified-native").rglob("*.json.gz"))
+            self.assertEqual(len(preserved), 1)
+            self.assertEqual(preserved[0].read_bytes(), failed_bytes)
+
+
+
+
+
+class EncodedHostingTests(unittest.TestCase):
+    # Past fictional clock keeps saved restart checks independent of wall time.
+    AT = datetime(2026, 10, 17, 11, tzinfo=timezone.utc)
+    run_live = PublicSelectionPipelineTests.run_live
+    locality_report = PublicSelectionPipelineTests.locality_report
+    projection = PartitionedPublicationTests.projection
+
+    def test_gzip_is_deterministic_lossless_and_legacy_assets_stay_valid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, projected = self.projection(directory); base = root / "assets"
+            summary, rows, outcomes, chunks, _ = projected
+            plain = selection_publication.prepare_publication(base, *projected[:4], self.AT)
+            original = {p: p.read_bytes() for p in base.rglob("*") if p.is_file()}
+            compressed = selection_publication.prepare_publication(base, *projected[:4], self.AT, encoding="gzip")
+            self.assertNotEqual(plain["report_id"], compressed["report_id"])
+            old = list(selection_publication.publication_contents(base, plain))
+            new = list(selection_publication.publication_contents(base, compressed))
+            old[0].pop("report_id"); new[0].pop("report_id")
+            self.assertEqual(old, new)
+            permuted = dict(summary, summary=dict(summary["summary"], tables=list(reversed(summary["summary"]["tables"]))))
+            again = selection_publication.prepare_publication(base, permuted, rows, list(reversed(outcomes)), chunks, self.AT, encoding="gzip")
+            self.assertEqual(again, compressed)
+            other = root / "independent"
+            self.assertEqual(selection_publication.prepare_publication(other, *projected[:4], self.AT, encoding="gzip"), compressed)
+            for path in base.rglob("*"):
+                if path.is_file() and path not in original:
+                    self.assertEqual(path.read_bytes(), (other / path.relative_to(base)).read_bytes())
+            self.assertTrue(all(path.read_bytes() == raw for path, raw in original.items()))
+            value = compressed["rows"][0]
+            stored = (base / value["path"]).read_bytes()
+            self.assertEqual(stored[:8], b"\x1f\x8b\x08\x00\x00\x00\x00\x00")
+            self.assertEqual(hashlib.sha256(stored).hexdigest(), value["encoded_sha256"])
+            self.assertGreater(len(compressed["rows"]), 1)
+
+    def test_streamed_encoded_and_decoded_limits_and_corruption(self):
+        import io
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); raw = b'{"fictional":true}\n'
+            buffer = io.BytesIO()
+            with gzip.GzipFile(fileobj=buffer, filename="", mode="wb", mtime=0) as handle: handle.write(raw)
+            good = buffer.getvalue(); path = root / "payload"
+            def descriptor(stored=good, decoded=raw):
+                return {"encoding":"gzip", "encoded_sha256":hashlib.sha256(stored).hexdigest(), "encoded_bytes":len(stored),
+                        "sha256":hashlib.sha256(decoded).hexdigest(), "decoded_bytes":len(decoded)}
+            path.write_bytes(good)
+            self.assertEqual(selection_publication._read_asset_bytes(path, descriptor(), 2048, encoded=True), raw)
+            cases = [(good[:-3], descriptor(good[:-3])), (good + good, descriptor(good + good)),
+                     (good, dict(descriptor(), encoded_sha256="0" * 64)), (good, dict(descriptor(), sha256="0" * 64)),
+                     (good, dict(descriptor(), encoded_bytes=len(good)-1)), (good, dict(descriptor(), decoded_bytes=1)),
+                     (good, dict(descriptor(), decoded_bytes=2049)), (good, dict(descriptor(), encoded_bytes=2049)),
+                     (good, dict(descriptor(), encoding="br"))]
+            for stored, desc in cases:
+                with self.subTest(desc=desc):
+                    path.write_bytes(stored)
+                    with self.assertRaises(IntegrityError): selection_publication._read_asset_bytes(path, desc, 2048, encoded=True)
+            expanded = b"A" * (3 * 1024 * 1024); bomb = gzip.compress(expanded, mtime=0); path.write_bytes(bomb)
+            desc = descriptor(bomb, b"A" * 16)
+            with self.assertRaisesRegex(IntegrityError, "decoded size limit"):
+                selection_publication._read_asset_bytes(path, desc, 2 * 1024 * 1024, encoded=True)
+
+    def test_every_encoded_context_and_outcome_is_validated_before_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, projected = self.projection(directory); base = root / "assets"
+            pointer = selection_publication.prepare_publication(base, *projected[:4], self.AT, encoding="gzip")
+            indexpath = base / pointer["summary"]["path"]; original = indexpath.read_bytes()
+            index = load_json(indexpath); part = index["summary_partitions"][-1]
+            payload = fixture_part(base, part, "summary.json"); payload["period"] = "2026-w18"
+            replace_fixture_part(base, part, "summary.json", payload)
+            atomic_json(indexpath, index); changed = copy.deepcopy(pointer)
+            changed["summary"].update(sha256=hashlib.sha256(indexpath.read_bytes()).hexdigest(), decoded_bytes=len(indexpath.read_bytes()))
+            with self.assertRaisesRegex(IntegrityError, "identity/context/period"):
+                validate_publication(base, changed)
+            indexpath.write_bytes(original); validate_publication(base, pointer)
+            bad = copy.deepcopy(pointer); bad["rows"][0]["encoding"] = "identity"
+            with self.assertRaises(IntegrityError): validate_publication(base, bad)
+            bad = copy.deepcopy(pointer); bad["rows"][0]["path"] = "../private.json"
+            with self.assertRaises(IntegrityError): validate_publication(base, bad)
+
+    def git(self, root, *args):
+        return subprocess.check_output(["git", "-C", str(root), *args], stderr=subprocess.PIPE, text=True).strip()
+
+    def git_fixture(self, root):
+        self.git(root, "init", "-q"); self.git(root, "config", "user.name", "Fictional hosting test")
+        self.git(root, "config", "user.email", "fixture@example.invalid")
+        self.git(root, "commit", "--allow-empty", "-qm", "Fictional baseline")
+        for name in ("style.css", "reliability-ui.js", "recovery.html"):
+            target = root/"output"/name; target.parent.mkdir(exist_ok=True)
+            shutil.copyfile(ROOT/"output"/name, target)
+        # Exact actions/checkout remote spelling (without .git).
+        self.git(root, "remote", "add", "origin", "https://github.com/NickNicky19/nicks-expert-nfl-picks")
+
+    def commit_fixture(self, root, label):
+        self.git(root, "add", "pull", "config", "output/app.js", "output/index.html", "output/style.css", "output/reliability-ui.js", "output/recovery.html")
+        workflow = (ROOT / ".github/workflows/hourly.yml").read_text()
+        start = workflow.index("          git add output/data data/cache\n")
+        end = workflow.index("          if ! git diff --cached --quiet;", start)
+        subprocess.run(["bash", "-eu", "-c", textwrap.dedent(workflow[start:end])], cwd=root, check=True)
+        self.git(root, "commit", "-qm", "Fictional hosting " + label)
+        return self.git(root, "rev-parse", "HEAD")
+
+    def test_four_successive_updater_generations_archive_actual_commits_and_cold_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "writer"; root.mkdir(); self.git_fixture(root)
+            manifests, preserved = [], {}
+            for n in range(4):
+                self.run_live(root, self.AT + timedelta(minutes=10*n))
+                working = load_json(root / "output/data/selection-grading/hosting.json")
+                manifests.append(working["latest"])
+                self.assertEqual(working["previous"], manifests[n-1] if n else None)
+                self.assertTrue(all(path.read_bytes() == raw for path, raw in preserved.items()))
+                preserved.update({p:p.read_bytes() for p in (root / "data").rglob("*.gz")})
+                pin = self.commit_fixture(root, str(n))
+                with patch.object(phase2_capture, "_public_archive_commit") as public:
+                    stage = phase2_capture.stage_pages(root, Path(directory) / ("pages"+str(n)))
+                if n >= 2: public.assert_called_once_with(pin, self.git(root, "rev-parse", pin+"^{tree}"))
+                delivered = load_json(stage / "data/selection-grading/hosting.json")
+                self.assertEqual(delivered["latest"], manifests[-1])
+                self.assertEqual(delivered["previous"], manifests[-2] if n else None)
+                self.assertTrue((root / "output/data/selection-grading" / manifests[0]["path"]).exists())
+                if n >= 2:
+                    self.assertFalse((stage / "data/selection-grading" / manifests[0]["path"]).exists())
+                    records = {}
+                    for shard in delivered["archive_index"]:
+                        records.update(load_json(stage / "data/selection-grading" / shard["asset"]["path"])["reports"])
+                    key = digest(phase2_capture._manifest(root / "output/data/selection-grading", manifests[0])[0]["pointer"])
+                    self.assertEqual(records[key]["git_ref"], pin)
+                    self.assertEqual(records[key]["manifest"], manifests[0])
+            self.git(root, "clone", "--quiet", "--no-hardlinks", str(root), str(Path(directory)/"cold"))
+            cold = Path(directory)/"cold"; phase2_capture.validate_generation(cold)
+            self.git(cold, "remote", "set-url", "origin", "https://github.com/NickNicky19/nicks-expert-nfl-picks")
+            with patch.object(phase2_capture, "_public_archive_commit"):
+                phase2_capture.stage_pages(cold, Path(directory)/"cold-pages")
+            for relative in ("output/data/selection-grading/hosting.json", "output/data/release-identity.json", "output/data/health.json"):
+                self.assertEqual((cold/relative).read_bytes(), (root/relative).read_bytes())
+            self.assertEqual(engine_hashes(root), corrected.legacy_engine_hashes(ROOT))
+
+    def test_missing_or_corrupt_retained_archive_and_nonpublic_commit_fail_staging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/"writer";root.mkdir();self.git_fixture(root)
+            for n in range(3):
+                self.run_live(root, self.AT+timedelta(minutes=10*n)); self.commit_fixture(root,str(n))
+            previous=(root/"output/data/selection-grading/hosting.json").read_bytes()
+            with patch.object(phase2_capture,"_public_archive_commit",side_effect=IntegrityError("Unpublished fictional commit")):
+                with self.assertRaisesRegex(IntegrityError,"Unpublished"):
+                    phase2_capture.stage_pages(root,Path(directory)/"notpublic")
+            working=load_json(root/"output/data/selection-grading/hosting.json")
+            records=phase2_capture._registry(root/"output/data/selection-grading",working)
+            selected={digest(phase2_capture._manifest(root/"output/data/selection-grading",d)[0]["pointer"]) for d in (working['latest'],working['previous'])}
+            descriptor=records[next(iter(set(records)-selected))]
+            path=root/"output/data/selection-grading"/descriptor['path'];raw=path.read_bytes();path.write_bytes(raw+b' ')
+            with patch.object(phase2_capture,"_public_archive_commit"):
+                with self.assertRaises(IntegrityError):phase2_capture.stage_pages(root,Path(directory)/"corrupt")
+            path.write_bytes(raw)
+            self.assertEqual((root/"output/data/selection-grading/hosting.json").read_bytes(),previous)
+
+    def test_same_finalized_retry_does_not_rotate_and_later_clock_is_a_new_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.run_live(root)
+            base=root/"output/data/selection-grading";working=(base/"hosting.json").read_bytes()
+            phase2_capture.finalize_hosting(root,self.AT+timedelta(minutes=1))
+            self.assertEqual((base/"hosting.json").read_bytes(),working)
+            first=load_json(base/"hosting.json")['latest']
+            pointer=load_json(base/"latest.json");pointer['generated_at']=stamp(self.AT+timedelta(minutes=1));atomic_json(base/"latest.json",pointer)
+            generation=load_json(root/"output/data/release-identity.json");generation.pop('generation_sha256');generation['bindings']['data/selection-grading/latest.json']=hashlib.sha256((base/"latest.json").read_bytes()).hexdigest()
+            gid=digest(generation);atomic_json(root/"output/data/release-identity.json",dict(generation,generation_sha256=gid));health=load_json(root/"output/data/health.json");health['generation_sha256']=gid;atomic_json(root/"output/data/health.json",health)
+            phase2_capture.finalize_hosting(root,self.AT+timedelta(minutes=1))
+            changed=load_json(base/"hosting.json");self.assertEqual(changed['previous'],first);self.assertNotEqual(changed['latest'],first)
+            phase2_capture.validate_generation(root)
+
+    def test_budget_failure_preserves_working_publication_and_all_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'writer';root.mkdir();self.run_live(root)
+            before={p:p.read_bytes() for p in root.rglob('*') if p.is_file()}
+            with patch.object(phase2_capture,'STAGING_BUDGET',1):
+                with self.assertRaisesRegex(IntegrityError,'900000000-byte budget'):
+                    phase2_capture.stage_pages(root,Path(directory)/'too-large')
+            self.assertTrue(all(p.read_bytes()==raw for p,raw in before.items()))
+            staged=phase2_capture.stage_pages(root,Path(directory)/'valid')
+            self.assertEqual(staged.stat().st_mode & 0o777,0o755)
+            self.assertTrue(all((p.stat().st_mode & 0o777)==(0o755 if p.is_dir() else 0o644) for p in staged.rglob('*')))
+            # Untrusted oversized allowed-path input is rejected by actual 900MB
+            # budget before materializing its sparse bytes in the new stage.
+            huge=root/'output/data/archive/2000_w01.json';huge.parent.mkdir(exist_ok=True)
+            with huge.open('wb') as handle:
+                handle.write(b'SYNTHETIC_OVERSIZED_LIMIT_CONTROL_NOT_A_FORECAST')
+                handle.truncate(phase2_capture.STAGING_BUDGET+1)
+            failed=Path(directory)/'actual-oversized'
+            with self.assertRaisesRegex(IntegrityError,'900000000-byte budget'):
+                phase2_capture.stage_pages(root,failed)
+            self.assertFalse((failed/'data/archive/2000_w01.json').exists())
+            self.assertTrue(all(p.read_bytes()==raw for p,raw in before.items()))
+
+    def test_delivery_metadata_is_hash_bound_and_missing_part_is_not_previous_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'writer';root.mkdir();self.run_live(root)
+            stage=phase2_capture.stage_pages(root,Path(directory)/'pages');base=stage/'data/selection-grading';working=load_json(base/'hosting.json')
+            altered=copy.deepcopy(working);altered['delivery_sha256']='0'*64
+            with self.assertRaises(IntegrityError):phase2_capture._registry(base,altered)
+            altered=copy.deepcopy(working);altered['archive_index']=[{'prefix':'z','asset':{}}];altered['delivery_sha256']=digest({k:v for k,v in altered.items() if k!='delivery_sha256'})
+            with self.assertRaises(IntegrityError):phase2_capture._registry(base,altered)
+            before=(root/'output/data/selection-grading/hosting.json').read_bytes()
+            class Clock(datetime):
+                @classmethod
+                def now(cls, tz=None):return self.AT+timedelta(minutes=5)
+            with patch.object(selection_publication,'SUMMARY_LIMIT',128), patch.object(phase2_capture,'datetime',Clock):
+                with self.assertRaises(IntegrityError):run_capture(root,mode='live')
+            self.assertEqual((root/'output/data/selection-grading/hosting.json').read_bytes(),before)
+            phase2_capture.validate_generation(root)
+
+    def plain_original(self, root):
+        self.run_live(root)
+        base=root/'output/data/selection-grading'
+        summary,rows,outcomes=selection_publication.publication_contents(base,load_json(base/'latest.json'))
+        # Exercise the explicit retained legacy producer; never relabel a
+        # modern summary or strip required modern membership/context fields.
+        with tempfile.TemporaryDirectory() as analysis:
+            legacy,_=selection_publication.run_report([root],Path(analysis),now=self.AT,
+                expected_hashes=corrected.legacy_engine_hashes(),report_version='selection-report-v3')
+        summary,rows,outcomes,chunks,_=selection_publication._projection(legacy,
+            source_sha=summary['source_sha'],input_digest=summary['input_content_sha256'])
+        pointer=selection_publication.prepare_publication(base,summary,rows,outcomes,chunks,self.AT)
+        atomic_json(base/'latest.json',pointer)
+        generation=load_json(root/'output/data/release-identity.json');generation.pop('generation_sha256')
+        generation['selection_report_id']=pointer['report_id']
+        generation['bindings']['data/selection-grading/latest.json']=hashlib.sha256((base/'latest.json').read_bytes()).hexdigest()
+        gid=digest(generation);atomic_json(root/'output/data/release-identity.json',dict(generation,generation_sha256=gid))
+        health=load_json(root/'output/data/health.json');health['generation_sha256']=gid
+        health['phase2']['selection_report_sha256']=pointer['report_id'];atomic_json(root/'output/data/health.json',health)
+        # Versioned fictional legacy input, not a modification of real history.
+        (base/'hosting.json').unlink()
+        phase2_capture.validate_generation(root)
+        return pointer
+
+    def test_saved_packaging_uses_restored_git_namespace_and_rejects_wrong_original_assets(self):
+        import zlib
+        import selection_report
+        with tempfile.TemporaryDirectory() as directory:
+            area = Path(directory)
+            root, candidate = area / "restored", area / "new-packaging-source"
+            paths = ("tools", "pull", "config", "output/app.js", "output/index.html", "output/style.css",
+                     "output/reliability-ui.js", "output/recovery.html")
+            # No checkout of historical data or duplication of the object pack.
+            # Both disposable repos can read public source objects; only root
+            # owns the new fictional capture commit and its changed app blob.
+            for repository in (root, candidate):
+                self.git(ROOT, "clone", "--quiet", "--shared", "--no-checkout", str(ROOT), str(repository))
+                self.git(repository, "read-tree", "HEAD")
+                self.git(repository, "checkout", "--", *(paths if repository == candidate else paths[3:]))
+            original_app = (root / "output/app.js").read_bytes() + b"\n// Fictional retained-only capture namespace control.\n"
+            (root / "output/app.js").write_bytes(original_app)
+            self.git(root, "add", "output/app.js")
+            self.git(root, "-c", "user.name=FictionalPackagingTest", "-c", "user.email=fixture@example.invalid",
+                     "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fictional capture source only in restored namespace")
+            capture_source = self.git(root, "rev-parse", "HEAD")
+            packaging_source = self.git(candidate, "rev-parse", "HEAD")
+            missing = subprocess.run(["git", "-C", str(candidate), "cat-file", "-e", capture_source + "^{commit}"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertNotEqual(missing.returncode, 0, "new source must not accidentally own the capture commit")
+            self.assertEqual(self.git(root, "rev-parse", capture_source + "^{commit}"), capture_source)
+
+            def original_capture(runtime, at=None):
+                at = at or self.AT
+                prepare(runtime, mode="live", at=at, kickoff_hours=25, all_ten=True)
+                (runtime / "output/app.js").write_bytes(original_app)
+                class Clock(datetime):
+                    @classmethod
+                    def now(cls, tz=None): return at
+                with patch.dict(os.environ, {"GITHUB_SHA": capture_source}), \
+                        patch.object(phase2_capture, "ROOT", root), patch.object(phase2_capture, "datetime", Clock), \
+                        patch("requests.sessions.Session.request", side_effect=AssertionError("No provider collection")):
+                    result = run_capture(runtime, mode="live")
+                # The real report consumer verifies tracked input bytes against
+                # HEAD. Record this new fictional board as a normal forward data
+                # commit; its capture source remains the earlier exact source.
+                inputs = sorted({p.relative_to(runtime).as_posix() for pattern in selection_report.PATTERNS
+                                 for p in runtime.glob(pattern) if p.is_file()})
+                self.git(runtime, "add", "--", *inputs)
+                self.git(runtime, "-c", "user.name=FictionalPackagingTest", "-c", "user.email=fixture@example.invalid",
+                         "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Retain fictional board input")
+                return result
+
+            # Existing supported legacy producer creates a distinctly identified
+            # plain fixture; every original model/native clock remains intact.
+            with patch.object(self, "run_live", side_effect=original_capture):
+                old_pointer = self.plain_original(root)
+            original = load_json(root / "output/data/release-identity.json")
+            self.assertEqual(original["source_sha"], capture_source)
+            frozen = {p.relative_to(root): p.read_bytes() for p in (root / "data").rglob("*.gz")}
+            bad = area / "bad-restored"; shutil.copytree(root, bad)
+
+            # This is the actual public STAGED packaging wrapper, not a direct
+            # _source_assets unit check. ROOT is the coordinator's restored Git
+            # namespace; source_root is the separate newer source checkout.
+            with patch.object(phase2_capture, "ROOT", root), \
+                    patch("requests.sessions.Session.request", side_effect=AssertionError("Packaging cannot collect")):
+                packaged = phase2_capture.repackage_generation(root, source_root=candidate)
+                self.assertEqual(phase2_capture.validate_generation(root), packaged)
+                self.assertEqual(phase2_capture.repackage_generation(root, source_root=candidate), packaged)
+            self.assertEqual(packaged["capture_source_sha"], capture_source)
+            self.assertEqual(packaged["source_sha"], packaging_source)
+            self.assertEqual(packaged["capture_generation_sha256"], original["generation_sha256"])
+            for name, raw in frozen.items(): self.assertEqual((root / name).read_bytes(), raw)
+            working = load_json(root / "output/data/selection-grading/hosting.json")
+            with patch.object(phase2_capture, "ROOT", root):
+                previous, _ = phase2_capture._manifest(root / "output/data/selection-grading", working["previous"], root=root)
+            self.assertEqual(previous["pointer"], old_pointer)
+
+            # Corrupt ONLY an object owned by the disposable negative checkout.
+            # Shared source objects/alternates and all original receipts remain
+            # untouched. The commit still names the old blob, so the real
+            # asset comparison must reject rather than accept any Git success.
+            oid = self.git(bad, "rev-parse", capture_source + ":output/app.js")
+            loose = bad / ".git/objects" / oid[:2] / oid[2:]
+            self.assertTrue(loose.is_file(), "never mutate a shared Git object")
+            wrong = original_app + b"\n// Deliberately wrong retained source bytes.\n"
+            loose.chmod(0o600)
+            loose.write_bytes(zlib.compress(b"blob " + str(len(wrong)).encode() + b"\0" + wrong))
+            before = {p.relative_to(bad): p.read_bytes() for p in bad.rglob("*") if p.is_file()}
+            with patch.object(phase2_capture, "ROOT", bad), \
+                    patch("requests.sessions.Session.request", side_effect=AssertionError("Packaging cannot collect")):
+                with self.assertRaisesRegex(IntegrityError, "app/shell differs|app/shell mismatch"):
+                    phase2_capture.repackage_generation(bad, source_root=candidate)
+            for name, raw in before.items(): self.assertEqual((bad / name).read_bytes(), raw)
+
+
+    def test_saved_packaging_retains_original_clocks_complete_previous_and_exact_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'copy';root.mkdir();old_pointer=self.plain_original(root)
+            original=load_json(root/'output/data/release-identity.json')
+            originals={p:p.read_bytes() for p in (root/'data').rglob('*.gz')}
+            frozen={n:(root/'output'/n).read_bytes() for n in ('data/week.json','data/meta.json','data/verification-scope.json')}
+            with patch('requests.sessions.Session.request',side_effect=AssertionError('Packaging cannot collect')):
+                packaged=phase2_capture.repackage_generation(root,source_root=ROOT)
+            self.assertEqual(packaged['schema_version'],'website-packaging-generation-v2')
+            self.assertEqual(packaged['capture_generation_sha256'],original['generation_sha256'])
+            self.assertEqual(packaged['capture_source_sha'],original['source_sha'])
+            self.assertEqual(packaged['source_sha'],self.git(ROOT,'rev-parse','HEAD'))
+            self.assertGreater(utc(packaged['packaged_at']),self.AT)
+            self.assertTrue(all(p.read_bytes()==raw for p,raw in originals.items()))
+            self.assertTrue(all((root/'output'/n).read_bytes()==raw for n,raw in frozen.items()))
+            base=root/'output/data/selection-grading';working=load_json(base/'hosting.json')
+            self.assertEqual(phase2_capture._manifest(base,working['previous'],root=root)[0]['pointer'],old_pointer)
+            before={p:p.read_bytes() for p in root.rglob('*') if p.is_file()}
+            self.assertEqual(phase2_capture.repackage_generation(root,source_root=ROOT),packaged)
+            self.assertTrue(all(p.read_bytes()==raw for p,raw in before.items()))
+            staged=phase2_capture.stage_pages(root,Path(directory)/'pages')
+            self.assertTrue((staged/'data/selection-grading'/old_pointer['summary']['path']).exists())
+            generation_path=root/'output/data/release-identity.json';health_path=root/'output/data/health.json'
+            bad=copy.deepcopy(packaged);bad.pop('generation_sha256');bad['capture_source_sha']='0'*40
+            gid=digest(bad);atomic_json(generation_path,dict(bad,generation_sha256=gid))
+            health=load_json(health_path);health['generation_sha256']=gid;health['capture_source_sha']='0'*40;atomic_json(health_path,health)
+            with self.assertRaisesRegex(IntegrityError,'retained rich|capture/packaging'):
+                phase2_capture.validate_generation(root)
+
+    def test_encoded_unchanged_saved_packaging_is_noop_and_dirty_source_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'copy';root.mkdir();self.run_live(root)
+            before={p:p.read_bytes() for p in root.rglob('*') if p.is_file()}
+            original=phase2_capture.validate_generation(root)
+            self.assertEqual(phase2_capture.repackage_generation(root,source_root=ROOT),original)
+            self.assertTrue(all(p.read_bytes()==raw for p,raw in before.items()))
+            dirty=Path(directory)/'dirty-source'
+            self.git(ROOT,'clone','--quiet','--shared',str(ROOT),str(dirty))
+            with (dirty/'output/app.js').open('a') as handle:handle.write('\n// Fictional uncommitted control\n')
+            with self.assertRaisesRegex(IntegrityError,'not the identified committed source'):
+                phase2_capture.repackage_generation(root,source_root=dirty)
+            self.assertTrue(all(p.read_bytes()==raw for p,raw in before.items()))
+
+    def test_staging_validates_each_complete_graph_once_per_operation_and_rechecks_later(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'writer';root.mkdir();self.run_live(root)
+            self.run_live(root,self.AT+timedelta(minutes=5))
+            original_validator=selection_publication.validate_publication
+            calls=[]
+            def checked(base,pointer,**kwargs):
+                calls.append((str(Path(base).resolve()),digest(pointer)))
+                return original_validator(base,pointer,**kwargs)
+            with patch.object(selection_publication,'validate_publication',side_effect=checked):
+                phase2_capture.stage_pages(root,Path(directory)/'pages')
+            self.assertEqual(len(set(calls)),4)  # latest+previous, source+fresh destination
+            self.assertGreaterEqual(len(calls),len(set(calls)))  # repeat calls freshly hash bytes
+            base=root/'output/data/selection-grading';pointer=load_json(base/'latest.json')
+            index=load_json(base/pointer['summary']['path']);part=index['summary_partitions'][-1]
+            target=base/part['path'];raw=target.read_bytes();target.write_bytes(raw[:-1])
+            with self.assertRaises(IntegrityError):
+                phase2_capture.stage_pages(root,Path(directory)/'recheck')
+            target.write_bytes(raw);phase2_capture.validate_generation(root)
+
+    def test_existing_workflow_advisory_health_append_does_not_change_qualified_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'writer';root.mkdir();self.run_live(root)
+            base=root/'output/data/selection-grading';original=(base/'hosting.json').read_bytes()
+            workflow=(ROOT/'.github/workflows/hourly.yml').read_text()
+            advisory=workflow.split('      - name: Record advisory outcomes',1)[1].split('      - name: Commit validated data',1)[0]
+            script=textwrap.dedent(advisory.split("          python - <<'PY'\n",1)[1].rsplit('          PY',1)[0])
+            subprocess.run([sys.executable,'-c',script],cwd=root,check=True,
+                           env=dict(os.environ,LEGACY_OUTCOME='failure',COMPARISON_OUTCOME='success'))
+            phase2_capture.validate_generation(root)
+            phase2_capture.finalize_hosting(root)
+            self.assertEqual((base/'hosting.json').read_bytes(),original)
+            phase2_capture.stage_pages(root,Path(directory)/'pages')
+            health_path=root/'output/data/health.json';health=load_json(health_path)
+            health['unexpected_advisory_extension']='NOT_ALLOWED';atomic_json(health_path,health)
+            with self.assertRaisesRegex(IntegrityError,'snapshot differs'):
+                phase2_capture.validate_generation(root)
+
+
+
+class SharedPayloadReuseTests(unittest.TestCase):
+    AT = EncodedHostingTests.AT
+    run_live = PublicSelectionPipelineTests.run_live
+    projection = PartitionedPublicationTests.projection
+    locality_report = PublicSelectionPipelineTests.locality_report
+    configure = PartialOperationalPipelineTests.configure
+    run_partial = PartialOperationalPipelineTests.run_partial
+
+    def publish(self, base, values, at=None):
+        return selection_publication.prepare_publication(base, *values[:4], at or self.AT,
+                                                        encoding="gzip", shared=True)
+
+    def bodies(self, base, pointer):
+        summary = load_json(base/pointer['summary']['path'])
+        outcomes = load_json(base/pointer['outcomes']['path'])
+        return pointer['rows'] + summary['summary_partitions'] + outcomes['periods']
+
+    def test_shared_bodies_reuse_metadata_only_but_keep_actual_observation_and_outcome_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base=root/'shared'
+            old=selection_publication.prepare_publication(base,*values[:4],self.AT,encoding='gzip')
+            preserved={p:p.read_bytes() for p in base.rglob('*') if p.is_file()}
+            first=self.publish(base,values)
+            changed=list(copy.deepcopy(values)); changed[0]['source_sha']='3'*40; changed[0]['input_content_sha256']='4'*64
+            second=self.publish(base,changed,self.AT+timedelta(seconds=5))
+            self.assertNotEqual(first['report_id'],second['report_id'])
+            self.assertEqual(self.bodies(base,first),self.bodies(base,second))
+            clock=self.publish(base,changed,self.AT+timedelta(seconds=10))
+            self.assertEqual(clock['report_id'],second['report_id'])
+            self.assertEqual(clock['rows'],second['rows'])
+            expected=list(selection_publication.publication_contents(base,old)); actual=list(selection_publication.publication_contents(base,first))
+            expected[0].pop('report_id');actual[0].pop('report_id');self.assertEqual(expected,actual)
+            self.assertTrue(all(p.read_bytes()==raw for p,raw in preserved.items()))
+            for desc in self.bodies(base,first):
+                payload=fixture_part(base,desc,desc['path'].split('/')[-1])
+                self.assertNotIn('report_id',payload)
+                self.assertTrue(desc['path'].startswith(desc['encoded_sha256']+'/'))
+            # Actual clocks and corrections remain evidence, not stripped metadata.
+            self.assertTrue(changed[2])
+            corrected=copy.deepcopy(changed)
+            corrected[2][0]['collected_at']=stamp(self.AT+timedelta(seconds=1))
+            third=self.publish(base,corrected,self.AT+timedelta(seconds=10))
+            self.assertEqual(third['rows'],second['rows'])
+            self.assertNotEqual(self.bodies(base,third),self.bodies(base,second))
+            self.assertEqual(selection_publication.publication_contents(base,third)[2],sorted(corrected[2],key=selection_publication.identity))
+            # Explicit legacy and modern identities remain distinct.
+            self.assertEqual(first['schema_version'],'selection-publication-pointer-v4')
+            with self.assertRaises(IntegrityError):validate_publication(base,dict(first,schema_version='selection-publication-pointer-v99'))
+
+    def test_fresh_byte_keys_reject_restored_mtime_same_size_and_distinct_root_corruption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root,values=self.projection(directory);base=root/'shared';pointer=self.publish(base,values)
+            cache={};validate_publication(base,pointer,_checked=cache)
+            descriptor=pointer['rows'][0];target=base/descriptor['path'];saved=target.read_bytes();info=target.stat()
+            corrupted=bytearray(saved);corrupted[len(corrupted)//2]^=1;target.write_bytes(corrupted)
+            os.utime(target,ns=(info.st_atime_ns,info.st_mtime_ns))
+            with self.assertRaises(IntegrityError):validate_publication(base,pointer,_checked=cache)
+            target.write_bytes(saved);validate_publication(base,pointer,_checked=cache)
+            clone=root/'independent';shutil.copytree(base,clone)
+            (clone/descriptor['path']).write_bytes(corrupted)
+            with self.assertRaises(IntegrityError):validate_publication(clone,pointer,_checked=cache)
+            with self.assertRaises(IntegrityError):validate_publication(clone,pointer)
+            # Parsed values are defensive: callers cannot mutate cached trust.
+            desc=load_json(base/pointer['summary']['path'])['summary_partitions'][0]
+            part=selection_publication._partition_asset(base,desc,'summary.json',encoded=True,_checked=cache)
+            part['tables'].clear()
+            self.assertTrue(selection_publication._partition_asset(base,desc,'summary.json',encoded=True,_checked=cache)['tables'])
+            original=selection_publication.summarize
+            with patch.object(selection_publication,'summarize',wraps=original) as reconcile:
+                fresh={};validate_publication(base,pointer,_checked=fresh);validate_publication(base,pointer,_checked=fresh)
+                self.assertEqual(reconcile.call_count,1)
+                validate_publication(base,pointer)
+                self.assertEqual(reconcile.call_count,2)
+            with self.assertRaises(IntegrityError):validate_publication(base,dict(pointer,generated_at=stamp(self.AT-timedelta(days=30))),_checked=cache)
+
+    def test_warm_evidence_rechecks_new_removed_markers_and_mutable_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.configure(root);_,health=self.run_partial(root)
+            spec=load_json(root/'config/phase2.json')['partial_week'];name=health['phase2']['partial_completion_receipt'];cache={}
+            original=corrected.legacy_bundle
+            with patch.object(corrected,'legacy_bundle',wraps=original) as read_bundle:
+                first=phase2_capture._qualified_bundle(root,name,spec,cache)
+                first[1]['game_population'].clear()
+                second=phase2_capture._qualified_bundle(root,name,spec,cache)
+                self.assertTrue(second[1]['game_population']);self.assertEqual(read_bundle.call_count,1)
+                marker=write(root,'verification/partial-failures',{'season':2026,'week':6,'completion_sha256':digest(second[0])})
+                with self.assertRaisesRegex(IntegrityError,'final persistence'):phase2_capture._qualified_bundle(root,name,spec,cache)
+                marker.unlink();phase2_capture._qualified_bundle(root,name,spec,cache)
+                native=root/second[0]['baseline_receipt'];raw=native.read_bytes();info=native.stat()
+                corrupt=bytearray(raw);corrupt[-5]^=1;native.write_bytes(corrupt);os.utime(native,ns=(info.st_atime_ns,info.st_mtime_ns))
+                with self.assertRaises((IntegrityError,OSError,ValueError,EOFError)):phase2_capture._qualified_bundle(root,name,spec,cache)
+                native.write_bytes(raw);phase2_capture._qualified_bundle(root,name,spec,cache)
+                clone=root/'independent';shutil.copytree(root/'data',clone/'data');shutil.copytree(root/'config',clone/'config');shutil.copytree(root/'pull',clone/'pull')
+                phase2_capture._qualified_bundle(clone,name,spec,cache)
+                self.assertGreaterEqual(read_bundle.call_count,4)
+
+    def test_imported_validator_outside_runtime_is_in_fresh_closure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'runtime';self.configure(root);_,health=self.run_partial(root)
+            spec=load_json(root/'config/phase2.json')['partial_week'];name=health['phase2']['partial_completion_receipt']
+            source=Path(directory)/'loaded-source/data_integrity_v2.py';source.parent.mkdir();shutil.copyfile(corrected.__file__,source)
+            with patch.object(corrected,'__file__',str(source)):
+                cache={};phase2_capture._qualified_bundle(root,name,spec,cache)
+                info=source.stat();raw=source.read_bytes();source.write_bytes(raw.replace(b'Network',b'network',1) if b'Network' in raw else raw[:-1]+bytes([raw[-1]^1]))
+                os.utime(source,ns=(info.st_atime_ns,info.st_mtime_ns))
+                with self.assertRaises(IntegrityError):phase2_capture._qualified_bundle(root,name,spec,cache)
+
+    git = EncodedHostingTests.git
+    plain_original = EncodedHostingTests.plain_original
+
+    def test_successive_packaging_keeps_flat_root_and_rejects_invented_prior_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'saved';root.mkdir();self.plain_original(root)
+            original=load_json(root/'output/data/release-identity.json')
+            first=phase2_capture.repackage_generation(root,source_root=ROOT)
+            retained={p:p.read_bytes() for p in (root/'data').rglob('*.gz')}
+            source=Path(directory)/'next-source';self.git(ROOT,'clone','--quiet','--shared',str(ROOT),str(source))
+            self.git(source,'config','user.name','Fictional packaging control');self.git(source,'config','user.email','fixture@example.invalid')
+            with (source/'output/app.js').open('a') as handle:handle.write('\n// Fictional next packaging source, no provider capture.\n')
+            self.git(source,'add','output/app.js');self.git(source,'commit','-qm','Fictional future packaging control')
+            with patch.object(phase2_capture,'ROOT',source), patch('requests.sessions.Session.request',side_effect=AssertionError('No collection')):
+                second=phase2_capture.repackage_generation(root,source_root=source)
+                self.assertEqual(second['capture_generation_sha256'],original['generation_sha256'])
+                self.assertEqual(second['capture_original_receipt'],first['capture_original_receipt'])
+                self.assertEqual(second['selection_report_id'],first['selection_report_id'])
+                self.assertNotEqual(second['generation_sha256'],first['generation_sha256'])
+                prior=read(root/second['prior_packaging_receipt'])
+                self.assertEqual(prior['previous_generation'],first)
+                self.assertNotIn('previous_transition',prior)
+                base=root/'output/data/selection-grading';working=load_json(base/'hosting.json')
+                self.assertNotEqual(working['previous'],working['latest'])
+                self.assertEqual(phase2_capture.repackage_generation(root,source_root=source),second)
+                self.assertTrue(all(p.read_bytes()==raw for p,raw in retained.items()))
+                original_generation=(root/'output/data/release-identity.json').read_bytes();original_health=(root/'output/data/health.json').read_bytes()
+                bad=copy.deepcopy(prior);previous=bad['previous_generation'];previous.pop('generation_sha256');previous['source_sha']='0'*40
+                previous['generation_sha256']=digest(previous);bad['previous_health'].update(source_sha='0'*40,generation_sha256=previous['generation_sha256'])
+                receipt=write(root,'verification/hosting-capture-originals',bad)
+                altered=copy.deepcopy(second);altered.pop('generation_sha256');altered['prior_packaging_receipt']=receipt.relative_to(root).as_posix();altered['generation_sha256']=digest(altered)
+                atomic_json(root/'output/data/release-identity.json',altered)
+                health=load_json(root/'output/data/health.json');health['generation_sha256']=altered['generation_sha256'];atomic_json(root/'output/data/health.json',health)
+                with self.assertRaisesRegex(IntegrityError,'source commit is unavailable'):phase2_capture.validate_generation(root)
+                (root/'output/data/release-identity.json').write_bytes(original_generation);(root/'output/data/health.json').write_bytes(original_health)
+                phase2_capture.validate_generation(root)
+
+    def test_mutation_at_actual_pointer_and_stage_boundaries_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'writer';root.mkdir();self.run_live(root)
+            base=root/'output/data/selection-grading';old=(base/'latest.json').read_bytes();mutated={}
+            original=selection_publication._state_write
+            prepared=[];prepare_original=selection_publication.prepare_publication
+            def remember_prepared(*args,**kwargs):
+                result=prepare_original(*args,**kwargs);prepared.append(result);return result
+            def change_after_evidence(*args,**kwargs):
+                result=original(*args,**kwargs)
+                if args[1]=='verification/selection-grading/runs':
+                    target=base/prepared[-1]['rows'][0]['path'];mutated[target]=target.read_bytes()
+                    data=bytearray(mutated[target]);data[-5]^=1;target.write_bytes(data)
+                return result
+            with patch.object(selection_publication,'prepare_publication',side_effect=remember_prepared), patch.object(selection_publication,'_state_write',side_effect=change_after_evidence):
+                with self.assertRaises(IntegrityError):publish_selection_report(root,self.AT+timedelta(seconds=5),source_sha='1'*40)
+            self.assertEqual((base/'latest.json').read_bytes(),old)
+            for target,raw in mutated.items():target.write_bytes(raw)
+            phase2_capture.validate_generation(root)
+            actual_copy=shutil.copyfile;changed=[]
+            def mutate_after_copy(src,dst,*args,**kwargs):
+                result=actual_copy(src,dst,*args,**kwargs)
+                if not changed:
+                    marker=root/'data/verification/FICTIONAL_NEW_FAILURE_DEPENDENCY';marker.write_text('new inventory entry');changed.append(marker)
+                return result
+            with patch.object(phase2_capture.shutil,'copyfile',side_effect=mutate_after_copy):
+                with self.assertRaisesRegex(IntegrityError,'source evidence changed'):phase2_capture.stage_pages(root,Path(directory)/'pages')
+            changed[0].unlink();phase2_capture.validate_generation(root)
+
+    def test_complete_shared_validation_rejects_typed_mixing_and_atomic_race(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root,values=self.projection(directory);base=root/'shared';pointer=self.publish(base,values)
+            indexpath=base/pointer['summary']['path'];original=indexpath.read_bytes();index=load_json(indexpath)
+            for mode in ('report_envelope','wrong_context','wrong_version','membership'):
+                changed=copy.deepcopy(index);desc=changed['summary_partitions'][-1];payload=fixture_part(base,desc,'summary.json')
+                if mode=='report_envelope':payload['report_id']=pointer['report_id']
+                elif mode=='wrong_context':payload['context_id']='0'*64
+                elif mode=='wrong_version':payload['schema_version']='selection-public-summary-partition-v1'
+                else:payload['tables'][0]['row_positions']=[]
+                replace_fixture_part(base,desc,'summary.json',payload);atomic_json(indexpath,changed)
+                altered=copy.deepcopy(pointer);altered['summary'].update(sha256=hashlib.sha256(indexpath.read_bytes()).hexdigest(),decoded_bytes=len(indexpath.read_bytes()))
+                with self.assertRaises(IntegrityError):validate_publication(base,altered)
+            indexpath.write_bytes(original);validate_publication(base,pointer)
+
+
+class PreparedPublicationTests(unittest.TestCase):
+    AT = PartitionedPublicationTests.AT
+    projection = PartitionedPublicationTests.projection
+    locality_report = PublicSelectionPipelineTests.locality_report
+    run_live = PublicSelectionPipelineTests.run_live
+
+    @staticmethod
+    def memo(checked):
+        return checked[("publisher-context",)][1][("prepared-publications",)]
+
+    def layouts(self, base, values):
+        for options in ({"partitioned": False}, {}, {"encoding": "gzip"}, {"encoding": "gzip", "shared": True}):
+            yield selection_publication.prepare_publication(base, *values[:4], self.AT, **options)
+
+    def test_legacy_reader_stays_uncached_without_ranked_dependency_closure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "legacy-no-ranked-git"
+            with patch.object(selection_publication, "_strategy_row_context", side_effect=IntegrityError("Unavailable retained Git")):
+                for pointer in self.layouts(base, values):
+                    checked = {}
+                    summary, rows, outcomes = selection_publication.publication_contents(base, pointer, _checked=checked)
+                    self.assertEqual(rows, values[1])
+                    self.assertEqual(outcomes, sorted(values[2], key=selection_publication.identity))
+                    self.assertNotIn(("publisher-context",), checked)
+                    self.assertEqual(summary["report_id"], pointer["report_id"])
+
+    def test_all_readers_prepare_once_return_isolated_exact_values_and_hash_plain_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "prepared"
+            for pointer in self.layouts(base, values):
+                checked = {}
+                original = selection_publication._validate_legacy_publication
+                with patch.object(selection_publication, "_validate_legacy_publication", wraps=original) as complete:
+                    first = selection_publication.publication_contents(base, pointer, _checked=checked)
+                    expected = copy.deepcopy(first)
+                    first[0]["summary"]["tables"].clear(); first[1][0]["name"] = "mutated caller"
+                    first[2].clear()
+                    self.assertEqual(selection_publication.publication_contents(base, pointer, _checked=checked), expected)
+                    self.assertEqual(validate_publication(base, pointer, _checked=checked), expected[0])
+                    self.assertEqual(complete.call_count, 1)
+                    self.assertEqual(self.memo(checked).hits, 2)
+                    target = base / pointer["rows"][-1]["path"]
+                    raw = target.read_bytes(); info = target.stat()
+                    corrupt = bytearray(raw); corrupt[len(corrupt)//2] ^= 1
+                    target.write_bytes(corrupt); os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+                    with self.assertRaises(IntegrityError): validate_publication(base, pointer, _checked=checked)
+                    target.write_bytes(raw)
+                    self.assertEqual(selection_publication.publication_contents(base, pointer, _checked=checked), expected)
+                    target.unlink()
+                    with self.assertRaises((IntegrityError, OSError)): validate_publication(base, pointer, _checked=checked)
+                    target.write_bytes(raw)
+                self.assertEqual(selection_publication.publication_contents(base, pointer), expected)
+                self.assertEqual(expected[1], values[1])
+                self.assertEqual(expected[2], sorted(values[2], key=selection_publication.identity))
+
+    def test_every_nondefault_dependency_and_exact_envelope_is_fresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "prepared"
+            pointer = selection_publication.prepare_publication(base, *values[:4], self.AT, encoding="gzip", shared=True)
+            checked = {}; validate_publication(base, pointer, _checked=checked)
+            index = load_json(base / pointer["summary"]["path"])
+            final = load_json(base / pointer["outcomes"]["path"])
+            descriptors = [pointer["summary"], pointer["outcomes"], *index["summary_partitions"], *final["periods"]]
+            self.assertGreater(len(index["summary_partitions"]), 1)
+            for desc in descriptors:
+                target = base / desc["path"]; raw = target.read_bytes(); info = target.stat()
+                corrupt = bytearray(raw); corrupt[len(corrupt)//2] ^= 1
+                target.write_bytes(corrupt); os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+                with self.assertRaises((IntegrityError, ValueError)): validate_publication(base, pointer, _checked=checked)
+                target.write_bytes(raw)
+            # Self-consistently rehashed descriptor/leaf changes still require the
+            # unchanged full privacy, identity and membership algorithms.
+            for mode in ("private", "membership", "period", "context", "version", "new_dependency"):
+                changed = copy.deepcopy(index); desc = changed["summary_partitions"][-1]
+                payload = fixture_part(base, desc, "summary.json")
+                if mode == "private": payload["tables"][0]["credential"] = "fictional-not-a-secret"
+                elif mode == "membership": payload["tables"][0]["row_positions"] = []
+                elif mode == "period": payload["period"] = "2026-w18"
+                elif mode == "context": payload["context_id"] = "0" * 64
+                elif mode == "version": payload["schema_version"] = "unknown"
+                else: changed["summary_partitions"].append(copy.deepcopy(desc))
+                if mode != "new_dependency": replace_fixture_part(base, desc, "summary.json", payload)
+                raw = selection_publication.canonical(changed) + b"\n"
+                path = base / pointer["summary"]["path"]; old = path.read_bytes(); path.write_bytes(raw)
+                altered = copy.deepcopy(pointer); altered["summary"].update(sha256=hashlib.sha256(raw).hexdigest(), decoded_bytes=len(raw))
+                with self.assertRaises(IntegrityError): validate_publication(base, altered, _checked=checked)
+                path.write_bytes(old)
+            for altered in (dict(pointer, generated_at=stamp(self.AT-timedelta(days=30))),
+                            dict(pointer, schema_version="selection-publication-pointer-v999")):
+                with self.assertRaises(IntegrityError): validate_publication(base, altered, _checked=checked)
+            # A changed source header is a different graph, not an old PASS.
+            changed = copy.deepcopy(index); changed["source_sha"] = "not-a-commit"
+            path = base / pointer["summary"]["path"]; old = path.read_bytes(); atomic_json(path, changed)
+            altered = copy.deepcopy(pointer); altered["summary"].update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), decoded_bytes=path.stat().st_size)
+            with self.assertRaises(IntegrityError): validate_publication(base, altered, _checked=checked)
+            path.write_bytes(old)
+            validate_publication(base, pointer, _checked=checked)
+
+    def test_roots_helpers_limits_and_processes_never_borrow_trust(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "prepared"
+            pointer = selection_publication.prepare_publication(base, *values[:4], self.AT, encoding="gzip", shared=True)
+            checked = {}; validate_publication(base, pointer, _checked=checked)
+            clone = root / "copied"; shutil.copytree(base, clone)
+            original = selection_publication._validate_legacy_publication
+            with patch.object(selection_publication, "_validate_legacy_publication", wraps=original) as complete:
+                validate_publication(base, pointer, _checked=checked)
+                validate_publication(clone, pointer, _checked=checked)
+                self.assertEqual(complete.call_count, 2)
+            for helper in ("summarize", "_json_bytes", "_row"):
+                with patch.object(selection_publication, helper, side_effect=IntegrityError("changed helper")) as changed:
+                    with self.assertRaises(IntegrityError): validate_publication(base, pointer, _checked=checked)
+                    self.assertTrue(changed.called)
+                validate_publication(base, pointer, _checked=checked)
+            # Non-function callable wrappers have identities too; replacing one
+            # must invalidate both prepared and lower-level cached work.
+            reader = selection_publication._fresh_stored_bytes
+            with patch.object(selection_publication, "_fresh_stored_bytes", wraps=reader):
+                validate_publication(base, pointer, _checked=checked)
+            with patch.object(selection_publication, "_fresh_stored_bytes", side_effect=IntegrityError("changed reader")) as replaced:
+                with self.assertRaisesRegex(IntegrityError, "changed reader"):
+                    validate_publication(base, pointer, _checked=checked)
+                self.assertTrue(replaced.called)
+            # A helper can change DURING the fresh lookup, after its initial
+            # identity was read. Even a warm hit must recheck that boundary.
+            armed = [False]; original_read = selection_publication._fresh_stored_bytes
+            original_row = selection_publication._row
+            def change_helper_during_read(*args, **kwargs):
+                result = original_read(*args, **kwargs)
+                if armed[0]:
+                    selection_publication._row = lambda row: (_ for _ in ()).throw(IntegrityError("new row helper"))
+                    armed[0] = False
+                return result
+            try:
+                with patch.object(selection_publication, "_fresh_stored_bytes", side_effect=change_helper_during_read):
+                    validate_publication(base, pointer, _checked=checked)
+                    armed[0] = True
+                    with self.assertRaisesRegex(IntegrityError, "helper changed"):
+                        validate_publication(base, pointer, _checked=checked)
+            finally:
+                selection_publication._row = original_row
+            with patch.object(selection_publication, "ROW_LIMIT", 1), self.assertRaises(IntegrityError):
+                validate_publication(base, pointer, _checked=checked)
+            link = root / "symlink"; link.symlink_to(base, target_is_directory=True)
+            with self.assertRaises(IntegrityError): validate_publication(link, pointer, _checked=checked)
+            target = clone / pointer["rows"][0]["path"]; raw = target.read_bytes()
+            target.write_bytes(b"x" * len(raw))
+            with self.assertRaises(IntegrityError): validate_publication(clone, pointer, _checked=checked)
+            atomic_json(root / "pointer.json", pointer)
+            command = [sys.executable, "-c", "import sys;from pathlib import Path;sys.path[:0]=[sys.argv[1],sys.argv[2]];from selection_publication import validate_publication;from reliability import load_json;validate_publication(Path(sys.argv[3]),load_json(Path(sys.argv[4])))", str(ROOT/"tools"), str(ROOT/"pull"), str(clone), str(root/"pointer.json")]
+            self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+
+    def test_exact_lru_byte_accounting_eviction_and_oversized_skip(self):
+        memo = selection_publication._PreparedPublications()
+        self.assertEqual(selection_publication.PREPARED_LIMIT, 384 * 1024 * 1024)
+        self.assertEqual(selection_publication.PREPARED_ENTRIES, 8)
+        for number in range(9): memo.put(number, (b"1", b"2", b"3"))
+        self.assertEqual(list(memo.entries), list(range(1, 9)))
+        self.assertEqual(memo.serialized_bytes, 24)
+        memo = selection_publication._PreparedPublications()
+        with patch.object(selection_publication, "PREPARED_ENTRIES", 2), patch.object(selection_publication, "PREPARED_LIMIT", 12):
+            memo.put("a", (b"123", b"45", b"6")); memo.put("b", (b"12", b"34", b"56"))
+            self.assertEqual(memo.serialized_bytes, 12)
+            self.assertIsNotNone(memo.get("a")); memo.put("c", (b"12", b"34", b"56"))
+            self.assertEqual(list(memo.entries), ["a", "c"]); self.assertIsNone(memo.get("b"))
+            memo.put("c", (b"1", b"2", b"3")); self.assertEqual(memo.serialized_bytes, 9)
+            memo.put("too-big", (b"x" * 13, b"", b""))
+            self.assertFalse(memo.entries); self.assertEqual(memo.serialized_bytes, 0)
+            self.assertLessEqual(memo.peak_serialized_bytes, 12)
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "prepared"
+            pointer = selection_publication.prepare_publication(base, *values[:4], self.AT)
+            checked = {}; expected = validate_publication(base, pointer)
+            with patch.object(selection_publication, "PREPARED_LIMIT", 1):
+                self.assertEqual(validate_publication(base, pointer, _checked=checked), expected)
+                self.assertEqual(self.memo(checked).serialized_bytes, 0)
+                self.assertEqual(validate_publication(base, pointer, _checked=checked), expected)
+
+    def test_first_validation_race_cannot_seed_prepared_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "prepared"
+            pointer = selection_publication.prepare_publication(base, *values[:4], self.AT)
+            checked = {}; original = selection_publication._validate_legacy_publication
+            target = base / pointer["rows"][0]["path"]; raw = target.read_bytes()
+            def mutate_after_complete(*args, **kwargs):
+                result = original(*args, **kwargs); target.write_bytes(b"x" * len(raw)); return result
+            with patch.object(selection_publication, "_validate_legacy_publication", side_effect=mutate_after_complete):
+                with self.assertRaises(IntegrityError): validate_publication(base, pointer, _checked=checked)
+                self.assertFalse(self.memo(checked).entries)
+            target.write_bytes(raw)
+            self.assertEqual(selection_publication.publication_contents(base, pointer, _checked=checked)[1], values[1])
+            # Optional helper closure unavailable: no old lower-cache success is
+            # borrowed, and unchanged complete validation remains supported.
+            with patch.object(selection_publication, "_publication_helpers", return_value=None), patch.object(selection_publication, "_validate_legacy_publication", wraps=original) as complete:
+                validate_publication(base, pointer, _checked=checked)
+                validate_publication(base, pointer, _checked=checked)
+                self.assertEqual(complete.call_count, 2)
+
+
+
+# Reuse the retained smallest mixed-original/corrected fixture. These controls
+# do not change that earlier fixture or invoke a provider. The only substitutions
+# are explicitly fictional HTTP, clocks and public-archive transport lookup.
+RANKED_CONNECTED_SEED = r'''
+code,root=Path(sys.argv[1]),Path(sys.argv[2])
+m=bind(code)
+import selection_strategies as strategies
+provider=Provider(m,DIMENSIONS)
+m['_provider']=provider
+provider.at=START+timedelta(hours=53)
+board=m['rel'].load_json(root/'output/data/week.json')
+plan(m,root,board,provider.at,True)
+def git(*args):
+    return subprocess.check_output(['git','-C',str(root),*args],stderr=subprocess.PIPE).decode().strip()
+def commit():
+    git('add','data','output/data','ranked-state.json')
+    git('-c','user.name=FictionalRegression','-c','user.email=fictional@example.invalid',
+        '-c','core.hooksPath=/dev/null','commit','-qm','Wholly fictional ranked-selection regression')
+def public_tree(ref,tree):
+    if git('rev-parse',ref+'^{tree}')!=tree:
+        raise RuntimeError('Fictional archive tree mismatch')
+class StrategyClock(datetime):
+    @classmethod
+    def now(cls,tz=None): return provider.at
+state=dict(updates=[],source_sha=sys.argv[3])
+with external(m,provider,root),patch.object(strategies,'datetime',StrategyClock), \
+        patch.object(m['capture'],'_public_archive_commit',side_effect=public_tree):
+    for step in range(3):
+        provider.at=START+timedelta(hours=53,seconds=step*5)
+        report,health=m['capture'].run_capture(root,build_first=(step!=1))
+        generation=m['capture'].validate_generation(root)
+        completions=sorted(p.relative_to(root).as_posix()
+            for p in (root/'data'/strategies.COMPLETE_LANE).rglob('*.json.gz'))
+        rows=strategies.decisions([root],m['rel'].load_json(root/'config/timing-policy.json'),
+            provider.at,ledger_root=root)
+        selected=[row for row in rows if row['checkpoint']=='history' and row['action']=='SELECT']
+        if not selected: raise RuntimeError('Actual connected fixture produced no ranked selections')
+        if len(completions)!=(1 if step<2 else 2):
+            raise RuntimeError('Unchanged retry changed first ranked recording or new input failed to record')
+        state['updates'].append(dict(at=provider.at.isoformat(),generation=generation,
+            completions=completions,selected=selected,health=health))
+        m['rel'].atomic_json(root/'ranked-state.json',state)
+        commit()
+    m['capture'].stage_pages(root,root.parent/'ranked-pages')
+    pointer=m['rel'].load_json(root/'output/data/selection-grading/latest.json')
+    summary,rows,outcomes=m['publication'].publication_contents(root/'output/data/selection-grading',pointer)
+    if summary['schema_version']!='selection-public-report-v6':
+        raise RuntimeError('Connected report did not use the explicit strategy-aware contract')
+    if not any(row['cohort'] in strategies.STRATEGIES and row['action']=='SELECT' for row in rows):
+        raise RuntimeError('Public projection dropped the actual ranked selections')
+    clean=root.parent/'ranked-clean-copy'
+    shutil.copytree(root,clean)
+    if m['capture'].validate_generation(clean)!=state['updates'][-1]['generation']:
+        raise RuntimeError('Independent copied-root replay changed generation')
+    cold=strategies.decisions([clean],m['rel'].load_json(clean/'config/timing-policy.json'),
+        provider.at,ledger_root=clean)
+    if cold!=strategies.decisions([root],m['rel'].load_json(root/'config/timing-policy.json'),
+        provider.at,ledger_root=root):
+        raise RuntimeError('Independent copied-root strategy decisions changed')
+    state['clean_replay']='PASS'
+    m['rel'].atomic_json(root/'ranked-state.json',state)
+'''
+
+
+class RankedStrategyConnectedPipelineTests(unittest.TestCase):
+    """Real source-bound recorded update and saved consumers, after commit.
+
+    The retained legacy builder runs in its retained source process. The new
+    builder and all qualification/ranking/completion/publication algorithms run
+    from the actual new commit; no validator or source manifest is mocked.
+    """
+    @classmethod
+    def setUpClass(cls):
+        from test_data_integrity_v2 import FROZEN_FRONTIER_SUPPORT, FROZEN_FRONTIER_SEED, frontier_process
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.base = Path(cls.temporary.name) / "ranked-fixture"
+        cls.base.mkdir()
+        namespace = {}
+        exec(FROZEN_FRONTIER_SUPPORT, namespace)
+        code = getattr(cls, "source_code", ROOT)
+        legacy_env = dict(os.environ)
+        legacy_env.pop("GITHUB_SHA", None)
+        with corrected.legacy_source() as retained:
+            namespace["copy_source"](retained, cls.base)
+            frontier_process([sys.executable, "-c", FROZEN_FRONTIER_SUPPORT + FROZEN_FRONTIER_SEED,
+                              str(retained), str(cls.base), "legacy"], env=legacy_env)
+        namespace["copy_source"](code, cls.base)
+        subprocess.run(["git", "init", "-q", str(cls.base)], check=True)
+        objects = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-path", "objects"], text=True).strip()
+        (cls.base / ".git/objects/info/alternates").write_text(objects + "\n")
+        cls.source = getattr(cls, "source_commit", subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip())
+        subprocess.run(["git", "-C", str(cls.base), "update-ref", "refs/fixture/source", cls.source], check=True)
+        subprocess.run(["git", "-C", str(cls.base), "remote", "add", "origin", "https://github.com/NickNicky19/nicks-expert-nfl-picks"], check=True)
+        subprocess.run(["git", "-C", str(cls.base), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(cls.base), "-c", "user.name=FictionalRegression", "-c", "user.email=fictional@example.invalid",
+                        "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Wholly fictional ranked initial fixture"], check=True)
+        frontier_process([sys.executable, "-c", FROZEN_FRONTIER_SUPPORT + RANKED_CONNECTED_SEED,
+                          str(cls.base), str(cls.base), cls.source], env=dict(os.environ, GITHUB_SHA=cls.source))
+        cls.state = load_json(cls.base / "ranked-state.json")
+
+    def setUp(self):
+        self.temporary_case = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_case.cleanup)
+        self.root = Path(self.temporary_case.name) / "copy"
+        shutil.copytree(self.base, self.root)
+        self.at = utc(self.state["updates"][-1]["at"])
+        self.first_name = self.state["updates"][0]["completions"][0]
+
+    def clock(self):
+        at = self.at
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None): return at
+        return Clock
+
+    def first(self):
+        import selection_strategies as strategies
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            return strategies.read_completed(self.root, self.first_name, now=self.at)
+
+    def test_ranked_public_rows_share_only_fresh_batch_dependencies(self):
+        base = self.root / "output/data/selection-grading"
+        pointer = load_json(base / "latest.json")
+        expected = selection_publication.publication_contents(base, pointer)
+        self.assertGreater(len(expected[1]), 2)
+        with patch.object(corrected, "legacy_engine_hashes", wraps=corrected.legacy_engine_hashes) as hashes:
+            actual = selection_publication.publication_contents(base, pointer, _checked={})
+        self.assertEqual(actual, expected)
+        self.assertLess(hashes.call_count, len(expected[1]))
+        modern = [row for row in expected[1] if row.get("schema_version") == "selection-decision-v2"]
+        self.assertTrue(modern)
+        with patch.object(corrected, "legacy_engine_hashes", wraps=corrected.legacy_engine_hashes) as hashes:
+            for row in modern[:2]: self.assertEqual(selection_publication._row(row, extended=True), row)
+        self.assertEqual(hashes.call_count, len(modern[:2]), "standalone rows still verify fresh dependencies")
+        context = selection_publication._strategy_row_context()
+        for field, value in (("engine_sha256", "0" * 64), ("strategy_policy_sha256", "0" * 64),
+                             ("model_version", "unknown-model"), ("schema_version", "unknown-schema")):
+            with self.subTest(field=field), self.assertRaises(IntegrityError):
+                selection_publication._row(dict(modern[0], **{field: value}), extended=True, _strategy_context=context)
+        with patch.object(selection_publication, "_strategy_row_context", side_effect=IntegrityError("Unavailable retained Git")):
+            with self.assertRaises(IntegrityError): validate_publication(base, pointer, _checked={})
+
+    def test_ranked_projection_rechecks_batch_context_and_preserves_latest(self):
+        base = self.root / "output/data/selection-grading"
+        latest = (base / "latest.json").read_bytes()
+        with tempfile.TemporaryDirectory() as directory, patch.object(phase2_capture, "datetime", self.clock()):
+            report, _ = run_report([self.root], Path(directory), now=self.at,
+                                   report_version="selection-report-v4", diagnostic_exports=False)
+        context = selection_publication._strategy_row_context()
+        with patch.object(selection_publication, "_strategy_row_context", return_value=context) as reads:
+            expected = selection_publication._projection(report, source_sha=self.source, input_digest="1" * 64)
+        self.assertEqual(reads.call_count, 2)
+        self.assertEqual(len(expected[1]), len(report["rows"]))
+        changed = ("0" * 64, *context[1:])
+        with patch.object(selection_publication, "_strategy_row_context", side_effect=[context, changed]):
+            with self.assertRaisesRegex(IntegrityError, "dependencies changed during projection"):
+                selection_publication._projection(report, source_sha=self.source, input_digest="1" * 64)
+        self.assertEqual((base / "latest.json").read_bytes(), latest)
+
+    def test_warm_ranked_publication_rechecks_actual_git_at_cache_return(self):
+        base = self.root / "output/data/selection-grading"
+        pointer = load_json(base / "latest.json"); latest = (base / "latest.json").read_bytes()
+        checked = {}; state = {"corrupt": False, "race": False}
+        actual_git = corrected._git
+        actual_get = selection_publication._PreparedPublications.get
+        def git(repository, *args):
+            raw = actual_git(repository, *args)
+            if state["corrupt"] and args == ("cat-file", "commit", corrected.LEGACY_SOURCE):
+                return raw[:-1] + bytes([raw[-1] ^ 1])
+            return raw
+        def get(memo, key):
+            value = actual_get(memo, key)
+            if value is not None and state["race"]: state["corrupt"] = True
+            return value
+        # Only the read boundary is controlled. Actual fixture/source/row/
+        # semantic validators run; shared Git objects are never overwritten.
+        with patch.object(corrected, "_git", side_effect=git), patch.object(selection_publication._PreparedPublications, "get", get):
+            expected = validate_publication(base, pointer, _checked=checked)
+            self.assertEqual(validate_publication(base, pointer, _checked=checked), expected)
+            state["race"] = True
+            with self.assertRaisesRegex(IntegrityError, "helper changed during prepared reuse"):
+                validate_publication(base, pointer, _checked=checked)
+            state.update(corrupt=True, race=False)
+            with self.assertRaises(IntegrityError): validate_publication(base, pointer, _checked=checked)
+            state["corrupt"] = False
+            self.assertEqual(validate_publication(base, pointer, _checked=checked), expected)
+        self.assertEqual((base / "latest.json").read_bytes(), latest)
+
+    def test_actual_mixed_updater_retry_complete_publication_and_clean_copy(self):
+        import selection_strategies as strategies
+        self.assertEqual(self.state["clean_replay"], "PASS")
+        self.assertEqual(self.state["source_sha"], self.source)
+        first, done = self.first()
+        self.assertEqual(first["source_sha"], self.source)
+        self.assertEqual(first["source_files"], strategies._source(ROOT, self.source))
+        self.assertEqual([len(item["completions"]) for item in self.state["updates"]], [1, 1, 2])
+        self.assertEqual(self.state["updates"][0]["selected"], self.state["updates"][1]["selected"])
+        self.assertEqual(self.state["updates"][0]["selected"], self.state["updates"][2]["selected"])
+        originals = {p.relative_to(self.root): p.read_bytes() for p in (self.root / "data").rglob("*.json.gz")}
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            phase2_capture.validate_generation(self.root)
+            summary, rows, outcomes = selection_publication.publication_contents(self.root / "output/data/selection-grading",
+                load_json(self.root / "output/data/selection-grading/latest.json"))
+        self.assertEqual(summary["schema_version"], "selection-public-report-v6")
+        self.assertTrue(any(row["cohort"] in strategies.STRATEGIES and row["action"] == "SELECT" for row in rows))
+        for name, raw in originals.items(): self.assertEqual((self.root / name).read_bytes(), raw)
+
+    def test_format_compatible_forward_recovery_and_two_actual_mocked_updates(self):
+        """Exact current-source recovery; no old-reader or runtime qualification."""
+        from test_data_integrity_v2 import FROZEN_FRONTIER_SUPPORT, frontier_process
+        import selection_strategies as strategies
+
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(self.root), *args], text=True, stderr=subprocess.PIPE).strip()
+
+        def commit(paths, message):
+            git("add", "--", *paths)
+            git("-c", "user.name=FictionalRegression", "-c", "user.email=fictional@example.invalid",
+                "-c", "core.hooksPath=/dev/null", "commit", "-qm", message)
+            return git("rev-parse", "HEAD")
+
+        paths = tuple(dict.fromkeys(("output/app.js", "output/index.html", *strategies.SOURCE_PATHS)))
+        expected = {name: subprocess.check_output(["git", "-C", str(ROOT), "show", self.source + ":" + name]) for name in paths}
+        for name, raw in expected.items():
+            self.assertEqual((ROOT / name).read_bytes(), raw, "run only against the actual committed final source")
+            self.assertEqual((self.root / name).read_bytes(), raw)
+        old_identity = (self.root / "output/data/release-identity.json").read_bytes()
+        original_parent = git("rev-parse", "HEAD")
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            original_generation = phase2_capture.validate_generation(self.root)
+
+        # Harmless bytes still break the app/generation contract. This bad commit
+        # exists only inside this test's independent disposable Git checkout.
+        app = self.root / "output/app.js"
+        app.write_bytes(expected["output/app.js"] + b"\n// FICTIONAL deliberately incompatible recovery control\n")
+        bad_commit = commit(["output/app.js"], "Fictional bad source recovery control")
+        self.assertEqual(git("rev-parse", bad_commit + "^"), original_parent)
+        with patch.object(phase2_capture, "datetime", self.clock()), self.assertRaisesRegex(IntegrityError, "Publication generation content mismatch"):
+            phase2_capture.validate_generation(self.root)
+        self.assertEqual((self.root / "output/data/release-identity.json").read_bytes(), old_identity)
+
+        # Restore exact app/shell/helper bytes with another ordinary forward
+        # commit; no reset/revert to a legacy representation or receipt rewrite.
+        for name, raw in expected.items():
+            (self.root / name).write_bytes(raw)
+        recovery_commit = commit(list(paths), "Fictional exact current-source forward recovery")
+        self.assertEqual(git("rev-parse", recovery_commit + "^"), bad_commit)
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            self.assertEqual(phase2_capture.validate_generation(self.root), original_generation)
+        self.assertEqual((self.root / "output/data/release-identity.json").read_bytes(), old_identity)
+
+        # Real updater, generation qualification, complete public reconstruction,
+        # and Pages/archive checks. Only the retained fictional HTTP/clocks and
+        # public-transport lookup are substituted, exactly as in the seed.
+        script = FROZEN_FRONTIER_SUPPORT + r'''
+import os
+code,root=Path(sys.argv[1]),Path(sys.argv[2])
+m=bind(code)
+import selection_strategies as strategies
+provider=Provider(m,DIMENSIONS)
+m['_provider']=provider
+provider.at=START+timedelta(hours=53,seconds=15)
+class StrategyClock(datetime):
+    @classmethod
+    def now(cls,tz=None):return provider.at
+def git(*args):
+    return subprocess.check_output(['git','-C',str(root),*args],stderr=subprocess.PIPE).decode().strip()
+def public_tree(ref,tree):
+    if git('rev-parse',ref+'^{tree}')!=tree:raise RuntimeError('Fictional archive tree mismatch')
+def immutable():
+    files=list((root/'data').rglob('*.json.gz'))
+    base=root/'output/data/selection-grading'
+    files.extend(p for p in base.rglob('*') if p.is_file() and len(p.relative_to(base).parts)>1)
+    return {p.relative_to(root).as_posix():sha(p.read_bytes()) for p in files}
+def preserved(before):
+    for name,digest in before.items():
+        if not (root/name).is_file() or sha((root/name).read_bytes())!=digest:
+            raise RuntimeError('Recovery changed immutable evidence/asset: '+name)
+original_files=immutable()
+original_source={name:(root/name).read_bytes() for name in ('output/app.js','output/index.html',*strategies.SOURCE_PATHS)}
+original_config={p.relative_to(root).as_posix():p.read_bytes() for p in (root/'config').rglob('*') if p.is_file()}
+base=root/'output/data/selection-grading'
+original_manifest=m['rel'].load_json(base/'hosting.json')['latest']
+updates=[]
+with external(m,provider,root),patch.object(strategies,'datetime',StrategyClock),patch.object(m['capture'],'_public_archive_commit',side_effect=public_tree):
+    for step in range(2):
+        before=immutable()
+        provider.at=START+timedelta(hours=53,seconds=15+5*step)
+        provider.revision=1
+        actual_source=git('rev-parse','HEAD')
+        if 'GITHUB_SHA' in os.environ:raise RuntimeError('Do not override the actual disposable checkout source')
+        m['capture'].run_capture(root,build_first=True)
+        generation=m['capture'].validate_generation(root)
+        if generation['source_sha']!=actual_source:raise RuntimeError('Updater did not bind actual source HEAD')
+        pointer=m['rel'].load_json(base/'latest.json')
+        summary,rows,outcomes=m['publication'].publication_contents(base,pointer)
+        if summary['schema_version']!='selection-public-report-v6':raise RuntimeError('Recovery lost the current format')
+        if not any(row.get('cohort') in strategies.STRATEGIES and row['action']=='SELECT' for row in rows):raise RuntimeError('Recovery lost recorded strategies')
+        git('add','data','output/data')
+        git('-c','user.name=FictionalRegression','-c','user.email=fictional@example.invalid','-c','core.hooksPath=/dev/null','commit','-qm','Wholly fictional post-recovery update')
+        m['capture'].stage_pages(root,root.parent/('recovery-pages-'+str(step)))
+        m['capture'].validate_generation(root)
+        m['capture']._manifest(base,original_manifest,root=root)
+        preserved(before)
+        for name,raw in original_source.items():
+            if (root/name).read_bytes()!=raw:raise RuntimeError('Updater changed preserved source: '+name)
+        for name,raw in original_config.items():
+            if (root/name).read_bytes()!=raw:raise RuntimeError('Updater changed configuration: '+name)
+        updates.append(dict(source_sha=actual_source,data_commit=git('rev-parse','HEAD'),generation=generation,
+            row_count=len(rows),outcome_count=len(outcomes),retained_original_manifest=original_manifest))
+    preserved(original_files)
+m['rel'].atomic_json(root/'recovery-result.json',dict(updates=updates,immutable_original_count=len(original_files),
+    original_manifest=original_manifest,claim='CURRENT_FORMAT_FORWARD_RECOVERY_ONLY_NOT_OPERATING_QUALIFICATION'))
+'''
+        env = dict(os.environ)
+        env.pop("GITHUB_SHA", None)
+        frontier_process([sys.executable, "-c", script, str(self.root), str(self.root)], env=env)
+        result = load_json(self.root / "recovery-result.json")
+        self.assertEqual(len(result["updates"]), 2)
+        self.assertEqual(result["updates"][0]["source_sha"], recovery_commit)
+        self.assertEqual(result["updates"][1]["source_sha"], result["updates"][0]["data_commit"])
+        self.assertGreater(result["immutable_original_count"], 0)
+        self.assertNotEqual(result["updates"][0]["generation"]["generation_sha256"], result["updates"][1]["generation"]["generation_sha256"])
+        for name, raw in expected.items():
+            self.assertEqual((self.root / name).read_bytes(), raw)
+
+    def test_actual_source_qualified_originals_and_completion_bindings_are_required(self):
+        saved, completion = self.first()
+        q = saved["qualification"]
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            board, native = phase2_capture._strategy_qualification(self.root, q, utc(saved["created_at"]))
+            self.assertEqual(digest(board), q["board_sha256"])
+            self.assertEqual(digest(native), q["native_payload_sha256"])
+            for field in ("board_sha256", "native_payload_sha256", "partial_completion_payload_sha256"):
+                bad = copy.deepcopy(q); bad[field] = "0" * 64
+                with self.subTest(field=field), self.assertRaises(IntegrityError):
+                    phase2_capture._strategy_qualification(self.root, bad, utc(saved["created_at"]))
+            with self.assertRaises(IntegrityError):
+                phase2_capture._strategy_qualification(self.root, q, utc(saved["created_at"]) - timedelta(seconds=1))
+        # Actual pinned bytes are necessary, even with matching saved flags.
+        native_path = self.root / q["native_receipt"]
+        native_path.write_bytes(b"FICTIONAL corrupt native bytes")
+        with patch.object(phase2_capture, "datetime", self.clock()), self.assertRaises((IntegrityError, OSError, EOFError)):
+            self.first()
+
+    def test_failure_marker_excludes_saved_strategy_without_rewriting_original_evidence(self):
+        import selection_strategies as strategies
+        saved, completion = self.first()
+        native_path = self.root / saved["qualification"]["native_receipt"]
+        original = native_path.read_bytes()
+        write(self.root, strategies.FAILURE_LANE, {"schema_version": "ranked-selection-failure-v1",
+              "season": saved["season"], "week": saved["week"], "completion_sha256": digest(completion), "failed_at": stamp(self.at)})
+        with self.assertRaises(strategies.UnqualifiedStrategy): self.first()
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            rows = strategies.decisions([self.root], load_json(self.root / "config/timing-policy.json"), self.at)
+        self.assertFalse(any(row["action"] == "SELECT" and row["strategy_receipt_sha256"] == digest(saved) for row in rows))
+        self.assertEqual(native_path.read_bytes(), original)
+
+
+
+    def test_actual_active_native_and_saved_consumers_require_runtime_registry(self):
+        import selection_strategies as strategies
+        saved, completion = self.first()
+        self.assertGreaterEqual(utc(saved["created_at"]), utc(strategies.policy()["registered_at"]))
+        originals = {p.relative_to(self.root): p.read_bytes() for p in (self.root / "data").rglob("*.json.gz")}
+        (self.root / strategies.POLICY_PATH).unlink()  # Isolated negative copy only.
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            # No source/validator/qualification mocks: the exact existing active
+            # native is freshly qualified before missing-registry rejection.
+            with self.assertRaises((IntegrityError, FileNotFoundError)):
+                strategies.record(self.root, saved["qualification"], saved["source_sha"], clock=lambda: self.at)
+            with self.assertRaises((IntegrityError, FileNotFoundError)):
+                strategies.read_completed(self.root, self.first_name, now=self.at)
+            with self.assertRaises((IntegrityError, FileNotFoundError)):
+                strategies.decisions([self.root], load_json(self.root / "config/timing-policy.json"), self.at)
+        for name, raw in originals.items(): self.assertEqual((self.root / name).read_bytes(), raw)
+
+
+class RetainedRankedSourcePipelineTests(unittest.TestCase):
+    """Actual e2d fictional lineage replayed by the changed current reader."""
+    @classmethod
+    def setUpClass(cls):
+        import selection_strategies as strategies
+        cls.retained = strategies._retained_source()
+        cls.source_code = cls.retained.__enter__()
+        cls.addClassCleanup(cls.retained.__exit__, None, None, None)
+        cls.source_commit = strategies.RETAINED_SOURCE
+        (cls.source_code / "output").mkdir()
+        for path in (ROOT / "output").iterdir():
+            if path.is_file():
+                raw = corrected._git(ROOT, "show", cls.source_commit + ":output/" + path.name)
+                (cls.source_code / "output" / path.name).write_bytes(raw)
+        RankedStrategyConnectedPipelineTests.setUpClass.__func__(cls)
+
+    setUp = RankedStrategyConnectedPipelineTests.setUp
+    clock = RankedStrategyConnectedPipelineTests.clock
+
+    def test_closed_original_source_and_pinned_ledger_replay_and_cold_process(self):
+        import selection_strategies as strategies
+        before = {p.relative_to(self.root): p.read_bytes() for p in (self.root / "data").rglob("*.json.gz")}
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            saved, _ = strategies.read_completed(self.root, self.first_name, now=self.at)
+            rows = strategies.decisions([self.root], load_json(self.root / "config/timing-policy.json"), self.at, ledger_root=self.root)
+        self.assertEqual(saved["source_sha"], strategies.RETAINED_SOURCE)
+        self.assertEqual([r for r in rows if r["checkpoint"] == "history" and r["action"] == "SELECT"],
+                         self.state["updates"][-1]["selected"])
+        for name, raw in before.items(): self.assertEqual((self.root / name).read_bytes(), raw)
+        # The old source never qualifies a NEW recording under current bytes.
+        with self.assertRaises(IntegrityError): strategies._source(self.root, strategies.RETAINED_SOURCE)
+        clean = self.root.parent / "independent-cold-copy"
+        shutil.copytree(self.root, clean)
+        program = '''import sys
+from pathlib import Path
+sys.path[:0]=[str(Path(sys.argv[1])/'tools'),str(Path(sys.argv[1])/'pull')]
+from datetime import datetime
+import phase2_capture,selection_strategies as s
+from reliability import utc,load_json,digest
+at=utc(sys.argv[3])
+class Clock(datetime):
+ @classmethod
+ def now(cls,tz=None):return at
+phase2_capture.datetime=Clock
+rows=s.decisions([Path(sys.argv[2])],load_json(Path(sys.argv[2])/'config/timing-policy.json'),at,ledger_root=Path(sys.argv[2]))
+print(digest(rows))
+'''
+        actual = subprocess.check_output([sys.executable, "-c", program, str(ROOT), str(clean), stamp(self.at)], text=True).strip().splitlines()[-1]
+        self.assertEqual(actual, digest(rows))
+
+    def test_retained_failure_markers_and_same_size_corruption_are_not_cached(self):
+        import selection_strategies as strategies
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            saved, completed = strategies.read_completed(self.root, self.first_name, now=self.at)
+            write(self.root, strategies.FAILURE_LANE, {"schema_version": "ranked-selection-failure-v1", "season": saved["season"],
+                "week": saved["week"], "completion_sha256": digest(completed), "failed_at": stamp(self.at)})
+            with self.assertRaises(strategies.UnqualifiedStrategy):
+                strategies.read_completed(self.root, self.first_name, now=self.at)
+        clean = self.root.parent / "corrupt-copy"
+        shutil.copytree(self.base, clean)
+        native = clean / saved["qualification"]["native_receipt"]
+        state = native.stat(); raw = native.read_bytes()
+        native.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1])); os.utime(native, ns=(state.st_atime_ns, state.st_mtime_ns))
+        with patch.object(phase2_capture, "datetime", self.clock()), self.assertRaises(IntegrityError):
+            strategies.read_completed(clean, self.first_name, now=self.at)
+
+    def test_unknown_source_and_unknown_ledger_helpers_fail_without_fallback(self):
+        import selection_strategies as strategies
+        completed = read(self.root / self.first_name)
+        saved = read(self.root / completed["observation_receipt"])
+        saved["source_sha"] = "0" * 40
+        altered = write(self.root, strategies.LANE, saved)
+        completed.update(observation_receipt=altered.relative_to(self.root).as_posix(), observation_sha256=digest(saved))
+        altered = write(self.root, strategies.COMPLETE_LANE, completed)
+        with patch.object(phase2_capture, "datetime", self.clock()), self.assertRaises(IntegrityError):
+            strategies.read_completed(self.root, altered.relative_to(self.root).as_posix(), now=self.at)
+        clean = self.root.parent / "bad-ledger-copy"; shutil.copytree(self.base, clean)
+        ledger = next((clean / "data/ranked_selection_decisions").rglob("*.json.gz"))
+        payload = read(ledger); payload["helper_files"]["tools/selection_report.py"] = "0" * 64
+        # New defective content-addressed control, never rewritten history.
+        write(clean, "ranked_selection_decisions", payload)
+        with patch.object(phase2_capture, "datetime", self.clock()), self.assertRaisesRegex(IntegrityError, "helper identity"):
+            strategies.decisions([clean], load_json(clean / "config/timing-policy.json"), self.at, ledger_root=clean)
+
+
+class SavedGenerationPlanTransitionTests(unittest.TestCase):
+    """Saved generations pin original plans; current aliases use current config.
+
+    Tiny actual corrected builder/native/report/hosting fixture. Only fictional
+    HTTP responses and clocks are substituted; no qualification or publisher
+    algorithm is mocked. Independent matching alternatives qualify before fault
+    injection and never replace the saved edge. A corrupt registration also
+    correctly invalidates the complete source-dependency inventory.
+    """
+    @classmethod
+    def setUpClass(cls):
+        from test_data_integrity_v2 import corrected_fixture, DI_NOW
+        from test_partial_week import status
+        cls.at = DI_NOW
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.base = Path(cls.temporary.name) / "saved-generation"
+        cls.base.mkdir()
+        data, proof, spec, registration, _ = corrected_fixture(cls.base)
+        cls.spec, cls.data = spec, data
+        # A separate fictional lineage shares exact recorded inputs, but gets
+        # its own actual registration. Do not rewrite the first registration.
+        alternative = cls.base.parent / "alternative-first-recording"
+        def exclude_registration(path, names):
+            return names if Path(path).name == "partial-registrations" else []
+        shutil.copytree(cls.base, alternative, ignore=exclude_registration)
+        alternative_source = corrected.recording_source("e2dd96a31690baad04c8660302933f45f77d72e7")
+        alternative_registration, _ = corrected.register_plan(alternative, spec,
+            cls.at, source_sha=alternative_source, initial_board=data)
+        class Clock(datetime):
+            @classmethod
+            def now(clock_cls, tz=None): return cls.at
+        with patch.object(phase2_capture, "datetime", Clock), \
+                patch.object(phase2_capture, "_closing_status", return_value=status(data, cls.at)), \
+                patch.object(phase2_capture, "run_point_candidate", side_effect=AssertionError("Inactive candidate")), \
+                patch.object(phase2_capture, "make_shadow", side_effect=AssertionError("Inactive shadow")):
+            _, health = run_capture(cls.base)
+            cls.generation = phase2_capture.validate_generation(cls.base)
+        cls.completion = health["phase2"]["partial_completion_receipt"]
+        cls.scope = read(cls.base / cls.completion)["scope_receipt"]
+        cls.registration = registration
+        cls.native = health["receipt"]
+        _, _, other_complete, _ = corrected.record_bundle(alternative, data, proof,
+            status(data, cls.at), spec, alternative_registration.relative_to(alternative).as_posix(),
+            clock=lambda: cls.at)
+        cls.alternative_completion = other_complete.relative_to(alternative).as_posix()
+        if cls.alternative_completion == cls.completion:
+            raise AssertionError("Independent valid registrations did not produce distinct pinned completions")
+        for path in (alternative / "data").rglob("*.json.gz"):
+            target = cls.base / path.relative_to(alternative)
+            if target.exists():
+                if target.read_bytes() != path.read_bytes():
+                    raise AssertionError("Alternative attempted to overwrite original evidence")
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, target)
+        # This is a separately identified valid prospective config/registration,
+        # not an amendment to either already-completed fictional generation.
+        config = load_json(cls.base / "config/phase2.json")
+        next_spec = copy.deepcopy(spec)
+        next_spec["plan"]["plan_id"] += "_NEXT_CONFIG"
+        next_spec["plan_sha256"] = digest(next_spec["plan"])
+        next_spec["owner_authorization"] = "FICTIONAL_NEXT_PLAN_ONLY"
+        next_registration, _ = corrected.register_plan(cls.base, next_spec, cls.at,
+            source_sha=corrected.recording_source(), initial_board=data)
+        cls.next_registration = next_registration.relative_to(cls.base).as_posix()
+        config["partial_week"] = next_spec
+        atomic_json(cls.base / "config/phase2.json", config)
+        cls.snapshots = {name: (cls.base / "output" / name).read_bytes() for name in phase2_capture.HOST_SNAPSHOTS}
+        cls.proof = proof
+        cls.manifest = load_json(cls.base / "output/data/selection-grading/hosting.json")["latest"]
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "independent-copy"
+        shutil.copytree(self.base, self.root)
+        at = self.at
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None): return at
+        clock = patch.object(phase2_capture, "datetime", Clock)
+        clock.start(); self.addCleanup(clock.stop)
+
+    def saved(self, root=None, snapshots=None):
+        return phase2_capture._validate_generation(root or self.root,
+            self.snapshots if snapshots is None else snapshots, legacy_proof=self.proof)
+
+    def assert_valid_alternative(self, root):
+        value = phase2_capture._qualified_bundle(root, self.alternative_completion, self.spec, {})
+        self.assertEqual(value[0]["baseline_receipt"], self.native)
+        self.assertNotEqual(value[0]["scope_receipt"], self.scope)
+
+    def test_saved_snapshot_uses_exact_own_plan_while_current_alias_rejects_next_plan(self):
+        before = {p.relative_to(self.root): p.read_bytes() for p in (self.root / "data").rglob("*.json.gz")}
+        self.assert_valid_alternative(self.root)
+        self.assertEqual(self.saved(), self.generation)
+        manifest, snapshots = phase2_capture._manifest(self.root / "output/data/selection-grading", self.manifest, root=self.root)
+        self.assertEqual(manifest["generation_sha256"], self.generation["generation_sha256"])
+        self.assertEqual(snapshots, self.snapshots)
+        with self.assertRaises(IntegrityError): phase2_capture.validate_generation(self.root)
+        for name, raw in before.items(): self.assertEqual((self.root / name).read_bytes(), raw)
+
+    def test_missing_or_corrupt_exact_edge_never_uses_valid_matching_alternative(self):
+        original_latest = (self.root / "output/data/selection-grading/latest.json").read_bytes()
+        for name in (self.completion, self.scope, self.registration):
+            for corrupt in (False, True):
+                with self.subTest(dependency=name, corrupt=corrupt), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory) / "case"; shutil.copytree(self.root, root)
+                    self.assert_valid_alternative(root)
+                    alternative = (root / self.alternative_completion).read_bytes()
+                    path = root / name
+                    if corrupt:
+                        info = path.stat(); raw = path.read_bytes()
+                        path.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))
+                        os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+                    else: path.unlink()  # Intentional defect in this disposable copy only.
+                    self.assertEqual((root / self.alternative_completion).read_bytes(), alternative)
+                    # Corrupt registrations are part of the full dependency
+                    # inventory even when checking the matching alternative.
+                    if not (name == self.registration and corrupt):
+                        self.assert_valid_alternative(root)
+                    with self.assertRaises((IntegrityError, OSError, EOFError)):
+                        self.saved(root)
+                    self.assertEqual((root / "output/data/selection-grading/latest.json").read_bytes(), original_latest)
+
+    def test_wrong_pinned_registration_fails_with_valid_original_and_alternative_present(self):
+        scope = copy.deepcopy(read(self.root / self.scope))
+        scope["registration_receipt"] = self.next_registration
+        scope_path = write(self.root, "verification/partial-scopes", scope)
+        completion = copy.deepcopy(read(self.root / self.completion))
+        completion.update(scope_receipt=scope_path.relative_to(self.root).as_posix(), scope_payload_sha256=digest(scope))
+        completion_path = write(self.root, "verification/partial-completions", completion)
+        snapshots = dict(self.snapshots)
+        public = corrected.public_scope(scope, completion)
+        snapshots["data/verification-scope.json"] = selection_publication.canonical(public) + b"\n"
+        health = json.loads(snapshots["data/health.json"])
+        health["phase2"]["partial_completion_receipt"] = completion_path.relative_to(self.root).as_posix()
+        generation = json.loads(snapshots["data/release-identity.json"])
+        generation["bindings"]["data/verification-scope.json"] = hashlib.sha256(snapshots["data/verification-scope.json"]).hexdigest()
+        generation.pop("generation_sha256")
+        identity = digest(generation); generation["generation_sha256"] = identity; health["generation_sha256"] = identity
+        snapshots["data/release-identity.json"] = selection_publication.canonical(generation) + b"\n"
+        snapshots["data/health.json"] = selection_publication.canonical(health) + b"\n"
+        self.assert_valid_alternative(self.root)
+        self.assertEqual(self.saved(), self.generation)
+        with self.assertRaisesRegex(IntegrityError, "completion/plan|registration"):
+            self.saved(snapshots=snapshots)
+
+    def test_saved_original_still_rejects_future_or_explicitly_failed_completion(self):
+        earlier = self.at - timedelta(microseconds=1)
+        class Earlier(datetime):
+            @classmethod
+            def now(cls, tz=None): return earlier
+        with patch.object(phase2_capture, "datetime", Earlier), self.assertRaises(IntegrityError):
+            self.saved()
+        complete = read(self.root / self.completion)
+        write(self.root, "verification/partial-failures", {"schema_version": "completion-failure-data-integrity-v2",
+            "season": complete["season"], "week": complete["week"], "completion_sha256": digest(complete),
+            "failed_at": stamp(self.at), "reason": "FINAL_COMPLETION_BOUNDARY_FAILED"})
+        self.assert_valid_alternative(self.root)
+        with self.assertRaises(IntegrityError): self.saved()
+
+
+class Retained045RankedSourcePipelineTests(unittest.TestCase):
+    """Three targeted checks for actual045 source; retain the separate e2d tests."""
+    SOURCE = "04519b54dfb76dcca7916fe6bf75d7e1711793b6"
+
+    @classmethod
+    def setUpClass(cls):
+        import selection_strategies as strategies
+        cls.retained = strategies._retained_source(cls.SOURCE)
+        cls.source_code = cls.retained.__enter__()
+        cls.addClassCleanup(cls.retained.__exit__, None, None, None)
+        cls.source_commit = cls.SOURCE
+        (cls.source_code / "output").mkdir()
+        for path in (ROOT / "output").iterdir():
+            if path.is_file():
+                (cls.source_code / "output" / path.name).write_bytes(corrected._git(ROOT, "show", cls.SOURCE + ":output/" + path.name))
+        RankedStrategyConnectedPipelineTests.setUpClass.__func__(cls)
+
+    setUp = RankedStrategyConnectedPipelineTests.setUp
+    clock = RankedStrategyConnectedPipelineTests.clock
+    test_retained_failure_markers_and_same_size_corruption_are_not_cached = RetainedRankedSourcePipelineTests.test_retained_failure_markers_and_same_size_corruption_are_not_cached
+    test_unknown_source_and_unknown_ledger_helpers_fail_without_fallback = RetainedRankedSourcePipelineTests.test_unknown_source_and_unknown_ledger_helpers_fail_without_fallback
+
+    def test_actual045_saved_observation_ledger_and_independent_cold_replay(self):
+        import selection_strategies as strategies
+        before = {p.relative_to(self.root): p.read_bytes() for p in (self.root / "data").rglob("*.json.gz")}
+        with patch.object(phase2_capture, "datetime", self.clock()):
+            saved, _ = strategies.read_completed(self.root, self.first_name, now=self.at)
+            rows = strategies.decisions([self.root], load_json(self.root / "config/timing-policy.json"), self.at, ledger_root=self.root)
+        self.assertEqual(saved["source_sha"], self.SOURCE)
+        self.assertEqual([r for r in rows if r["checkpoint"] == "history" and r["action"] == "SELECT"],
+                         self.state["updates"][-1]["selected"])
+        for name, raw in before.items(): self.assertEqual((self.root / name).read_bytes(), raw)
+        with self.assertRaises(IntegrityError): strategies._source(self.root, self.SOURCE)
+        clean = self.root.parent / "independent045-cold-copy"; shutil.copytree(self.root, clean)
+        program = '''import sys
+from pathlib import Path
+sys.path[:0]=[str(Path(sys.argv[1])/'tools'),str(Path(sys.argv[1])/'pull')]
+from datetime import datetime
+import phase2_capture,selection_strategies as s
+from reliability import utc,load_json,digest
+at=utc(sys.argv[3])
+class Clock(datetime):
+ @classmethod
+ def now(cls,tz=None):return at
+phase2_capture.datetime=Clock
+rows=s.decisions([Path(sys.argv[2])],load_json(Path(sys.argv[2])/'config/timing-policy.json'),at,ledger_root=Path(sys.argv[2]))
+print(digest(rows))
+'''
+        actual = subprocess.check_output([sys.executable, "-c", program, str(ROOT), str(clean), stamp(self.at)], text=True).strip().splitlines()[-1]
+        self.assertEqual(actual, digest(rows))
+
+
+class CorrectedCheckpointPersistenceTests(unittest.TestCase):
+    def test_actual_due_corrected_checkpoint_publishes_and_reloads_without_repinning_original(self):
+        from test_data_integrity_v2 import corrected_fixture, DI_NOW
+        from test_partial_week import status
+        from scorecard import paired_forecasts
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"; root.mkdir()
+            data, proof, spec, registration, _ = corrected_fixture(root)
+            native, _, complete, _ = corrected.record_bundle(root, data, proof, status(data, DI_NOW), spec,
+                registration, clock=lambda: DI_NOW)
+            originals = {p.relative_to(root): p.read_bytes() for p in (root / "data").rglob("*.json.gz")}
+            at = DI_NOW + timedelta(minutes=31)  # Genuine fictional 90m checkpoint, no rewritten capture.
+            pointer = publish_selection_report(root, at)
+            _, rows, _ = selection_publication.publication_contents(root / "output/data/selection-grading", pointer)
+            due = [r for r in rows if r["model_version"] == corrected.MODEL and r["checkpoint"] == "90m"]
+            self.assertTrue(due)
+            self.assertTrue(all(r["engine_sha256"] == digest(corrected.V2_SOURCE_SHA256) for r in due))
+            ledgers = list((root / "data/verification/selection-grading/decisions").rglob("*.json.gz"))
+            self.assertTrue(ledgers)
+            for p in ledgers:
+                value = read(p)
+                self.assertEqual(selection_publication._ledger(value, load_json(root / "config/timing-policy.json"),
+                    corrected.legacy_engine_hashes(), at), value)
+            again = publish_selection_report(root, at)
+            self.assertEqual(again["report_id"], pointer["report_id"])
+            ledger_bytes = {p.relative_to(root): p.read_bytes() for p in ledgers}
+            # A later derivation may produce new outcome observation clocks;
+            # retain those identities rather than forcing report equality.
+            later = publish_selection_report(root, at + timedelta(seconds=1))
+            _, later_rows, _ = selection_publication.publication_contents(root / "output/data/selection-grading", later)
+            self.assertEqual([r["decision_sha256"] for r in later_rows if r["checkpoint"] == "90m"],
+                             [r["decision_sha256"] for r in rows if r["checkpoint"] == "90m"])
+            for name, raw in ledger_bytes.items(): self.assertEqual((root / name).read_bytes(), raw)
+            clean = root.parent / "clean"; shutil.copytree(root, clean)
+            repeated = publish_selection_report(clean, at + timedelta(seconds=1))
+            _, copied, _ = selection_publication.publication_contents(clean / "output/data/selection-grading", repeated)
+            self.assertEqual([r for r in copied if r["checkpoint"] == "90m"], [r for r in later_rows if r["checkpoint"] == "90m"])
+            for name, raw in originals.items(): self.assertEqual((root / name).read_bytes(), raw)
+            policy = load_json(root / "config/evaluation-policy.json")
+            pairs, coverage = paired_forecasts([read(native)], policy, corrected.legacy_engine_hashes())
+            self.assertFalse(pairs)
+            self.assertEqual(coverage["excluded"]["corrected_model_outside_registered_experiment"], len(read(native)["rows"]))
+
+    def test_corrected_checkpoint_rejects_unknown_or_crossed_engine_identity(self):
+        from test_data_integrity_v2 import corrected_fixture, DI_NOW
+        from test_partial_week import status
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"; root.mkdir()
+            data, proof, spec, registration, _ = corrected_fixture(root)
+            corrected.record_bundle(root, data, proof, status(data, DI_NOW), spec, registration, clock=lambda: DI_NOW)
+            analysis = root.parent / "analysis"; at = DI_NOW + timedelta(minutes=31)
+            run_report([root], analysis, now=at, expected_hashes=corrected.legacy_engine_hashes(), diagnostic_exports=False)
+            payload = read(next((analysis / "data/selection_decisions").rglob("*.json.gz")))
+            payload["rows"] = [r for r in payload["rows"] if r["checkpoint"] != "history"]
+            self.assertTrue(payload["rows"])
+            timing = load_json(root / "config/timing-policy.json")
+            selection_publication._ledger(payload, timing, corrected.legacy_engine_hashes(), at)
+            for model, engines in (("unknown-model", corrected.V2_SOURCE_SHA256),
+                    (corrected.MODEL, corrected.legacy_engine_hashes()),
+                    (timing["model"], corrected.V2_SOURCE_SHA256),
+                    (corrected.MODEL, dict(corrected.V2_SOURCE_SHA256, **{"pull/grade.py": "0" * 64}))):
+                bad = copy.deepcopy(payload)
+                for row in bad["rows"]:
+                    row.update(model_version=model, engine_files=engines, engine_sha256=digest(engines))
+                    row.pop("decision_sha256"); row["decision_sha256"] = digest(row)
+                with self.subTest(model=model, engine=digest(engines)), self.assertRaises(IntegrityError):
+                    selection_publication._ledger(bad, timing, corrected.legacy_engine_hashes(), at)
+
+
+class RetainedRankedTreeTests(unittest.TestCase):
+    def test_corrupt_root_or_nested_tree_never_supplies_retained_executable_bytes(self):
+        import selection_strategies as strategies
+        actual = corrected._git
+        tools_tree = actual(ROOT, "rev-parse", strategies.RETAINED_SOURCE + ":tools").decode().strip()
+        for oid in (strategies.RETAINED_TREE, tools_tree):
+            def corrupt(repository, *args):
+                raw = actual(repository, *args)
+                if args == ("cat-file", "tree", oid): return raw[:-1] + bytes([raw[-1] ^ 1])
+                return raw
+            with self.subTest(tree=oid), patch.object(corrected, "_git", side_effect=corrupt):
+                with self.assertRaisesRegex(IntegrityError, "tree is corrupt"):
+                    with strategies._retained_source(): self.fail("Corrupt tree supplied executable source")
+
+
+if __name__ == "__main__":
+    unittest.main()

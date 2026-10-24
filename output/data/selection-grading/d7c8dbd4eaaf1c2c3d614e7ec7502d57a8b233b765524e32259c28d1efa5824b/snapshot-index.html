@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nick&#39;s Expert NFL Picks</title>
+<meta name="description" content="Nick&#39;s Expert NFL Picks: NFL props against DraftKings lines, fantasy projections, live scoring and play-by-play, league sync and trade ideas.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b1028'/%3E%3Cellipse cx='16' cy='16' rx='11' ry='7' transform='rotate(-35 16 16)' fill='%2300e1e0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Oswald:wght@500;600&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=38">
+<style>
+#selection-grading { min-width:0; overflow-wrap:anywhere; }
+#selection-grading .grading-filters { align-items:end; flex-wrap:wrap; }
+#selection-grading .grading-filters label { display:flex; flex-direction:column; gap:5px; max-width:100%; }
+#selection-grading select { max-width:100%; min-width:0; }
+#selection-grading .tbl { min-width:660px; }
+#selection-grading [data-grading-details] { min-width:0; padding:12px; }
+#selection-grading td { white-space:normal; overflow-wrap:anywhere; max-width:360px; }
+#selection-grading details p { font-size:12px; }
+@media(max-width:560px) { #selection-grading .grading-filters label { width:100%; } }
+
+/* Recorded category/side results; responsive display only. */
+#selection-grading .card, #selection-grading .grading-filters { min-width:0; max-width:100%; }
+#selection-grading .grading-filters label { min-width:0; }
+#selection-grading .grading-filters select { width:100%; text-overflow:ellipsis; }
+#selection-grading .note, #selection-grading code { overflow-wrap:anywhere; }
+#selection-grading .tbl-wrap { max-width:100%; }
+#selection-grading [data-grading-details] button { max-width:100%; white-space:normal; }
+#selection-grading .performance-desktop { min-width:0; width:100%; table-layout:fixed; }
+#selection-grading .performance-desktop th { white-space:normal; }
+#selection-grading .performance-desktop td { vertical-align:top; }
+#selection-grading .performance-phone { display:none; }
+#selection-grading [data-performance-primary] .tbtn { white-space:normal; }
+#selection-grading [data-performance-primary] small { display:block; }
+.performance-side { display:grid; grid-template-columns:90px minmax(0,1fr); gap:8px; padding:10px 0; }
+@media(max-width:560px) {
+ #selection-grading .performance-desktop { display:none; }
+ #selection-grading .performance-phone { display:block; }
+ #selection-grading [data-performance-primary] .card { min-width:0; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"></span>
+    <div>
+      <h1>Nick&#39;s Expert NFL Picks</h1>
+      <div class="sub" id="sub">Loading...</div>
+    </div>
+    <button id="sync-btn" class="sync-btn" title="Sync your Sleeper or ESPN league">Sync league</button>
+    <div class="scoring">
+      <button id="sc-btn" class="sc-btn" aria-haspopup="true">Sleeper PPR ▾</button>
+      <div id="sc-panel" class="sc-panel" hidden></div>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="props" class="on">Props</button>
+    <button role="tab" data-tab="fantasy">Fantasy</button>
+    <button role="tab" data-tab="compare">Compare</button>
+    <button role="tab" data-tab="league">League</button>
+    <button role="tab" data-tab="trade">Trade</button>
+    <button role="tab" data-tab="mine">My Picks <span id="mine-n" class="gbadge" hidden></span></button>
+    <button role="tab" data-tab="parlay" aria-label="Parlay Builder">Parlay<span class="hide-sm"> Builder</span></button>
+    <button role="tab" data-tab="news">News</button>
+    <button role="tab" data-tab="teams">Teams</button>
+    <button role="tab" data-tab="record"><span class="hide-sm">Track Record</span><span class="show-sm">Record</span></button>
+    <button role="tab" data-tab="about"><span class="hide-sm">How it works</span><span class="show-sm">About</span></button>
+  </nav>
+</header>
+
+<div id="banner" class="banner" hidden>
+  New lines are out. <button id="reload">Refresh</button>
+</div>
+
+<section class="scores" aria-label="Scores">
+  <div class="scores-head"><span id="live-dot" class="live-dot" hidden></span><span id="scores-status">Scores</span><span id="wkpick" class="wkpick"></span></div>
+  <div class="strip" id="strip"></div>
+</section>
+
+<div id="build-health" class="card note" role="status" style="margin:12px auto;max-width:1200px;padding:12px">Build freshness is being checked. Individual quote timestamps are not verified.</div>
+
+<main id="main"></main>
+
+<footer class="foot">
+  <div class="made"><a href="#maker" id="made-by">Nick&#39;s edition</a> · <a href="#/about" id="all-features">All features</a></div>
+  Lines from DraftKings (via ESPN) and Sleeper Picks where posted, otherwise our estimate. For fun, not betting advice.
+  Data: Sleeper (projections, stats, injuries, Picks lines) and ESPN (DraftKings lines, live scores, play-by-play).
+</footer>
+<script src="reliability-ui.js?v=1"></script>
+<script src="app.js?v=59"></script>
+</body>
+</html>

@@ -23,6 +23,8 @@ const INJ_SHORT = { Questionable: "Q", Doubtful: "D", Out: "OUT", IR: "IR", PUP:
 
 const S = {
   data: null, track: null, generatedAt: null,
+  grading: null, gradingError: null, finalOutcomes: new Map(),
+  gradingFilters: {}, gradingGroup: null, gradingShown: 100,
   byId: {}, byKey: {},
   games: {},           // game id -> schedule merged with the latest ESPN scoreboard
   live: {},            // player id -> stat line from ESPN's box score (Sleeper field names)
@@ -60,6 +62,8 @@ const S = {
   leagues: store("leagues") || [],      // [{id, name, season, settings}]
   scFound: null, scMsg: "",
   mine: store("mine") || [],
+  paper: { legs: [], source: "dk", sides: "mixed", categories: [], game: "", size: 2,
+    opened: null, results: null, history: null, historyEpoch: 0, epoch: 0, error: "" },
   cmp: store("cmp") || [null, null],    // the two players on the Compare tab
   trade: store("trade") || { give: [], get: [] },
   yahoo: store("yahoo") || null,       // Yahoo tokens (from the Worker's sign-in)
@@ -75,6 +79,213 @@ function store(key, value) {
     if (value === undefined) return JSON.parse(localStorage.getItem("nflprops." + key));
     localStorage.setItem("nflprops." + key, JSON.stringify(value));
   } catch { return null; }
+}
+
+// Private paper selections are immutable revisions, never offers or accepted
+// financial entries. Each revision has its own key; no shared mutable index.
+const PAPER_PREFIX = "nflprops.paper-ticket.v1.";
+const PAPER_CATEGORIES = ["pass_yd", "pass_td", "pass_cmp", "pass_att", "pass_int", "rush_yd", "rush_att", "rec_yd", "rec", "rush_rec_yd"];
+function paperLegIdentity(leg) {
+  return JSON.stringify([leg.season, leg.week, leg.game_id, leg.player_id, leg.category, leg.team, Date.parse(leg.kickoff)]);
+}
+function validatePaperLeg(leg) {
+  const fields = ["season", "week", "game_id", "player_id", "category", "team", "name", "period", "kickoff", "line", "side", "line_source", "raw_projection", "adjusted_projection", "board_generated_at", "quote_observed_at"];
+  if (!leg || JSON.stringify(Object.keys(leg).sort()) !== JSON.stringify(fields.sort())
+      || !Number.isInteger(leg.season) || leg.season < 2000 || leg.season > 2200 || !Number.isInteger(leg.week) || leg.week < 1 || leg.week > 18
+      || !["game_id", "player_id", "team", "name"].every(k => typeof leg[k] === "string" && leg[k].length > 0 && leg[k].length <= 200)
+      || !PAPER_CATEGORIES.includes(leg.category) || leg.period !== "full_game"
+      || !["over", "under"].includes(leg.side) || !["dk", "sleeper"].includes(leg.line_source)
+      || ![leg.line, leg.raw_projection, leg.adjusted_projection].every(Number.isFinite) || leg.line < 0
+      || ![leg.kickoff, leg.board_generated_at].every(v => typeof v === "string" && /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(v) && Number.isFinite(Date.parse(v)))
+      || Date.parse(leg.board_generated_at) >= Date.parse(leg.kickoff) || leg.quote_observed_at !== null) throw new Error("Unsupported paper leg contract");
+  return leg;
+}
+function validatePaperTicket(ticket) {
+  const fields = ["schema_version", "ticket_id", "revision_id", "parent_revision_id", "saved_at", "clock_basis", "product", "line_source", "legs"];
+  if (!ticket || JSON.stringify(Object.keys(ticket).sort()) !== JSON.stringify(fields.sort())
+      || ticket.schema_version !== "paper-parlay-ticket-v1" || ticket.product !== "paper_all_legs"
+      || ticket.clock_basis !== "OWNER_DEVICE_TIME_NOT_INDEPENDENTLY_TIMESTAMPED"
+      || !["ticket_id", "revision_id"].every(k => typeof ticket[k] === "string" && /^[a-zA-Z0-9-]{16,80}$/.test(ticket[k]))
+      || ticket.parent_revision_id !== null && (typeof ticket.parent_revision_id !== "string" || !/^[a-zA-Z0-9-]{16,80}$/.test(ticket.parent_revision_id) || ticket.parent_revision_id === ticket.revision_id)
+      || typeof ticket.saved_at !== "string" || !/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(ticket.saved_at) || !Number.isFinite(Date.parse(ticket.saved_at)) || !["dk", "sleeper"].includes(ticket.line_source)
+      || !Array.isArray(ticket.legs) || ticket.legs.length < 2 || ticket.legs.length > 6) throw new Error("Unsupported paper ticket");
+  const players = new Set(), games = new Set();
+  for (const leg of ticket.legs) {
+    validatePaperLeg(leg);
+    if (leg.line_source !== ticket.line_source || Date.parse(ticket.saved_at) >= Date.parse(leg.kickoff)
+        || Date.parse(leg.board_generated_at) > Date.parse(ticket.saved_at)
+        || players.has(leg.player_id) || games.has(leg.game_id)) throw new Error("Incompatible paper ticket membership or clock");
+    players.add(leg.player_id); games.add(leg.game_id);
+  }
+  return ticket;
+}
+function savePaperTicket(ticket, storage = localStorage) {
+  validatePaperTicket(ticket);
+  if (ticket.parent_revision_id === null) {
+    for (let i=0;i<storage.length;i++) if (storage.key(i)?.startsWith(PAPER_PREFIX+ticket.ticket_id+".") && storage.key(i)!==PAPER_PREFIX+ticket.ticket_id+"."+ticket.revision_id) throw new Error("Ticket root identity already exists");
+  }
+  if (ticket.parent_revision_id !== null) {
+    const parentBytes = storage.getItem(PAPER_PREFIX + ticket.ticket_id + "." + ticket.parent_revision_id);
+    const parent = parentBytes && validatePaperTicket(JSON.parse(parentBytes));
+    if (!parent || parent.ticket_id !== ticket.ticket_id || parent.revision_id !== ticket.parent_revision_id || Date.parse(parent.saved_at) > Date.parse(ticket.saved_at)) throw new Error("Saved parent revision is unavailable or incompatible");
+    if (!readPaperTickets(storage).tickets.some(v => v.ticket.ticket_id === parent.ticket_id && v.ticket.revision_id === parent.revision_id)) throw new Error("Complete saved parent lineage is unavailable");
+  }
+  const key = PAPER_PREFIX + ticket.ticket_id + "." + ticket.revision_id, bytes = JSON.stringify(ticket);
+  if (bytes.length > 32768) throw new Error("Paper ticket storage bound exceeded");
+  const previous = storage.getItem(key);
+  if (previous !== null && previous !== bytes) throw new Error("Saved paper revision is immutable");
+  storage.setItem(key, bytes);
+  if (storage.getItem(key) !== bytes) throw new Error("Paper ticket save could not be verified");
+  return key;
+}
+function readPaperTickets(storage = localStorage) {
+  const result = [], errors = [];
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i);
+    if (!key?.startsWith(PAPER_PREFIX)) continue;
+    try {
+      const raw = storage.getItem(key);
+      if (!raw || raw.length > 32768) throw new Error("Saved ticket exceeds limit");
+      const ticket = validatePaperTicket(JSON.parse(raw));
+      if (key !== PAPER_PREFIX + ticket.ticket_id + "." + ticket.revision_id) throw new Error("Saved identity mismatch");
+      result.push({ key, ticket });
+    } catch { errors.push("A saved paper ticket is unavailable; its original bytes were preserved."); }
+  }
+  const byRevision = new Map(result.map(v => [v.key, v.ticket]));
+  const roots = new Map();
+  for (const {ticket} of result) if (ticket.parent_revision_id === null) roots.set(ticket.ticket_id,(roots.get(ticket.ticket_id)||0)+1);
+  const valid = result.filter(({ticket}) => {
+    if (roots.get(ticket.ticket_id)!==1) { errors.push("A saved ticket family has an ambiguous or missing root; bytes were preserved."); return false; }
+    let current = ticket; const seen = new Set();
+    while (current.parent_revision_id !== null) {
+      const key = PAPER_PREFIX + current.ticket_id + "." + current.parent_revision_id;
+      const parent = byRevision.get(key);
+      if (!parent || seen.has(key) || Date.parse(parent.saved_at) > Date.parse(current.saved_at)) {
+        errors.push("A saved revision lineage is unavailable; its original bytes were preserved."); return false;
+      }
+      seen.add(key); current = parent;
+    }
+    return true;
+  });
+  return { tickets: valid.sort((a, b) => Date.parse(b.ticket.saved_at) - Date.parse(a.ticket.saved_at) || a.key.localeCompare(b.key)), errors };
+}
+function paperLegStatus(leg, outcomes) {
+  validatePaperLeg(leg);
+  const row = outcomes.get(paperLegIdentity(leg));
+  if (!row || paperLegIdentity(row) !== paperLegIdentity(leg) || row.outcome_conflict || row.outcome_identity_status === "quarantined") return { status: "unresolved", actual: null };
+  if (row.status === "pending") return { status: "pending", actual: null };
+  if (!row.final_confirmed || row.game_state !== "post" || row.outcome_selection !== "confirmed" || row.outcome_source_mix === "conflicting_sources"
+      || !Number.isFinite(Date.parse(row.collected_at)) || Date.parse(row.collected_at) <= Date.parse(leg.kickoff)
+      || ![row.outcome_snapshot_sha256, row.selected_outcome_row_sha256, row.selected_outcome_provenance_sha256].every(v => typeof v === "string" && HASH64.test(v))) return { status: "unresolved", actual: null };
+  if (row.status === "dnp" && row.actual === null) return { status: "dnp", actual: null };
+  if (row.status !== "resolved" || !Number.isSafeInteger(row.actual) || !leg.category.endsWith("_yd") && row.actual < 0) return { status: "unresolved", actual: null };
+  return { status: row.actual === leg.line ? "push" : (row.actual > leg.line) === (leg.side === "over") ? "win" : "loss", actual: row.actual };
+}
+function paperTicketStatus(results) {
+  if (!Array.isArray(results) || results.length < 2 || results.length > 6 || results.some(r => !["win", "loss", "push", "dnp", "pending", "unresolved"].includes(r.status))) return "unresolved";
+  if (results.every(r => r.status === "win")) return "all_legs_won";
+  if (results.some(r => r.status === "loss")) {
+    const open = ["unresolved", "pending", "dnp", "push"].filter(status => results.some(r => r.status === status));
+    return open.length ? "loss_present_with_" + open.join("_") : "completed_with_loss";
+  }
+  if (results.some(r => r.status === "unresolved")) return "unresolved";
+  if (results.some(r => r.status === "pending")) return "pending";
+  if (results.some(r => r.status === "dnp")) return "confirmed_DNP_no_venue_void_rule";
+  if (results.some(r => r.status === "push")) return "push_no_venue_settlement";
+  return "completed_with_loss";
+}
+function paperCandidates(now = Date.now()) {
+  const options = [], f = S.paper;
+  for (const player of S.data.players) {
+    const game = S.games[player.game_id];
+    const originalGame = S.data.games.find(g => g.id === player.game_id);
+    if (!game || !originalGame || originalGame.state !== "pre" || Date.parse(originalGame.kickoff) !== Date.parse(game.kickoff)
+        || originalGame.home !== game.home || originalGame.away !== game.away
+        || game.state !== "pre" || Date.parse(game.kickoff) <= now || player.late || UNAVAILABLE.has(injOf(player).status)
+        || f.game && player.game_id !== f.game) continue;
+    for (const prop of player.props || []) {
+      if (!PAPER_CATEGORIES.includes(prop.key) || prop.line_from !== f.source || !Number.isFinite(prop.line) || prop.line < 0
+          || !Number.isFinite(prop.proj) || !Number.isFinite(prop.adj) || !["over", "under"].includes(prop.lean)
+          || f.sides !== "mixed" && prop.lean !== f.sides || f.categories.length && !f.categories.includes(prop.key)) continue;
+      if (prop.line_from === "sleeper" && (prop.sleeper?.line !== prop.line || !Number.isFinite(prop.sleeper?.[prop.lean]) || prop.sleeper[prop.lean] <= 0)) continue;
+      const leg = { season: S.data.season, week: S.data.week, game_id: String(player.game_id), player_id: String(player.id), category: prop.key,
+        team: player.team, name: player.name, period: "full_game", kickoff: game.kickoff, line: prop.line, side: prop.lean,
+        line_source: prop.line_from, raw_projection: prop.proj, adjusted_projection: prop.adj, board_generated_at: S.data.generated_at, quote_observed_at: null };
+      try { validatePaperLeg(leg); } catch { continue; }
+      options.push({ leg, score: Math.abs(prop.adj - prop.line) / Math.max(1, prop.line) });
+    }
+  }
+  return options.sort((a, b) => b.score - a.score || paperLegIdentity(a.leg).localeCompare(paperLegIdentity(b.leg)));
+}
+async function gradeOpenedPaper() {
+  const paper = S.paper, ticket = paper.opened, grading = S.grading, epoch = ++paper.epoch;
+  paper.results = null;
+  if (!ticket || !grading) return;
+  try {
+    const outcomes = new Map();
+    if (grading.outcomeIndex) {
+      for (const [season, week] of [...new Set(ticket.legs.map(l => JSON.stringify([l.season, l.week])))].map(v => JSON.parse(v))) {
+        const map = await loadOutcomePeriod(grading, season, week);
+        for (const [key, value] of map) outcomes.set(key, value);
+      }
+    } else for (const [key, value] of S.finalOutcomes) outcomes.set(key, value);
+    if (S.grading !== grading || paper.opened !== ticket || paper.epoch !== epoch) return;
+    paper.results = ticket.legs.map(leg => paperLegStatus(leg, outcomes));
+  } catch { if (paper.opened === ticket && paper.epoch === epoch) paper.error = "Required saved outcome evidence is unavailable; no result was substituted."; }
+  if (S.tab === "parlay" && paper.opened === ticket && paper.epoch === epoch) renderParlay();
+}
+async function gradeSavedPaper() {
+  const paper=S.paper, grading=S.grading, epoch=++paper.historyEpoch;
+  paper.history=null;
+  if(!grading){paper.error="Saved outcome publication is unavailable.";renderParlay();return;}
+  try {
+    const saved=readPaperTickets(), tickets=saved.tickets, snapshot=JSON.stringify(tickets);
+    if(snapshot.length>1024*1024)throw new Error("Saved ticket evaluation exceeds its 1 MiB interactive bound; all original tickets remain stored.");
+    const periods=[...new Set(tickets.flatMap(({ticket})=>ticket.legs.map(l=>JSON.stringify([l.season,l.week]))))];
+    if(periods.length>64)throw new Error("Saved ticket evaluation exceeds 64 distinct periods; no partial totals were calculated.");
+    const results=new Map(tickets.map(({key,ticket})=>[key,ticket.legs.map(()=>({status:"unresolved",actual:null}))]));
+    for(const text of periods){
+      const [season,week]=JSON.parse(text);
+      const outcomes=grading.outcomeIndex?await loadOutcomePeriod(grading,season,week):S.finalOutcomes;
+      if(S.grading!==grading||paper.historyEpoch!==epoch)return;
+      for(const {key,ticket} of tickets)ticket.legs.forEach((leg,i)=>{if(leg.season===season&&leg.week===week)results.get(key)[i]=paperLegStatus(leg,outcomes);});
+    }
+    if(S.grading!==grading||paper.historyEpoch!==epoch||JSON.stringify(readPaperTickets().tickets)!==snapshot)return;
+    paper.history={report_id:grading.pointer.report_id,rows:tickets.map(({key,ticket})=>({ticket,status:paperTicketStatus(results.get(key)),legs:results.get(key)})),excluded:saved.errors.length};
+    paper.error="Saved ticket results recomputed from this exact outcome generation.";
+  } catch(error){if(S.grading===grading&&paper.historyEpoch===epoch)paper.error="Saved results unavailable: "+error.message;}
+  if(S.tab==="parlay"&&paper.historyEpoch===epoch)renderParlay();
+}
+function paperPerformanceHtml(history) {
+  if(!history)return "";
+  const originals=history.rows.filter(r=>r.ticket.parent_revision_id===null);
+  return `<div data-paper-performance><h4>Saved ticket results by original ticket size</h4><p>Each first saved ticket is counted once. Later revisions are shown separately below and are related selections, not independent samples. No lucky combinations are reconstructed. ${history.excluded} unavailable stored records/lineages excluded.</p>${[2,3,4,5,6].map(n=>{
+    const rows=originals.filter(r=>r.ticket.legs.length===n),legs=rows.flatMap(r=>r.legs),wins=legs.filter(r=>r.status==="win").length,losses=legs.filter(r=>r.status==="loss").length;
+    const states=Object.fromEntries([...new Set(rows.map(r=>r.status))].map(s=>[s,rows.filter(r=>r.status===s).length]));
+    return `<p>${n} legs · ${rows.length} saved tickets · ${rows.filter(r=>r.status==="all_legs_won").length} all-leg statistical wins · leg W–L ${wins}–${losses} (${wins+losses?fmt(100*wins/(wins+losses))+"%":"Unavailable"}) · states ${esc(JSON.stringify(states))}</p>`;
+  }).join("")}<details><summary>Every saved ticket/revision and leg result</summary>${history.rows.map(r=>`<p>${esc(r.ticket.ticket_id)} / ${esc(r.ticket.revision_id)} · ${r.ticket.legs.length} legs · ${esc(r.status)} · ${esc(r.legs.map(l=>l.status).join(", "))}</p>`).join("")}</details><p style="overflow-wrap:anywhere">Outcome report ${esc(history.report_id)}. Financial ROI and venue settlement unavailable.</p></div>`;
+}
+function renderParlay() {
+  const f = S.paper, candidates = paperCandidates(); let saved;
+  try { saved = readPaperTickets(); } catch { saved = { tickets: [], errors: ["Private ticket storage is unavailable."] }; }
+  const legText = leg => `${leg.name} · ${leg.side} ${leg.line} ${SHORT[leg.category]} · ${leg.team} · ${leg.season} W${leg.week}`;
+  const opened = f.opened;
+  $("#main").innerHTML = `<h2>Parlay Builder <small>Paper only</small></h2><div class="card note">Assemble 2–6 legs from one reference source. No accepted ticket, verified quote freshness, payout, probability, EV or ROI. Suggestions use the existing relative projection gap, not a win probability. Repeated players and same-game combinations are excluded; this does not prove independence. Saves stay on this device; its clock is not an independent pregame timestamp.</div>
+    <section class="card" style="overflow-wrap:anywhere"><div class="gtool">
+    <label>Source <select class="tbtn" data-paper-filter="source">${["dk", "sleeper"].map(s => `<option value="${s}" ${s === f.source ? "selected" : ""}>${LINE_FROM[s]} reference</option>`).join("")}</select></label>
+    <label>Side <select class="tbtn" data-paper-filter="sides">${["mixed", "over", "under"].map(s => `<option ${s === f.sides ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+    <label>Upcoming game <select class="tbtn" data-paper-filter="game"><option value="">All</option>${Object.values(S.games).filter(g => g.state === "pre" && Date.parse(g.kickoff) > Date.now()).map(g => `<option value="${esc(g.id)}" ${g.id === f.game ? "selected" : ""}>${esc(g.away)}–${esc(g.home)}</option>`).join("")}</select></label>
+    <label>Suggestion size <select class="tbtn" data-paper-filter="size">${[2,3,4,5,6].map(n => `<option ${n === +f.size ? "selected" : ""}>${n}</option>`).join("")}</select></label></div>
+    <fieldset><legend>Categories (none checked means all supported)</legend>${PAPER_CATEGORIES.map(c => `<label style="display:inline-block;margin:.3rem"><input type="checkbox" data-paper-category="${c}" ${f.categories.includes(c) ? "checked" : ""}> ${SHORT[c]}</label>`).join("")}</fieldset>
+    <p class="note">Fantasy/PPR and anytime-TD offered legs are unavailable in this version. A missing Sleeper side is excluded. Saved multipliers do not verify paired thresholds, accepted product rules or executable prices; DK side availability is unverified. These remain paper reference legs.</p>
+    <button class="tbtn" data-paper-suggest>Suggest up to ${+f.size}</button> <button class="tbtn" data-paper-new>New draft</button>
+    <p role="status">${esc(f.error || (candidates.length ? `${candidates.length} eligible reference opportunities` : "NO_ACTION: no eligible reference opportunities"))}</p>
+    <h3>Draft · ${f.legs.length}/6 legs</h3>${f.legs.map((leg,i) => `<p>${esc(legText(leg))} <button class="tbtn" data-paper-remove="${i}" aria-label="Remove ${esc(leg.name)}">Remove</button></p>`).join("") || "<p>No legs selected.</p>"}
+    <button class="tbtn" data-paper-save ${f.legs.length < 2 ? "disabled" : ""}>${opened ? "Save as a new revision" : "Save private paper ticket"}</button>
+    <details><summary>Ranked shortlist · relative gap</summary>${candidates.slice(0, 60).map(v => `<p>${esc(legText(v.leg))} · ${fmt(v.score,3)} <button class="tbtn" data-paper-add="${esc(JSON.stringify(v.leg))}">Add leg</button></p>`).join("")}</details></section>
+    <section class="card" style="overflow-wrap:anywhere"><h3>Saved tickets</h3>${saved.errors.map(e => `<p role="status">${esc(e)}</p>`).join("")}${saved.tickets.map(({key,ticket}) => `<p><button class="tbtn" data-paper-open="${esc(key)}">${ticket.legs.length} legs · ${esc(ticket.saved_at)}</button> ${esc(ticket.ticket_id)} / ${esc(ticket.revision_id)}${ticket.parent_revision_id ? " · revision" : ""}</p>`).join("") || "<p>No saved tickets.</p>"}
+    <button class="tbtn" data-paper-evaluate>Evaluate saved tickets</button>${paperPerformanceHtml(f.history)}
+    ${opened ? `<h3>Saved ${opened.legs.length}-leg revision</h3><p>Ticket state: ${esc(f.results ? paperTicketStatus(f.results) : "Outcome evidence unavailable or loading")}. Financial result unavailable.</p>${opened.legs.map((leg,i) => `<p>${esc(legText(leg))} · ${esc(f.results?.[i]?.status || "unresolved")}${f.results?.[i]?.actual != null ? ` (${esc(f.results[i].actual)})` : ""}</p>`).join("")}<p class="note">Push, confirmed DNP and unresolved results are distinct; venue void rules are unavailable. Saved membership stays fixed when outcomes are corrected. Revisions are related tickets, not independent performance samples.</p>` : ""}</section>`;
 }
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -92,6 +303,14 @@ async function getJSON(url) {
   return r.json();
 }
 
+async function boundJSON(url) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error("Unavailable generation asset");
+  const bytes = await response.arrayBuffer();
+  const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(value => value.toString(16).padStart(2, "0")).join("");
+  return { value: JSON.parse(new TextDecoder().decode(bytes)), hash };
+}
+
 function normName(name) {
   return name.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
     .replace(/[.'’,]/g, "").replace(/\b(jr|sr|ii|iii|iv|v)\b/g, "").replace(/\s+/g, " ").trim();
@@ -99,10 +318,42 @@ function normName(name) {
 
 // Same as ppr_points() in pull/scoring.py (Sleeper's standard PPR)
 function ppr(s) {
+  if (!offensiveComponentsKnown(s, [...Object.keys(S.data.scoring), "idp_fum_rec"])) return null;
   let total = 0;
   for (const [k, w] of Object.entries(S.data.scoring)) total += w * (s[k] || 0);
   if (s.idp_fum_rec) total -= S.data.scoring.fum_rec_td * (s.fum_rec_td || 0);
   return Math.round(total * 100) / 100;
+}
+
+function offensiveComponentsKnown(s, keys) {
+  if (!s || typeof s !== "object") return false;
+  const metadata = s._presence;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(s, key)) {
+      if (typeof s[key] !== "number" || !Number.isFinite(s[key])) return false;
+      if (metadata?.kind === "actual" && (["pass_yd", "rush_yd", "rec_yd"].includes(key)
+          ? !Number.isSafeInteger(s[key]) : !Number.isSafeInteger(s[key]) || s[key] < 0)) return false;
+      continue;
+    }
+    if (metadata == null && !Object.prototype.hasOwnProperty.call(s, "_presence")) continue; // Retained legacy adapter assumption.
+    const original = metadata?.original_row, context = metadata?.source_context;
+    if (!metadata || metadata.version !== "nfl-data-presence-v2" || metadata.kind === "projection"
+        || metadata.sparse_contract !== "legacy-played-sparse-stat-assumption-v1"
+        || !original || !original.stats || !context || context.adapter !== "sleeper-week-stats-v1"
+        || !Number.isInteger(context.season) || !Number.isInteger(context.week) || context.week < 1 || context.week > 18
+        || !["player_id", "team", "opponent"].every(field => typeof original[field] === "string" && original[field])
+        || Object.prototype.hasOwnProperty.call(original.stats, key)
+        || !["gp", "off_snp"].some(field => typeof original.stats[field] === "number"
+          && Number.isSafeInteger(original.stats[field]) && original.stats[field] > 0)
+        || !Object.keys(s).filter(field => field !== "_presence" && field in original.stats)
+          .every(field => s[field] === original.stats[field])) return false;
+  }
+  return true;
+}
+
+function tdChanceText(prop) {
+  return typeof prop?.td_chance === "number" && Number.isFinite(prop.td_chance)
+    && prop.td_chance >= 0 && prop.td_chance <= 1 ? `${Math.round(100 * prop.td_chance)}%` : "Unavailable";
 }
 
 function statValue(key, s) {
@@ -125,28 +376,461 @@ function gameStatus(g) {
   return g.detail || (g.state === "post" ? "Final" : "Live");
 }
 
+// Public grading assets have a small, versioned contract. Only content-addressed
+// local paths are read; provider bodies and private report manifests are absent.
+const GRADING_BASE = "data/selection-grading/";
+const gradingArchiveSources = new WeakMap();
+const HASH64 = /^[a-f0-9]{64}$/;
+const GRADING_RESULTS = ["win", "loss", "push", "dnp", "pending", "unresolved", "no_action", "not_due", "excluded"];
+function finalIdentity(p, category) {
+  return JSON.stringify([S.data.season, S.data.week, String(p.game_id), String(p.id), category, p.team,
+    Date.parse(S.games[p.game_id]?.kickoff)]);
+}
+function finalIdentityMatches(row, p, category) {
+  return row.season === S.data.season && row.week === S.data.week && row.player_id === String(p.id)
+    && row.game_id === String(p.game_id) && row.category === category && row.team === p.team
+    && Number.isFinite(Date.parse(row.kickoff)) && Date.parse(row.kickoff) === Date.parse(S.games[p.game_id]?.kickoff);
+}
+let gradingLoadRevision = 0;
+const PARTITION_CONTEXT_FIELDS = ["provenance_class", "model_version", "engine_sha256", "policy_version", "policy_sha256", "view", "checkpoint", "line_source_scope"];
+const gradingCanonical = value => JSON.stringify(value && typeof value === "object" ? (Array.isArray(value) ? value.map(value => JSON.parse(gradingCanonical(value))) : Object.fromEntries(Object.keys(value).sort().map(key => [key, JSON.parse(gradingCanonical(value[key]))]))) : value);
+async function gradingHash(bytes) {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(v => v.toString(16).padStart(2, "0")).join("");
+}
+function publicAssetPath(pointer, descriptor, type, partition = false) {
+  if (["selection-publication-pointer-v3", "selection-publication-pointer-v4"].includes(pointer.schema_version)) {
+    const compressed = partition || type === "rows";
+    const fields = ["path", "sha256", "decoded_bytes", ...(compressed ? ["encoding", "encoded_sha256", "encoded_bytes"] : []),
+      ...(type === "rows" ? ["count"] : partition && type === "summary" ? ["context_id", "period", "table_count"] : partition ? ["season", "week", "count"] : [])];
+    const limit = (type === "rows" ? 2 : partition ? 12 : 1) * 1024 * 1024;
+    if (!descriptor || JSON.stringify(Object.keys(descriptor).sort()) !== JSON.stringify(fields.sort())
+        || !Number.isInteger(descriptor.decoded_bytes) || descriptor.decoded_bytes < 1 || descriptor.decoded_bytes > limit
+        || compressed && (descriptor.encoding !== "gzip" || !HASH64.test(descriptor.encoded_sha256)
+          || !Number.isInteger(descriptor.encoded_bytes) || descriptor.encoded_bytes < 1 || descriptor.encoded_bytes > limit)) throw new Error("Invalid encoded grading descriptor/size");
+  }
+  const shared = pointer.schema_version === "selection-publication-pointer-v4";
+  const filename = type === "rows" ? (shared ? "rows.json" : "rows-[0-9]{4,}.json") : `${type}.json`;
+  const namespace = shared && (partition || type === "rows") ? descriptor?.encoded_sha256
+    : partition && ["selection-publication-pointer-v2", "selection-publication-pointer-v3"].includes(pointer.schema_version)
+      ? (pointer.schema_version === "selection-publication-pointer-v3" ? descriptor?.encoded_sha256 : descriptor?.sha256) : pointer.report_id;
+  const pattern = new RegExp(`^${namespace}/${filename.replaceAll(".", "\\.")}$`);
+  if (!descriptor || !HASH64.test(namespace) || !pattern.test(descriptor.path) || !HASH64.test(descriptor.sha256)) throw new Error("Invalid grading asset binding");
+  return GRADING_BASE + descriptor.path;
+}
+async function gradingStreamBytes(stream, limit, exact = null) {
+  if (!stream || typeof stream.getReader !== "function") throw new Error("Streaming report reader unavailable");
+  const reader = stream.getReader(), chunks = []; let total = 0;
+  try {
+    while (true) {
+      const item = await reader.read();
+      if (item.done) break;
+      total += item.value.byteLength;
+      if (total > limit || exact !== null && total > exact) throw new Error("Report stream exceeds declared size limit");
+      chunks.push(item.value);
+    }
+  } catch (err) {
+    try { await reader.cancel(); } catch (_) { /* Preserve the integrity error. */ }
+    throw err;
+  } finally { reader.releaseLock(); }
+  if (exact !== null && total !== exact) throw new Error("Report stream size mismatch");
+  const bytes = new Uint8Array(total); let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
+}
+async function checkedHostingJson(url, descriptor = null) {
+  const limit = 1024 * 1024;
+  if (descriptor && (!HASH64.test(descriptor.sha256) || !Number.isInteger(descriptor.decoded_bytes)
+      || descriptor.decoded_bytes < 1 || descriptor.decoded_bytes > limit)) throw new Error("Invalid hosting descriptor");
+  const response = await fetch(url, { cache: descriptor ? "default" : "no-store" });
+  if (!response.ok) throw new Error("Retained report metadata unavailable");
+  const bytes = await gradingStreamBytes(response.body, limit, descriptor?.decoded_bytes ?? null);
+  if (descriptor && await gradingHash(bytes) !== descriptor.sha256) throw new Error("Retained report metadata checksum mismatch");
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+}
+async function resolveGradingArchive(pointer) {
+  if (gradingArchiveSources.has(pointer)) return gradingArchiveSources.get(pointer);
+  const promise = (async () => {
+    const working = await checkedHostingJson(GRADING_BASE + "hosting.json");
+    const core = { ...working }; delete core.delivery_sha256;
+    if (working.schema_version !== "selection-hosting-working-set-v1" || !HASH64.test(working.delivery_sha256)
+        || await gradingHash(new TextEncoder().encode(gradingCanonical(core))) !== working.delivery_sha256
+        || !Array.isArray(working.archive_index) || working.archive_index.length > 16) throw new Error("Unsupported retained report locator");
+    const publicationId = await gradingHash(new TextEncoder().encode(gradingCanonical(pointer)));
+    const shards = working.archive_index.filter(item => item.prefix === publicationId[0]);
+    if (shards.length !== 1) throw new Error("Exact retained report unavailable; refresh to load a coherent current report");
+    const descriptor = shards[0].asset;
+    if (!descriptor || descriptor.path !== descriptor.sha256 + "/archive.json") throw new Error("Invalid retained report index path");
+    const shard = await checkedHostingJson(GRADING_BASE + descriptor.path, descriptor);
+    if (shard.schema_version !== "selection-hosting-archive-v1" || shard.prefix !== publicationId[0]
+        || shard.repository !== "NickNicky19/nicks-expert-nfl-picks" || !shard.reports || typeof shard.reports !== "object") throw new Error("Invalid retained report repository/index");
+    const record = shard.reports[publicationId];
+    if (!record || !/^[0-9a-f]{40}$/.test(record.git_ref) || !record.manifest
+        || record.manifest.path !== record.manifest.sha256 + "/manifest.json") throw new Error("Missing immutable retained report locator");
+    const base = "https://raw.githubusercontent.com/NickNicky19/nicks-expert-nfl-picks/" + record.git_ref + "/output/" + GRADING_BASE;
+    const manifest = await checkedHostingJson(base + record.manifest.path, record.manifest);
+    if (manifest.schema_version !== "selection-hosting-generation-v1" || manifest.report_id !== pointer.report_id
+        || gradingCanonical(manifest.pointer) !== gradingCanonical(pointer)) throw new Error("Retained report does not match the saved generation");
+    return base;
+  })();
+  gradingArchiveSources.set(pointer, promise); // One bounded attempt, including failures.
+  return promise;
+}
+async function fetchGradingAsset(pointer, path) {
+  let response;
+  try { response = await fetch(path, { cache: "default" }); } catch (_) { response = null; }
+  if (response?.ok) return response;
+  if (response && ![404, 410].includes(response.status)) throw new Error("Report source unavailable; archive retrieval was not selected");
+  const base = await resolveGradingArchive(pointer);
+  const archived = await fetch(base + path.slice(GRADING_BASE.length), { cache: "default" });
+  if (!archived.ok) throw new Error("Exact retained report asset unavailable");
+  return archived;
+}
+async function checkedGradingAsset(pointer, descriptor, type, partition = false) {
+  const path = publicAssetPath(pointer, descriptor, type, partition);
+  const modern = ["selection-publication-pointer-v2", "selection-publication-pointer-v3", "selection-publication-pointer-v4"].includes(pointer.schema_version);
+  const compressed = ["selection-publication-pointer-v3", "selection-publication-pointer-v4"].includes(pointer.schema_version) && (partition || type === "rows");
+  const limit = (type === "rows" ? 2 : modern && !partition ? 1 : 12) * 1024 * 1024;
+  const hasSize = modern && (type !== "rows" || compressed);
+  if (hasSize && (!Number.isInteger(descriptor.decoded_bytes) || descriptor.decoded_bytes < 1 || descriptor.decoded_bytes > limit)) throw new Error("Invalid grading asset size");
+  if (compressed && (descriptor.encoding !== "gzip" || !HASH64.test(descriptor.encoded_sha256)
+      || !Number.isInteger(descriptor.encoded_bytes) || descriptor.encoded_bytes < 1 || descriptor.encoded_bytes > limit)) throw new Error("Invalid encoded grading asset contract");
+  if (!compressed && ["encoding", "encoded_sha256", "encoded_bytes"].some(key => Object.hasOwn(descriptor, key))) throw new Error("Encoded asset outside its supported version");
+  if (compressed && (typeof DecompressionStream !== "function" || typeof Blob !== "function")) throw new Error("Gzip report decoder unavailable in this browser");
+  const response = await fetchGradingAsset(pointer, path);
+  const stored = await gradingStreamBytes(response.body, limit, compressed ? descriptor.encoded_bytes : hasSize ? descriptor.decoded_bytes : null);
+  if (await gradingHash(stored) !== (compressed ? descriptor.encoded_sha256 : descriptor.sha256)) throw new Error("Grading encoded asset checksum mismatch");
+  // Fetch removes HTTP coding first. Verify the delivered application bytes;
+  // never branch on Content-Encoding or silently accept an already-decoded body.
+  const bytes = compressed ? await gradingStreamBytes(new Blob([stored]).stream().pipeThrough(new DecompressionStream("gzip")), limit, descriptor.decoded_bytes) : stored;
+  if (await gradingHash(bytes) !== descriptor.sha256) throw new Error("Grading decoded asset checksum mismatch");
+  const data = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  if (pointer.schema_version === "selection-publication-pointer-v4" && (partition || type === "rows")) {
+    const fields = type === "rows" ? ["schema_version", "rows"] : type === "summary"
+      ? ["schema_version", "context_id", "period", "tables"] : ["schema_version", "season", "week", "outcomes"];
+    const schema = type === "rows" ? "selection-public-rows-v2" : type === "summary"
+      ? "selection-public-summary-partition-v2" : "selection-final-outcome-period-v2";
+    if (data.schema_version !== schema || JSON.stringify(Object.keys(data).sort()) !== JSON.stringify(fields.sort())
+        || type === "summary" && (data.context_id !== descriptor.context_id || data.period !== descriptor.period)
+        || type === "outcomes" && (data.season !== descriptor.season || data.week !== descriptor.week)) throw new Error("Shared grading payload type/context mismatch");
+    // Only the exact hash-validated graph supplies this in-memory envelope.
+    // Stored shared bodies never acquire a fabricated original report ID.
+    return { ...data, report_id: pointer.report_id, schema_version: type === "rows" ? "selection-public-rows-v1"
+      : type === "summary" ? "selection-public-summary-partition-v1" : "selection-final-outcome-period-v1" };
+  }
+  if (data.report_id !== pointer.report_id) throw new Error("Grading report identity mismatch");
+  return data;
+}
+
+function validateGradingRowContract(row, version) {
+  const strategies = ['ranked_biggest_lean_v1', 'ranked_projected_points_v1'];
+  const fields = ['strategy_version', 'strategy_policy_sha256', 'strategy_receipt_sha256', 'strategy_rank'];
+  const extended = version === 'selection-public-report-v6', modern = row.schema_version === 'selection-decision-v2';
+  if (extended && !['selection-decision-v1', 'selection-decision-v2'].includes(row.schema_version)
+      || modern && !extended || !modern && (fields.some(key => Object.hasOwn(row, key)) || strategies.includes(row.cohort))) throw new Error('Unsupported grading row version');
+  if (!modern) return;
+  const engines = { original_sleeper_matchup_baseline: 'e8e8823f460e074485ee91a0dc1c1cfc43877146c4498ef074d15d2b5a735d07',
+    'sleeper-matchup-data-integrity-v2': '3909c7ac5470970182065576f057e8036f31ad30da13f1ef9999eb1108a183b4' };
+  if (!fields.every(key => Object.hasOwn(row, key)) || row.strategy_version !== 'ranked-selection-policy-v1'
+      || row.strategy_policy_sha256 !== '80d9ab617f8c6b331dc879ff3e83a8304a934944a01d40514567e6933d251250'
+      || !strategies.includes(row.cohort) || !Object.hasOwn(engines, row.model_version) || row.engine_sha256 !== engines[row.model_version]
+      || row.provenance_class !== 'completed_prospective_ranked_selection'
+      || row.strategy_rank !== null && (!Number.isInteger(row.strategy_rank) || row.strategy_rank < 1 || row.strategy_rank > 12)
+      || row.strategy_receipt_sha256 !== null && !HASH64.test(row.strategy_receipt_sha256)) throw new Error('Invalid prospective strategy identity');
+  if (row.action === 'SELECT') {
+    const [forecast, collection, created, kickoff] = ['forecast_generated_at', 'collected_at', 'original_selection_created_at', 'kickoff'].map(key => typeof row[key] === 'string' ? Date.parse(row[key]) : NaN);
+    if (!['over', 'under'].includes(row.side) || !['dk', 'sleeper'].includes(row.line_from)
+        || row.strategy_rank === null || row.strategy_receipt_sha256 === null
+        || row.selection_clock_basis !== 'LOCAL_COMPLETED_RANKED_SELECTION'
+        || row.recorded_selection_at !== row.original_selection_created_at
+        || ![forecast, collection, created, kickoff].every(Number.isFinite) || !(forecast <= collection && collection <= created && created < kickoff)) throw new Error('Invalid prospective strategy clocks or reference');
+  }
+}
+
+function validateGradingTables(pointer, tables, version) {
+    if (!Array.isArray(tables)) throw new Error("Missing grading tables");
+    const tableIds = new Set();
+    for (const table of tables) {
+      if (version !== "selection-public-report-v1" &&
+          (!Object.hasOwn(table, "policy_version") || !Object.hasOwn(table, "policy_sha256")
+            || typeof table.policy_version !== "string" || !table.policy_version.trim() || !HASH64.test(table.policy_sha256)
+            || !["all", "dk", "sleeper", "ours", "unknown"].includes(table.line_source_scope)
+            || version !== "selection-public-report-v6" && table.line_source_scope !== "all" && !["overall", "category", "category_side"].includes(table.dimension))) throw new Error("Invalid grading policy/source context");
+      if (!HASH64.test(table.summary_id) || tableIds.has(table.summary_id) || !Array.isArray(table.row_positions)
+          || table.row_positions.length !== table.rows || new Set(table.row_positions).size !== table.rows || !HASH64.test(table.row_ids_sha256)
+          || table.row_positions.some((i) => !Number.isInteger(i) || i < 0 || i >= pointer.row_count)
+          || !Array.isArray(table.row_chunks) || table.row_chunks.some((i) => !Number.isInteger(i) || i < 0 || i >= pointer.rows.length)
+          || JSON.stringify([...new Set(table.row_positions.map((i) => Math.floor(i / 250)))].sort((a, b) => a - b)) !== JSON.stringify([...table.row_chunks].sort((a, b) => a - b))
+          || GRADING_RESULTS.some((key) => !Number.isInteger(table[key]) || table[key] < 0)
+          || !Number.isInteger(table.decided) || table.decided !== table.win + table.loss
+          || (table.decided ? table.hit_rate !== table.win / table.decided : table.hit_rate !== null)
+          || ["unique_players", "unique_games", "unique_weeks", "decided_unique_players", "decided_unique_games", "decided_unique_weeks"].some((key) => !Number.isInteger(table[key]) || table[key] < 0)
+          || GRADING_RESULTS.reduce((n, k) => n + table[k], 0) !== table.rows) throw new Error("Invalid grading summary reconciliation");
+      tableIds.add(table.summary_id);
+    }
+
+}
+function validateFinalOutcomes(pointer, rows) {
+    if (!Array.isArray(rows)) throw new Error("Missing final outcomes");
+    const result = new Map();
+    for (const row of rows) {
+      if (!Number.isInteger(row.season) || !Number.isInteger(row.week) || !["game_id", "player_id", "category", "team"].every((key) => typeof row[key] === "string" && row[key])
+          || !Number.isFinite(Date.parse(row.kickoff)) || !["resolved", "dnp", "pending", "unresolved"].includes(row.status)
+          || typeof row.final_confirmed !== "boolean" || typeof row.outcome_conflict !== "boolean"
+          || (row.status === "resolved" && !Number.isFinite(row.actual))
+          || (["resolved", "dnp"].includes(row.status) && (!row.final_confirmed || row.outcome_conflict))
+          || (["resolved", "dnp"].includes(row.status) && row.outcome_identity_status === "quarantined")
+          || (["resolved", "dnp"].includes(row.status) && (row.game_state !== "post" || row.outcome_selection !== "confirmed"
+              || row.outcome_source_mix === "conflicting_sources" || !Number.isFinite(Date.parse(row.collected_at))
+              || Date.parse(row.collected_at) <= Date.parse(row.kickoff) || Date.parse(row.collected_at) > Date.parse(pointer.generated_at)))
+          || (row.status === "resolved" && (!Number.isInteger(row.actual) || (!row.category.endsWith("_yd") && row.actual < 0)))
+          || (row.status !== "resolved" && row.actual !== null)
+          || (["resolved", "dnp"].includes(row.status) && (!HASH64.test(row.outcome_snapshot_sha256)
+              || !HASH64.test(row.selected_outcome_provenance_sha256) || !HASH64.test(row.selected_outcome_row_sha256)))) throw new Error("Invalid final outcome index");
+      const key = JSON.stringify([row.season, row.week, row.game_id, row.player_id, row.category, row.team, Date.parse(row.kickoff)]);
+      if (result.has(key)) throw new Error("Duplicate final outcome identity");
+      result.set(key, row);
+    }
+
+    return result;
+}
+function validateForecastAccuracy(value) {
+  const fail = () => { throw new Error("Invalid aggregate forecast accuracy contract"); };
+  const fields = (v, keys) => { if (!v || typeof v !== "object" || Array.isArray(v) || JSON.stringify(Object.keys(v).sort()) !== JSON.stringify([...keys].sort())) fail(); };
+  const count = n => { if (!Number.isSafeInteger(n) || n < 0) fail(); };
+  const number = n => { if (typeof n !== "number" || !Number.isFinite(n)) fail(); };
+  const same = (a,b) => { if (Math.abs(a-b) > 1e-10 * Math.max(1,Math.abs(a),Math.abs(b))) fail(); };
+  const sample = v => { fields(v,["opportunities","unique_players","unique_games","unique_weeks"]); Object.values(v).forEach(count); if (Object.values(v).some(n=>n>v.opportunities) || v.opportunities && [v.unique_players,v.unique_games,v.unique_weeks].some(n=>!n)) fail(); };
+  const statuses = v => { if (!v || typeof v !== "object" || Array.isArray(v) || Object.keys(v).some(k=>!["resolved","dnp","pending","unresolved","void","excluded_schedule_changed"].includes(k))) fail(); Object.values(v).forEach(count); };
+  const total = v => Object.values(v).reduce((a,b)=>a+b,0);
+  const point = v => {
+    fields(v,["n","mae","rmse","mean_error","bias","absolute_error_sum","squared_error_sum","signed_error_sum"]); count(v.n);
+    [v.absolute_error_sum,v.squared_error_sum,v.signed_error_sum].forEach(number);
+    if (v.absolute_error_sum<0 || v.squared_error_sum<0) fail();
+    if (!v.n) { if ([v.mae,v.rmse,v.mean_error,v.bias].some(n=>n!==null) || [v.absolute_error_sum,v.squared_error_sum,v.signed_error_sum].some(n=>n!==0)) fail(); return; }
+    [v.mae,v.rmse,v.mean_error,v.bias].forEach(number);
+    if (v.mae<0 || v.rmse<0 || Math.abs(v.signed_error_sum)>v.absolute_error_sum+1e-10*Math.max(1,v.absolute_error_sum) || v.mae>v.rmse+1e-10*Math.max(1,v.rmse)) fail();
+    same(v.mae,v.absolute_error_sum/v.n); same(v.rmse*v.rmse,v.squared_error_sum/v.n); same(v.mean_error,v.signed_error_sum/v.n); same(v.bias,v.mean_error);
+  };
+  const pair = v => {
+    fields(v,["raw","adjusted","helps","hurts","ties","absolute_error_change_sum","sample"]); point(v.raw); point(v.adjusted); sample(v.sample);
+    [v.helps,v.hurts,v.ties].forEach(count); number(v.absolute_error_change_sum);
+    if (v.raw.n!==v.adjusted.n || v.raw.n!==v.sample.opportunities || v.helps+v.hurts+v.ties!==v.raw.n) fail();
+    same(v.absolute_error_change_sum,v.adjusted.absolute_error_sum-v.raw.absolute_error_sum);
+  };
+  const probability = v => {
+    fields(v,["n","events","sample","brier_sum","brier","finite_log_loss_sum","infinite_log_loss_count","log_loss","log_loss_state","calibration"]);
+    [v.n,v.events,v.infinite_log_loss_count].forEach(count); sample(v.sample); [v.brier_sum,v.finite_log_loss_sum].forEach(number);
+    if (v.events>v.n || v.infinite_log_loss_count>v.n || v.sample.opportunities!==v.n || v.brier_sum<0 || v.finite_log_loss_sum<0 || v.n===v.infinite_log_loss_count && v.finite_log_loss_sum!==0) fail();
+    const state = v.infinite_log_loss_count ? "positive_infinity" : v.n ? "finite" : "unavailable";
+    if (v.log_loss_state!==state || state!=="finite" && v.log_loss!==null) fail();
+    if (v.n) { number(v.brier); if(v.brier<0||v.brier>1)fail(); same(v.brier,v.brier_sum/v.n); } else if(v.brier!==null||v.brier_sum!==0) fail();
+    if (state==="finite") { number(v.log_loss); if(v.log_loss<0)fail(); same(v.log_loss,v.finite_log_loss_sum/v.n); }
+    if (!Array.isArray(v.calibration)||v.calibration.length!==10)fail();
+    v.calibration.forEach((b,i)=>{
+      fields(b,["lower","upper","upper_inclusive","n","events","predicted_mean","event_rate","sample"]);
+      number(b.lower);number(b.upper);count(b.n);count(b.events);sample(b.sample);
+      if (b.lower!==i/10 || b.upper!==(i+1)/10 || b.upper_inclusive!==(i===9) || b.events>b.n || b.sample.opportunities!==b.n)fail();
+      if(b.n){number(b.predicted_mean);number(b.event_rate);if(b.predicted_mean<b.lower||b.predicted_mean>b.upper||i<9&&b.predicted_mean===b.upper||b.event_rate<0||b.event_rate>1)fail();same(b.event_rate,b.events/b.n);}
+      else if(b.predicted_mean!==null||b.event_rate!==null)fail();
+    });
+    if(v.calibration.reduce((s,b)=>s+b.n,0)!==v.n||v.calibration.reduce((s,b)=>s+b.events,0)!==v.events)fail();
+  };
+  const models = {
+    original_sleeper_matchup_baseline: ["e8e8823f460e074485ee91a0dc1c1cfc43877146c4498ef074d15d2b5a735d07","53f6016d59fe93f9ce09bc23c472f7e77471e7a80a8b1f75e78b2ab3ed4a258d"],
+    "sleeper-matchup-data-integrity-v2": ["3909c7ac5470970182065576f057e8036f31ad30da13f1ef9999eb1108a183b4","fd024229abd98a661f0ffa53866bf55bf13142e891b2e64ecee94012dcbe1948"] };
+  const cats=[...PAPER_CATEGORIES,"fpts","anytime_td"], provenance=["missing","unknown_unverified","identity_quarantined","conflicting_outcome_evidence","saved_cache_descriptive_regrade","recorded_outcome_receipt"];
+  fields(value,["schema_version","cohorts","capture_coverage","uncertainty","limitations"]);
+  if(value.schema_version!=="forecast-accuracy-public-v1"||!Array.isArray(value.cohorts)||value.cohorts.length>12||!Array.isArray(value.capture_coverage)||value.capture_coverage.length>2)fail();
+  fields(value.uncertainty,["status","interval","calibration"]);
+  const limitations=["Cumulative saved original pregame forecasts; independent of selection filters.","Model versions and selected outcome provenance are separate populations.","Component-derived PPR and saved direct-provider PPR are different comparators.","Recorded and formula-rederived TD probabilities are separate.","No mixed-unit accuracy, calibrated pick probability, promotion, profit or ROI claim."];
+  if(value.uncertainty.status!=="UNAVAILABLE_DESCRIPTIVE_EXTENSION_NO_REGISTERED_INTERVAL"||value.uncertainty.interval!==null||value.uncertainty.calibration!=="DESCRIPTIVE_NOT_CONFIRMED"||JSON.stringify(value.limitations)!==JSON.stringify(limitations))fail();
+  const captures=new Set(),cohorts=new Set(),cohortModels=new Set();
+  for(const c of value.capture_coverage){
+    fields(c,["model_version","capture_coverage","unsupported_outcome_counts"]);
+    if(!Object.hasOwn(models,c.model_version)||captures.has(c.model_version))fail();captures.add(c.model_version);
+    const v=c.capture_coverage;fields(v,["unique_receipts","duplicate_receipts","eligible_capture_rows","paired_capture_rows","excluded"]);count(v.unique_receipts);count(v.duplicate_receipts);
+    for(const [key,allowed] of [["eligible_capture_rows",cats],["paired_capture_rows",cats],["excluded",["unsupported_forecast_contract_or_engine","non_live_receipt","future_receipt","unsupported_category","unsupported_category_position","not_pregame","missing_forecast"]]]){
+      if(!v[key]||typeof v[key]!=="object"||Array.isArray(v[key])||Object.keys(v[key]).some(k=>!allowed.includes(k)))fail();Object.values(v[key]).forEach(count);
+    }
+    if(Object.entries(v.paired_capture_rows).some(([k,n])=>n>(v.eligible_capture_rows[k]||0)))fail();
+    if(!c.unsupported_outcome_counts||typeof c.unsupported_outcome_counts!=="object"||Array.isArray(c.unsupported_outcome_counts)||Object.keys(c.unsupported_outcome_counts).some(k=>!["unsupported_legacy_extra_statistic","unsupported_descriptive_outcome_contract"].includes(k)))fail();Object.values(c.unsupported_outcome_counts).forEach(count);
+  }
+  for(const c of value.cohorts){
+    fields(c,["model_version","engine_sha256","period","forecast_provenance","outcome_provenance","statistic_contract_sha256","source_report_sha256","coverage","categories"]);
+    const key=c.model_version+":"+c.outcome_provenance;
+    if(!Object.hasOwn(models,c.model_version)||cohorts.has(key)||!provenance.includes(c.outcome_provenance)||c.period!=="cumulative"||c.forecast_provenance!=="original_recorded_pregame_observation"||c.engine_sha256!==models[c.model_version][0]||c.statistic_contract_sha256!==models[c.model_version][1]||!HASH64.test(c.source_report_sha256))fail();
+    cohorts.add(key);cohortModels.add(c.model_version);sample(c.coverage);fields(c.categories,cats);
+    for(const [category,v] of Object.entries(c.categories)){
+      fields(v,["coverage","paired_coverage","outcome_status","paired_status","paired","unpaired_coverage","unpaired_status","unpaired_missingness","adjusted_only",...(category==="fpts"?["direct_provider_ppr"]:[]),...(category==="anytime_td"?["probability","probability_unavailable"]:[])]);
+      sample(v.coverage);sample(v.paired_coverage);sample(v.unpaired_coverage);statuses(v.outcome_status);statuses(v.paired_status);statuses(v.unpaired_status);pair(v.paired);point(v.adjusted_only);
+      if(total(v.outcome_status)!==v.coverage.opportunities||total(v.paired_status)!==v.paired_coverage.opportunities||total(v.unpaired_status)!==v.unpaired_coverage.opportunities||v.paired.raw.n!==(v.paired_status.resolved||0)||v.adjusted_only.n>(v.unpaired_status.resolved||0)||v.unpaired_coverage.opportunities>v.coverage.opportunities)fail();
+      if(!v.unpaired_missingness||typeof v.unpaired_missingness!=="object"||Array.isArray(v.unpaired_missingness)||Object.keys(v.unpaired_missingness).some(k=>!["raw_missing","adjusted_missing"].includes(k)))fail();Object.values(v.unpaired_missingness).forEach(count);if(total(v.unpaired_missingness)!==v.unpaired_coverage.opportunities)fail();
+      if(category==="fpts"){pair(v.direct_provider_ppr);if(v.direct_provider_ppr.raw.n>v.paired.raw.n)fail();}
+      if(category==="anytime_td"){
+        fields(v.probability,["originally_recorded_probability","rederived_from_original_count_retained_formula"]);Object.values(v.probability).forEach(probability);
+        if(!v.probability_unavailable||typeof v.probability_unavailable!=="object"||Array.isArray(v.probability_unavailable)||Object.keys(v.probability_unavailable).some(k=>k!=="invalid_exact_original_board"))fail();Object.values(v.probability_unavailable).forEach(count);
+        const n=Object.values(v.probability).reduce((s,p)=>s+p.n,0);if(n>(v.outcome_status.resolved||0)||n+total(v.probability_unavailable)>v.coverage.opportunities)fail();
+      }
+    }
+    if(Object.values(c.categories).reduce((s,v)=>s+v.coverage.opportunities,0)!==c.coverage.opportunities)fail();
+  }
+  if([...captures].sort().join()!==[...cohortModels].sort().join())fail();
+  return value;
+}
+function forecastAccuracyHtml(value) {
+  if (!value) return "";
+  const metric = v => v.n ? `${fmt(v.mae,3)} / ${fmt(v.rmse,3)} / ${fmt(v.bias,3)}` : "Unavailable";
+  return `<section class="card" data-forecast-accuracy><h3>Saved forecast accuracy · cumulative</h3><p class="note">Independent of selection filters. Paired raw/adjusted errors use the same saved observation and supported final outcome. First-observation coverage and earliest-valid-pair coverage can differ. Category units stay separate. Uncertainty and later confirmation are unavailable; this is descriptive evidence, not predictive improvement or a pick probability.</p>${value.cohorts.map(c=>`<details><summary>${esc(c.model_version)} · ${esc(gradingLabel(c.outcome_provenance))} · ${c.coverage.opportunities} saved forecasts</summary><p style="overflow-wrap:anywhere">Engine ${esc(c.engine_sha256)} · ${esc(c.forecast_provenance)} · ${c.coverage.unique_players} players / ${c.coverage.unique_games} games / ${c.coverage.unique_weeks} weeks</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Category</th><th>Saved / paired coverage</th><th>Resolved paired N</th><th>Raw MAE / RMSE / bias</th><th>Adjusted MAE / RMSE / bias</th><th>Other coverage</th></tr></thead><tbody>${Object.entries(c.categories).map(([key,v])=>`<tr><th>${esc(SHORT[key])}</th><td>${v.coverage.opportunities} / ${v.paired_coverage.opportunities}</td><td>${v.paired.raw.n}</td><td>${metric(v.paired.raw)}</td><td>${metric(v.paired.adjusted)}</td><td><details><summary>Coverage and sample</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({outcomes:v.outcome_status,paired_outcomes:v.paired_status,sample:v.paired.sample,unpaired:v.unpaired_coverage,missing:v.unpaired_missingness,adjusted_only:v.adjusted_only},null,2))}</pre></details></td></tr>`).join("")}</tbody></table></div><p>Offensive PPR above is component-derived. Direct saved provider PPR comparator: N ${c.categories.fpts.direct_provider_ppr.raw.n}; provider ${metric(c.categories.fpts.direct_provider_ppr.raw)}; adjusted component ${metric(c.categories.fpts.direct_provider_ppr.adjusted)}. No missing direct total is inferred.</p><h4>Anytime rushing/receiving TD probability</h4>${Object.entries(c.categories.anytime_td.probability).map(([basis,v])=>`<details><summary>${esc(gradingLabel(basis))} · N ${v.n} · events ${v.events} · Brier ${v.n?fmt(v.brier,4):"Unavailable"} · log loss ${v.log_loss_state==="positive_infinity"?"Positive infinity":v.n?fmt(v.log_loss,4):"Unavailable"}</summary><p>Fixed calibration bins are descriptive; no calibrated ticket probability is established.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify(v.calibration,null,2))}</pre></details>`).join("")}<p>Missing TD probability coverage: ${esc(JSON.stringify(c.categories.anytime_td.probability_unavailable))}</p></details>`).join("")}<details><summary>Capture exclusions and scope</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({capture_coverage:value.capture_coverage,uncertainty:value.uncertainty,limitations:value.limitations},null,2))}</pre></details></section>`;
+}
+async function validateGradingIndexes(pointer, summary, outcomes) {
+  const extended = summary.schema_version === "selection-public-report-v6" && summary.report_schema_version === "selection-report-v4" && pointer.schema_version === "selection-publication-pointer-v4";
+  if ((!extended && (summary.schema_version !== (pointer.schema_version === "selection-publication-pointer-v4" ? "selection-public-report-v5" : pointer.schema_version === "selection-publication-pointer-v3" ? "selection-public-report-v4" : "selection-public-report-v3") || summary.report_schema_version !== "selection-report-v3"))
+      || summary.row_count !== pointer.row_count || !summary.contexts || typeof summary.contexts !== "object" || Array.isArray(summary.contexts)
+      || !Array.isArray(summary.summary_partitions) || Object.hasOwn(summary.summary || {}, "tables")
+      || outcomes.schema_version !== (pointer.schema_version === "selection-publication-pointer-v4" ? "selection-final-outcome-index-v2" : "selection-final-outcome-index-v1") || !Array.isArray(outcomes.periods)
+      || !Number.isInteger(outcomes.outcome_count) || outcomes.outcome_count < 0) throw new Error("Unsupported grading indexes");
+  if (!extended && Object.hasOwn(summary, 'forecast_accuracy')) throw new Error('Aggregate accuracy outside its explicit report contract');
+  if (extended) {
+    const fields=["schema_version","report_schema_version","report_id","row_count","source_sha","input_binding","input_content_sha256","summary","coverage","primary_raw_vs_adjusted","forecast_accuracy","uncertainty","limitations","contexts","summary_partitions"];
+    if(JSON.stringify(Object.keys(summary).sort())!==JSON.stringify(fields.sort())||!/^[a-f0-9]{40}$/.test(summary.source_sha)||!HASH64.test(summary.input_content_sha256)||summary.input_binding!=="NOT_YET_GIT_COMMITTED")throw new Error("Unknown modern report fields or source binding");
+    validateForecastAccuracy(summary.forecast_accuracy);
+  }
+  const used = new Set(), pairs = new Set();
+  for (const [id, context] of Object.entries(summary.contexts)) {
+    if (!HASH64.test(id) || !context || JSON.stringify(Object.keys(context).sort()) !== JSON.stringify([...PARTITION_CONTEXT_FIELDS].sort())
+        || await gradingHash(new TextEncoder().encode(gradingCanonical(context))) !== id) throw new Error("Invalid exact grading context");
+  }
+  for (const part of summary.summary_partitions) {
+    publicAssetPath(pointer, part, "summary", true);
+    if (!Object.hasOwn(summary.contexts, part.context_id) || !/^(cumulative|[0-9]{4}-w(0[1-9]|1[0-8]))$/.test(part.period)
+        || !Number.isInteger(part.table_count) || part.table_count < 1 || !Number.isInteger(part.decoded_bytes) || part.decoded_bytes < 1
+        || part.decoded_bytes > 12 * 1024 * 1024 || pairs.has(part.context_id + ":" + part.period)) throw new Error("Invalid summary context/period index");
+    pairs.add(part.context_id + ":" + part.period); used.add(part.context_id);
+  }
+  if (used.size !== Object.keys(summary.contexts).length) throw new Error("Unreferenced grading context");
+  const periods = new Set(); let count = 0;
+  for (const part of outcomes.periods) {
+    publicAssetPath(pointer, part, "outcomes", true);
+    if (!Number.isInteger(part.season) || part.season < 2000 || part.season > 2200 || !Number.isInteger(part.week) || part.week < 1 || part.week > 18
+        || !Number.isInteger(part.count) || part.count < 1 || !Number.isInteger(part.decoded_bytes) || part.decoded_bytes < 1 || part.decoded_bytes > 12 * 1024 * 1024
+        || periods.has(part.season + ":" + part.week)) throw new Error("Invalid outcome period index");
+    periods.add(part.season + ":" + part.week); count += part.count;
+  }
+  if (count !== outcomes.outcome_count) throw new Error("Outcome index population mismatch");
+}
+async function loadOutcomePeriod(grading, season, week) {
+  const descriptor = grading.outcomeIndex.periods.find(part => part.season === season && part.week === week);
+  // An absent period is explicitly unknown, never borrowed from another week.
+  if (!descriptor) return new Map();
+  const part = await checkedGradingAsset(grading.pointer, descriptor, "outcomes", true);
+  if (part.schema_version !== "selection-final-outcome-period-v1" || part.season !== season || part.week !== week
+      || !Array.isArray(part.outcomes) || part.outcomes.length !== descriptor.count
+      || part.outcomes.some(row => row.season !== season || row.week !== week)) throw new Error("Wrong outcome partition period");
+  return validateFinalOutcomes(grading.pointer, part.outcomes);
+}
+async function loadSelectedGradingSummary(grading = S.grading) {
+  if (!grading?.partitioned) return;
+  const revision = ++grading.viewRevision;
+  const { descriptor } = selectedGradingTables();
+  const key = descriptor?.context_id + ":" + descriptor?.period;
+  grading.selectedKey = key; grading.partError = null;
+  if (!descriptor) { grading.partLoading = false; grading.summary.summary.tables = []; grading.partError = "No matching report context is available."; return; }
+  if (grading.parts.has(key)) {
+    grading.partLoading = false; grading.summary.summary.tables = grading.parts.get(key); return;
+  }
+  grading.partLoading = true;
+  try {
+    const part = await checkedGradingAsset(grading.pointer, descriptor, "summary", true);
+    if (part.schema_version !== "selection-public-summary-partition-v1" || part.context_id !== descriptor.context_id || part.period !== descriptor.period
+        || !Array.isArray(part.tables) || part.tables.length !== descriptor.table_count
+        || part.tables.some(table => table.period !== descriptor.period || PARTITION_CONTEXT_FIELDS.some(field => table[field] !== grading.index.contexts[descriptor.context_id][field]))) throw new Error("Wrong summary partition context/period");
+    validateGradingTables(grading.pointer, part.tables, grading.index.schema_version);
+    if (S.grading !== grading || revision !== grading.viewRevision) return;
+    grading.parts.set(key, part.tables);
+  } catch (err) {
+    if (S.grading === grading && revision === grading.viewRevision) grading.partError = String(err.message || "Unavailable selected summary");
+  } finally {
+    if (S.grading === grading && revision === grading.viewRevision) {
+      grading.partLoading = false;
+      grading.summary.summary.tables = grading.parts.get(key) || [];
+      if (S.tab === "record") renderRecord();
+    }
+  }
+}
+async function loadGrading() {
+  const revision = ++gradingLoadRevision;
+  S.paper.epoch++; S.paper.results = null; S.paper.historyEpoch++; S.paper.history=null;
+  S.grading = null; S.gradingError = null; S.finalOutcomes = new Map();
+  try {
+    const response = await fetch(GRADING_BASE + "latest.json", { cache: "no-store" });
+    if (!response.ok) throw new Error("Grading pointer unavailable");
+    const raw = await gradingStreamBytes(response.body, 1024 * 1024);
+    const pointer = JSON.parse(new TextDecoder().decode(raw));
+    const partitioned = ["selection-publication-pointer-v2", "selection-publication-pointer-v3", "selection-publication-pointer-v4"].includes(pointer.schema_version);
+    if (["selection-publication-pointer-v3", "selection-publication-pointer-v4"].includes(pointer.schema_version) && JSON.stringify(Object.keys(pointer).sort()) !== JSON.stringify(["schema_version", "report_id", "generated_at", "row_count", "summary", "rows", "outcomes"].sort())) throw new Error("Unknown encoded report pointer fields");
+    if ((!partitioned && pointer.schema_version !== "selection-publication-pointer-v1") || !HASH64.test(pointer.report_id)
+        || !Number.isFinite(Date.parse(pointer.generated_at)) || !Array.isArray(pointer.rows)
+        || pointer.rows.length > 4000) throw new Error("Unsupported grading publication");
+    const paths = new Set();
+    for (const chunk of pointer.rows) {
+      publicAssetPath(pointer, chunk, "rows");
+      if (!Number.isInteger(chunk.count) || chunk.count < 1 || chunk.count > 250 || paths.has(chunk.path)) throw new Error("Invalid grading row chunks");
+      paths.add(chunk.path);
+    }
+    if (pointer.rows.slice(0, -1).some(chunk => chunk.count !== 250)
+        || !Number.isInteger(pointer.row_count) || pointer.row_count !== pointer.rows.reduce((n, chunk) => n + chunk.count, 0)) throw new Error("Invalid grading row population");
+    const [summary, finals] = await Promise.all([checkedGradingAsset(pointer, pointer.summary, "summary"), checkedGradingAsset(pointer, pointer.outcomes, "outcomes")]);
+    const modernAccuracy = summary.schema_version === 'selection-public-report-v6' && summary.report_schema_version === 'selection-report-v4' && pointer.schema_version === 'selection-publication-pointer-v4';
+    if (Object.hasOwn(summary, 'forecast_accuracy') && !modernAccuracy) throw new Error('Aggregate accuracy outside its explicit report contract');
+    const grading = { pointer, summary, chunks: new Map(), partitioned, viewRevision: 0, parts: new Map() };
+    let finalOutcomes;
+    if (partitioned) {
+      await validateGradingIndexes(pointer, summary, finals);
+      grading.index = summary; grading.outcomeIndex = finals;
+      grading.summary = { ...summary, summary: { ...summary.summary, tables: [] } };
+      finalOutcomes = await loadOutcomePeriod(grading, S.data.season, S.data.week);
+    } else {
+      const supported = summary.schema_version === "selection-public-report-v1" && summary.report_schema_version === "selection-report-v2"
+        || summary.schema_version === "selection-public-report-v2" && summary.report_schema_version === "selection-report-v3";
+      if (!supported || finals.schema_version !== "selection-final-outcomes-v1") throw new Error("Unsupported grading data schema");
+      validateGradingTables(pointer, summary.summary?.tables, summary.schema_version);
+      finalOutcomes = validateFinalOutcomes(pointer, finals.outcomes);
+    }
+    if (revision !== gradingLoadRevision) return;
+    S.grading = grading; S.finalOutcomes = finalOutcomes; S.gradingGroup = null;
+    if (partitioned) await loadSelectedGradingSummary(grading);
+    if (S.paper.opened) gradeOpenedPaper();
+  } catch (err) {
+    if (revision !== gradingLoadRevision) return;
+    S.grading = null; S.finalOutcomes = new Map(); S.gradingError = String(err.message || "Unavailable saved grading");
+  }
+}
+
 // ---------------------------------------------------------------- live data
 
-// A player's stat line this week: ESPN's live box score first, then Sleeper's (from the last build).
-// null before kickoff. {none: true} when the game is final and the player never showed up in the box score.
-// Live stats: Sleeper's own feed first (what the Sleeper app shows), then ESPN's box score, then the last build.
+// Live progress is provisional. Absence from a feed is unknown participation,
+// never a confirmed DNP. Final props use the separately validated saved index.
 function current(p) {
   const g = S.games[p.game_id];
   if (!g || g.state === "pre") return null;
+  const finals = [...S.finalOutcomes.values()].filter((r) => finalIdentityMatches(r, p, r.category));
+  const dnp = finals.length && finals.every((r) => r.status === "dnp" && r.final_confirmed && !r.outcome_conflict);
+  if (g.state === "post" && dnp) return { stats: {}, none: true, status: "dnp" };
   const slp = S.slp[p.id];
-  const stats = (slp && slpPlayed(slp) ? slp : null) || S.live[p.id] || p.actual?.stats;
-  if (stats) return { stats, none: false };
-  if (g.state === "post" && (S.slpOk || S.boxLoaded.has(p.game_id))) return { stats: {}, none: true };
-  return { stats: {}, none: false };
+  const actual = p.actual?.stats;
+  const stats = (slp && slpPlayed(slp) ? slp : null) || S.live[p.id] || (actual && slpPlayed(actual) ? actual : null);
+  if (stats) return { stats, none: false, status: "observed" };
+  return { stats: {}, none: false, status: "unresolved" };
 }
 
 function slpPlayed(s) {
-  return (s.gp || 0) > 0 || (s.off_snp || 0) > 0 || s.pts_ppr != null;
+  return !!s && [s.gp, s.off_snp].every((v) => v == null || typeof v === "number" && Number.isFinite(v) && v >= 0)
+    && ((s.gp || 0) > 0 || (s.off_snp || 0) > 0);
 }
 
 function livePPR(p) {
   const c = current(p);
-  return c && !c.none ? fantasyPts(c.stats, p.pos) : null;
+  return c && !c.none && c.status !== "unresolved" ? fantasyPts(c.stats, p.pos) : null;
 }
 
 // Same as fantasy_points() in pull/scoring.py: Sleeper PPR or half PPR for skill players, ESPN standard for K and DEF
@@ -159,7 +843,10 @@ function fantasyPts(s, pos) {
     const fifty = k.fgm_50p || 0;
     if (k.fgm_60p == null) k.fgm_60p = k.fgm_50_59 != null ? fifty - k.fgm_50_59 : 0;
     if (k.fgm_50_59 == null) k.fgm_50_59 = Math.max(0, fifty - k.fgm_60p);
-    return Math.round((ppr(s) + table(S.data.scoring_k, k)) * 100) / 100;
+    // K scoring remains the retained separate product, outside offensive PPR.
+    let points = table(S.data.scoring);
+    if (s.idp_fum_rec) points -= S.data.scoring.fum_rec_td * (s.fum_rec_td || 0);
+    return Math.round((points + table(S.data.scoring_k, k)) * 100) / 100;
   }
   if (pos === "DEF") {
     return Math.round((table(S.data.scoring_def) + tier(s.pts_allow || 0, S.data.def_tiers.pts) + tier(s.yds_allow || 0, S.data.def_tiers.yds)) * 100) / 100;
@@ -174,8 +861,12 @@ function currentLeague() {
 // QB/RB/WR/TE points in the chosen scoring
 function skillPts(s, pos) {
   const lg = currentLeague();
-  if (lg) return scoreWith(lg.settings, s, pos);
+  if (lg) {
+    const required = Object.keys(lg.settings).filter(key => lg.settings[key] && key in S.data.scoring);
+    return offensiveComponentsKnown(s, required) ? scoreWith(lg.settings, s, pos) : null;
+  }
   let t = ppr(s);
+  if (t === null) return null;
   if (S.sc.mode === "espn") t -= s.pass_int || 0;          // ESPN takes 2 per interception, Sleeper 1
   if (S.sc.half) t -= 0.5 * (s.rec || 0);
   return Math.round(t * 100) / 100;
@@ -239,22 +930,36 @@ function pv(p, prop) {
   const byWeek = Object.fromEntries((p.log || []).map((x) => [x.w, x]));
   const values = prop.values.map((x) => { const g = byWeek[x.w]; const v = g ? logPts(p, g) : null; return { ...x, v: v ?? x.v }; });
   const proj = projPts(p);
-  const adj = proj != null ? Math.round(proj * (prop.mf ?? 1) * 100) / 100 : prop.adj;
-  const line = adj != null ? Math.floor(adj) + 0.5 : prop.line;
+  const incomplete = p.proj && Object.prototype.hasOwnProperty.call(p.proj, "_presence") && proj == null;
+  const adj = proj != null ? Math.round(proj * (prop.mf ?? 1) * 100) / 100 : incomplete ? null : prop.adj;
+  const line = adj != null ? Math.floor(adj) + 0.5 : incomplete ? null : prop.line;
   return { ...prop, values, proj, adj, line, over: values.filter((x) => x.v > line).length };
 }
 
 // Where a prop stands. dir is the side being tracked (a pick or lean), or null.
 function propStatus(p, key, line, dir) {
-  const c = current(p);
-  if (!c) return null;
   const g = S.games[p.game_id];
-  if (c.none) return { v: null, res: "dnp", final: true };
+  if (!g || g.state === "pre") return null;
+  if (!Number.isFinite(line)) return { v: null, res: "unresolved", final: false, reason: "Saved line missing or invalid" };
+  if (g.state === "post") {
+    const outcome = S.finalOutcomes.get(finalIdentity(p, key));
+    if (!outcome || !finalIdentityMatches(outcome, p, key) || outcome.outcome_conflict)
+      return { v: null, res: "unresolved", final: false, reason: outcome?.outcome_conflict ? "Conflicting evidence" : "Awaiting saved final evidence" };
+    if (outcome.status === "dnp" && outcome.final_confirmed) return { v: null, res: "dnp", final: true };
+    if (outcome.status === "pending") return { v: null, res: "pending", final: false, reason: "Awaiting a saved confirmed final outcome" };
+    if (outcome.status !== "resolved" || !outcome.final_confirmed || !Number.isFinite(outcome.actual))
+      return { v: null, res: "unresolved", final: false, reason: outcome.reason || "Awaiting confirmed participation" };
+    const v = outcome.actual;
+    const relative = v === line ? "push" : v > line ? "over" : "under";
+    return { v, res: relative === "push" ? "push" : dir ? (relative === dir ? "hit" : "miss") : relative, final: true };
+  }
+  const c = current(p);
+  if (!c || c.status === "unresolved") return { v: null, res: "unresolved", final: false, reason: "Awaiting live statistics" };
+  const required = key === "rush_rec_yd" ? ["rush_yd", "rec_yd"] : key === "anytime_td" ? ["rush_td", "rec_td"] : [key];
+  if (required.some((name) => Object.hasOwn(c.stats, name) && (typeof c.stats[name] !== "number" || !Number.isFinite(c.stats[name]))))
+    return { v: null, res: "unresolved", final: false, reason: "Live statistic explicitly missing or invalid" };
   const v = statValue(key, c.stats);
-  const over = v > line;
-  if (g.state === "post") return { v, res: dir ? ((dir === "over") === over ? "hit" : "miss") : over ? "over" : "under", final: true };
-  if (over) return { v, res: dir === "under" ? "miss" : "hit", final: false };   // stats only go up, so an over is locked in
-  return { v, res: "live", final: false };
+  return { v, res: v === line ? "equal" : v > line ? "above" : "below", final: false };
 }
 
 function twoPointScorers(text) {
@@ -589,12 +1294,36 @@ async function checkMeta() {
 // ---------------------------------------------------------------- load
 
 async function load() {
-  S.data = await getJSON(`data/week.json?t=${Date.now()}`);
+  const board = await boundJSON(`data/week.json?t=${Date.now()}`);
+  S.data = board.value;
   S.rosKey = null; S.gradeKey = null;
   S.future = null; S.futureLoading = null; S.ideas = null; S.teamWeeksMap = null; S.teamOppsMap = null;
   S.generatedAt = S.data.generated_at;
   try { S.track = await getJSON(`data/track_record.json?t=${Date.now()}`); } catch { S.track = null; }
   try { S.dk = await getJSON(`data/dk_backtest.json?t=${Date.now()}`); } catch { S.dk = null; }
+  try { S.forecastScorecard = await getJSON(`data/forecast-scorecard.json?t=${Date.now()}`); } catch { S.forecastScorecard = null; }
+  S.verificationScope = null; let verifiedGeneration = null;
+  try {
+    const [savedScope, savedGeneration, savedHealth] = await Promise.all(["verification-scope", "release-identity", "health"].map(name => boundJSON(`data/${name}.json?t=${Date.now()}`)));
+    const scope = savedScope.value, generation = savedGeneration.value, health = savedHealth.value;
+    if (["website-generation-v1", "website-packaging-generation-v1", "website-packaging-generation-v2"].includes(generation.schema_version) && health.generation_sha256 === generation.generation_sha256
+        && health.board_sha256 === generation.board_sha256 && scope.output_sha256 === generation.board_sha256
+        && health.source_sha === generation.source_sha && HASH64.test(generation.generation_sha256)
+        && (!["website-packaging-generation-v1", "website-packaging-generation-v2"].includes(generation.schema_version) || (
+          /^[0-9a-f]{40}$/.test(generation.capture_source_sha) && HASH64.test(generation.capture_generation_sha256)
+          && generation.capture_source_sha === health.capture_source_sha
+          && generation.capture_generation_sha256 === health.capture_generation_sha256
+          && Number.isFinite(Date.parse(generation.packaged_at)) && generation.packaged_at === health.packaged_at))
+        && generation.bindings?.["data/week.json"] === board.hash
+        && generation.bindings?.["data/verification-scope.json"] === savedScope.hash
+        && ["partial-week-public-scope-v1", "strict-full-board-public-scope-v1"].includes(scope.schema_version)
+        && (scope.schema_version !== "partial-week-public-scope-v1" || (scope.full_board_verified === false
+          && scope.complete_week_qualified === false && Array.isArray(scope.games)
+          && new Set(scope.games.map(game => game.game_id)).size === scope.games.length
+          && scope.games.every(game => typeof game.game_id === "string" && typeof game.home === "string" && typeof game.away === "string"
+            && Number.isFinite(Date.parse(game.kickoff)) && ["new_pregame_original_inputs_verified", "frozen_original_inputs_verified",
+              "retained_legacy_original_proof_missing"].includes(game.classification))))) verifiedGeneration = { scope, generation };
+  } catch { /* Legacy, unavailable or mixed generation: no verification claim. */ }
   S.byId = {};
   S.byKey = {};
   S.byEspn = {};
@@ -604,6 +1333,10 @@ async function load() {
     if (p.espn_id) S.byEspn[String(p.espn_id)] = p.id;
   }
   for (const g of S.data.games) S.games[g.id] = { ...g, ...(S.games[g.id] || {}) };
+  await loadGrading();
+  if (verifiedGeneration && S.grading?.pointer.report_id === verifiedGeneration.generation.selection_report_id
+      && S.grading?.summary.source_sha === (["website-packaging-generation-v1", "website-packaging-generation-v2"].includes(verifiedGeneration.generation.schema_version)
+        ? verifiedGeneration.generation.capture_source_sha : verifiedGeneration.generation.source_sha)) S.verificationScope = verifiedGeneration.scope;
   const built = new Date(S.data.generated_at);
   updateSub();
 }
@@ -837,10 +1570,14 @@ function favBtn(p) {
 
 function resBadge(st) {
   if (!st) return "";
-  if (st.res === "hit") return `<span class="res hit">${st.final ? "HIT" : "CLEARED"}</span>`;
-  if (st.res === "miss") return `<span class="res miss">${st.final ? "MISS" : "LOST"}</span>`;
+  if (st.res === "hit" && st.final) return `<span class="res hit">WIN</span>`;
+  if (st.res === "miss" && st.final) return `<span class="res miss">LOSS</span>`;
   if (st.res === "dnp") return `<span class="res dnp">DNP</span>`;
   if (st.res === "push") return `<span class="res dnp">PUSH</span>`;
+  if (st.res === "unresolved") return `<span class="res dnp" title="${esc(st.reason || "Awaiting evidence")}">UNRESOLVED</span>`;
+  if (st.res === "pending") return `<span class="res live" title="${esc(st.reason || "Awaiting final outcome")}">PENDING</span>`;
+  if (["above", "below", "equal"].includes(st.res)) return `<span class="res live">CURRENTLY ${st.res.toUpperCase()}</span>`;
+  if (["over", "under"].includes(st.res)) return `<span class="res">FINAL ${st.res.toUpperCase()}</span>`;
   if (st.res === "live") return `<span class="res live">LIVE</span>`;
   return "";
 }
@@ -851,7 +1588,7 @@ function progress(st, line, dir, key) {
   // an under that's most of the way to its line is in danger
   const cls = st.res === "hit" ? "hit" : st.res === "miss" ? "miss" : dir === "under" && pct >= 75 ? "warn" : "";
   let note = "";
-  if (st.res === "live" && key) {
+  if (!st.final && st.v != null && key) {
     const gap = line - st.v;
     note = dir === "under" ? `${fmtStat(key, gap)} to spare` : `needs ${fmtStat(key, Math.max(0, Math.floor(gap) + 1))} more`;
   }
@@ -886,7 +1623,7 @@ function propChip(p, raw) {
   const line = S.lines[`${p.id}|${prop.key}`] ?? prop.line;
   const st = propStatus(p, prop.key, line, prop.lean);
   const arrow = prop.key === "anytime_td"
-    ? `<span class="muted"> ${Math.round(100 * (prop.td_chance || 0))}%</span>`
+    ? `<span class="muted"> ${tdChanceText(prop)}</span>`
     : prop.lean ? `<span class="arrow">${prop.lean === "over" ? "▲" : "▼"}</span>` : "";
   const cls = [prop.lean ? `lean-${prop.lean}` : "", st && prop.lean && (st.res === "hit" || st.res === "miss") ? st.res : ""].join(" ");
   const lineText = prop.key === "anytime_td" ? "" : `<b>${line}</b><span class="src ${prop.line_from || "ours"}">${LINE_TAG[prop.line_from] || "est"}</span>`;
@@ -915,7 +1652,7 @@ function catCard(p, raw) {
     lean = d > cat.lean ? "over" : d < -cat.lean ? "under" : null;
   }
   const leanPill = prop.key === "anytime_td"
-    ? `<span class="lean ${prop.lean ? "over" : "none"}">${Math.round(100 * (prop.td_chance || 0))}% TD chance</span>`
+    ? `<span class="lean ${prop.lean ? "over" : "none"}">${tdChanceText(prop)} TD chance</span>`
     : from === "ours"
       ? `<span class="lean none" title="Leans are only called against real sportsbook lines">No book line</span>`
       : `<span class="lean ${lean || "none"}">${lean ? `Lean ${lean}` : "No lean"}</span>`;
@@ -942,7 +1679,7 @@ function catCard(p, raw) {
     : (vals.length ? `Over in <b>${over}</b> of ${gamesText}${edited ? ` at your line (the ${LINE_FROM[from]} line is ${prop.line})` : ""}.` : "No games yet this season.")
         + mfText
         + (from === "ours" && prop.key !== "fpts" ? " No sportsbook line yet, so this line is our projection." : "")
-        + (prop.sleeper?.over ? ` Sleeper Picks pays ${prop.sleeper.over}x over, ${prop.sleeper.under}x under.` : "");
+        + (prop.sleeper?.over ? ` Sleeper Picks shows leg multipliers: ${prop.sleeper.over}x over, ${prop.sleeper.under}x under. Full payouts depend on the contest entry.` : "");
 
   return `<div class="cat" data-cat="${k}">
     <div class="cat-h"><span>${prop.key === "fpts" ? `Fantasy Points (${scoringName()})` : cat.label}</span>${leanPill}</div>
@@ -956,7 +1693,7 @@ function catCard(p, raw) {
       ${st && !st.final && st.v != null && prop.adj != null && prop.key !== "anytime_td" ? `<div title="What he has so far plus our pregame projection for the time left">On pace<span class="n" style="color:var(--amber)">${fmt(st.v + prop.adj * remaining(S.games[p.game_id]), prop.key === "fpts" ? 2 : 1)}</span></div>` : ""}
       ${prop.proj != null ? `<div>Sleeper proj<span class="n">${fmtStat(prop.key, prop.proj)}</span></div>` : ""}
       ${avg != null ? `<div>Season avg<span class="n">${fmt(avg)}</span></div>` : ""}
-      ${st ? `<div>${st.final ? "Final" : "Now"}<span class="n" style="color:var(--cyan)">${st.v == null ? "DNP" : fmtStat(prop.key, st.v)}</span></div>` : ""}
+      ${st ? `<div>${st.final ? "Final statistic" : S.games[p.game_id]?.state === "post" ? "Final evidence" : "Now"}<span class="n" style="color:var(--cyan)">${st.v == null ? st.res === "dnp" ? "DNP" : "Unresolved" : fmtStat(prop.key, st.v)}</span>${resBadge(st)}</div>` : ""}
     </div>
     ${vals.length ? `<div class="bars">${bars}<div class="lineat" style="bottom:${(100 * line) / top}%"></div></div><div class="bars-x">${xs}</div>` : ""}
     <div class="foot-n">${note}</div>
@@ -1876,7 +2613,7 @@ function leagueFreeAgents() {
     <div class="fa-list">${rows.map(({ p, beat, add, pg }) => {
       const fut = futureRows(p);
       const g = S.games[p.game_id];
-      const week = g && g.state === "pre" ? `wk ${S.data.week} proj ${fmtPts(projPts(p))}` : g ? `wk ${S.data.week} ${current(p) && !current(p).none ? fmtPts(livePPR(p)) : g.state === "post" ? "did not play" : "0.00"}${g.state === "in" ? " so far" : ""}` : `wk ${S.data.week} bye`;
+      const week = g && g.state === "pre" ? `wk ${S.data.week} proj ${fmtPts(projPts(p))}` : g ? `wk ${S.data.week} ${current(p)?.none ? "confirmed DNP" : livePPR(p) != null ? fmtPts(livePPR(p)) : "unresolved"}${g.state === "in" ? " so far" : ""}` : `wk ${S.data.week} bye`;
       return `<div class="fa-row ${beat ? "up" : ""}" data-open="${p.id}">
         ${avatar(p)}
         <div class="fa-main"><div><b>${esc(p.name)}</b>${injBadge(p)} <span class="muted small">${p.pos} ${p.freeAgent ? "free agent" : p.team}${byesLeft(p).length ? ` · bye ${byesLeft(p).join(", ")}` : ""}</span></div>
@@ -2589,26 +3326,159 @@ function pctText(t) {
 
 function dkSection(c) {
   const b = S.dk;
+  const benchmarkRate = value => value == null ? "Unavailable" : fmt(value) + "%";
   const dl = c.dk_leans || {};
   const leanStat = (side) => `<div class="card stat"><div class="k">Leans ${side} the real line</div><div class="v">${pctText(dl[side])}</div><div class="d">${dl[side] ? `${dl[side].hit}-${dl[side].miss}` : "0-0"}, DraftKings or Sleeper Picks lines</div></div>`;
   return `<h2>Against real lines</h2>
     <div class="stats">${leanStat("over")}${leanStat("under")}</div>
-    ${b ? `<h2>Our numbers vs DraftKings <small>${b.season} weeks ${b.weeks[0]}-${b.weeks[b.weeks.length - 1]}, ${b.props.toLocaleString()} props</small></h2>
+    ${b ? `<h2>Historical season-average benchmark vs DraftKings <small>${b.season} weeks ${b.weeks[0]}-${b.weeks[b.weeks.length - 1]}, ${b.props.toLocaleString()} props</small></h2>
     <div class="stats">
-      ${b.our_side != null ? `<div class="card stat"><div class="k">When we disagreed with DraftKings</div><div class="v">${fmt(b.our_side)}%</div><div class="d">of the time the result landed on our side (${b.our_side_n.toLocaleString()} props; 50% is a coin flip)</div></div>` : ""}
-      <div class="card stat"><div class="k">DraftKings closer to the result</div><div class="v">${fmt(b.dk_closer)}%</div><div class="d">vs the matchup-adjusted season average</div></div>
-      <div class="card stat"><div class="k">Unders at DraftKings' line</div><div class="v">${fmt(b.dk_under)}%</div><div class="d">a fair line would be 50%</div></div>
-      <div class="card stat"><div class="k">Ours well below DK: under hit</div><div class="v">${fmt(b.below_under)}%</div><div class="d">${b.below_n} props</div></div>
-      <div class="card stat"><div class="k">Ours well above DK: over hit</div><div class="v">${fmt(b.above_over)}%</div><div class="d">${b.above_n} props</div></div>
+      ${b.our_side != null ? `<div class="card stat"><div class="k">When the historical benchmark differed from DraftKings</div><div class="v">${fmt(b.our_side)}%</div><div class="d">of the time the result landed on our side (${b.our_side_n.toLocaleString()} props; reconstructed benchmark, not saved model selections)</div></div>` : ""}
+      <div class="card stat"><div class="k">DraftKings closer to the result</div><div class="v">${benchmarkRate(b.dk_closer)}</div><div class="d">vs the matchup-adjusted season average</div></div>
+      <div class="card stat"><div class="k">Unders at DraftKings' line</div><div class="v">${benchmarkRate(b.dk_under)}</div><div class="d">actual finished below DK; not a model under recommendation</div></div>
+      <div class="card stat"><div class="k">Benchmark sufficiently below DK: under hit</div><div class="v">${benchmarkRate(b.below_under)}</div><div class="d">${b.below_n} props</div></div>
+      <div class="card stat"><div class="k">Benchmark sufficiently above DK: over hit</div><div class="v">${benchmarkRate(b.above_over)}</div><div class="d">${b.above_n} props</div></div>
     </div>
     <div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th class="l">Category</th><th>Props</th><th>Ours minus DK</th><th>Unders at DK</th><th>DK closer</th></tr></thead>
-      <tbody>${b.categories.filter((x) => x.dk_under != null).map((x) => `<tr><td class="l">${S.data.categories[x.key].label}</td><td>${x.n}</td><td>${x.gap > 0 ? "+" : ""}${fmt(x.gap)}</td><td>${fmt(x.dk_under)}%</td><td>${x.dk_closer != null ? fmt(x.dk_closer) + "%" : "-"}</td></tr>`).join("")}</tbody>
+      <thead><tr><th class="l">Category</th><th>Props</th><th>Benchmark minus DK</th><th>Actual below DK</th><th>DK closer</th><th>Benchmark above: Over / N</th><th>Benchmark below: Under / N</th></tr></thead>
+      <tbody>${b.categories.filter((x) => x.dk_under != null).map((x) => `<tr><td class="l">${S.data.categories[x.key].label}</td><td>${x.n}</td><td>${x.gap > 0 ? "+" : ""}${fmt(x.gap)}</td><td>${fmt(x.dk_under)}%</td><td>${x.dk_closer != null ? fmt(x.dk_closer) + "%" : "-"}</td><td>${x.above_over == null ? "Unavailable" : fmt(x.above_over) + "%"} · N ${x.above_n ?? "Unavailable"}</td><td>${x.below_under == null ? "Unavailable" : fmt(x.below_under) + "%"} · N ${x.below_n ?? "Unavailable"}</td></tr>`).join("")}</tbody>
     </table></div>
-    <p class="note">DraftKings' closing lines, via ESPN, for every finished game this season, compared with each player's average so far this season adjusted for the matchup, using only earlier games (tools/compare_lines.py). Players need 2+ earlier games, so week 1 and 2 have few props. Sleeper's projections can't be tested on past weeks (Sleeper revises them after the games), so this tests the matchup adjustment on its own.</p>` : ""}`;
+    <p class="note">DraftKings' closing lines, via ESPN, for every finished game this season, compared with each player's average so far this season adjusted for the matchup, using only earlier games (tools/compare_lines.py). Players need 2+ earlier games, so week 1 and 2 have few props. Sleeper's projections can't be tested on past weeks (Sleeper revises them after the games), this is a separate reconstructed season-average benchmark with its own large-gap definition, not the saved Sleeper-adjusted model-selection record. Saved rates are rounded and exact win/loss counts are unavailable; no financial return is established.</p>` : ""}`;
 }
 
+const GRADING_LABELS = {
+  ranked_biggest_lean_v1: "Recorded Biggest-lean strategy v1", ranked_projected_points_v1: "Recorded Projected-points strategy v1",
+  completed_prospective_ranked_selection: "Completed prospective ranked selections",
+  category_side_selection_kickoff_lead: "Exact category × side × selection day × kickoff day × lead time",
+  all_qualifying_leans: "All qualifying leans", top_picks: "Actual recorded Top Picks",
+  top_at_all_lean_decision: "Top at the all-lean decision", non_top_at_all_lean_decision: "Non-Top leans (disjoint)",
+  local_pregame_membership_observation: "Original local pregame observations",
+  inherited_or_unclocked_archive: "Inherited / unclocked history", history: "First recorded selection (descriptive)",
+  overall: "Overall", category_side: "Category × side", selection_weekday: "Chicago selection weekday",
+  kickoff_weekday: "Chicago kickoff weekday", lead_time_bucket: "Actual pregame lead time",
+  venue: "Our selections by line source", all: "All line sources", legacy_aggregate_not_separated: "Legacy aggregate — policy not separated",
+  saved_cache_descriptive_regrade: "Saved-cache descriptive regrade", recorded_outcome_receipt: "Recorded outcome receipt",
+};
+const gradingLabel = (value) => value == null ? "Unknown / unavailable" : GRADING_LABELS[value] || SHORT[value] || String(value).replaceAll("_", " ");
+const gradingContextFields = ["provenance_class", "model_version", "engine_sha256", "policy_version", "policy_sha256", "view", "checkpoint", "period", "line_source_scope"];
+const gradingContextValue = (table, field) => table[field] ?? (field === "line_source_scope" ? "all" : "legacy_aggregate_not_separated");
+function selectedGradingTables() {
+  const grading = S.grading;
+  let tables = grading.partitioned ? grading.index.summary_partitions.map(part => ({ ...grading.index.contexts[part.context_id], period: part.period, descriptor: part })) : grading.summary.summary.tables;
+  const fields = [...gradingContextFields, "dimension"];
+  const defaults = { provenance_class: "local_pregame_membership_observation", view: "all_qualifying_leans", checkpoint: "history", period: "cumulative", line_source_scope: "all", dimension: "overall" };
+  const labels = { provenance_class: "Forecast provenance", model_version: "Model", engine_sha256: "Engine version", policy_version: "Timing policy version", policy_sha256: "Timing policy identity", view: "Cohort", checkpoint: "Decision checkpoint", period: "Reporting period", line_source_scope: "Line source", dimension: "Supporting breakdown" };
+  const controls = []; let baseTables = [];
+  let descriptor = null;
+  for (const field of fields) {
+    if (field === "dimension" && grading.partitioned) {
+      descriptor = tables.length === 1 ? tables[0].descriptor : null;
+      const key = descriptor?.context_id + ":" + descriptor?.period;
+      tables = grading.parts.get(key) || [];
+    }
+    const values = [...new Set(tables.map(table => gradingContextValue(table, field)))].sort((a,b) => String(a).localeCompare(String(b)));
+    if (!values.includes(S.gradingFilters[field])) S.gradingFilters[field] = values.includes(defaults[field]) ? defaults[field] : values[0];
+    controls.push(`<label>${labels[field]}<select data-grading-filter="${field}" aria-label="${labels[field]}">${values.map(value => `<option value="${esc(value)}" ${value === S.gradingFilters[field] ? "selected" : ""}>${esc(gradingLabel(value))}</option>`).join("")}</select></label>`);
+    if (field === "dimension") baseTables = tables;
+    tables = tables.filter(table => gradingContextValue(table, field) === S.gradingFilters[field]);
+  }
+  return { tables, baseTables, descriptor, controls: controls.join("") };
+}
+function selectionPerformanceHtml(baseTables) {
+  const one = (dimension,value) => { const matches=baseTables.filter(t=>t.dimension===dimension && t.value===value);return matches.length===1?matches[0]:null; };
+  const counts = t => t ? `${t.pending} pending · ${t.push} push · ${t.dnp} confirmed DNP · ${t.unresolved} unresolved · ${t.excluded} excluded · ${t.no_action} NO_ACTION · ${t.not_due} not due` : "No matching aggregate available";
+  const cell = (t,kind) => !t ? `<span data-performance-unavailable>Unavailable</span>` : `<button class="tbtn" data-grading-group="${t.summary_id}" data-performance-cell="${kind}" data-summary-id="${t.summary_id}"><b>${t.win}–${t.loss}</b> · ${t.decided ? fmt(100*t.win/t.decided)+"%" : "Unavailable"}<br><small>${t.decided} decided · W / (W + L)</small></button><details><summary>Other outcomes and coverage</summary><p>${esc(counts(t))}<br>${t.rows} coverage rows · ${t.unique_players} players · ${t.unique_games} games · ${t.unique_weeks} weeks</p></details>`;
+  const order=Object.entries(S.data.categories).filter(([key,info])=>info.lean && !["fpts","anytime_td"].includes(key)).map(([key])=>key);
+  const rows=order.map(key=>({key,label:S.data.categories[key].label,over:one("category_side",key+":over"),under:one("category_side",key+":under"),combined:one("category",key)}));
+  const total=one("overall","all");
+  const context=gradingContextFields.map(field=>gradingLabel(S.gradingFilters[field])).join(" · ");
+  const unclassified=r=>Math.max(0,(r.combined?.rows||0)-(r.over?.rows||0)-(r.under?.rows||0));
+  return `<section data-performance-primary><h3>Recorded selection performance</h3><p class="note" data-performance-context>${esc(context)}</p>
+    <div class="card" data-performance-headline>${cell(total,"overall")}</div>
+    <p class="note">Choose any W–L result to inspect its exact supporting rows. No decided sample means unavailable. Combined includes no-side coverage; it is not an independent sample of Over and Under. ${S.grading.summary.schema_version === "selection-public-report-v6" ? "Exact joint category/side/Chicago selection day/kickoff day/lead-time groups retain the same source and strategy context. Observed leaders are descriptive, not later confirmed findings. Ranked strategies contain only genuinely recorded prospective membership; display sorts and older observations are not strategy history." : ["selection-public-report-v2", "selection-public-report-v3", "selection-public-report-v4", "selection-public-report-v5"].includes(S.grading.summary.schema_version) ? "Our selections by line source use matched joint decision groups. Source-specific day breakdowns are unavailable; choose All line sources for those views." : "Legacy aggregates do not separate timing policies or offer source jointly; only All line sources is available."}</p>
+    <table class="tbl performance-desktop"><thead><tr><th class="l">Category</th><th>Over W–L / hit rate / decided N</th><th>Under W–L / hit rate / decided N</th><th>Combined</th></tr></thead><tbody>${rows.map(r=>`<tr data-category-performance="${r.key}"><th class="l">${esc(r.label)}</th><td>${cell(r.over,"over")}</td><td>${cell(r.under,"under")}</td><td>${cell(r.combined,"combined")}<small>${unclassified(r)} no-side coverage rows</small></td></tr>`).join("")}</tbody></table>
+    <div class="performance-phone">${rows.map(r=>`<article class="card" data-category-performance="${r.key}"><h4>${esc(r.label)}</h4><div class="performance-side"><b>Over</b><div>${cell(r.over,"over")}</div></div><div class="performance-side"><b>Under</b><div>${cell(r.under,"under")}</div></div><div class="performance-side"><b>Combined</b><div>${cell(r.combined,"combined")}<small>${unclassified(r)} no-side coverage rows</small></div></div></article>`).join("")}</div></section>`;
+}
+function gradingRowsHtml(group) {
+  if (group.error) return `<p role="alert">Rows unavailable: ${esc(group.error)}. No partial rows qualify as a reconciled report.</p>`;
+  const table = S.grading.summary.summary.tables.find((item) => item.summary_id === group.id);
+  const rows = group.rows.slice(0, group.shown);
+  const label = (row, key) => esc(row[key] ?? "Unknown");
+  return `<h3 id="grading-detail">Auditable selections and coverage</h3><p data-grading-row-count>${rows.length} of ${table.rows} rows loaded${group.complete ? " · complete group reconciled" : " · bounded loading"}.</p>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th class="l">Selection</th><th>Saved line / side</th><th>Outcome</th><th class="l">Timing and evidence</th></tr></thead><tbody>${rows.map((row) => `<tr data-grading-row="${row.decision_sha256}"><td class="l"><b>${label(row, "name")}</b><br>${label(row, "team")} · ${label(row, "game_id")}<br>${esc(SHORT[row.category] || row.category)} · ${label(row, "model_version")}</td><td>${label(row, "side")} ${label(row, "line")}<br>${esc(LINE_FROM[row.line_from] || row.line_from || "No recorded real offer")}<br>${row.top_at_decision === true ? "Recorded Top" : row.top_at_decision === false ? "Not recorded Top" : "Top unknown"}</td><td>${esc(gradingLabel(row.result))}<br>${row.actual == null ? "No resolved statistic" : fmtStat(row.category, row.actual)}<br>${esc(gradingLabel(row.outcome_provenance))}${row.outcome_source_mix === "mixed_agreeing_sources" ? " · agreeing mixed sources" : ""}${row.outcome_conflict ? " · conflict" : ""}</td><td class="l"><details><summary>${label(row, "selection_weekday")} selection · ${label(row, "kickoff_weekday")} kickoff</summary><p>Recorded: ${label(row, "recorded_selection_at")}<br>Generated: ${label(row, "forecast_generated_at")}<br>Collected: ${label(row, "collected_at")}<br>Saved kickoff: ${label(row, "kickoff")}<br>Checkpoint: ${label(row, "checkpoint")}<br>Observation age: ${label(row, "observation_age_seconds")} seconds<br>Lead time: ${label(row, "seconds_to_kickoff")} seconds<br>Action: ${label(row, "action")} · ${label(row, "reason")}<br>Outcome: ${label(row, "outcome_reason")}<br>Coverage: ${label(row, "source_coverage")}<br>Policy: ${label(row, "policy_version")}<br>Selected source: ${label(row, "outcome_selection")}<br>Source mix: ${label(row, "outcome_source_mix")}<br>Revision: ${row.outcome_revision === true ? "Yes" : "No recorded revision"}</p><code style="overflow-wrap:anywhere">Decision ${row.decision_sha256}<br>Forecast ${label(row, "observation_receipt_sha256")}<br>Outcome ${label(row, "outcome_snapshot_sha256")}</code></details></td></tr>`).join("")}</tbody></table></div>
+      ${!group.complete ? `<button class="tbtn" data-grading-more ${group.loading ? "disabled" : ""}>${group.loading ? "Loading…" : "Load more (up to 100 rows)"}</button>` : `<button class="tbtn" data-grading-download>Download this complete group (JSON)</button>`}`;
+}
+function gradingReportHtml() {
+  if (!S.grading) return `<section id="selection-grading"><h2>Selection and timing grading</h2><div class="card note" role="status">The integrated report is unavailable. ${esc(S.gradingError || "No approved publication has been loaded.")} Existing historical reporting below is separate; missing report assets do not establish zero outcomes or verified final participation.</div></section>`;
+  const { pointer, summary } = S.grading;
+  const { tables, baseTables, controls } = selectedGradingTables();
+  const age = Date.now() - Date.parse(pointer.generated_at);
+  const freshness = age < 0 ? "Generation clock is in the future; freshness unknown." : age > 2 * 3600000 ? "Stale report: no new generation clock is implied by loading these saved bytes." : "Saved report generation is recent; provider and quote freshness remain unverified.";
+  const statusCounts = (table) => `${table.win} W · ${table.loss} L · ${table.push} push · ${table.dnp} confirmed DNP · ${table.pending} pending · ${table.unresolved} unresolved · ${table.excluded} excluded · ${table.no_action} NO_ACTION · ${table.not_due} not due`;
+  const pointCategories = summary.primary_raw_vs_adjusted?.categories || {};
+  const scope = S.verificationScope;
+  const verification = scope?.schema_version === "partial-week-public-scope-v1"
+    ? `Partial-week original-model-input reproduction only. ${scope.games.filter(game => game.classification === "new_pregame_original_inputs_verified").length} newly verified pregame games; ${scope.games.filter(game => game.classification === "frozen_original_inputs_verified").length} frozen games with retained originals; ${scope.games.filter(game => game.classification === "retained_legacy_original_proof_missing").length} retained legacy games with missing proof. Full-board and complete-week qualification: No. This does not establish provider projection authentication, quote freshness, executable offers or prediction accuracy.`
+    : scope ? "Strict original-model-input reproduction. Complete-week research qualification is separate; predictive accuracy and quote freshness are not established by this check."
+      : "Current prediction verification scope is unavailable or legacy. Saved individual grading remains descriptive; missing original proof has not passed.";
+  return `<section id="selection-grading"><h2>Selection and timing grading</h2><div class="card note" data-verification-scope>${esc(verification)}</div>
+    <div class="card note"><b>Descriptive statistical results, not venue settlement or ROI.</b><p data-grading-freshness>${esc(freshness)} Generated ${esc(pointer.generated_at)}.</p><p>Top Picks overlap all leans. The disjoint non-Top view partitions the all-lean decision at its own original clock. Repeated checkpoint policies are related observations. Never add these tables as independent outcomes.</p><p>Whole-week intervals and confirmed subgroup advantages are unavailable unless their registered evidence requirements are met. These views do not identify the best weekday to consult the website.</p><p>The original full-board Week 6 proof is incomplete. Game-level evidence must be read separately; this report does not authenticate missing historical inputs. Full offer coverage, quote freshness and complete venue contracts remain unestablished where the saved records do not prove them.</p></div>
+    <div class="filters grading-filters">${controls}</div>
+    ${S.grading.partitioned && (S.grading.partLoading || S.grading.partError) ? `<div class="card note" data-grading-part-status role="status">${esc(S.grading.partError || "Loading the selected context and period…")}. Totals are unavailable until its complete validated summary is loaded.</div>` : selectionPerformanceHtml(baseTables)}
+    <h3>Supporting breakdown</h3>
+    <div class="tbl-wrap"><table class="tbl" data-grading-summaries><thead><tr><th class="l">Group</th><th>Hit rate</th><th>Sample</th><th class="l">Results and coverage</th><th>Rows</th></tr></thead><tbody>${tables.map((table) => `<tr data-grading-summary="${table.summary_id}"><td class="l">${esc(gradingLabel(table.value))}</td><td>${table.hit_rate == null ? "Unavailable" : fmt(100 * table.hit_rate) + "%"}<br><small>W / (W + L)</small></td><td>${table.decided} decided<br>${table.decided_unique_players} players · ${table.decided_unique_games} games · ${table.decided_unique_weeks} weeks</td><td class="l">${esc(statusCounts(table))}<br>${table.selected} selected / ${table.rows} coverage rows<br>${esc(Object.entries(table.coverage_reason_counts || {}).map(([reason, count]) => `${reason}: ${count}`).join(" · "))}<br>${table.unique_players} players · ${table.unique_games} games · ${table.unique_weeks} archived/observed weeks</td><td><button class="tbtn" data-grading-group="${table.summary_id}">Inspect ${table.rows} rows</button></td></tr>`).join("")}</tbody></table></div>
+    <p class="note">NO_ACTION reasons remain in the rows: observed abstention or non-Top membership differs from missing/stale observations, absent source rows and an unknown universe. Reference-only records are not executable offers. Inherited clocks stay unknown; saved-cache regrades remain separately labelled outcomes.</p>
+    ${S.gradingGroup ? `<div class="card" data-grading-details>${gradingRowsHtml(S.gradingGroup)}</div>` : ""}
+    ${forecastAccuracyHtml(summary.schema_version === "selection-public-report-v6" && summary.report_schema_version === "selection-report-v4" ? summary.forecast_accuracy : null)}<details class="card"><summary>Raw Sleeper versus unchanged adjusted point forecasts</summary><p>Separate registered three-target comparison, independent of the selection filters above. Same original observation and valid matched outcomes. Category-specific units; no mixed-unit accuracy claim. Descriptive comparisons do not prove improvement. ${summary.forecast_accuracy ? "The all-category descriptive extension is separate from the registered experiment." : "All-category numerical/PPR/TD evaluation remains local and opt-in for this legacy report."}</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Category</th><th>Matched n</th><th>Raw MAE / RMSE / bias</th><th>Adjusted MAE / RMSE / bias</th></tr></thead><tbody>${Object.entries(pointCategories).map(([key, item]) => { const raw = item.raw_sleeper || {}, adjusted = item.unchanged_clone || {}; return `<tr><td>${esc(SHORT[key] || key)}</td><td>${raw.n || 0}</td><td>${fmt(raw.mae, 3)} / ${fmt(raw.rmse, 3)} / ${fmt(raw.mean_error, 3)}</td><td>${fmt(adjusted.mae, 3)} / ${fmt(adjusted.rmse, 3)} / ${fmt(adjusted.mean_error, 3)}</td></tr>`; }).join("") || `<tr><td colspan="4">No matched point outcomes available.</td></tr>`}</tbody></table></div></details>
+    <details class="card"><summary>Coverage, limitations and report identity</summary><p>Report ${esc(pointer.report_id)} · ${esc(summary.report_schema_version)}. Source ${esc(summary.source_sha || "Unbound")}; generated input binding ${esc(summary.input_binding || "Unknown")}.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({ coverage: summary.coverage, limitations: summary.limitations, uncertainty: summary.uncertainty }, null, 2))}</pre></details></section>`;
+}
+async function loadGradingRows(id, more = false) {
+  if (!S.grading) return;
+  const grading = S.grading;
+  const table = grading.summary.summary.tables.find((item) => item.summary_id === id);
+  if (!table || S.gradingGroup?.loading) return;
+  if (!more || S.gradingGroup?.id !== id) S.gradingGroup = { id, rows: [], idsByPosition: new Map(), shown: 100, loadedChunks: 0, complete: false };
+  else S.gradingGroup.shown += 100;
+  const group = S.gradingGroup, wanted = new Set(table.row_positions);
+  let visitedChunks = 0; // Sparse groups must not download the full population in one click.
+  group.loading = true; renderRecord();
+  try {
+    while (group.rows.length < Math.min(group.shown, table.rows) && group.loadedChunks < table.row_chunks.length && visitedChunks++ < 4) {
+      const index = table.row_chunks[group.loadedChunks++], descriptor = grading.pointer.rows[index];
+      let chunk = grading.chunks.get(index);
+      if (!chunk) {
+        chunk = await checkedGradingAsset(grading.pointer, descriptor, "rows");
+        if (chunk.schema_version !== "selection-public-rows-v1" || !Array.isArray(chunk.rows) || chunk.rows.length !== descriptor.count
+            || new Set(chunk.rows.map((row) => row.decision_sha256)).size !== chunk.rows.length
+            || chunk.rows.some((row) => !HASH64.test(row.decision_sha256) || !GRADING_RESULTS.includes(row.result))) throw new Error("Invalid grading row chunk");
+        chunk.rows.forEach(row => validateGradingRowContract(row, grading.index?.schema_version || grading.summary.schema_version));
+        grading.chunks.set(index, chunk);
+      }
+      if (S.grading !== grading || S.gradingGroup !== group) return;
+      chunk.rows.forEach((row, offset) => {
+        const position = index * 250 + offset;
+        if (wanted.has(position)) { group.rows.push(row); group.idsByPosition.set(position, row.decision_sha256); }
+      });
+    }
+    group.rows.sort((a, b) => a.decision_sha256.localeCompare(b.decision_sha256));
+    if (new Set(group.rows.map((row) => row.decision_sha256)).size !== group.rows.length) throw new Error("Duplicate grading row identity");
+    if (group.loadedChunks === table.row_chunks.length) {
+      if (group.rows.length !== table.rows || group.idsByPosition.size !== table.rows
+          || GRADING_RESULTS.some((result) => group.rows.filter((row) => row.result === result).length !== table[result])) throw new Error("Summary-to-row reconciliation failed");
+      const originalIds = table.row_positions.map((position) => group.idsByPosition.get(position));
+      const membershipHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(originalIds))))].map((v) => v.toString(16).padStart(2, "0")).join("");
+      if (membershipHash !== table.row_ids_sha256) throw new Error("Summary membership checksum mismatch");
+      group.complete = group.rows.length <= group.shown;
+    }
+  } catch (err) { group.error = err.message; group.rows = []; }
+  finally { group.loading = false; if (S.grading === grading && S.gradingGroup === group && S.tab === "record") renderRecord(); }
+}
 function renderRecord() {
+  renderLegacyRecord();
+  const legacy = $("#main").innerHTML;
+  $("#main").innerHTML = gradingReportHtml() + `<details class="card"><summary>Separate legacy archive and historical benchmark</summary>${legacy}</details>`;
+}
+function renderLegacyRecord() {
   const t = S.track;
   if (!t || !t.weeks.length) {
     $("#main").innerHTML = `<h2>Track record</h2><div class="card note">Nothing graded yet.</div>`;
@@ -2632,7 +3502,7 @@ function renderRecord() {
   }).join("");
   const nothing = graded(c.top_over) + graded(c.top_under) + graded(c.leans) === 0;
   $("#main").innerHTML = `
-    <h2>Track record <small>${c.weeks} week${c.weeks === 1 ? "" : "s"}</small></h2>
+    <h2>Track record <small>${c.weeks} archived week${c.weeks === 1 ? "" : "s"}</small></h2>
     <p class="note">${t.grading_version ? "Statistical grading v2: unresolved data and pushes are excluded from hit-rate denominators. Historical regrading is not new prospective evidence." : "Legacy grading snapshot: these totals have not yet been rebuilt by the upgraded grader."} This is not a sportsbook-settled profit record.</p>
     <p class="note">Historical picks and results from before this edition was created came from <a href="https://github.com/joshuam0y/joshua-moy-expert-nfl-picks" target="_blank" rel="noopener">Joshua Moy's original project</a>. The forecasting code is retained as the original benchmark; statistical grading is versioned separately. Inherited historical picks are not new prospective forecasts from this edition.</p>
     ${nothing ? `<div class="card note" style="margin-bottom:10px">Grading started with week ${t.weeks[t.weeks.length - 1].week} of ${t.weeks[t.weeks.length - 1].season}. Only picks and leans saved before kickoff count, so this fills in as games go final. There's no backfill: Sleeper updates past weeks' projections after the games, so grading old weeks would look far better than it really is.</div>` : ""}
@@ -2651,7 +3521,7 @@ function renderRecord() {
     </div>` : ""}
     ${dkSection(c)}
     <h2>By week</h2>${weeks}
-    <p class="note">A hit requires a result strictly over or under the saved line. In statistical grading v2, equality is a push; a missing participation record is unresolved, not confirmed DNP. Actual venue void, injury, and payout rules still require verification. Lines first built after kickoff are excluded. My Picks and live progress retain their original tracking behavior; they are not venue settlement.</p>`;
+    <p class="note">A hit requires a result strictly over or under the saved line. In statistical grading v2, equality is a push; a missing participation record is unresolved, not confirmed DNP. Actual venue void, injury, and payout rules still require verification. Lines first built after kickoff are excluded. My Picks uses each saved user line and confirmed final statistical evidence; live progress remains reversible.</p>`;
 }
 
 // ---------------------------------------------------------------- how it works tab
@@ -2665,15 +3535,22 @@ function renderAbout() {
   ];
   const cats = Object.entries(S.data.categories).filter(([k]) => k !== "anytime_td");
   $("#main").innerHTML = `<div class="about">
-    <h2>Reliability foundation · Phase 1</h2>
-    <div class="card note"><p><b>The prediction engine is unchanged.</b> Raw Sleeper projections, matchup adjustments, and top-pick selection rules remain the original benchmark. This release improves statistical grading, publication checks, and future baseline capture; it does not establish greater predictive accuracy or profitability.</p>
+    <h2>Forecast comparison · Phase 2</h2>
+    <div class="card note"><p><b>Production picks use the retained baseline.</b> Raw Sleeper projections, matchup adjustments, and top-pick selection rules remain unchanged. Statistical grading and saved forecast comparisons do not establish greater predictive accuracy or profitability.</p>
     <p>Top picks are projection-gap rankings, not calibrated win probabilities or positive-EV recommendations. DraftKings player-prop prices are not captured. A recent build does not verify the age of each quote.</p>
-    <p>After installation, the update workflow saves append-only pregame capture receipts with both raw and adjusted projections, input and code hashes, and the local observation time. These are not verified execution receipts. Replay tests are stored separately and never called prospective results.</p>
-    <p>Recovery preserves the original code and retains subsequent evidence. <a href="recovery.html">How to restore the original</a>.</p></div>
+    <p>The comparison scorecard pairs raw Sleeper and the unchanged clone for receptions, rushing attempts and passing yards at the same forecast time. Repeated captures count once per player, game and statistic. Final games and confirmed participation are required for accuracy metrics.</p>
+    <p>An experimental probability model saves shadow forecasts and fixed-prior comparison distributions. It does not select production picks. Calibration and profitability remain unproven; model promotion requires a forward holdout review and explicit approval.</p>
+    <p>Sleeper selection captures save the exact line, side, offered leg multiplier, collection time, available source timestamp and rule references. No offer, a source outage and missing information are separate states. A source timestamp is not a freshness guarantee. Full entry payout and entry-specific settlement remain unverified; no EV is computed.</p>
+    <p>The update workflow preserves exact matchup inputs, frozen-forecast origins and append-only pregame receipts. Replay tests stay separate from prospective evidence. <a href="recovery.html">Recovery instructions</a>.</p></div>
+    <h2>Saved comparison status</h2>
+    <div class="card note">${S.forecastScorecard ? `<p>${Number(S.forecastScorecard.coverage?.unique_opportunities || 0)} unique matched opportunities; ${Number(S.forecastScorecard.coverage?.repeated_capture_rows || 0)} repeated captures excluded from sample size. ${Number(S.forecastScorecard.outcome_status?.pending || 0)} pending, ${Number(S.forecastScorecard.outcome_status?.unresolved || 0)} unresolved, ${Number(S.forecastScorecard.outcome_status?.dnp || 0)} confirmed DNP.</p>
+      <table class="ptable"><thead><tr><th>Statistic</th><th>Resolved</th><th>Sleeper MAE</th><th>Clone MAE</th></tr></thead><tbody>${[ ["rec", "Receptions"], ["rush_att", "Rush attempts"], ["pass_yd", "Pass yards"] ].map(([key, label]) => { const c = S.forecastScorecard.categories?.[key]; const number = (v) => v == null ? "Pending" : fmt(v, 2); return `<tr><td>${label}</td><td>${Number(c?.raw_sleeper?.n || 0)}</td><td>${number(c?.raw_sleeper?.mae)}</td><td>${number(c?.unchanged_clone?.mae)}</td></tr>`; }).join("")}</tbody></table>
+      <p>MAE is the average absolute miss in that statistic's units. Uncertainty requires eight completed NFL weeks. These are statistical outcomes, not sportsbook settlement or ROI.</p>` : `<p>No comparison report is available for this release yet. Accuracy and model performance are not established.</p>`}</div>
     <h2 id="features">What's here</h2>
+    <div class="card note"><p><b>Separate timing and over/under study:</b> development source integrates saved decision records and descriptive grading into Track Record and the existing updater. Public availability requires separately approved generated assets and deployment; code alone does not establish operating capture. The registered 24-hour, 6-hour and 90-minute checkpoints use the latest already-recorded snapshot at or before the boundary, at most 60 minutes old. Chicago selection and kickoff weekdays remain separate. This leaves the primary forecast comparison unchanged; small descriptive groups do not establish a best weekday or profit.</p></div>
     <div class="feat">
       <div class="card"><b>Props with real lines</b><p>DraftKings lines (then Sleeper Picks) for every prop, our pregame projection, leans, hit rates this season, and Top Overs / Unders for real starters only.</p></div>
-      <div class="card"><b>Live everything</b><p>Scores, every player's stats and fantasy points from Sleeper's live feed, prop progress (cleared, lost, hit, miss), all refreshing together every 15 to 30 seconds.</p></div>
+      <div class="card"><b>Live everything</b><p>Scores, observed player stats and fantasy points, with reversible currently above/below/equal prop progress, refreshing together every 15 to 30 seconds. Final statistical results require saved evidence.</p></div>
       <div class="card"><b>Game pages</b><p>Tap a game: field position, last play, quarter scores, win probability, play-by-play with filters (quarter, scoring, big plays, turnovers, flags), box score, props and fantasy for that game.</p></div>
       <div class="card"><b>Past weeks</b><p>Pick any earlier week above the scores: final scores, box scores, play-by-play, fantasy points and every player against DraftKings' closing lines.</p></div>
       <div class="card"><b>Future weeks and teams</b><p>Pick any week through 18 above the scores: upcoming games with DraftKings' line once it's posted and a preview of who matters (projection, recent form, snap share, depth chart role, matchup). The Teams tab has every team's schedule, ESPN depth chart (offense, defense, special teams), fantasy players and injuries.</p></div>
@@ -2682,7 +3559,7 @@ function renderAbout() {
       <div class="card"><b>Game lines</b><p>DraftKings spread, total, moneyline and implied points next to ours (player projections added up), pregame and live, with leans that get graded.</p></div>
       <div class="card"><b>Your scoring</b><p>Sleeper or ESPN, PPR or half, or your own Sleeper league's exact settings. Every number on the site follows it. Kickers and defenses use ESPN scoring.</p></div>
       <div class="card"><b>Fantasy rankings</b><p>This week or rest of season, by position or FLEX, with live points, snap share and byes.</p></div>
-      <div class="card"><b>Game logs</b><p>Every player's games this season with snaps, then a projection for each remaining week, like Sleeper's. Games he missed show as Did not play (0 points).</p></div>
+      <div class="card"><b>Game logs</b><p>Recorded games with snaps and future projections. Missing participation stays unresolved; only attributed DNP evidence confirms that a player did not play.</p></div>
       <div class="card"><b>Compare</b><p>Two players side by side with a start recommendation, matchup, props and game logs.</p></div>
       <div class="card"><b>Your league</b><p>Sync Sleeper with just your username (or ESPN by league ID): start/sit for this week (locked players stay put), this week's matchups live, standings, every roster, and free agents ranked against your worst player at each spot.</p></div>
       <div class="card"><b>Trades</b><p>Top targets for your weak spots and fair trade ideas with every team (fair for both sides, and their lineup can't get worse), filtered by position, plus a calculator, position ranks (WR14), how both lineups look after the trade, and an AI trade builder.</p></div>
@@ -2699,7 +3576,7 @@ function renderAbout() {
     <h2>Leans and top picks</h2>
     <p>A lean means our projection is far enough above (over) or below (under) a real sportsbook line. There are no leans against our own estimate. Top Overs and Top Unders are the biggest gaps, measured in each category's typical spread, and only use real sportsbook lines. They include players with 2+ games this season who aren't out, doubtful or on IR, and lock at kickoff. During a game, cards also show DraftKings' live line.</p>
     <h2>How our lines compare with DraftKings</h2>
-    <p>See the Track Record tab. In short: DraftKings' lines are sharper than a season average, and three or four weeks in, the matchup adjustment hasn't yet made a season average more accurate. That's why the real line is the one that counts, and why the adjustment is kept small until there's more data.</p>
+    <p>The Track Record tab includes a descriptive comparison with saved historical DraftKings lines. Its historical season-average benchmark differs from the raw Sleeper forecasts in the forward scorecard. Small historical samples do not establish future accuracy.</p>
     <h2>Our game lines</h2>
     <p>Our spread, total and moneyline come from the same player projections, added up: each team's projected touchdowns (passing TDs from the quarterback, rushing TDs from everyone, so no catch is counted twice), 2-point conversions, its kicker's field goals and extra points, and its defense's touchdowns and safeties. Those totals are scaled to this season's real average points per team, then turned into a spread, total and win chance (a fair moneyline with no sportsbook margin). We show a lean when we're 2+ points off DraftKings' spread or 3+ off the total, lock it at kickoff, and grade it on the Track Record tab.</p>
     <h2>Future weeks and trades</h2>
@@ -2710,11 +3587,11 @@ function renderAbout() {
     <table class="ptable">${scoreRows.map(([k, v]) => `<tr><td>${k}</td><td class="num">${v > 0 ? "+" : ""}${v}</td></tr>`).join("")}<tr><td>Reception (half PPR)</td><td class="num">+0.5</td></tr></table>
     <p>Kickers and team defenses use <b>ESPN's standard scoring</b>: field goals 3 (under 40 yards), 4 (40-49), 5 (50-59), 6 (60+), -1 per miss, 1 per extra point; defenses get 1 per sack, 2 per interception, fumble recovery, safety or blocked kick, 6 per touchdown, plus points-allowed and yards-allowed tiers. Every kicker and defense matches ESPN's own totals each week we've checked.</p>
     <h2>Live</h2>
-    <p>Scores, box scores and play-by-play come straight from ESPN every 30 seconds while games are on (every 8 seconds for the game you have open, and the newest play shows "just in" the moment the scoreboard has it, before the full play-by-play catches up), paused when this tab is hidden. Live points use the same scoring, including 2-point conversions and field goal distances. An over is marked cleared the moment it passes the line, since stats only go up; an under is only a hit once the game is final.</p>
+    <p>Scores, box scores and play-by-play come straight from ESPN every 30 seconds while games are on (every 8 seconds for the game you have open, and the newest play shows "just in" the moment the scoreboard has it, before the full play-by-play catches up), paused when this tab is hidden. Live points use the same scoring, including 2-point conversions and field goal distances. Prop progress is currently above, below or equal to the saved line. Negative yardage, deductions and corrections can reverse it. Final wins, losses and pushes require validated saved outcomes; missing statistics are unresolved, and fantasy points alone do not prove participation. Later evidence can revise a final statistical result. Venue settlement is separate.</p>
     <h2>News and injuries</h2>
     <p>Injury designations come from Sleeper with each update, along with ESPN's injury report (notes, body part and expected return). On game days the page also checks ESPN's latest news for games kicking off within 4 hours, so game-day inactives show up right away (outlined badges, with the time ESPN posted them). The News tab has ESPN's latest headlines, tagged with the players they mention, and an injury report by game. Opening a player and tapping More news loads his latest Rotowire note and headlines.</p>
     <h2>Updates, grading, and evidence</h2>
-    <p>The configured schedule is unchanged: hourly builds, with additional game-day runs. Critical structural checks and offline regression tests must pass before publishing a new release. Older network-dependent diagnostics remain visible as advisory results. A failed critical build leaves the prior published snapshot in place; the build-age warning identifies when it becomes stale.</p>
+    <p>One scheduled refresh runs each day at 8:06 a.m. America/Chicago. Deliberate manual and code-change runs may also occur. Daily refreshes may miss registered timing checkpoints; later observations never fill a missed checkpoint. Exact-input matchup verification, structural checks and offline regression tests must pass before publication. Network-dependent diagnostics remain visible as advisory results, with unavailable coverage reported. A failed critical build leaves the prior published snapshot in place; the build-age warning identifies when it becomes stale.</p>
     <p>Selections for started games remain frozen. Grading v2 reports pushes and unresolved participation separately and preserves the raw and adjusted projection for each top pick. These are statistical comparisons, not verified venue settlement or ROI. Prior archives can be regraded without changing the saved forecasts; that is a historical regrade, not a new prospective prediction. Missing stats must not be mistaken for confirmed DNP.</p>
     <h2 id="maker">Nick's Expert NFL Picks</h2>
     <div class="card bio">
@@ -3608,7 +4485,7 @@ function applyHash() {
   }
   const tm = location.hash.match(/^#\/teams(?:\/([A-Z]{2,3}))?$/);
   if (tm) { S.gameView = null; S.tab = "teams"; S.teamView = tm[1] || null; return true; }
-  const t = location.hash.match(/^#\/(props|fantasy|compare|league|trade|mine|news|record|about)$/);
+  const t = location.hash.match(/^#\/(props|fantasy|compare|league|trade|mine|parlay|news|record|about)$/);
   if (t) { S.gameView = null; S.tab = t[1]; return true; }
   return false;
 }
@@ -3705,16 +4582,17 @@ function gameLog(p) {
   const keys = S.data.log_stats?.[p.pos];
   if (!keys) return "";
   const rows = (p.log || []).map((x) => ({ ...x, pts: logPts(p, x) }));
-  // weeks his team played without him show as "Did not play" (0 points), weeks the team was off as "Bye"
+  // An absent historical log is missing participation evidence, not confirmed DNP.
   const opps = teamOpps(p.team), playedW = new Set(rows.map((x) => x.w));
   for (let w = 1; w < S.data.week; w++) {
     if (playedW.has(w)) continue;
-    rows.push(opps[w] ? { w, opp: opps[w], dnp: true, pts: 0 } : { w, bye: true });
+    rows.push(opps[w] ? { w, opp: opps[w], unknown: true, pts: null } : { w, bye: true });
   }
   rows.sort((a, b) => a.w - b.w);
   const g = S.games[p.game_id];
   const c = current(p);
   if (c && c.none && g) rows.push({ w: S.data.week, opp: p.opp, dnp: true, pts: 0, now: true });
+  else if (c && c.status === "unresolved") rows.push({ w: S.data.week, opp: p.opp, unknown: true, pts: null, now: true });
   else if (c && !c.none) {
     const st = c.stats;
     rows.push({ w: S.data.week, opp: p.opp, snp: st.off_snp, tsnp: st.tm_off_snp, s: keys.map((k) => st[k] || 0), pts: livePPR(p), now: true });
@@ -3741,6 +4619,8 @@ function gameLog(p) {
     <thead><tr><th class="l">Game log</th><th>Opp</th><th>Snaps</th>${keys.map((k) => `<th>${LOG_LABELS[k]}</th>`).join("")}<th class="ppr">Pts</th></tr></thead>
     <tbody>${rows.map((r) => r.bye
       ? `<tr class="bye"><td class="l">Week ${r.w}</td><td colspan="${keys.length + 3}">Bye</td></tr>`
+      : r.unknown
+      ? `<tr><td class="l">${r.now ? (g.state === "post" ? "Final" : "Now") : `Week ${r.w}`}</td><td>${r.opp || ""}</td><td colspan="${keys.length + 1}">Participation unresolved</td><td class="ppr">-</td></tr>`
       : r.dnp
       ? `<tr class="dnp"><td class="l">${r.now ? "Final" : `Week ${r.w}`}</td><td>${r.opp || ""}</td><td colspan="${keys.length + 1}" class="dnp-t">Did not play</td><td class="ppr">${fmtPts(0)}</td></tr>`
       : `<tr class="${r.now ? "now" : r.proj ? "proj" : ""}"><td class="l">${r.now ? (g.state === "post" ? "Final" : "Now") : `Week ${r.w}`}${r.proj ? ` <span class="ptag big">proj</span>` : ""}</td><td>${r.opp || ""}</td><td>${r.proj ? "" : snaps(r)}</td>${r.s.map((v) => `<td>${cellv(v, r.proj)}</td>`).join("")}<td class="ppr">${fmtPts(r.pts)}</td></tr>`).join("")}</tbody>
@@ -4189,7 +5069,7 @@ function renderCompare() {
   const keys = [...new Set([...a.props, ...b.props].map((x) => x.key))].filter((k) => k !== "fpts");
   const propRow = (k) => {
     const xa = a.props.find((x) => x.key === k), xb = b.props.find((x) => x.key === k);
-    const cell = (x) => !x ? "-" : k === "anytime_td" ? `${Math.round(100 * (x.td_chance || 0))}% TD chance`
+    const cell = (x) => !x ? "-" : k === "anytime_td" ? `${tdChanceText(x)} TD chance`
       : `${x.line} <span class="src ${x.line_from || "ours"}">${LINE_TAG[x.line_from] || "est"}</span> · proj ${fmtStat(k, x.adj)}${x.lean ? ` <span class="arrow ${x.lean}">${x.lean === "over" ? "▲" : "▼"}</span>` : ""}<div class="muted">over in ${x.over} of ${x.n}</div>`;
     return `<tr><td>${cell(xa)}</td><th>${S.data.categories[k].label}</th><td>${cell(xb)}</td></tr>`;
   };
@@ -4277,13 +5157,19 @@ function gameBetLabel(m, g) {
 // Where a game bet stands: live margins and totals, then hit, miss or push at the final
 function gameBetStatus(m) {
   const g = S.games[m.gid];
-  if (!g || g.state === "pre" || g.home_score == null) return null;
+  if (!g || g.state === "pre") return null;
+  if (!["spread", "total", "ml"].includes(m.market) || (m.market !== "ml" && !Number.isFinite(m.line)))
+    return { res: "unresolved", final: false, note: "Saved market or line missing/invalid" };
+  if (m.market === "total" ? !["over", "under"].includes(m.side) : ![g.home, g.away].includes(m.side))
+    return { res: "unresolved", final: false, note: "Saved side does not match this game/market" };
+  if (!Number.isFinite(g.home_score) || !Number.isFinite(g.away_score)) return { res: "unresolved", final: false, note: "Missing recorded game score" };
+  if (g.state === "post" && !/^Final(?:\/\d*OT)?$/i.test((g.detail || "").trim())) return { res: "unresolved", final: false, note: "Final status unconfirmed; cancellation/void settlement unavailable" };
   const final = g.state === "post";
   const hs = g.home_score, as = g.away_score;
   if (m.market === "total") {
     const t = hs + as;
     const over = t > m.line;
-    const res = final ? (t === m.line ? "push" : over === (m.side === "over") ? "hit" : "miss") : over ? (m.side === "over" ? "hit" : "miss") : "live";
+    const res = final ? (t === m.line ? "push" : over === (m.side === "over") ? "hit" : "miss") : t === m.line ? "equal" : over ? "above" : "below";
     return { res, final, v: t, note: `${t} points${final ? "" : " so far"}${!final && !over ? `, ${fmt(m.line - t, 1)} under the line` : ""}`, pct: Math.min(100, (100 * t) / Math.max(m.line, 1)) };
   }
   const mine = m.side === g.home ? hs - as : as - hs;
@@ -4325,12 +5211,13 @@ function renderMine() {
   });
   const rank = (r) => (r.g.state === "in" ? 0 : r.g.state === "pre" ? 1 : 2);
   rows.sort((a, b) => rank(a) - rank(b) || a.g.kickoff.localeCompare(b.g.kickoff) || a.m.at - b.m.at);
-  const hit = rows.filter((r) => r.st?.res === "hit").length;
-  const miss = rows.filter((r) => r.st?.res === "miss").length;
-  const push = rows.filter((r) => r.st?.res === "push").length;
+  const hit = rows.filter((r) => r.st?.final && r.st.res === "hit").length;
+  const miss = rows.filter((r) => r.st?.final && r.st.res === "miss").length;
+  const push = rows.filter((r) => r.st?.final && r.st.res === "push").length;
+  const dnp = rows.filter((r) => r.st?.final && r.st.res === "dnp").length;
+  const unresolved = rows.filter((r) => r.st?.res === "unresolved").length;
   const final = rows.filter((r) => r.st?.final).length;
   const live = rows.filter((r) => r.g.state === "in").length;
-  const entry = miss ? "lost" : hit + push === rows.length && hit ? "won" : "open";
   const gameRow = ({ m, g, st }) => `<div class="pick mine ${st?.res || ""}" data-game="${g.id}">
       <div class="av def"><img src="${logo(m.market === "total" ? g.home : m.side)}" alt=""></div>
       <div>
@@ -4365,11 +5252,12 @@ function renderMine() {
   $("#main").innerHTML = `
     <h2>My Picks <small>${S.data.season} week ${S.data.week}</small></h2>
     <div class="mine-sum card">
-      <div><div class="k">Hit</div><div class="v num" style="color:var(--green)">${hit}</div></div>
-      <div><div class="k">Missed</div><div class="v num" style="color:var(--red)">${miss}</div></div>
+      <div><div class="k">Final wins</div><div class="v num" style="color:var(--green)">${hit}</div></div>
+      <div><div class="k">Final losses</div><div class="v num" style="color:var(--red)">${miss}</div></div>
+      <div><div class="k">Push / DNP</div><div class="v num">${push} / ${dnp}</div></div>
+      <div><div class="k">Unresolved</div><div class="v num">${unresolved}</div></div>
       <div><div class="k">Live</div><div class="v num" style="color:var(--cyan)">${live}</div></div>
       <div><div class="k">Not started</div><div class="v num">${rows.filter((r) => r.g.state === "pre").length}</div></div>
-      <div class="entry ${entry}"><div class="k">All ${rows.length} together</div><div class="v">${entry === "won" ? "Won" : entry === "lost" ? "Lost" : `${hit} of ${rows.length}`}</div></div>
     </div>
     <div class="plist">${rows.map((r) => (r.m.kind === "game" ? gameRow(r) : propRow(r))).join("")}</div>
     <div class="gtool" style="margin-top:12px">
@@ -4377,7 +5265,7 @@ function renderMine() {
       <button class="tbtn" data-mine-clear="all">Clear all</button>
       ${old ? `<button class="tbtn" data-mine-clear="old">Clear ${old} from earlier weeks</button>` : ""}
     </div>
-    <p class="note">Picks keep the line you added them at; change any line to the one you actually got (an alternate spread like -4.5, a different total). Overs show cleared as soon as they pass the line; unders, spreads and moneylines settle when the game is final (a push is a tie with the line).</p>`;
+    <p class="note">Each selection uses your own saved line. Equality is a statistical push on either side. Live values are currently above, below or equal and can change, including downward corrections. Only confirmed final statistical outcomes enter the win/loss counts; missing evidence is unresolved. These are individual statistical results, not verified venue settlement or combined-ticket economics.</p>`;
 }
 
 // ---------------------------------------------------------------- render and events
@@ -4385,7 +5273,7 @@ function renderMine() {
 function render() {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", !S.gameView && b.dataset.tab === S.tab));
   if (S.gameView) { renderGame(); renderScores(); return; }
-  ({ props: renderProps, fantasy: renderFantasy, compare: renderCompare, league: renderLeagueTab, trade: renderTrade, mine: renderMine, news: renderNews, teams: renderTeams, record: renderRecord, about: renderAbout })[S.tab]();
+  ({ props: renderProps, fantasy: renderFantasy, compare: renderCompare, league: renderLeagueTab, trade: renderTrade, mine: renderMine, parlay: renderParlay, news: renderNews, teams: renderTeams, record: renderRecord, about: renderAbout })[S.tab]();
   updateSyncBtn();
   updateMineBadge();
   renderScores();
@@ -4393,6 +5281,7 @@ function render() {
 
 // Live ticks update numbers in place, so open cards, focus and scroll position survive
 function renderLiveParts() {
+  if (!S.gameView && S.tab === "parlay") { if (!document.activeElement?.matches("input,select")) renderParlay(); return; }
   if (!S.gameView && S.tab === "mine") { if (!document.activeElement?.matches("input")) { const y = window.scrollY; renderMine(); window.scrollTo(0, y); } return; }
   if (!S.gameView && S.tab === "league") { if ((S.leagueView || "team") === "matchups" && !document.activeElement?.matches("input")) { const y = window.scrollY; renderLeagueTab(); window.scrollTo(0, y); } return; }
   if (!S.gameView && S.tab === "compare") { if (!document.activeElement?.matches("input")) { const y = window.scrollY; renderCompare(); window.scrollTo(0, y); } return; }
@@ -4425,6 +5314,61 @@ function renderLiveParts() {
 
 document.addEventListener("click", (e) => {
   const t = e.target;
+  if(t.closest("[data-paper-evaluate]")){gradeSavedPaper();return;}
+  if (t.closest("[data-paper-new]")) { Object.assign(S.paper, { legs: [], opened: null, results: null, error: "" }); renderParlay(); return; }
+  const paperRemove = t.closest("[data-paper-remove]");
+  if (paperRemove) { S.paper.legs.splice(+paperRemove.dataset.paperRemove, 1); renderParlay(); return; }
+  if (t.closest("[data-paper-suggest]")) {
+    S.paper.legs = []; S.paper.error = "";
+    for (const { leg } of paperCandidates()) {
+      if (S.paper.legs.some(l => l.player_id === leg.player_id || l.game_id === leg.game_id)) continue;
+      S.paper.legs.push(leg); if (S.paper.legs.length === +S.paper.size) break;
+    }
+    if (S.paper.legs.length < 2) S.paper.error = "NO_ACTION: fewer than two compatible legs; no forced filling.";
+    renderParlay(); return;
+  }
+  const paperAdd = t.closest("[data-paper-add]");
+  if (paperAdd) {
+    let leg;
+    try {
+      const rendered = validatePaperLeg(JSON.parse(paperAdd.dataset.paperAdd));
+      leg = paperCandidates().find(v => gradingCanonical(v.leg) === gradingCanonical(rendered))?.leg;
+    } catch { /* Stale/malformed rendered contracts cannot select another leg. */ }
+    if (!leg || S.paper.legs.length >= 6 || S.paper.legs.some(l => l.player_id === leg.player_id || l.game_id === leg.game_id || l.line_source !== leg.line_source)) S.paper.error = "Leg unavailable or incompatible with this draft.";
+    else { S.paper.legs.push(leg); S.paper.error = ""; }
+    renderParlay(); return;
+  }
+  if (t.closest("[data-paper-save]")) {
+    try {
+      const now = Date.now(), candidates = paperCandidates(now);
+      if (S.paper.legs.some(leg => !candidates.some(v => gradingCanonical(v.leg) === gradingCanonical(leg)))) throw new Error("A draft contract changed or started. Recheck the draft before saving.");
+      const previous = S.paper.opened, ticket = { schema_version: "paper-parlay-ticket-v1", ticket_id: previous?.ticket_id || crypto.randomUUID(), revision_id: crypto.randomUUID(),
+        parent_revision_id: previous?.revision_id || null, saved_at: new Date(now).toISOString(), clock_basis: "OWNER_DEVICE_TIME_NOT_INDEPENDENTLY_TIMESTAMPED",
+        product: "paper_all_legs", line_source: S.paper.legs[0]?.line_source, legs: structuredClone(S.paper.legs) };
+      savePaperTicket(ticket); S.paper.opened = ticket; S.paper.history=null;S.paper.historyEpoch++; S.paper.error = "Saved and read back on this device."; gradeOpenedPaper();
+    } catch (error) { S.paper.error = "Not saved: " + error.message; }
+    renderParlay(); return;
+  }
+  const paperOpen = t.closest("[data-paper-open]");
+  if (paperOpen) {
+    try {
+      const item = readPaperTickets().tickets.find(v => v.key === paperOpen.dataset.paperOpen);
+      if (!item) throw new Error("Saved revision unavailable");
+      S.paper.opened = item.ticket; S.paper.legs = structuredClone(item.ticket.legs); S.paper.source = item.ticket.line_source; S.paper.error = "";
+      gradeOpenedPaper();
+    } catch (error) { S.paper.error = error.message; }
+    renderParlay(); return;
+  }
+  const gradingGroup = t.closest("[data-grading-group]");
+  if (gradingGroup) { loadGradingRows(gradingGroup.dataset.gradingGroup); return; }
+  if (t.closest("[data-grading-more]")) { if (S.gradingGroup) loadGradingRows(S.gradingGroup.id, true); return; }
+  if (t.closest("[data-grading-download]")) {
+    const group = S.gradingGroup;
+    if (!group?.complete || group.error) return;
+    const blob = new Blob([JSON.stringify({ schema_version: "selection-public-group-download-v1", report_id: S.grading.pointer.report_id, summary_id: group.id, rows: group.rows }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob), link = document.createElement("a");
+    link.href = url; link.download = `grading-${group.id}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); return;
+  }
   const tab = t.closest(".tabs button");
   if (tab) { if (tab.dataset.tab === "teams") S.teamView = null; S.tab = tab.dataset.tab; S.gameView = null; store("tab", S.tab); render(); syncHash(true); window.scrollTo(0, 0); return; }
   if (t.closest("[data-back]")) { S.gameView = null; render(); syncHash(true); window.scrollTo(0, 0); return; }
@@ -4760,6 +5704,18 @@ document.addEventListener("input", (e) => {
 });
 
 document.addEventListener("change", (e) => {
+  if (e.target.dataset.paperFilter) { S.paper[e.target.dataset.paperFilter] = e.target.value; renderParlay(); return; }
+  if (e.target.dataset.paperCategory) {
+    const key = e.target.dataset.paperCategory;
+    S.paper.categories = e.target.checked ? [...new Set([...S.paper.categories, key])] : S.paper.categories.filter(c => c !== key);
+    renderParlay(); return;
+  }
+  if (e.target.dataset.gradingFilter) {
+    S.gradingFilters[e.target.dataset.gradingFilter] = e.target.value;
+    S.gradingGroup = null;
+    if (S.grading?.partitioned) loadSelectedGradingSummary();
+    renderRecord(); return;
+  }
   if (e.target.matches("[data-wksel]")) { setWeek(+e.target.value); return; }
   if (e.target.matches("[data-mu-week]")) { S.muWeek = +e.target.value; renderLeagueTab(); return; }
   const t = e.target;
@@ -4822,7 +5778,7 @@ $("#reload").addEventListener("click", async () => {
 
 (async function start() {
   const saved = store("tab");
-  if (["props", "fantasy", "compare", "league", "trade", "mine", "news", "record", "about"].includes(saved)) S.tab = saved;
+  if (["props", "fantasy", "compare", "league", "trade", "mine", "parlay", "news", "record", "about"].includes(saved)) S.tab = saved;
   try {
     await load();
   } catch (err) {

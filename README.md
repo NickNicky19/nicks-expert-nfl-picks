@@ -66,12 +66,37 @@ finished game this season.
 Leans can't be backtested: Sleeper revises past weeks' projections after the games, so the track record only grades
 what was saved before kickoff.
 
+## Phase 2 review branch
+
+The retained production model is unchanged. Phase 2 records exact matchup inputs,
+compares raw Sleeper and the clone at matched times for receptions, rushing
+attempts and passing yards, and saves an experimental probability challenger in
+shadow mode. Each player/game/statistic counts once, even with many captures.
+Accuracy needs confirmed finals and participation; initial outcomes are pending.
+Calibration and profitability are unproven, and promotion is disabled.
+
+Sleeper normal-line selection captures retain contract, line, side, offered leg
+multiplier, collection/source timestamps and rule provenance. Missing full entry
+payout/settlement information remains explicit. No odds, EV, paid service or new
+account is added. See [UPGRADE_NOTES.md](UPGRADE_NOTES.md),
+[evaluation rules](docs/EVALUATION_PROTOCOL.md), [offer scope](docs/OFFER_CAPTURE.md),
+[diagnosis](docs/PHASE2_DIAGNOSIS.md) and [recovery](ROLLBACK.md).
+
+The separate day/timing and over/under study is **registered but not implemented**
+at the safe handoff. See [timing protocol](docs/TIMING_PROTOCOL.md) and
+[implementation handoff](docs/IMPLEMENTATION_HANDOFF.md). Automatic implementation
+is disabled. The existing hourly audit uses PR #1; a tested cooperative remote
+writer gate is provided, while native GitHub-triggered environment/gate adoption
+remains unverified. No scheduler, API-key requirement or replacement repo was added.
+
 ## Running it
 
 ```
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python pull/build.py      # writes output/data/
-.venv/bin/python tools/verify.py    # checks scoring, point-in-time lines and live scoring
+.venv/bin/python tools/build_recorded.py  # unchanged builder plus exact input receipts
+.venv/bin/python tools/verify.py --offline
+.venv/bin/python tools/phase2_capture.py --mode live
+.venv/bin/python tools/verify.py    # also runs network scoring diagnostics
 cd output && python3 -m http.server 8000
 ```
 
@@ -79,6 +104,7 @@ cd output && python3 -m http.server 8000
 
 - PPR matches Sleeper's own totals on every cached player-week.
 - Lines rebuild exactly from earlier weeks only.
+- The full recorded builder population and frozen-game input origins match.
 - The output is consistent.
 - Live ESPN scoring matches Sleeper's final PPR for finished games.
 
@@ -95,6 +121,11 @@ cd output && python3 -m http.server 8000
 | `pull/gamemodel.py` | our game projection: team scores, spread, total, moneyline |
 | `pull/news.py` | ESPN's injury report |
 | `tools/verify.py`, `tools/compare_lines.py` | checks, DraftKings comparison |
+| `tools/build_recorded.py` | exact retained-builder input recording |
+| `tools/scorecard.py`, `tools/shadow.py` | unique prospective comparison and shadow probability scoring |
+| `tools/offers.py`, `tools/phase2_capture.py` | narrow source capture and evidence pipeline |
+| `data/forward`, `data/verification`, `data/shadow`, `data/offers`, `data/outcomes` | create-only evidence |
+| `config/evaluation-policy.json` | versioned evaluation/promotion rules |
 | `output/` | the site (`index.html`, `app.js`, `style.css`) and its data |
 | `data/cache/` | trimmed weekly stats (finished weeks are fetched once) |
 | `.github/workflows/hourly.yml` | daily scheduled build, commit and Pages deploy; manual/code-change runs retained |
@@ -143,3 +174,49 @@ secret (for "Sign in with Yahoo"; Yahoo's API doesn't allow requests from web pa
 3. Get a Gemini API key at https://aistudio.google.com/apikey.
 4. `npx wrangler secret put YAHOO_CLIENT_ID`, `YAHOO_CLIENT_SECRET` and `GEMINI_API_KEY`.
 5. Set `WORKER_URL` in `output/app.js` to the new Worker's address and publish that change. Keep all secrets out of Git.
+
+
+## Phase 2 reporting checkpoint (2026-10-22)
+
+The current public website and this development checkpoint are different releases.
+The public Phase 1 Props/Record/My Picks features and the daily scheduling change
+do not establish deployment of the Phase 2 grading/reporting upgrade. This local
+checkpoint is implemented but final combined checks, exact-source CI, source and
+artifact review, and release authorization are still pending.
+
+The proposed development report adds weekly/cumulative recorded Top Over/Under
+and qualifying-lean grading, exact category/side/source/timing groups, separately
+recorded Biggest-lean and Projected-points strategies, and an aggregate
+all-category forecast-accuracy section. Display sorts alone are not recorded
+strategies. Historical observations do not acquire new strategy membership.
+The rich all-category evaluation rows remain local; only the typed aggregate
+contract is prepared for the public report. Numerical accuracy, TD probability
+scores and selection hit rates remain separate measurements.
+
+The separate paper-first Parlay Builder implementation supports 2–6 saved legs,
+category and Over/Under/Mixed filters, immutable ticket revisions and separate
+leg/ticket statistical results. It uses one reference source per ticket, avoids
+repeated players and same-game combinations, and may return NO_ACTION. Local
+save time is an owner-device clock, not independently timestamped pregame proof.
+It provides no executable-offer, venue-settlement, ticket-probability, EV or ROI
+claim. Its source and public behavior require their own completed checks and
+release review; a development implementation is not a deployed feature.
+
+The release remains blocked on representative cloud preparation and operating
+validation, a coherent production-rooted artifact, exact public-content review,
+and the combined deployment/public Props/Record/cache/My Picks/recovery decision.
+The existing canonical requirements and research roadmap remain in
+`docs/EVALUATION_PROTOCOL.md`; no additional scheduler or roadmap is introduced.
+
+
+## Validated source and current-data checks
+
+The development execution contract keeps complete regression coverage in source
+CI and verifies its exact code/test/workflow/configuration, retained fixture and
+installed-dependency bindings before a Phase 2 update. Current data is freshly
+validated every run through the unchanged generation and Pages checks; a green
+source run cannot qualify missing or corrupt evidence. Source/runtime changes
+without matching passed checks fail closed. See the current
+[implementation handoff](docs/IMPLEMENTATION_HANDOFF.md) for source versus
+operating costs, integration status and release verification. Daily scheduling,
+manual recovery and Ticker retirement remain unchanged.
