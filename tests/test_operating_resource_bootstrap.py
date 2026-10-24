@@ -413,7 +413,7 @@ class GenuineRoute(unittest.TestCase):
         self.assertFalse(b.arguments(raw).genuine_case)
     def test_actual_reviewed_inline_source_bytes_and_changed_source_rejected(self):
         commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
-        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),34202);self.assertEqual(b.sha(raw),b.GENUINE_DRIVER)
+        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),35468);self.assertEqual(b.sha(raw),b.GENUINE_DRIVER)
         with patch.object(b,'git',return_value=b'not the actual source'):
             with self.assertRaisesRegex(RuntimeError,'actual source'):b.genuine_driver(ROOT,commit)
         original=(ROOT/b.GENUINE_WORKFLOW).read_bytes()
@@ -428,7 +428,7 @@ class GenuineRoute(unittest.TestCase):
         with patch.object(b,'regular_bytes',return_value=original),patch.object(b,'git',return_value=original):
             raw=b.genuine_driver(ROOT,legacy)
         self.assertEqual(len(raw),30854);self.assertEqual(b.sha(raw),b.LEGACY_GENUINE_DRIVER)
-        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.GENUINE_DRIVER:34202})
+        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.GENUINE_DRIVER:35468})
     def test_direct_data_only_descendant_and_unchanged_source(self):
         def git(code,*argv):
             if argv==('rev-parse','HEAD'):return b'2'*40
@@ -1006,7 +1006,7 @@ class GenuineRecovery(unittest.TestCase):
         legacy=subprocess.check_output(['git','-C',str(ROOT),'show','25826e015e70cad74a375e9a5028e7cada5d5c88:'+r.WORKFLOW])
         with patch.object(r,'authenticated_bytes',return_value=legacy):
             self.assertEqual(r.checked_driver(ROOT,'25826e015e70cad74a375e9a5028e7cada5d5c88'),r.LEGACY_DRIVER)
-        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.DRIVER:34202})
+        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.DRIVER:35468})
 
 
 class DiagnosticLifetimeDependencyContract(unittest.TestCase):
