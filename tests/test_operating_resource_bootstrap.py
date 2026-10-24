@@ -508,6 +508,58 @@ class GenuineRoute(unittest.TestCase):
     def test_lifetime_oom_is_not_hidden_by_leaf_pass(self):
         with self.assertRaisesRegex(RuntimeError,'did not pass'):self.read(oom=1)
 
+
+class PublicDeploymentBrowserContract(unittest.TestCase):
+    """Synthetic contract controls only; no browser, deployed bytes or outcome qualification."""
+    def invoke(self,change=None,url=None):
+        script=(ROOT/'tools/release_browser.cjs').read_text()
+        fragment=script.split('// BEGIN PUBLIC DEPLOYMENT REVIEW CONTRACT\n',1)[1].split('// END PUBLIC DEPLOYMENT REVIEW CONTRACT',1)[0]
+        generation={'source_sha':'1'*40,'generation_sha256':'a'*64}
+        raw=json.dumps(generation,separators=(',',':')).encode()
+        import hashlib
+        proof=dict(schema_version='source-ci-verification-v1',executed_commit='2'*40,executed_tree='3'*40,
+            source_manifest_sha256='b'*64,source_ci_commit='4'*40,run_id=55,run_attempt=1,job_id=66,
+            seal_sha256='c'*64,environment_sha256='d'*64,
+            claim='COMPLETE_SOURCE_CHECKS_ONLY_NOT_GENERATION_OR_OPERATING_QUALIFICATION')
+        value=dict(schema_version='public-deployment-review-v1',status='AUTHENTICATED_HOURLY_PAGES_DEPLOYMENT',
+            source='1'*40,installed_source='5'*40,installed_source_manifest_sha256='b'*64,
+            runtime_data_commit='2'*40,runtime_data_tree='3'*40,
+            hourly=dict(run_id=77,run_attempt=1,head_sha='6'*40,event='schedule',job_id=88,workflow_path='.github/workflows/hourly.yml'),
+            source_ci=proof,artifact=dict(id=99,name='github-pages',zip_bytes=1024,zip_sha256='e'*64,tar_bytes=1024,tar_sha256='f'*64),
+            pages=dict(members_sha256='e'*64,release_identity_sha256=hashlib.sha256(raw).hexdigest(),generation_sha256='a'*64),
+            generation=generation,expected_site_url='https://nicknicky19.github.io/nicks-expert-nfl-picks/')
+        if change:change(value)
+        test="const assert=require('node:assert/strict'),crypto=require('node:crypto');const sha=b=>crypto.createHash('sha256').update(b).digest('hex');\n"+fragment
+        test+="\nconst input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));publicDeploymentContract(input.value,input.url,input.generation,Buffer.from(input.raw),'e'.repeat(64));"
+        result=subprocess.run(['node','-e',test],input=json.dumps(dict(value=value,url=url or value['expected_site_url'],generation=generation,raw=raw.decode())),text=True,capture_output=True,timeout=10)
+        return result.returncode
+    def test_explicit_deployment_contract_accepts_typed_synthetic_binding(self):
+        self.assertEqual(self.invoke(),0)
+    def test_public_target_must_be_exact_canonical_site(self):
+        for url in ('https://example.test/','https://nicknicky19.github.io/nicks-expert-nfl-picks/?x=1','https://nicknicky19.github.io/nicks-expert-nfl-picks'):
+            self.assertNotEqual(self.invoke(url=url),0)
+    def test_case_status_cannot_stand_in_for_hourly_review(self):
+        self.assertNotEqual(self.invoke(lambda v:v.update(status='COMPLETE_GENUINE_NONDEPLOY_CASE')),0)
+    def test_extra_provider_or_qualification_fields_rejected(self):
+        self.assertNotEqual(self.invoke(lambda v:v.update(provider_case_attempts=1)),0)
+    def test_source_ci_must_bind_actual_runtime_commit_and_tree(self):
+        for key in ('executed_commit','executed_tree','source_manifest_sha256'):
+            self.assertNotEqual(self.invoke(lambda v,k=key:v['source_ci'].update({k:'9'*(40 if k!='source_manifest_sha256' else 64)})),0)
+    def test_public_generation_and_actual_identity_bytes_bound(self):
+        self.assertNotEqual(self.invoke(lambda v:v['pages'].update(release_identity_sha256='0'*64)),0)
+        self.assertNotEqual(self.invoke(lambda v:v.update(source='0'*40)),0)
+        self.assertNotEqual(self.invoke(lambda v:v['pages'].update(generation_sha256='0'*64)),0)
+    def test_actual_pages_member_digest_must_match(self):
+        self.assertNotEqual(self.invoke(lambda v:v['pages'].update(members_sha256='0'*64)),0)
+    def test_zip_tar_caps_and_actual_artifact_role(self):
+        self.assertNotEqual(self.invoke(lambda v:v['artifact'].update(zip_bytes=128*1024**2+1)),0)
+        self.assertNotEqual(self.invoke(lambda v:v['artifact'].update(tar_bytes=127*1024**2+1)),0)
+        self.assertNotEqual(self.invoke(lambda v:v['artifact'].update(name='genuine-production-review-77')),0)
+    def test_normal_hourly_identity_not_caller_command_or_url(self):
+        self.assertNotEqual(self.invoke(lambda v:v['hourly'].update(workflow_path='arbitrary.yml')),0)
+        self.assertNotEqual(self.invoke(lambda v:v['hourly'].update(run_attempt=True)),0)
+
+
 if __name__=='__main__':unittest.main(verbosity=2)
 
 class GenuineRecovery(unittest.TestCase):

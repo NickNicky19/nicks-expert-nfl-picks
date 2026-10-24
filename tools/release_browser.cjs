@@ -38,16 +38,66 @@ const criticalPaths=[root,artifactRoot,markerPath,resultPath,evidence,profileRoo
 const initialFilesystems=filesystemGuard(criticalPaths,12*1024*1024);
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const readJSON = filename => JSON.parse(fs.readFileSync(filename));
+// BEGIN PUBLIC DEPLOYMENT REVIEW CONTRACT
+const PUBLIC_SITE='https://nicknicky19.github.io/nicks-expert-nfl-picks/';
+function publicDeploymentContract(value,url,actualGeneration,identityBytes,membersDigest) {
+  const keys=(v,expected)=>assert.deepEqual(Object.keys(v).sort(),expected.split(' ').sort(),'PUBLIC_REVIEW_CLOSED_KEYS');
+  const integer=v=>assert.ok(Number.isSafeInteger(v)&&v>0,'PUBLIC_REVIEW_INTEGER');
+  const digest=v=>assert.match(v,/^[0-9a-f]{64}$/,'PUBLIC_REVIEW_DIGEST');
+  const commit=v=>assert.match(v,/^[0-9a-f]{40}$/,'PUBLIC_REVIEW_COMMIT');
+  assert.equal(url,PUBLIC_SITE,'PUBLIC_REVIEW_CANONICAL_SITE');
+  keys(value,'schema_version status source installed_source installed_source_manifest_sha256 runtime_data_commit runtime_data_tree hourly source_ci artifact pages generation expected_site_url');
+  assert.equal(value.schema_version,'public-deployment-review-v1');
+  assert.equal(value.status,'AUTHENTICATED_HOURLY_PAGES_DEPLOYMENT');
+  assert.equal(value.expected_site_url,PUBLIC_SITE);
+  for(const key of ['source','installed_source','runtime_data_commit','runtime_data_tree'])commit(value[key]);
+  digest(value.installed_source_manifest_sha256);
+  keys(value.hourly,'run_id run_attempt head_sha event job_id workflow_path');
+  for(const key of ['run_id','run_attempt','job_id'])integer(value.hourly[key]);
+  commit(value.hourly.head_sha);assert.ok(['push','schedule','workflow_dispatch'].includes(value.hourly.event));
+  assert.equal(value.hourly.workflow_path,'.github/workflows/hourly.yml');
+  keys(value.source_ci,'schema_version executed_commit executed_tree source_manifest_sha256 source_ci_commit run_id run_attempt job_id seal_sha256 environment_sha256 claim');
+  assert.equal(value.source_ci.schema_version,'source-ci-verification-v1');
+  assert.equal(value.source_ci.claim,'COMPLETE_SOURCE_CHECKS_ONLY_NOT_GENERATION_OR_OPERATING_QUALIFICATION');
+  assert.equal(value.source_ci.executed_commit,value.runtime_data_commit);
+  assert.equal(value.source_ci.executed_tree,value.runtime_data_tree);
+  assert.equal(value.source_ci.source_manifest_sha256,value.installed_source_manifest_sha256);
+  commit(value.source_ci.source_ci_commit);
+  for(const key of ['run_id','run_attempt','job_id'])integer(value.source_ci[key]);
+  for(const key of ['source_manifest_sha256','seal_sha256','environment_sha256'])digest(value.source_ci[key]);
+  keys(value.artifact,'id name zip_bytes zip_sha256 tar_bytes tar_sha256');
+  assert.equal(value.artifact.name,'github-pages');
+  for(const key of ['id','zip_bytes','tar_bytes'])integer(value.artifact[key]);
+  assert.ok(value.artifact.zip_bytes<=128*1024**2&&value.artifact.tar_bytes<=127*1024**2);
+  for(const key of ['zip_sha256','tar_sha256'])digest(value.artifact[key]);
+  keys(value.pages,'members_sha256 release_identity_sha256 generation_sha256');
+  for(const key of ['members_sha256','release_identity_sha256','generation_sha256'])digest(value.pages[key]);
+  assert.equal(value.pages.members_sha256,membersDigest,'PUBLIC_REVIEW_ACTUAL_PAGES_MEMBERS');
+  assert.equal(value.pages.release_identity_sha256,sha(identityBytes));
+  assert.equal(value.pages.generation_sha256,actualGeneration.generation_sha256);
+  assert.equal(value.source,actualGeneration.source_sha);
+  assert.deepEqual(value.generation,actualGeneration,'PUBLIC_REVIEW_ACTUAL_GENERATION');
+}
+function publicMembersDigest(directory) {
+  const members={},pending=[directory];let total=0;
+  while(pending.length){const parent=pending.pop();for(const name of fs.readdirSync(parent)){const file=path.join(parent,name),info=fs.lstatSync(file);assert.ok(!info.isSymbolicLink(),'PUBLIC_REVIEW_SYMLINK');if(info.isDirectory()){pending.push(file);continue;}assert.ok(info.isFile(),'PUBLIC_REVIEW_FILE');const key=path.relative(directory,file).split(path.sep).join('/');total+=info.size;assert.ok(Object.keys(members).length<20000&&total<=900000000,'PUBLIC_REVIEW_MEMBERS_BOUND');members[key]={bytes:info.size,sha256:sha(fs.readFileSync(file))};}}
+  assert.ok(Object.keys(members).length);return sha(Buffer.from(canonical(members)));
+}
+// END PUBLIC DEPLOYMENT REVIEW CONTRACT
 const marker = readJSON(markerPath);
+const deploymentReview=marker.schema_version==='public-deployment-review-v1';
+if(!deploymentReview){
 assert.equal(marker.schema_version,'genuine-current-production-case-v1');
 assert.equal(marker.status,'COMPLETE_GENUINE_NONDEPLOY_CASE','Actual complete case required');
 assert.equal(marker.provider_case_attempts,1);assert.equal(marker.deployed,false);assert.equal(marker.main_written,false);
+}
 assert.ok(fs.statSync(root).isDirectory(), 'Actual fresh staged root is required');
 fs.mkdirSync(evidence,{recursive:true});
 fs.mkdirSync(profileRoot,{mode:0o700});process.env.TMPDIR=profileRoot;process.env.TMP=profileRoot;process.env.TEMP=profileRoot;
 filesystemGuard(criticalPaths,12*1024*1024);
 const generationBytes = fs.readFileSync(path.join(root, 'data/release-identity.json'));
 const generation = JSON.parse(generationBytes);
+if(deploymentReview)publicDeploymentContract(marker,publicURL,generation,generationBytes,publicMembersDigest(root));
 const pointer = readJSON(path.join(root, 'data/selection-grading/latest.json'));
 const board = readJSON(path.join(root, 'data/week.json'));
 const appHash = sha(fs.readFileSync(path.join(root, 'app.js')));
@@ -73,6 +123,7 @@ const result = {
 };
 result.target=publicURL?{kind:'ACTUAL_PUBLIC_URL',url:publicURL}:{kind:'ACTUAL_STAGED_BYTES',root};
 result.manifest_sha256=sha(fs.readFileSync(markerPath));result.unavailable=[];
+if(deploymentReview){result.review_contract='public-deployment-review-v1';result.runtime_data_commit=marker.runtime_data_commit;result.hourly_run_id=marker.hourly.run_id;}
 result.filesystems=initialFilesystems;result.resource_verdict='UNKNOWN';result.job_aggregate_peak_bytes=null;
 result.limitations=['Actual artifact/public data only; no clocks, responses or outcomes fabricated.','Private choices created now in isolated contexts; no historical pregame ticket claim.','CDP/host resolver block external requests; no Playwright routing. Controlled missing-asset denial is explicitly identified.','Real-data rule calls do not establish a natural future correction transition or physical Safari.','Recorded strategy/cohort differs from display sort; unsupported historical populations stay unavailable.'];
 const save = () => {const bytes=JSON.stringify(result,null,2)+'\n';assert.ok(Buffer.byteLength(bytes)<=128*1024,'Bounded result');fs.writeFileSync(arg('--result')||path.join(evidence,'RESULT.json'),bytes);};
