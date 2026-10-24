@@ -18,6 +18,288 @@ sys.path.insert(0,str(DEPENDENCY_ROOT/'tools'))
 spec=importlib.util.spec_from_file_location('proposed_operating_campaign',HERE/'tools/operating_campaign.py')
 c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
 
+def final_workload_control(source='1'*40,tree='2'*40):
+    """Synthetic metric-validator control only, never measured qualification."""
+    sample={'opportunities':1,'unique_players':1,'unique_games':1,'unique_weeks':1}
+    cohorts=[];captures=[]
+    for model in sorted(c.FINAL_ACCURACY_MODELS):
+        categories={}
+        for category in c.FINAL_ACCURACY_CATEGORIES:
+            item={name:dict(sample) for name in ('coverage','paired_coverage','unpaired_coverage')}
+            item['unpaired_coverage']={k:0 for k in sample}
+            item.update(outcome_status={'resolved':1},paired_resolved=1,adjusted_only_resolved=0)
+            if category=='fpts':item['direct_provider_ppr_resolved']=0
+            if category=='anytime_td':item['probability']={'originally_recorded_probability':0,'rederived_from_original_count_retained_formula':1}
+            categories[category]=item
+        cohorts.append(dict(model_version=model,engine_sha256=c.FINAL_ACCURACY_ENGINES[model],period='cumulative',forecast_provenance='original_recorded_pregame_observation',outcome_provenance='saved_cache_descriptive_regrade',statistic_contract_sha256=c._final_statistic_contracts()[model],source_report_sha256='5'*64,coverage={**sample,'opportunities':len(categories)},categories=categories))
+        expected=c.FINAL_REFERENCE['accuracy_capture_work'][model]
+        captures.append(dict(model_version=model,capture_coverage=dict(unique_receipts=expected['unique_receipts'],duplicate_receipts=0,eligible_capture_rows=copy.deepcopy(expected['eligible_capture_rows']),paired_capture_rows=copy.deepcopy(expected['paired_capture_rows']),excluded={}),unsupported_outcome_counts={}))
+    metrics={name:1 for name in c.FINAL_METRICS};metrics.update(c.FINAL_LOAD_FLOORS,**c.FINAL_REFERENCE['informational_descriptor_metrics'],complete_generations=24)
+    coverage=dict(categories={k:1 for k in c.seed_v1.REQUIRED_SETS['categories']},sides={'over':1,'under':1},sources={k:1 for k in c.seed_v1.REQUIRED_SETS['sources']},cohorts={k:1 for k in c.FINAL_COHORTS},checkpoints={k:1 for k in c.seed_v1.REQUIRED_SETS['checkpoints']},dimensions={k:1 for k in c.FINAL_DIMENSIONS},results={k:1 for k in c.seed_v1.REQUIRED_SETS['status_counts']},periods={'cumulative':1,'2026-w06':1},strategy_selected={k:1 for k in ('ranked_biggest_lean_v1','ranked_projected_points_v1')})
+    value=dict(schema_version='final-candidate-workload-v1',candidate={'commit':source,'tree':tree},publication_source=source,generation_source=source,generation_sha256='6'*64,report_id='7'*64,report_schema_version='selection-report-v4',summary_index_sha256='8'*64,semantics_sha256='9'*64,reference=copy.deepcopy(c.FINAL_REFERENCE),metrics=metrics,coverage=coverage,contexts=dict(ids=sorted(c.FINAL_REFERENCE_CONTEXT_IDS),descriptors_sha256='a'*64,missing_reference_ids=[],extra_reference_ids=[],correspondence='EXACT_DESCRIPTOR_IDS_MISSING_EXTRA_REPORTED_NOT_SYNTHETIC_HISTORY'),accuracy=dict(schema_version='forecast-accuracy-public-v1',content_sha256='b'*64,capture_coverage=captures,cohorts=cohorts))
+    value['decisions']=c._final_workload_decisions(value)
+    value['applicability']=c._final_applicability(value)
+    return value
+
+
+def permitted_accuracy_control():
+    """Actual typed projector on small fictional inputs, not operating evidence."""
+    helper=importlib.util.spec_from_file_location('accuracy_workload_unit_helpers',DEPENDENCY_ROOT/'tests/test_accuracy_publication.py')
+    helpers=importlib.util.module_from_spec(helper);helper.loader.exec_module(helpers)
+    import accuracy_publication
+    reports=[]
+    for model in sorted(c.FINAL_ACCURACY_MODELS):
+        rows=[];td=[]
+        for provenance in sorted(accuracy_publication.PROVENANCE):
+            for category in sorted(c.FINAL_ACCURACY_CATEGORIES):
+                row=helpers.observation('unit-'+provenance+'-'+category,category,actual=1,raw=2,adjusted=1,provenance=provenance,model=model)
+                if category=='anytime_td':
+                    row.update(raw_projection=.5,adjusted_projection=None,probability=.25,probability_provenance='rederived_from_original_count_retained_formula');td.append(row)
+                rows.append(row)
+        reports.append(helpers.evaluation(rows,td=td,model=model))
+    typed=accuracy_publication.project_accuracy(reports);accuracy_publication.validate_accuracy(typed)
+    assert len(typed['cohorts'])==len(accuracy_publication.MODELS)*len(accuracy_publication.PROVENANCE)==12
+    return typed
+
+
+class FinalCandidateWorkload(unittest.TestCase):
+    def test_current_bound_metric_control_and_honest_zero_probabilities(self):
+        value=final_workload_control();c._check_final_workload(value,'1'*40,'2'*40)
+        self.assertTrue(value['decisions']['admitted'])
+        self.assertEqual(value['accuracy']['cohorts'][0]['categories']['fpts']['direct_provider_ppr_resolved'],0)
+        self.assertEqual(value['accuracy']['cohorts'][0]['categories']['anytime_td']['probability']['originally_recorded_probability'],0)
+
+    def test_old_source_or_wrong_current_tree_cannot_borrow_final_counts(self):
+        for key,bad in (('commit',c.BASE),('tree','3'*40)):
+            value=final_workload_control();value['candidate'][key]=bad
+            with self.assertRaisesRegex(RuntimeError,'source/version'):
+                c._check_final_workload(value,'1'*40,'2'*40)
+        value=final_workload_control();value['publication_source']=c.BASE
+        with self.assertRaisesRegex(RuntimeError,'source/version'):c._check_final_workload(value)
+        value=final_workload_control();value['report_schema_version']='selection-report-v3';value['decisions']=c._final_workload_decisions(value)
+        value['applicability']=c._final_applicability(value)
+        with self.assertRaisesRegex(RuntimeError,'envelope'):c._check_final_workload(value)
+
+    def test_actual_final_rows_groups_and_outcomes_each_enforce_load_floor(self):
+        for name,floor in c.FINAL_LOAD_FLOORS.items():
+            value=final_workload_control();value['metrics'][name]=floor-1;value['decisions']=c._final_workload_decisions(value)
+            value['applicability']=c._final_applicability(value)
+            self.assertFalse(value['decisions']['numeric'][name])
+            c._check_final_workload(value,require_admitted=False)
+            with self.assertRaisesRegex(RuntimeError,'envelope'):c._check_final_workload(value)
+
+    def test_final_missing_metric_or_stale_admitted_flag_is_rejected(self):
+        value=final_workload_control();del value['metrics']['groups']
+        with self.assertRaisesRegex(RuntimeError,'counts/bytes'):c._check_final_workload(value)
+        value=final_workload_control();value['metrics']['groups']=0
+        with self.assertRaisesRegex(RuntimeError,'recomputed'):c._check_final_workload(value)
+
+    def test_required_product_contexts_cannot_be_hidden_by_larger_totals(self):
+        mutations=[('cohorts','ranked_biggest_lean_v1'),('dimensions','category_side_selection_kickoff_lead'),('sources','sleeper'),('checkpoints','90m'),('categories','rec'),('sides','under')]
+        for key,name in mutations:
+            value=final_workload_control();del value['coverage'][key][name];value['metrics']['groups']*=10
+            value['decisions']=c._final_workload_decisions(value)
+            value['applicability']=c._final_applicability(value)
+            with self.assertRaisesRegex(RuntimeError,'envelope'):c._check_final_workload(value)
+
+    def test_incidental_reference_context_difference_is_reported_not_fabricated(self):
+        value=final_workload_control();missing=value['contexts']['ids'].pop();value['metrics']['contexts']-=1
+        value['contexts']['missing_reference_ids']=[missing]
+        value['decisions']=c._final_workload_decisions(value)
+        value['applicability']=c._final_applicability(value)
+        c._check_final_workload(value)
+        value['contexts']['missing_reference_ids']=[]
+        with self.assertRaisesRegex(RuntimeError,'correspondence'):c._check_final_workload(value)
+
+    def test_display_context_alone_cannot_substitute_for_ranked_selection(self):
+        value=final_workload_control();value['coverage']['strategy_selected']['ranked_projected_points_v1']=0
+        value['decisions']=c._final_workload_decisions(value)
+        value['applicability']=c._final_applicability(value)
+        with self.assertRaisesRegex(RuntimeError,'envelope'):c._check_final_workload(value)
+
+    def test_accuracy_keys_without_real_supported_populations_cannot_pass(self):
+        value=final_workload_control()
+        for capture in value['accuracy']['capture_coverage']:
+            capture['capture_coverage']['eligible_capture_rows']['rec']=0
+            capture['capture_coverage']['paired_capture_rows']['rec']=0
+        value['decisions']=c._final_workload_decisions(value)
+        value['applicability']=c._final_applicability(value)
+        with self.assertRaisesRegex(RuntimeError,'envelope'):c._check_final_workload(value)
+        value=final_workload_control();value['accuracy']['cohorts'][0]['engine_sha256']='f'*64
+        with self.assertRaisesRegex(RuntimeError,'engine/cohort'):c._check_final_workload(value)
+        value=final_workload_control();value['accuracy']['cohorts'][0]['categories']['rec']['paired_resolved']=2
+        with self.assertRaisesRegex(RuntimeError,'reconcile'):c._check_final_workload(value)
+
+    def test_rehashed_unsupported_statistic_contract_fails_private_and_compact(self):
+        private=final_workload_control();public=c._public_final_workload(private)
+        for cohort in private['accuracy']['cohorts']:cohort['statistic_contract_sha256']='f'*64
+        for cohort in public['accuracy']['cohorts']:cohort['statistic_contract_sha256']='f'*64
+        public['private_metrics_sha256']=c.sha(c.encoded(private))
+        with self.assertRaisesRegex(RuntimeError,'statistic contract'):c._check_final_workload(private)
+        with self.assertRaisesRegex(RuntimeError,'statistic contract'):c._check_final_workload(public,projection=True)
+        typed=permitted_accuracy_control()
+        expected=c._final_statistic_contracts()
+        self.assertTrue(all(v['statistic_contract_sha256']==expected[v['model_version']] for v in typed['cohorts']))
+
+    def test_td_bases_cannot_double_count_the_same_resolved_forecast(self):
+        value=final_workload_control()
+        td=value['accuracy']['cohorts'][0]['categories']['anytime_td']
+        td['probability']={'originally_recorded_probability':1,'rederived_from_original_count_retained_formula':1}
+        with self.assertRaisesRegex(RuntimeError,'TD probability bases'):c._check_final_workload(value)
+
+    def test_accuracy_capture_and_cohort_bounds_are_preserved(self):
+        value=final_workload_control();capture=value['accuracy']['capture_coverage'][0]['capture_coverage']
+        capture['paired_capture_rows']['rec']=capture['eligible_capture_rows']['rec']+1
+        with self.assertRaisesRegex(RuntimeError,'paired capture'):c._check_final_workload(value)
+        value=final_workload_control();value['accuracy']['cohorts'][0]['categories']['rec']['coverage']['unique_players']=2
+        with self.assertRaisesRegex(RuntimeError,'sample identities'):c._check_final_workload(value)
+        value=final_workload_control();value['accuracy']['cohorts'][0]['coverage']['opportunities']+=1
+        with self.assertRaisesRegex(RuntimeError,'category populations'):c._check_final_workload(value)
+
+    def test_nested_reference_values_do_not_alias_source_defined_guard(self):
+        value=final_workload_control();original=copy.deepcopy(c.FINAL_REFERENCE)
+        value['reference']['accuracy_capture_work']['original_sleeper_matchup_baseline']['unique_receipts']=0
+        self.assertEqual(c.FINAL_REFERENCE,original)
+        with self.assertRaisesRegex(RuntimeError,'exact final'):c._check_final_workload(value)
+
+    def test_supported_missing_model_preserves_known_metrics_and_unknown_dimensions(self):
+        value=final_workload_control()
+        value['accuracy']['capture_coverage']=[v for v in value['accuracy']['capture_coverage'] if v['model_version']=='original_sleeper_matchup_baseline']
+        value['accuracy']['cohorts']=[v for v in value['accuracy']['cohorts'] if v['model_version']=='original_sleeper_matchup_baseline']
+        value['decisions']=c._final_workload_decisions(value);value['applicability']=c._final_applicability(value)
+        c._check_final_workload(value,require_admitted=False)
+        absent=[value['applicability']['comparisons'][name] for name in value['applicability']['deficiencies'] if value['applicability']['comparisons'][name]['presence']=='ABSENT_UNESTABLISHED']
+        self.assertTrue(absent);self.assertTrue(all(v['actual'] is None for v in absent))
+        self.assertIn('original_sleeper_matchup_baseline',{v['model_version'] for v in value['accuracy']['cohorts']})
+        with self.assertRaisesRegex(RuntimeError,'envelope'):c._check_final_workload(value)
+
+    def test_actual_typed_maximum_cohort_population_compacts_losslessly(self):
+        value=final_workload_control();value['accuracy']=c._accuracy_workload(permitted_accuracy_control())
+        # Boundary telemetry population only: not invented observations/contexts
+        # in a seed, report, fixture or application qualification.
+        ids=sorted(c.sha(c.encoded(['unit-context-boundary',i])) for i in range(512))
+        value['metrics']['contexts']=len(ids);value['contexts'].update(ids=ids,missing_reference_ids=sorted(c.FINAL_REFERENCE_CONTEXT_IDS-set(ids)),extra_reference_ids=sorted(set(ids)-c.FINAL_REFERENCE_CONTEXT_IDS))
+        value['decisions']=c._final_workload_decisions(value);value['applicability']=c._final_applicability(value)
+        public=c._public_final_workload(value);c._check_final_workload(public,projection=True)
+        self.assertEqual(public['private_metrics_sha256'],c.sha(c.encoded(value)))
+        self.assertNotIn('ids',public['contexts']);self.assertEqual(public['contexts']['extra_reference_count'],512)
+        self.assertEqual(public['contexts']['ids_sha256'],c.sha(c.encoded(ids)))
+        self.assertEqual([sorted(c.FINAL_REFERENCE_CONTEXT_IDS)[i] for i in public['contexts']['missing_reference_indices']],value['contexts']['missing_reference_ids'])
+        fields=('opportunities','unique_players','unique_games','unique_weeks')
+        for before,after in zip(value['accuracy']['cohorts'],public['accuracy']['cohorts']):
+            self.assertEqual(dict(zip(fields,after['coverage'])),before['coverage'])
+            for category,item in before['categories'].items():
+                for name in ('coverage','paired_coverage','unpaired_coverage'):
+                    self.assertEqual(dict(zip(fields,after['categories'][category][name])),item[name])
+        self.assertLess(len(c.encoded(public)),52*1024) # leaves room inside unchanged outer64KiB.
+        public['accuracy']['cohorts'][0]['coverage'].append(0)
+        with self.assertRaisesRegex(RuntimeError,'compact accuracy'):c._check_final_workload(public,projection=True)
+
+    def test_smaller_accuracy_scan_is_unknown_applicability_not_new_fictional_floor(self):
+        value=final_workload_control()
+        for capture in value['accuracy']['capture_coverage']:capture['capture_coverage']['unique_receipts']=277
+        value['decisions']=c._final_workload_decisions(value);value['applicability']=c._final_applicability(value)
+        self.assertTrue(value['decisions']['admitted']);c._check_final_workload(value)
+        self.assertEqual(value['applicability']['status'],'UNKNOWN_ADDITIONAL_MATCHED_REAL_CASE_REQUIRED')
+        self.assertEqual(len(value['applicability']['deficiencies']),2)
+        self.assertTrue(all(value['applicability']['comparisons'][name]['actual']==277 and value['applicability']['comparisons'][name]['reference']==431 for name in value['applicability']['deficiencies']))
+        value['applicability']['status']='CONSERVATIVE_REFERENCE_ENVELOPE_COVERED'
+        with self.assertRaisesRegex(RuntimeError,'applicability'):c._check_final_workload(value)
+
+    def test_corrected_pending_does_not_require_invented_resolved_ppr_or_td(self):
+        value=final_workload_control()
+        for cohort in value['accuracy']['cohorts']:
+            if cohort['model_version']=='original_sleeper_matchup_baseline':continue
+            for category,item in cohort['categories'].items():
+                item.update(paired_resolved=0,adjusted_only_resolved=0,outcome_status={'pending':1})
+                if category=='anytime_td':item['probability']={k:0 for k in item['probability']}
+        value['decisions']=c._final_workload_decisions(value)
+        value['applicability']=c._final_applicability(value)
+        c._check_final_workload(value)
+
+    def test_b3_admission_does_not_replace_missing_final_candidate_evidence(self):
+        temp=Campaign();value={'admission':{},'correction':{},'advisories':{}}
+        with self.assertRaisesRegex(RuntimeError,'missing'):
+            c._check_evidence_projection(value)
+
+    def test_commit_collects_after_existing_stage_and_preserves_failure_counts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'fixture';root.mkdir();result=Path(temp)/'dataflow.json';events=[]
+            c.put(result,{'status':'CAPTURE_COMPLETE_PRECOMMIT_CI_PENDING','stages':{}})
+            value=final_workload_control();value['metrics']['groups']=1;value['decisions']=c._final_workload_decisions(value)
+            value['applicability']=c._final_applicability(value)
+            capture=SimpleNamespace(stage_pages=lambda *a:events.append('actual-stage-control'),_public_archive_commit=lambda *a:None)
+            m={'capture':capture}
+            def metrics(*a):events.append('metrics');return value
+            with patch.object(c,'require_offline'),patch.object(c,'execution_identity'),patch.object(c,'_sample_context',return_value=(m,None)),patch.object(c,'external',side_effect=lambda *a:contextlib.nullcontext()),patch.object(c,'commit',side_effect=lambda *a:events.append('commit')),patch.object(c,'final_candidate_workload',side_effect=metrics):
+                with self.assertRaisesRegex(RuntimeError,'envelope'):c.sample_commit(Path(temp),root,result)
+            self.assertEqual(events,['commit','actual-stage-control','metrics'])
+            saved=json.loads(result.read_bytes())
+            self.assertEqual(saved['final_candidate_workload']['metrics']['groups'],1)
+            self.assertEqual(saved['status'],'FINAL_CANDIDATE_WORKLOAD_NOT_ADMITTED')
+            self.assertGreaterEqual(saved['stages']['final_candidate_metrics'],0)
+
+
+    def test_actual_collector_counts_supported_reader_values_without_history_replay(self):
+        # Current-graph reader/registry are controlled unit transports; file,
+        # descriptor hashing, extraction and decision code are actual. No seed
+        # admission, source qualification or application fixture is claimed.
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'fixture';base=root/'output/data/selection-grading';base.mkdir(parents=True)
+            pages=Path(temp)/'pages';pages.mkdir();(pages/'index.html').write_text('tiny staged unit control')
+            descriptor=dict(model_version='original_sleeper_matchup_baseline',provenance_class='local_pregame_membership_observation',engine_sha256=c.FINAL_ACCURACY_ENGINES['original_sleeper_matchup_baseline'],view='top_picks',checkpoint='history',line_source_scope='all',policy_version='phase2-timing-v1',policy_sha256='a'*64)
+            context=c.sha(c.encoded(descriptor))
+            report='7'*64;namespace=base/report;namespace.mkdir()
+            c.put(namespace/'summary.json',dict(report_id=report,row_count=1,source_sha='1'*40,report_schema_version='selection-report-v4',contexts={context:descriptor},summary_partitions=[dict(encoded_bytes=12,decoded_bytes=24)]))
+            c.put(namespace/'outcomes.json',dict(report_id=report,outcome_count=1,periods=[dict(encoded_bytes=13,decoded_bytes=26)]));c.put(base/'hosting.json',{'unit':'registry transport'})
+            pointer=dict(schema_version='selection-publication-pointer-v4',report_id=report,row_count=1,rows=[dict(encoded_bytes=10,decoded_bytes=20)])
+            for name in ('summary','outcomes'):
+                path=namespace/(name+'.json');pointer[name]=dict(path=report+'/'+name+'.json',sha256=c.sha(path.read_bytes()),decoded_bytes=path.stat().st_size)
+            c.put(base/'latest.json',pointer)
+            c.put(root/'output/data/release-identity.json',dict(schema_version='website-generation-v1',source_sha='1'*40,generation_sha256='6'*64,selection_report_id=report))
+            for source in (base/'latest.json',namespace/'summary.json',namespace/'outcomes.json',root/'output/data/release-identity.json'):
+                destination=pages/source.relative_to(root/'output');destination.parent.mkdir(parents=True,exist_ok=True);destination.write_bytes(source.read_bytes())
+            typed=final_workload_control()['accuracy'];raw_accuracy={'schema_version':typed['schema_version'],'capture_coverage':typed['capture_coverage'],'cohorts':[]}
+            for cohort in typed['cohorts']:
+                raw=copy.deepcopy(cohort)
+                for category,item in raw['categories'].items():
+                    item['paired']={'raw':{'n':item.pop('paired_resolved')}};item['adjusted_only']={'n':item.pop('adjusted_only_resolved')}
+                    if category=='fpts':item['direct_provider_ppr']={'raw':{'n':item.pop('direct_provider_ppr_resolved')}}
+                    if category=='anytime_td':item['probability']={k:{'n':n} for k,n in item['probability'].items()}
+                raw_accuracy['cohorts'].append(raw)
+            rows=[dict(category='rec',side='over',cohort='top_picks',checkpoint='history',result='pending',action='SELECT')]
+            tables=[dict(line_source_scope='all',view='top_picks',dimension='overall',period='cumulative')]
+            summary={'report_id':report,'summary':{'tables':tables},'forecast_accuracy':raw_accuracy}
+            calls=[]
+            import selection_publication as actual_publication
+            publication=SimpleNamespace(__file__=str(root/'tools/selection_publication.py'),_partition_asset=actual_publication._partition_asset,publication_contents=lambda b,p:(calls.append('publication') or (summary,rows,[{}])))
+            capture=SimpleNamespace(__file__=str(root/'tools/phase2_capture.py'),_registry=lambda *a:(calls.append('registry') or {str(i):{} for i in range(24)}))
+            marker={'candidate_commit':'1'*40,'candidate_tree':'2'*40}
+            with patch.object(c,'execution_identity',return_value=marker),patch.object(c.seed_v1,'workload',side_effect=AssertionError('No diagnostic all-history replay for counts')):
+                value=c.final_candidate_workload(Path(temp),root,{'publication':publication,'capture':capture},pages)
+            self.assertEqual(calls,['publication','registry'])
+            self.assertEqual((value['metrics']['rows'],value['metrics']['groups'],value['metrics']['outcomes']),(1,1,1))
+            self.assertEqual(value['metrics']['staged_bytes'],sum(path.stat().st_size for path in pages.rglob('*') if path.is_file()))
+            self.assertEqual(value['contexts']['ids'],[context])
+            self.assertEqual(json.loads((root.parent/'FINAL_CONTEXT_DESCRIPTORS.private.json').read_bytes()),{context:descriptor})
+            self.assertFalse(value['decisions']['admitted'])
+            def race(*args):
+                (root/'output/data/release-identity.json').write_bytes(b'{"changed":"same-path-final-boundary"}')
+                return summary,rows,[{}]
+            publication.publication_contents=race
+            with patch.object(c,'execution_identity',return_value=marker):
+                with self.assertRaisesRegex(RuntimeError,'staged generation'):c.final_candidate_workload(Path(temp),root,{'publication':publication,'capture':capture},pages)
+            publication.__file__=str(Path(temp)/'old_B3/selection_publication.py')
+            with patch.object(c,'execution_identity',return_value=marker):
+                with self.assertRaisesRegex(RuntimeError,'actual installed'):c.final_candidate_workload(Path(temp),root,{'publication':publication,'capture':capture},pages)
+
+    def test_zero_counts_cannot_masquerade_as_required_semantic_keys(self):
+        value=final_workload_control();value['coverage']['cohorts']['ranked_biggest_lean_v1']=0
+        value['decisions']=c._final_workload_decisions(value)
+        value['applicability']=c._final_applicability(value)
+        with self.assertRaisesRegex(RuntimeError,'envelope'):c._check_final_workload(value)
+
+
 class Campaign(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name)
@@ -415,7 +697,7 @@ class Campaign(unittest.TestCase):
 
     def evidence(self):
         categorical=set(c.seed_v1.REQUIRED_SETS)|{'outcome_revisions','original_contexts','recorders_inactive','original_schema','corrected_schema','archives','scope_schema','original_comparator'}
-        return {'advisories':{'outcomes':{'legacy_verifier':{'outcome':'failure','returncode':1},'historical_comparison':{'outcome':'success','returncode':0}},'remote_continuation':'UNMEASURED','unsupported_raw_http_calls':2},'admission':{'numeric_floors':{k:{'actual':v,'required':v,'meets':True} for k,v in c.seed_v1.ENVELOPE.items()},
+        return {'final_candidate_workload':c._public_final_workload(final_workload_control()),'advisories':{'outcomes':{'legacy_verifier':{'outcome':'failure','returncode':1},'historical_comparison':{'outcome':'success','returncode':0}},'remote_continuation':'UNMEASURED','unsupported_raw_http_calls':2},'admission':{'numeric_floors':{k:{'actual':v,'required':v,'meets':True} for k,v in c.seed_v1.ENVELOPE.items()},
             'categorical':{k:True for k in categorical},'population_pass':True,'game_states':{'post':2,'in':7,'pre':5},
             'qualification_counts':{'retained_legacy_original_proof_missing':9,'new_pregame_original_inputs_verified':5},
             'public_semantics_sha256':'a'*64,'original_file_sha256':'b'*64},
@@ -465,6 +747,35 @@ class Campaign(unittest.TestCase):
         self.assertEqual(projection['resources'],'PASS');self.assertTrue(all(projection['checks'].values()))
         self.assertNotIn('/private/path',c.encoded(projection).decode());self.assertNotIn('/sys/fs/cgroup',c.encoded(projection).decode())
         self.assertEqual(projection['claim'],'DERIVED_MEASUREMENTS_NOT_ORIGINAL_RECORD_BYTES')
+    def test_failed_final_workload_projects_actual_counts_without_qualifying(self):
+        measured,outer,report,fp=self.measurement_fixture();work=self.base/'nfl-operating-1';work.mkdir();root=work/'fixture';result=work/'RESULT.json'
+        report['status']='FAIL';report['failure_class']='RuntimeError';result.write_bytes(c.encoded(report))
+        final=final_workload_control();final['metrics']['groups']=12;final['decisions']=c._final_workload_decisions(final)
+        final['applicability']=c._final_applicability(final)
+        c.put(work/'dataflow.json',{'final_candidate_workload':final})
+        records=[(measured,{'sha256':c.sha(c.encoded(measured)),'bytes':len(c.encoded(measured))}),(outer,{'sha256':'d'*64,'bytes':100})]
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.base),'GITHUB_RUN_ID':'123','GITHUB_SHA':'1'*40,'GITHUB_RUN_ATTEMPT':'1','GITHUB_EVENT_NAME':'workflow_dispatch','SEED_MANIFEST_SHA256':'b'*64}),patch.object(c,'_protected_report',side_effect=records),patch.object(c,'_source_ci_cli',return_value=fp),patch.object(c,'_hash_file',return_value='a'*64):
+            value=c.project(self.code,root,result,1)
+        self.assertEqual(value['status'],'FAIL');self.assertIsNone(value['workload_evidence'])
+        self.assertEqual(value['final_candidate_workload']['metrics']['groups'],12)
+        self.assertFalse(value['final_candidate_workload']['decisions']['admitted'])
+        self.assertLessEqual(len(c.encoded(value)),64*1024)
+
+    def test_full_permitted_typed_cohort_projection_remains_bounded_once(self):
+        measured,outer,report,fp=self.measurement_fixture();work=self.base/'nfl-operating-1';work.mkdir();root=work/'fixture';result=work/'RESULT.json';result.write_bytes(c.encoded(report))
+        final=final_workload_control();final['accuracy']=c._accuracy_workload(permitted_accuracy_control())
+        ids=sorted(c.sha(c.encoded(['unit-context-boundary',i])) for i in range(512))
+        final['metrics']['contexts']=len(ids);final['contexts'].update(ids=ids,missing_reference_ids=sorted(c.FINAL_REFERENCE_CONTEXT_IDS-set(ids)),extra_reference_ids=sorted(set(ids)-c.FINAL_REFERENCE_CONTEXT_IDS))
+        final['decisions']=c._final_workload_decisions(final);final['applicability']=c._final_applicability(final)
+        evidence=self.evidence();evidence['final_candidate_workload']=c._public_final_workload(final)
+        records=[(measured,{'sha256':c.sha(c.encoded(measured)),'bytes':len(c.encoded(measured))}),(outer,{'sha256':'d'*64,'bytes':100})]
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.base),'GITHUB_RUN_ID':'123','GITHUB_SHA':'1'*40,'GITHUB_RUN_ATTEMPT':'1','GITHUB_EVENT_NAME':'workflow_dispatch','SEED_MANIFEST_SHA256':'b'*64}),patch.object(c,'_protected_report',side_effect=records),patch.object(c,'_evidence_aggregates',return_value=evidence),patch.object(c,'_source_ci_cli',return_value=fp),patch.object(c,'_hash_file',return_value='a'*64):
+            value=c.project(self.code,root,result,1)
+        self.assertEqual(value['status'],'LOCAL_BOUNDARY_COMPLETE_EXTERNAL_JOB_TIMESTAMPS_PENDING')
+        self.assertIsNone(value['final_candidate_workload']) # no duplicate success payload.
+        self.assertLessEqual(len(c.encoded(value)),64*1024)
+        self.assertEqual(value['workload_evidence']['final_candidate_workload']['private_metrics_sha256'],c.sha(c.encoded(final)))
+
     def project_stage_control(self,stages):
         # Actual projector with controlled source/root measurement inputs;
         # never evidence that a resource backend or hosted workload ran.
@@ -535,6 +846,19 @@ class Campaign(unittest.TestCase):
             return inventory if '/jobs?' in route else run
         log_records=logs;api=SimpleNamespace(get=get);out=self.base/'assessment.json'
         value=c.assess(self.result,out,api=api);self.assertEqual(value['operating'],'PASS_FICTIONAL_COMPUTE_ONLY')
+        original_log=log_records[1]
+        unqualified=json.loads(original_log.decode().split('NFL_OPERATING_MEASUREMENT ',1)[1])
+        final=final_workload_control()
+        for capture in final['accuracy']['capture_coverage']:capture['capture_coverage']['unique_receipts']=277
+        final['applicability']=c._final_applicability(final)
+        unqualified['workload_evidence']['final_candidate_workload']=c._public_final_workload(final)
+        log_records[1]=b'NFL_OPERATING_MEASUREMENT '+c.encoded(unqualified)+b'\n'
+        unmatched=c.assess(self.result,out,api=api)
+        self.assertEqual(unmatched['operating'],'NOT_QUALIFIED')
+        self.assertEqual(unmatched['samples'][0]['planning'],'PASS')
+        self.assertEqual(unmatched['samples'][0]['resources'],'PASS')
+        self.assertEqual(unmatched['samples'][0]['applicability'],'UNKNOWN_ADDITIONAL_MATCHED_REAL_CASE_REQUIRED')
+        log_records[1]=original_log
         log_records[1]+=log_records[1]
         failed=c.assess(self.result,out,api=api);self.assertEqual(failed['operating'],'NOT_QUALIFIED')
         self.assertEqual(len(failed['samples']),3);self.assertEqual(failed['samples'][0]['resources'],'UNKNOWN')

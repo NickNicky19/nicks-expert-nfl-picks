@@ -8,6 +8,7 @@ retrieval, checks and packaging costs remain inside the measured job.
 """
 import argparse
 import copy
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -1123,6 +1124,276 @@ def _measurements(measured):
     return value
 
 
+# The retained real release is a measured load reference, not fictional history.
+FINAL_REFERENCE = {'source': '04519b54dfb76dcca7916fe6bf75d7e1711793b6', 'report_id': '46560e64a80282e7a602390b681c99e9cf60b104424b2a8a88d87097aaf49010', 'pointer_sha256': '1a311201666b258c7b0081eea485ba5660ee0e6682cebb95b5a109b19bf13083', 'summary_index_sha256': 'f0a19f5dc8c5c4265efb5caddc63feeb0dbf50f9faf6f485b0425837a5d3e6c3', 'context_descriptors_sha256': '5e3a67a867a9c2b49e6aae85f4661b06983ff4f895ebbf9f2479dfe504889449', 'required_load_floors': {'rows': 56918, 'groups': 24295, 'outcomes': 4830}, 'informational_descriptor_metrics': {'contexts': 122, 'summary_partitions': 328, 'row_chunks': 228, 'row_encoded_bytes': 22139104, 'row_decoded_bytes': 167554381, 'summary_encoded_bytes': 4685375, 'summary_decoded_bytes': 41545386, 'outcome_encoded_bytes': 450259, 'outcome_decoded_bytes': 4100696}, 'accuracy_capture_work': {'original_sleeper_matchup_baseline': {'unique_receipts': 431, 'eligible_capture_rows': {'anytime_td': 104861, 'fpts': 141796, 'pass_att': 13148, 'pass_cmp': 13148, 'pass_int': 13148, 'pass_td': 13148, 'pass_yd': 13148, 'rec': 128648, 'rec_yd': 128648, 'rush_att': 35501, 'rush_rec_yd': 92691, 'rush_yd': 48649}, 'paired_capture_rows': {'anytime_td': 0, 'fpts': 114451, 'pass_att': 9590, 'pass_cmp': 9590, 'pass_int': 9590, 'pass_td': 9590, 'pass_yd': 9590, 'rec': 104861, 'rec_yd': 104861, 'rush_att': 28120, 'rush_rec_yd': 74476, 'rush_yd': 37710}}, 'sleeper-matchup-data-integrity-v2': {'unique_receipts': 431, 'eligible_capture_rows': {'anytime_td': 366, 'fpts': 772, 'pass_att': 72, 'pass_cmp': 72, 'pass_int': 72, 'pass_td': 72, 'pass_yd': 72, 'rec': 734, 'rec_yd': 734, 'rush_att': 204, 'rush_rec_yd': 524, 'rush_yd': 276}, 'paired_capture_rows': {'anytime_td': 0, 'fpts': 0, 'pass_att': 52, 'pass_cmp': 52, 'pass_int': 52, 'pass_td': 52, 'pass_yd': 52, 'rec': 600, 'rec_yd': 600, 'rush_att': 168, 'rush_rec_yd': 346, 'rush_yd': 220}}}}
+FINAL_LOAD_FLOORS = {'rows':56918,'groups':24295,'outcomes':4830}
+FINAL_REFERENCE_CONTEXT_IDS = frozenset(['01515ae50d8129e07627a7597170e03d1ad7ddaeaabc56270e5bb05824e2bccf', '0183e948ab4360a97e8eb02b9fddbad17c6cc11fbf2fdd7d98d0cce191b1994d', '01c1324797562cd61f434b2217d77c1ea6e9f81a67497754c08b5a7f7bb6f7eb', '02515da245258676e12ce48f384a33a09b2c572a5a7e5071b5fa584a55e7fb77', '038a965fa85d8eef70c86dfe84c82ad71da117138ba89bdd10dd3c703f48857a', '03c2a3ed953c54b8d52d9cb998af69e0b3ddb26f7bc87b6638c615e0ecf7d5ae', '03d4267f2f291b91f48a208b4fda6f984440de51cbe37a96d0c9812aa36f942f', '05e5c8f4a81b9c0b0cd23eb3443a3de6f65e4e304c95d9e513e4a55422719fd4', '08f5075e23fb90d09636c2f6d466502d036cb5c8d7c27e83b9688aecd5a1837b', '0ab48ecc68cfdbc387817e48beb10f238505faf94f0994bacb3077f470265083', '0b205690db797f398230ec3554765fde8bcdc8817cec76bb067808f5313c2cf7', '0c63e02505d61b76d27a9fb34765637824d30aa8de05d6f80942203d684f650d', '1349c367652c4dce16c6b256667d3385b9a6cb1d01d7a06337af21c7f129d672', '13fcb3db60e4f2af514ddbe7521b103fe01055328ceeb4b0ef1d14b48b92a724', '1513caeb6807c44f8542061481df67d90115529e7accfc700f0fa35ea412a0b8', '1676bf6fda75ab5716befbe5b88683dd22c23015220b1c915710adeb2e5e300b', '19eb29f350c5aaf522c412521dbe095e282e15fe25c25d027042ef447e5361af', '1a7255ca0058c854cf020eb02cf8d78990f864f53f179a8087d14955594f0d12', '1e9b377713a212170751b9d29e7391f16388bfe24a09f48aea0842d83ff75dd6', '1ff2858e75d9b4f82203e89fe17ed4b8078f65ec28b7f028f19930bf8d8d69c3', '21d550c7be10ea98102262ee89fa60462c51c02399a6e37591f814fbc66c6456', '221092c9e6a68e65e6247af9df0cc488915e9c67c9a53028b86e21fb2db5cf2e', '2219db5a6602f2495a9640f29153c42953c8ee45db4dd00baa94e8f135be8755', '222276f4eaaed8397ab6131551e03fafffaedf77093de3ec87eefc2ce47ee035', '22cdce400b2bf684380ec11052f617325e549e7fda08d3eef0200b9012203e6d', '29bf6d7e9385cb47f114ed9cfd8f3b6d3e197244cdeb55a5334f31bcb3851921', '2cb1620c2f51651c962f146b0384591f04dc8edcd49cc663b4b9566ea91dfa68', '2f494b34574ea74fc479f8505578e8612acc5979e4c6d7f93d8d0f070db6edf3', '3044a32a344d888607afddeee4580a22f588e751f6175f3111a64a63f595eb3d', '3101c09f6e7a0eb35906ae27aef1c817fe1c2265590a830eee9774d20423603f', '31487f1a43d52f77525e3c3687423669a50c06ca551dbab0aebe53bc1e711057', '31edbe9d739e106429c404f7d8f3dc9b11366d096aa59c77b5a4136c9d8c2e11', '34221f9d031a671faa299eb8f76ea802b930344c820a9fc06e0673ca139b0b8f', '37e6b8abffd03d23881dd8428fcfc2668475fa13c25b7dbf68e4bc09229ee0b6', '3864b4185932a5cdef2c2888075555ede1c3c1e9029abc4eb5685fdb41e31c6c', '38abb10ec32c83855e74e2e8ecf723ab14975cba121227c8ccd2fcad0189e894', '38b6f786ea8b5ef2d42d7094281ab023bf76cd1b7838f6e95184a221ede6afd5', '395f4013843e898f3a01a22170a281fce8d28acd6d8206e353277d9fc1b65d34', '39bffb1552c0c983f38d5e11f54289da3f745bf92951108343d0d102b2ba93a6', '3a257b28d922250c0b0774513524a996837a4f76a2926aed24f2dddce9070abe', '3cb571fb423837c909dc35a4bb567c495997988d310eafa42daf4cd65c5ef889', '3f9a738bfe36d59402e24f4a25e63f70bcb6a553499d6c180cf2b3f4628590a6', '43c792be68164e97b2e834b7fe061027e74e1a8c705efa93a2673d5a56658bf9', '44e2346e72a427edc4e5f97b8798657759dbd40536d79b2df27d1c25de42bb31', '48d6bcdd6e29ce6adfe2472a2cb70fba204720f16fd1912a77265a93e5145459', '4e4015571ceb5ba47f8b49dbbf461659311823f1c585107cdf76329a3985555f', '4f8590014c47ddafcf52bdae4e96cb293a87999aa3078fb8e4715d8e06961ca1', '515abf81825732f1ec186552eca4faed21302fa5df44891918d0e38107e882c3', '526987f761ee3e969f8103487ad5b1632fa8195251ac93e84c0a3b75d0c8d1e9', '570e837b894327c7152d80ca8fba6e4c2754ca77d579c6809c372a3ac72c2318', '5d7ae0fd976bedf9044ec5d85f7267e22b1f9439b6b0d3b6f19916dec8ed6ab3', '5eb9b8b124977bbb67946a6871e7f110aab672233bb08828629271a78e334de1', '5fc34a173365f142d02661166bb34830f303bef86bdf089372f1e4b7cffa49f8', '63a28e68aa08a60bd4722a177f7d484de57bda6a4b76a4104ccb9201c388b2fa', '65c01211b7a70a5be77b43a162f05bdfea1c1fa7437871838e171323ec9bee63', '693ed4e191d593e6dcc33b3d43e602f1664ec6ee7d0e921782c2bac835e3009f', '6eb049bb88974849e084d03bc4f3ec10780fe778cf9f9b53dfbb801ab888a999', '7232f81ade6a0df8b4162d886a94d6b16e06b3ad68c776f372b05319909bb086', '733450c78e233562e1402a3b061fe47f019dc21be9235701b3d334ffd2bd8de8', '7553197ae8da08da2df904361932638501f258d0ce9ad36a1878650600a4426b', '75940d5b299ba49ae8beaa684ea8b54a623d4c4310eefc1e2e931ae21bd7ce40', '78a980057ad617dd38eb658229a66da41f45b75440b64d635a1536bd560a90da', '79f39e49a85aecfa0773fa4112d5c2dd926f83a6495c80e70b3de60b4c7b9eb5', '7ac252a246dcdb0fd4963c0e0af5c34a0053214aa399cdd987534f29590f7bab', '7de5a7445f332ce7e354c357a82ea7150122053bcdd53f71da957cd852a84b9d', '7eb6d7503cd05a3b59abbd89be6ee73b69852f09e4bff395bc76fedf4aecee2b', '7f27f476b692186e8550505b8062f530a0a8c0d0cfe161fa52eafc795c8a1cd6', '7fb8ed849a44e3a207a54ddcac3cad492687eaff7494dad37e44bb2a424ab7c1', '8147a4a550c258f46257c2d4be89940ef89e8fa7e0079ad3315bb510757b52d3', '851d54d6fde7390308a492db1a329ad5393623f5768bcb6164fd7566a605f6b5', '8551cfbe2a566293fce8faca58b0bf1d5f5bbcbae41004adacbf8d424887fa53', '875605da910d5b03efbf9835605d75797e63d3efe26946487f15cebbba794197', '88f703e4092cb5e1022eb5cc199b333ba8a9aceebe8efbfdcfccaab30107b3ca', '8a0fe565e4d0d8a8cf5b92c5b91fb79b7559eaf94535e2017708b1f3f86a802f', '8fa40967d7d42c74159a58eeaa385e9efcf4b8b439a6f49ec63516604f4cb5d9', '91202aec9c025cac998f0b33f819c6bbc899b37c371ac9869da07c75b10f200c', '921313a93b863924bc6c3ab3e0d609b14abb118b85b6cef3c7f8a63ca80a8853', '92e83e8c29eb45c16124675695d6e07cf41f1e648a3d05dd9b76a28cf23d6994', '9302004f06fddd32c69dc5e7226361cdd9986c07ce85dc6f5a9e24f1c13ba25e', '98183ce290bae25ddaca15ceab54c758020faa9e3bc0ff15eff0a9542548b45c', '9a203dfa424fe6ca2d6593d5cb3cb9d8a6ca8bf06bd9b551bf8d50d42dff7f58', '9a3d2da487ac88f53cf7164a4b62617956cc9f1f0900d38f0648849ab95195fe', '9b02fd012c002004f2a718917eac49c24073e7cb77872930e28f5af88c5b663f', 'a2745c3a6f6f24dfc150169597a21dadde045a6b888a948443d2616c79b98b02', 'a32744044352a6961ea9ddf3dad20768e0b74ba89af4e19db1d06d56aecdc4e7', 'a35894d27c59d2646d98e56dcf33bbfd4aed15efb910dc418f2c818f955bb882', 'a61e652c1e8fd6f13a5cd9852bf1b70b35c6ab50a35c4cec5d34226638a719ec', 'a8ba1015c089699ed0cc694e39c61e9d3045569ca90535ba2a1573006e8a3497', 'a9848fdad562636e207d9c75e5cfc57fdebbee209627ff09865d26aac6a6cc52', 'ac87693372c8c699b35d0c1dea8f09d6121d7d78f912e39c76ca9324725ed77b', 'ade7e4e5264caf7ee90bcca8cbd7f9d085081d395e987ca200724bef6af82b6c', 'b120d8ee968cf88289f7fafbe613e8b2b2a98d426f56efb126ae5fb04f3e4566', 'b189c3ea08e853a28dd7402ee42819899c4b47beb184b7c8b6f5773a065d35df', 'b6a789236d8051f36939aa2dc09a5606523caf82998b32963b5c7a08319bc6d8', 'b7d1f76afa4bde50b46ab410990d2368c640c6dc8d12d455a9181991ac83bff1', 'ba3511e4a1350ebfb2eaf7772ebe3a5084a4df4f0c6e33c128141d650ef156d9', 'c352c839917ecef44a4fad811c216d76ecd2606ae97c364f6b4eb2d2c639ed20', 'c8b0248a4e39849b4f0443efffd3645382ed8dcc828cf57e17abee4e29f9aec6', 'ca691f8040aa871702c8cb25ede2b557d9241c29d2cf312e07890cafc7246e2f', 'cb6dcdb1be845ec7491851e38203008b37135e3d2d85b2aa94e6477ab7f1b650', 'cb86d3674e289e2ec775f54be531325662ee7a250ed88b639013c18e2a33d7d0', 'cf8bac85d035fe37e887a822b98e0665e470c4c863ce21141c2c4e42d7da46a5', 'd180c49a22916e9c64989450b9f814cd1a3d28215f18557084bd50ba9baa2166', 'd4159d5e1ef971ee6329792d185a5c91ad9d52409184340c282980472b3ef246', 'd5258be20700cb0d9e0d18ccef0d298a9c1cad3252b52478089f62fd97b99c47', 'dab73e07b8dafb40c5220dcaeea23f9b0f7b47fc4a1958a968213fa1a3507d58', 'e000c30abb7b5cf400ae7b1393fc51f82ca26286e516adc3c2eb907642276e13', 'e0a03d6c0e4d3161c1501dff79b27a951d43164d34e010ed091eb4012ee26220', 'e7d20a37a96837d453fea331a8710d376d62e2b988a7d2eb31122119a9861993', 'eb479076bfbe88b7857293387cc59d6039ed9efb7f207f65d267c1059932cbc0', 'ebac7df9fd88b01579391ccbdf53e7387de45257e336aca08b9ecc4fe4efe728', 'ec54e83ab7431a22213634b259fc810db0e9aed47666797aaae3b260b56c87b8', 'ed7fa607e1c7aed32eeeecd69cb6daeb836147f75d9957c4299a63007c333abe', 'eeac2da5d457d8f618f0b1d0d3ef69cdea7e8670fbf7e9a22a370f8b41b87a00', 'ef38df88304c817f6549947470544bcc66e47e5dfbdd6da823658dbbfe55b09b', 'efcc24bb959710c520279870aa944bbc8fb33832f32a4db1e880e81bdab6a354', 'f15f459cc224806265482f431d26844ec769851d7dc1f188d6d4a3538f8f9d0d', 'f342e76bf5fd10b4424faffbd0587c399bdd984892c46bec920625d77a98e64d', 'f67f83ebec1418a4dcfc6ea709e706959c82ab123f43bc3d0c6d79048ae1df61', 'fd3eeee600cf74b2f0b95490ece12d5b9f88ad81216f2a6a39077825068a3639', 'fe04fb5d1dd7cea894d4fb1ad8dae208e3f12d892b7782ebeb9071dd1c368092', 'ff71ce2e79563477653da0406e4015d5e396530e29c9b7511024349ceb517782'])
+FINAL_COHORTS = frozenset(seed_v1.REQUIRED_SETS['cohorts'] | {'ranked_biggest_lean_v1','ranked_projected_points_v1'})
+FINAL_DIMENSIONS = frozenset({'category_side','selection_weekday','kickoff_weekday','lead_time_bucket','category_side_selection_kickoff_lead'})
+FINAL_ACCURACY_CATEGORIES = frozenset(seed_v1.REQUIRED_SETS['categories'] | {'fpts','anytime_td'})
+FINAL_ACCURACY_MODELS = frozenset({'original_sleeper_matchup_baseline','sleeper-matchup-data-integrity-v2'})
+FINAL_ACCURACY_ENGINES = {'original_sleeper_matchup_baseline':'e8e8823f460e074485ee91a0dc1c1cfc43877146c4498ef074d15d2b5a735d07','sleeper-matchup-data-integrity-v2':'3909c7ac5470970182065576f057e8036f31ad30da13f1ef9999eb1108a183b4'}
+
+
+def _metric_counts(values):
+    return dict(sorted(Counter('unavailable' if v is None else str(v) for v in values).items()))
+
+
+def _final_statistic_contracts():
+    # Exact existing model/schema dispatch, using the actual reviewed source.
+    # A caller-supplied digest or self-consistent metric hash has no authority.
+    from scorecard import descriptive_contract
+    return {model:sha(encoded(descriptive_contract(presence_aware=model=='sleeper-matchup-data-integrity-v2')))
+        for model in FINAL_ACCURACY_MODELS}
+
+
+def _accuracy_workload(value):
+    # publication_contents already invokes the unchanged typed accuracy reader.
+    # Preserve supported zero/pending populations; category keys alone prove no work.
+    cohorts=[]
+    for cohort in value['cohorts']:
+        categories={}
+        for category,v in cohort['categories'].items():
+            item={k:copy.deepcopy(v[k]) for k in ('coverage','paired_coverage','unpaired_coverage','outcome_status')}
+            item.update(paired_resolved=v['paired']['raw']['n'],adjusted_only_resolved=v['adjusted_only']['n'])
+            if category=='fpts':item['direct_provider_ppr_resolved']=v['direct_provider_ppr']['raw']['n']
+            if category=='anytime_td':item['probability']={basis:metrics['n'] for basis,metrics in v['probability'].items()}
+            categories[category]=item
+        cohorts.append({**{k:copy.deepcopy(cohort[k]) for k in ('model_version','engine_sha256','period','forecast_provenance','outcome_provenance','statistic_contract_sha256','source_report_sha256','coverage')},'categories':categories})
+    return dict(schema_version=value['schema_version'],content_sha256=sha(encoded(value)),
+        capture_coverage=copy.deepcopy(value['capture_coverage']),cohorts=cohorts)
+
+
+def _final_workload_decisions(value):
+    metrics=value['metrics'];coverage=value['coverage'];accuracy=value['accuracy']
+    numeric={name:type(metrics.get(name)) is int and metrics[name]>=floor for name,floor in FINAL_LOAD_FLOORS.items()}
+    captures={v['model_version']:v for v in accuracy['capture_coverage']}
+    cohorts=accuracy['cohorts']
+    def present(name,required):return all(coverage[name].get(key,0)>0 for key in required)
+    original=[v for v in cohorts if v['model_version']=='original_sleeper_matchup_baseline']
+    categorical={
+        'current_v4_publication':value['report_schema_version']=='selection-report-v4',
+        'source_bound_current_capture':value['publication_source']==value['candidate']['commit'] and value['generation_source']==value['candidate']['commit'],
+        'categories':present('categories',seed_v1.REQUIRED_SETS['categories']),
+        'sides':present('sides',{'over','under'}),
+        'sources':present('sources',seed_v1.REQUIRED_SETS['sources']),
+        'cohorts':present('cohorts',FINAL_COHORTS),
+        'checkpoints':present('checkpoints',seed_v1.REQUIRED_SETS['checkpoints']),
+        'joint_and_timing_dimensions':present('dimensions',FINAL_DIMENSIONS),
+        'preserved_result_states':present('results',seed_v1.REQUIRED_SETS['status_counts']),
+        'genuine_ranked_membership':all(type(coverage['strategy_selected'].get(name)) is int and coverage['strategy_selected'][name]>0 for name in ('ranked_biggest_lean_v1','ranked_projected_points_v1')),
+        'accuracy_schema':accuracy['schema_version']=='forecast-accuracy-public-v1',
+        'accuracy_models':FINAL_ACCURACY_MODELS<=set(captures) and FINAL_ACCURACY_MODELS<={v['model_version'] for v in cohorts} and all(any(v['model_version']==model and v['coverage']['opportunities']>0 for v in cohorts) for model in FINAL_ACCURACY_MODELS),
+        'accuracy_actual_category_populations':all(model in captures and FINAL_ACCURACY_CATEGORIES<=set(captures[model]['capture_coverage']['eligible_capture_rows']) and all(captures[model]['capture_coverage']['eligible_capture_rows'][cat]>0 for cat in FINAL_ACCURACY_CATEGORIES) for model in FINAL_ACCURACY_MODELS),
+        'original_numerical_resolved_controls':all(any(v['categories'][cat]['paired_resolved']>0 for v in original) for cat in seed_v1.REQUIRED_SETS['categories']),
+        'original_ppr_resolved_control':any(v['categories']['fpts']['paired_resolved']>0 for v in original),
+        'original_supported_td_probability_control':any(v['categories']['anytime_td']['probability'].get('rederived_from_original_count_retained_formula',0)>0 for v in original),
+        'retained_full_history':metrics['complete_generations']>=24,
+    }
+    return dict(numeric=numeric,categorical=categorical,admitted=all(numeric.values()) and all(categorical.values()))
+
+
+def _final_applicability(value):
+    """Conservative applicability, distinct from frozen admission and timing.
+
+    An unmatched real observation/byte workload requires a later matched case;
+    it never changes the frozen fictional population or invents history.
+    """
+    comparisons={};deficiencies=[]
+    def compare(name,actual,reference,*,present=True):
+        if present and (type(actual) is not int or actual<0):raise RuntimeError('Malformed final applicability dimension: '+name)
+        covers=present and actual>=reference
+        record={'actual':actual if present else None,'reference':reference,'covers':covers,'presence':'MEASURED' if present else 'ABSENT_UNESTABLISHED'}
+        comparisons[name]=record
+        if not covers:deficiencies.append(name)
+    reference={**FINAL_LOAD_FLOORS,**FINAL_REFERENCE['informational_descriptor_metrics']}
+    for name,minimum in reference.items():compare('report.'+name,value['metrics'].get(name),minimum)
+    captures={v['model_version']:v['capture_coverage'] for v in value['accuracy']['capture_coverage']}
+    for model,expected in FINAL_REFERENCE['accuracy_capture_work'].items():
+        actual=captures.get(model,{})
+        compare('accuracy.'+model+'.unique_receipts',actual.get('unique_receipts'),expected['unique_receipts'],present='unique_receipts' in actual)
+        for lane in ('eligible_capture_rows','paired_capture_rows'):
+            for category,minimum in expected[lane].items():
+                compare('accuracy.'+model+'.'+lane+'.'+category,actual.get(lane,{}).get(category),minimum,present=category in actual.get(lane,{}))
+    return dict(status='CONSERVATIVE_REFERENCE_ENVELOPE_COVERED' if not deficiencies else 'UNKNOWN_ADDITIONAL_MATCHED_REAL_CASE_REQUIRED',
+        comparisons=comparisons,deficiencies=deficiencies,
+        limitation='Measured fictional compute is not a matched production/configuration/provider/publication qualification')
+
+
+def _check_final_workload(value,source=None,tree=None,*,require_admitted=True,projection=False):
+    expected={'schema_version','candidate','publication_source','generation_source','generation_sha256','report_id','report_schema_version','summary_index_sha256','semantics_sha256','reference','metrics','coverage','contexts','accuracy','decisions','applicability'}
+    original=value
+    if projection:expected=expected|{'private_metrics_sha256'}
+    version='final-candidate-workload-projection-v1' if projection else 'final-candidate-workload-v1'
+    if type(value) is not dict or set(value)!=expected or value.get('schema_version')!=version or value.get('reference')!=FINAL_REFERENCE:
+        raise RuntimeError('Missing exact final-candidate workload metrics')
+    if projection:
+        if not _hex(value['private_metrics_sha256'],HEX64):raise RuntimeError('Missing full private metrics binding')
+        value=copy.deepcopy(value)
+        contexts=value['contexts'];indices=contexts.pop('missing_reference_indices',None)
+        reference_ids=sorted(FINAL_REFERENCE_CONTEXT_IDS)
+        if type(indices) is not list or indices!=sorted(set(indices)) or any(type(i) is not int or not 0<=i<len(reference_ids) for i in indices) or 'missing_reference_ids' in contexts:raise RuntimeError('Malformed compact exact reference context IDs')
+        contexts['missing_reference_ids']=[reference_ids[i] for i in indices]
+        fields=('opportunities','unique_players','unique_games','unique_weeks')
+        for cohort in value['accuracy']['cohorts']:
+            for item,keys in [(cohort,('coverage',)),*((v,('coverage','paired_coverage','unpaired_coverage')) for v in cohort['categories'].values())]:
+                for key in keys:
+                    counts=item[key]
+                    if type(counts) is not list or len(counts)!=4 or any(type(n) is not int or n<0 for n in counts):raise RuntimeError('Malformed compact accuracy sample')
+                    item[key]=dict(zip(fields,counts))
+    candidate=value['candidate']
+    if (type(candidate) is not dict or set(candidate)!={'commit','tree'} or any(not _hex(candidate[k],HEX40) for k in candidate)
+            or candidate['commit']==BASE or source is not None and candidate['commit']!=source or tree is not None and candidate['tree']!=tree
+            or value['publication_source']!=candidate['commit'] or value['generation_source']!=candidate['commit']):
+        raise RuntimeError('Final workload source/version mixing')
+    for key in ('generation_sha256','report_id','summary_index_sha256','semantics_sha256'):
+        if not _hex(value[key],HEX64):raise RuntimeError('Invalid final workload identity')
+    metrics=value['metrics']
+    if type(metrics) is not dict or set(metrics)!=set(FINAL_METRICS) or any(type(n) is not int or not 0<=n<=9007199254740991 for n in metrics.values()):
+        raise RuntimeError('Missing bounded final workload counts/bytes')
+    coverage=value['coverage']
+    allowed={'categories','sides','sources','cohorts','checkpoints','dimensions','results','periods','strategy_selected'}
+    if type(coverage) is not dict or set(coverage)!=allowed or any(type(v) is not dict or len(v)>256 or any(type(k) is not str or len(k)>160 or type(n) is not int or n<0 for k,n in v.items()) for v in coverage.values()):
+        raise RuntimeError('Invalid final semantic coverage')
+    contexts=value['contexts']
+    context_fields={'descriptors_sha256','missing_reference_ids','correspondence'}|({'ids_sha256','extra_reference_count','extra_reference_ids_sha256'} if projection else {'ids','extra_reference_ids'})
+    if type(contexts) is not dict or set(contexts)!=context_fields or not _hex(contexts['descriptors_sha256'],HEX64):raise RuntimeError('Missing final context descriptor binding')
+    for name in (('missing_reference_ids',) if projection else ('ids','missing_reference_ids','extra_reference_ids')):
+        values=contexts[name]
+        if type(values) is not list or len(values)>512 or values!=sorted(set(values)) or any(not _hex(v,HEX64) for v in values):raise RuntimeError('Invalid exact final context IDs')
+    if projection:
+        coherent=(set(contexts['missing_reference_ids'])<=FINAL_REFERENCE_CONTEXT_IDS and type(contexts['extra_reference_count']) is int and 0<=contexts['extra_reference_count']<=512
+            and metrics['contexts']==len(FINAL_REFERENCE_CONTEXT_IDS)-len(contexts['missing_reference_ids'])+contexts['extra_reference_count']
+            and all(_hex(contexts[k],HEX64) for k in ('ids_sha256','extra_reference_ids_sha256')))
+    else:
+        coherent=(metrics['contexts']==len(contexts['ids']) and contexts['missing_reference_ids']==sorted(FINAL_REFERENCE_CONTEXT_IDS-set(contexts['ids'])) and contexts['extra_reference_ids']==sorted(set(contexts['ids'])-FINAL_REFERENCE_CONTEXT_IDS))
+    if not coherent or contexts['correspondence']!='EXACT_DESCRIPTOR_IDS_MISSING_EXTRA_REPORTED_NOT_SYNTHETIC_HISTORY':raise RuntimeError('Final context correspondence differs')
+    accuracy=value['accuracy']
+    if type(accuracy) is not dict or set(accuracy)!={'schema_version','content_sha256','capture_coverage','cohorts'} or not _hex(accuracy['content_sha256'],HEX64):raise RuntimeError('Missing final accuracy work')
+    if type(accuracy['capture_coverage']) is not list or len(accuracy['capture_coverage'])>2 or type(accuracy['cohorts']) is not list or len(accuracy['cohorts'])>12:raise RuntimeError('Invalid final accuracy population bound')
+    seen=set()
+    for capture in accuracy['capture_coverage']:
+        if type(capture) is not dict or set(capture)!={'model_version','capture_coverage','unsupported_outcome_counts'} or capture['model_version'] not in FINAL_ACCURACY_MODELS or capture['model_version'] in seen:raise RuntimeError('Mixed final accuracy capture models')
+        seen.add(capture['model_version']);v=capture['capture_coverage']
+        if type(v) is not dict or set(v)!={'unique_receipts','duplicate_receipts','eligible_capture_rows','paired_capture_rows','excluded'} or any(type(v[k]) is not int or v[k]<0 for k in ('unique_receipts','duplicate_receipts')):raise RuntimeError('Invalid actual accuracy capture counts')
+        for key in ('eligible_capture_rows','paired_capture_rows','excluded'):
+            if type(v[key]) is not dict or any(type(n) is not int or n<0 for n in v[key].values()):raise RuntimeError('Invalid actual accuracy capture rows')
+        if any(n>v['eligible_capture_rows'].get(category,0) for category,n in v['paired_capture_rows'].items()):raise RuntimeError('Final paired capture count exceeds eligible captures')
+    cohort_keys=set();statistic_contracts=_final_statistic_contracts()
+    for cohort in accuracy['cohorts']:
+        keys={'model_version','engine_sha256','period','forecast_provenance','outcome_provenance','statistic_contract_sha256','source_report_sha256','coverage','categories'}
+        if type(cohort) is not dict or set(cohort)!=keys or cohort['model_version'] not in FINAL_ACCURACY_MODELS or cohort['period']!='cumulative' or cohort['forecast_provenance']!='original_recorded_pregame_observation' or cohort['outcome_provenance'] not in {'missing','unknown_unverified','identity_quarantined','conflicting_outcome_evidence','saved_cache_descriptive_regrade','recorded_outcome_receipt'}:raise RuntimeError('Mixed final accuracy cohort identity')
+        if any(not _hex(cohort[k],HEX64) for k in ('engine_sha256','statistic_contract_sha256','source_report_sha256')) or set(cohort['categories'])!=FINAL_ACCURACY_CATEGORIES:raise RuntimeError('Incomplete final accuracy categories')
+        key=(cohort['model_version'],cohort['outcome_provenance'])
+        if key in cohort_keys or cohort['engine_sha256']!=FINAL_ACCURACY_ENGINES[cohort['model_version']]:raise RuntimeError('Mixed final accuracy engine/cohort')
+        cohort_keys.add(key)
+        if cohort['statistic_contract_sha256']!=statistic_contracts[cohort['model_version']]:raise RuntimeError('Unsupported final accuracy statistic contract')
+        if type(cohort['coverage']) is not dict or set(cohort['coverage'])!={'opportunities','unique_players','unique_games','unique_weeks'} or any(type(n) is not int or n<0 for n in cohort['coverage'].values()):raise RuntimeError('Invalid final accuracy cohort sample')
+        for category,item in cohort['categories'].items():
+            fields={'coverage','paired_coverage','unpaired_coverage','outcome_status','paired_resolved','adjusted_only_resolved'}|({'direct_provider_ppr_resolved'} if category=='fpts' else {'probability'} if category=='anytime_td' else set())
+            if type(item) is not dict or set(item)!=fields:raise RuntimeError('Incomplete final accuracy category work')
+            for name in ('coverage','paired_coverage','unpaired_coverage'):
+                if type(item[name]) is not dict or set(item[name])!={'opportunities','unique_players','unique_games','unique_weeks'} or any(type(n) is not int or n<0 for n in item[name].values()):raise RuntimeError('Invalid final accuracy sample')
+            if type(item['outcome_status']) is not dict or any(type(n) is not int or n<0 for n in item['outcome_status'].values()):raise RuntimeError('Invalid final accuracy outcome states')
+            if any(type(item[k]) is not int or item[k]<0 for k in ('paired_resolved','adjusted_only_resolved')):raise RuntimeError('Invalid final resolved accuracy work')
+            if category=='fpts' and (type(item['direct_provider_ppr_resolved']) is not int or item['direct_provider_ppr_resolved']<0):raise RuntimeError('Invalid final direct-provider PPR work')
+            if category=='anytime_td' and (set(item['probability'])!={'originally_recorded_probability','rederived_from_original_count_retained_formula'} or any(type(n) is not int or n<0 for n in item['probability'].values())):raise RuntimeError('Invalid final TD probability work')
+            for name in ('coverage','paired_coverage','unpaired_coverage'):
+                sample=item[name]
+                if any(sample[k]>sample['opportunities'] for k in ('unique_players','unique_games','unique_weeks')) or sample['opportunities'] and any(sample[k]==0 for k in ('unique_players','unique_games','unique_weeks')):raise RuntimeError('Final accuracy sample identities exceed population')
+            resolved=item['outcome_status'].get('resolved',0)
+            if (item['paired_resolved']>item['paired_coverage']['opportunities'] or item['adjusted_only_resolved']>item['unpaired_coverage']['opportunities'] or sum(item['outcome_status'].values())!=item['coverage']['opportunities']
+                or item['paired_coverage']['opportunities']+item['unpaired_coverage']['opportunities']>item['coverage']['opportunities'] or item['paired_resolved']+item['adjusted_only_resolved']>resolved
+                or any(item[name][k]>cohort['coverage'][k] for name in ('coverage','paired_coverage','unpaired_coverage') for k in ('opportunities','unique_players','unique_games','unique_weeks'))):raise RuntimeError('Final accuracy populations do not reconcile')
+            if category=='fpts' and item['direct_provider_ppr_resolved']>item['paired_resolved']:raise RuntimeError('Direct-provider PPR exceeds supported pairs')
+            if category=='anytime_td' and sum(item['probability'].values())>resolved:raise RuntimeError('TD probability bases exceed resolved population')
+        if sum(item['coverage']['opportunities'] for item in cohort['categories'].values())!=cohort['coverage']['opportunities']:raise RuntimeError('Final category populations do not reconcile with cohort')
+    decisions=_final_workload_decisions(value)
+    if value['decisions']!=decisions:raise RuntimeError('Final workload decisions were not recomputed')
+    if value['applicability']!=_final_applicability(value):raise RuntimeError('Final workload applicability was not recomputed')
+    if require_admitted and not decisions['admitted']:raise RuntimeError('Final candidate does not cover the real release load/semantic envelope')
+    return original
+
+
+def _public_final_workload(value):
+    _check_final_workload(value,require_admitted=False)
+    result=copy.deepcopy(value);result['schema_version']='final-candidate-workload-projection-v1'
+    result['private_metrics_sha256']=sha(encoded(value))
+    contexts=result['contexts'];ids=contexts.pop('ids');extra=contexts.pop('extra_reference_ids')
+    contexts.update(ids_sha256=sha(encoded(ids)),extra_reference_count=len(extra),extra_reference_ids_sha256=sha(encoded(extra)))
+    reference_ids=sorted(FINAL_REFERENCE_CONTEXT_IDS)
+    contexts['missing_reference_indices']=[reference_ids.index(key) for key in contexts.pop('missing_reference_ids')]
+    fields=('opportunities','unique_players','unique_games','unique_weeks')
+    for cohort in result['accuracy']['cohorts']:
+        for item,keys in [(cohort,('coverage',)),*((v,('coverage','paired_coverage','unpaired_coverage')) for v in cohort['categories'].values())]:
+            for key in keys:item[key]=[item[key][name] for name in fields]
+    _check_final_workload(result,require_admitted=False,projection=True)
+    return result
+
+
+FINAL_METRICS=('rows','groups','outcomes','contexts','summary_partitions','row_chunks','complete_generations',
+    'row_encoded_bytes','row_decoded_bytes','summary_encoded_bytes','summary_decoded_bytes','outcome_encoded_bytes','outcome_decoded_bytes',
+    'staged_files','staged_bytes','staged_report_bytes','stored_report_bytes')
+
+
+def _bound_final_graph(root,pages,publication):
+    base=root/'output/data/selection-grading';delivery=pages/'data/selection-grading'
+    raw_pointer=_bounded_file(base/'latest.json',JSON_LIMIT);pointer=_decoded(raw_pointer)
+    if pointer.get('schema_version')!='selection-publication-pointer-v4' or not _hex(pointer.get('report_id'),HEX64):raise RuntimeError('Final metrics require the actual current shared publication')
+    raw_generation=_bounded_file(root/'output/data/release-identity.json',JSON_LIMIT)
+    generation=_decoded(raw_generation);bindings={'data/selection-grading/latest.json':raw_pointer,'data/release-identity.json':raw_generation}
+    indices={}
+    for name in ('summary','outcomes'):
+        descriptor=pointer[name]
+        # Reuse the actual strict bounded descriptor/path/hash reader on both
+        # trust namespaces; this is metadata binding, not history replay.
+        indices[name]=publication._partition_asset(base,descriptor,name+'.json',index=True,report_id=pointer['report_id'])
+        delivered=publication._partition_asset(delivery,descriptor,name+'.json',index=True,report_id=pointer['report_id'])
+        raw=_bounded_file(base/descriptor['path'],JSON_LIMIT)
+        if len(raw)!=descriptor['decoded_bytes'] or sha(raw)!=descriptor['sha256'] or delivered!=indices[name]:raise RuntimeError('Final index descriptor changed during metric collection')
+        bindings['data/selection-grading/'+descriptor['path']]=raw
+    for name,raw in bindings.items():
+        if _bounded_file(root/'output'/name,JSON_LIMIT)!=raw or _bounded_file(pages/name,JSON_LIMIT)!=raw:raise RuntimeError('Final metric graph differs from actual staged generation')
+    if (indices['summary'].get('report_id')!=pointer['report_id'] or indices['outcomes'].get('report_id')!=pointer['report_id']
+        or generation.get('selection_report_id')!=pointer['report_id'] or indices['summary'].get('row_count')!=pointer['row_count']):raise RuntimeError('Final report/generation metadata identities differ')
+    return pointer,indices['summary'],indices['outcomes'],generation,{name:sha(raw) for name,raw in bindings.items()}
+
+
+def final_candidate_workload(code,root,m,pages):
+    # Existing stage_pages has already performed mandatory current/previous,
+    # archive, source and independent-destination checks. Do not replay those
+    # histories merely to count them. Read the current complete semantic graph.
+    identity=execution_identity(code,root)
+    for key,name in (('capture','phase2_capture.py'),('publication','selection_publication.py')):
+        if Path(m[key].__file__).resolve()!=root/'tools'/name:raise RuntimeError('Final metrics must use actual installed candidate consumers')
+    base=root/'output/data/selection-grading'
+    pointer,index,outcome_index,generation,bindings=_bound_final_graph(root,pages,m['publication'])
+    summary,rows,outcomes=m['publication'].publication_contents(base,pointer)
+    if summary.get('report_id')!=pointer['report_id'] or len(rows)!=pointer['row_count'] or len(outcomes)!=outcome_index['outcome_count']:raise RuntimeError('Final semantic reader differs from bound metadata')
+    if generation.get('schema_version')!='website-generation-v1':raise RuntimeError('Final metrics require the actual connected capture, not saved B3 packaging')
+    contexts=index['contexts']
+    if len(contexts)>512 or any(sha(encoded(v))!=k for k,v in contexts.items()):raise RuntimeError('Final context descriptor identity')
+    tables=summary['summary']['tables'];working=_load(base/'hosting.json')
+    registry=m['capture']._registry(base,working)
+    staged=[p for p in pages.rglob('*') if p.is_file()]
+    if any(p.is_symlink() for p in staged):raise RuntimeError('Unsupported final staged asset')
+    parts=index['summary_partitions'];outparts=outcome_index['periods']
+    metrics=dict(rows=len(rows),groups=len(tables),outcomes=len(outcomes),contexts=len(contexts),summary_partitions=len(parts),row_chunks=len(pointer['rows']),complete_generations=len(registry),
+        row_encoded_bytes=sum(d['encoded_bytes'] for d in pointer['rows']),row_decoded_bytes=sum(d['decoded_bytes'] for d in pointer['rows']),summary_encoded_bytes=sum(d['encoded_bytes'] for d in parts),summary_decoded_bytes=sum(d['decoded_bytes'] for d in parts),outcome_encoded_bytes=sum(d['encoded_bytes'] for d in outparts),outcome_decoded_bytes=sum(d['decoded_bytes'] for d in outparts),
+        staged_files=len(staged),staged_bytes=sum(p.stat().st_size for p in staged),staged_report_bytes=sum(p.stat().st_size for p in staged if p.is_relative_to(pages/'data/selection-grading')),stored_report_bytes=sum(p.stat().st_size for p in base.rglob('*') if p.is_file()))
+    coverage=dict(categories=_metric_counts(r['category'] for r in rows),sides=_metric_counts(r['side'] for r in rows),sources=_metric_counts(t['line_source_scope'] for t in tables),cohorts=_metric_counts(t['view'] for t in tables),checkpoints=_metric_counts(r['checkpoint'] for r in rows),dimensions=_metric_counts(t['dimension'] for t in tables),results=_metric_counts(r['result'] for r in rows),periods=_metric_counts(t['period'] for t in tables),
+        strategy_selected={name:sum(r['cohort']==name and r['action']=='SELECT' and r.get('strategy_receipt_sha256') is not None and r.get('strategy_rank') is not None for r in rows) for name in ('ranked_biggest_lean_v1','ranked_projected_points_v1')})
+    result=dict(schema_version='final-candidate-workload-v1',candidate={'commit':identity['candidate_commit'],'tree':identity['candidate_tree']},publication_source=index['source_sha'],generation_source=generation['source_sha'],generation_sha256=generation['generation_sha256'],report_id=pointer['report_id'],report_schema_version=index['report_schema_version'],summary_index_sha256=_hash_file(base/pointer['summary']['path']),semantics_sha256=sha(encoded(dict(summary=summary,rows=rows,outcomes=outcomes))),reference=copy.deepcopy(FINAL_REFERENCE),metrics=metrics,coverage=coverage,
+        contexts=dict(ids=sorted(contexts),descriptors_sha256=sha(encoded(contexts)),missing_reference_ids=sorted(FINAL_REFERENCE_CONTEXT_IDS-set(contexts)),extra_reference_ids=sorted(set(contexts)-FINAL_REFERENCE_CONTEXT_IDS),correspondence='EXACT_DESCRIPTOR_IDS_MISSING_EXTRA_REPORTED_NOT_SYNTHETIC_HISTORY'),accuracy=_accuracy_workload(summary['forecast_accuracy']))
+    result['decisions']=_final_workload_decisions(result)
+    result['applicability']=_final_applicability(result)
+    if _bound_final_graph(root,pages,m['publication'])[4]!=bindings:raise RuntimeError('Final staged graph changed while collecting metrics')
+    _check_final_workload(result,identity['candidate_commit'],identity['candidate_tree'],require_admitted=False)
+    # Full actual descriptors stay private and bound to the public compact hash.
+    put(root.parent/'FINAL_CONTEXT_DESCRIPTORS.private.json',contexts)
+    return result
+
+
 def _evidence_aggregates(work):
     admission_raw=_bounded_file(work/'admission.json',JSON_LIMIT);admission=_decoded(admission_raw)
     metrics=admission['metrics'];decisions=seed_v1.admission_decisions(metrics)
@@ -1133,6 +1404,7 @@ def _evidence_aggregates(work):
     semantics=metrics.get('public_semantics_sha256')
     if not _hex(semantics,HEX64):raise RuntimeError('Missing admitted semantics identity')
     dataflow_raw=_bounded_file(work/'dataflow.json',JSON_LIMIT);dataflow=_decoded(dataflow_raw);correction=dataflow['material_correction']
+    final=_check_final_workload(dataflow.get('final_candidate_workload'))
     expected=correction['expected']['expected'];count=correction['changed_decisions']
     if (dataflow.get('status')!='PASS_DATAFLOW_ONLY_NOT_WHOLE_JOB' or correction.get('status')!='PASS_ACTUAL_SAVED_CONSUMERS'
             or type(expected) is not list or type(count) is not int or count!=len(expected) or count<1
@@ -1149,7 +1421,7 @@ def _evidence_aggregates(work):
     for name,value in advisory['outcomes'].items():
         if value.get('outcome') not in ('success','failure') or type(value.get('returncode')) is not int:raise RuntimeError('Invalid advisory result')
         public_advisory[name]={'outcome':value['outcome'],'returncode':value['returncode']}
-    return dict(admission=dict(numeric_floors=numeric,categorical=decisions['categorical'],population_pass=decisions['population_pass'],
+    return dict(final_candidate_workload=_public_final_workload(final),admission=dict(numeric_floors=numeric,categorical=decisions['categorical'],population_pass=decisions['population_pass'],
         game_states=metrics['game_states'],qualification_counts=metrics['latest_scope_classifications'],public_semantics_sha256=semantics,
         original_file_sha256=sha(admission_raw)),
         advisories=dict(outcomes=public_advisory,remote_continuation=advisory['remote_continuation'],unsupported_raw_http_calls=advisory['unsupported_raw_http_calls']),
@@ -1158,8 +1430,9 @@ def _evidence_aggregates(work):
             **outcome_counts,original_file_sha256=sha(dataflow_raw)))
 
 
-def _check_evidence_projection(evidence):
-    if type(evidence) is not dict or set(evidence)!={'admission','correction','advisories'}:raise RuntimeError('Fresh workload/correction measurements missing')
+def _check_evidence_projection(evidence,source=None,tree=None):
+    if type(evidence) is not dict or set(evidence)!={'admission','correction','advisories','final_candidate_workload'}:raise RuntimeError('Fresh workload/correction measurements missing')
+    _check_final_workload(evidence['final_candidate_workload'],source,tree,projection=True)
     advisory=evidence['advisories']
     if (set(advisory.get('outcomes',{}))!={'legacy_verifier','historical_comparison'}
             or advisory.get('remote_continuation') not in ('UNMEASURED','NOT_REQUESTED')
@@ -1270,10 +1543,16 @@ def project(code,root,result,sample_number):
         bound=_resource_binding(measured,outer,report,run,sample_number,source)
         from diagnostic_resources import report_verdict
         facts=_measurements(measured);verdict=report_verdict(facts) if bound else 'UNKNOWN'
+        final_workload=None
+        dataflow_path=root.parent/'dataflow.json'
+        if dataflow_path.exists():
+            dataflow=_load(dataflow_path)
+            if dataflow.get('final_candidate_workload') is not None:
+                final_workload=_check_final_workload(dataflow['final_candidate_workload'],source,actual['tree'],require_admitted=False)
         aggregate=_evidence_aggregates(root.parent) if report['status']=='LOCAL_BOUNDARY_COMPLETE_EXTERNAL_JOB_TIMESTAMPS_PENDING' else None
-        if aggregate is not None:_check_evidence_projection(aggregate)
+        if aggregate is not None:_check_evidence_projection(aggregate,source,actual['tree'])
         record.update(status=report['status'],resources=verdict,resource_measurements=facts,
-            workload_evidence=aggregate,source_tree=report['source_tree'],source_manifest_sha256=report['source_manifest_sha256'],source_ci=report['source_ci'],
+            workload_evidence=aggregate,final_candidate_workload=_public_final_workload(final_workload) if aggregate is None and final_workload is not None else None,source_tree=report['source_tree'],source_manifest_sha256=report['source_manifest_sha256'],source_ci=report['source_ci'],
             source_ci_boundary_count=len(boundaries),wrapper_sha256=report['harness_sha256'],fixture_harness_sha256=report['fixture_harness_sha256'],
             fixture_construction_source=report['fixture_construction_source'],seed_manifest_sha256=report['seed_manifest_sha256'],
             dependency_hashes=report['dependency_hashes'],runtime=report['runtime'],environment_sha256=report['environment_sha256'],
@@ -1368,7 +1647,7 @@ def assess(metadata,result,*,api=None):
                 raise RuntimeError('Authenticated projection identity mismatch')
             wall=(b-a).total_seconds()
             complete=projection.get('status')=='LOCAL_BOUNDARY_COMPLETE_EXTERNAL_JOB_TIMESTAMPS_PENDING'
-            bound=False;elapsed=0.;summed=0.;resources='UNKNOWN'
+            bound=False;elapsed=0.;summed=0.;resources='UNKNOWN';applicability='UNKNOWN_ADDITIONAL_MATCHED_REAL_CASE_REQUIRED';applicability_deficiencies=[]
             if complete:
                 proof=projection['source_ci'];sealed=approval['source_ci_identity']
                 if (type(sealed) is not dict or any(proof.get(k)!=v for k,v in sealed.items())
@@ -1387,7 +1666,9 @@ def assess(metadata,result,*,api=None):
                         or proof.get('claim')!='COMPLETE_SOURCE_CHECKS_ONLY_NOT_GENERATION_OR_OPERATING_QUALIFICATION'):
                     raise RuntimeError('Measured source/runtime differs from approved campaign')
                 evidence=projection.get('workload_evidence')
-                _check_evidence_projection(evidence)
+                _check_evidence_projection(evidence,run['head_sha'],projection['source_tree'])
+                final=evidence['final_candidate_workload'];matched=_final_applicability(final)
+                applicability=matched['status'];applicability_deficiencies=[{'dimension':name,**matched['comparisons'][name]} for name in matched['deficiencies']]
                 checks=projection['checks'];bound=set(checks)=={'fresh_source_ci_binding','root_record_source_bytes',
                     'root_execution_and_resource_binding','protected_original_records','resource_measurements_recomputed'} and all(v is True for v in checks.values())
                 elapsed=number(projection['harness_wall_seconds']);last=0.
@@ -1402,7 +1683,7 @@ def assess(metadata,result,*,api=None):
             samples.append(dict(sample=n,job_id=job['id'],conclusion=job['conclusion'],complete_harness=complete,
                 whole_job_seconds=wall,conservative_upper_seconds=wall+2,
                 planning='PASS' if complete and bound and job['conclusion']=='success' and wall+2<=960 else 'FAIL',
-                resources=resources,accounted_harness_seconds=elapsed,exclusive_stage_seconds=summed,
+                resources=resources,applicability=applicability,applicability_deficiencies=applicability_deficiencies,accounted_harness_seconds=elapsed,exclusive_stage_seconds=summed,
                 unassigned_inside_harness_seconds=elapsed-summed,outside_harness_residual_seconds=wall-elapsed,
                 projection_sha256=sha(encoded(projection)),authenticated_log_sha256=sha(raw)))
         except Exception as error:
@@ -1420,7 +1701,7 @@ def assess(metadata,result,*,api=None):
     value=dict(schema_version='operating-campaign-assessment-v2',source=run['head_sha'],run_id=run['id'],
         samples=sorted(samples,key=lambda x:x['sample']),queue_seconds=(instant(run['run_started_at'])-instant(run['created_at'])).total_seconds(),
         final_api_identity_rechecked=final_identity,final_identity_failure_class=final_identity_failure,
-        fixed_cold_serial_order=serial,operating='PASS_FICTIONAL_COMPUTE_ONLY' if final_identity and serial and run['conclusion']=='success' and all(x['planning']=='PASS' and x['resources']=='PASS' for x in samples) else 'NOT_QUALIFIED',
+        fixed_cold_serial_order=serial,operating='PASS_FICTIONAL_COMPUTE_ONLY' if final_identity and serial and run['conclusion']=='success' and all(x['planning']=='PASS' and x['resources']=='PASS' and x.get('applicability')=='CONSERVATIVE_REFERENCE_ENVELOPE_COVERED' for x in samples) else 'NOT_QUALIFIED',
         evidence='AUTHENTICATED_GITHUB_JOB_LOG_DERIVED_MEASUREMENTS_AND_POST_COMPLETION_JOB_TIMESTAMPS',
         excludes=['production_configuration','live_providers','remote_write','artifact_upload','Pages','public_cache','season_long_operation'])
     put(result,value);return value
@@ -1512,6 +1793,10 @@ def sample_commit(code,root,result):
     with external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
         tick=time.monotonic();commit(root);r['stages']['local_git_commit']=time.monotonic()-tick
         tick=time.monotonic();m['capture'].stage_pages(root,root.parent/'sample-pages');r['stages']['pages_staging_archive_checks']=time.monotonic()-tick
+        tick=time.monotonic();r['final_candidate_workload']=final_candidate_workload(code,root,m,root.parent/'sample-pages');r['stages']['final_candidate_metrics']=time.monotonic()-tick
+        if not r['final_candidate_workload']['decisions']['admitted']:r['status']='FINAL_CANDIDATE_WORKLOAD_NOT_ADMITTED'
+        put(result,r)
+        _check_final_workload(r['final_candidate_workload'],require_admitted=True)
     execution_identity(code,root);r['status']='PAGES_STAGED_FINAL_CI_PENDING';put(result,r)
 
 
