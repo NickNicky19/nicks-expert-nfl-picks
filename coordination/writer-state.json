@@ -1,34 +1,5 @@
 {
-  "active": {
-    "acquired_at": "2026-10-24T16:15:50.510625Z",
-    "authorized_coordination_sha": "945b719268eafbb7eb8f44cc7c673f3bf1641ed5",
-    "kind": "manual_owner",
-    "manual_gate_sha256": "4b651a5f19bf2cdbc32bb4de6528a746fa7c9e81f77ba1630fb549492ae98104",
-    "manual_gate_version": "phase2-manual-writer-v1",
-    "owner": {
-      "id": 208912933,
-      "login": "NickNicky19"
-    },
-    "request_comment": {
-      "author": {
-        "id": 208912933,
-        "login": "NickNicky19"
-      },
-      "body_sha256": "d6227ba2e2fa9d60e31d2e88db8aca89471acd7b29bcf7751694c028715cb4d0",
-      "created_at": "2026-10-24T16:15:47Z",
-      "id": 6386522040,
-      "marker": "MANUAL_OWNER_AUTHORIZATION",
-      "updated_at": "2026-10-24T16:15:47Z",
-      "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6386522040"
-    },
-    "request_id": "NFL-WEB-UPDATER-LIFETIME-BOUNDARY-20261024-161500Z-REQUEST",
-    "run_id": "NFL-WEB-UPDATER-LIFETIME-BOUNDARY-20261024-161500Z",
-    "scope": [
-      "tests/test_operating_campaign.py",
-      "tools/operating_campaign.py"
-    ],
-    "source_head": "f7f7f1c81e56cfcf5986c8e019a146ca8a16c170"
-  },
+  "active": null,
   "audit_ids": [
     "manual-gate-review-P01-20261014-174819Z",
     "manual-gate-correction-plan-20261014-200233Z",
@@ -1440,6 +1411,22 @@
         "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6386307683"
       },
       "run_id": "NFL-WEB-DIAGNOSTIC-LIFETIME-BROWSER-20261024-160000Z"
+    },
+    {
+      "end_sha": "f3cf1835790c5e2599f15ea70bc9f46411d8e5b5",
+      "result_comment": {
+        "author": {
+          "id": 208912933,
+          "login": "NickNicky19"
+        },
+        "body_sha256": "feb30778ef0cf96103c99df94ddbd8aded7fa8afa0a61e1019ca39770a873167",
+        "created_at": "2026-10-24T16:16:15Z",
+        "id": 6386527008,
+        "marker": "CODEX_RESULT",
+        "updated_at": "2026-10-24T16:16:15Z",
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6386527008"
+      },
+      "run_id": "NFL-WEB-UPDATER-LIFETIME-BOUNDARY-20261024-161500Z"
     }
   ],
   "finding_attempts": {
@@ -3020,6 +3007,7 @@
     },
     "NFL-WEB-UPDATER-LIFETIME-BOUNDARY-20261024-161500Z-REQUEST": {
       "audit_id": "NFL-WEB-UPDATER-LIFETIME-BOUNDARY-20261024-161500Z-AUDIT",
+      "end_sha": "f3cf1835790c5e2599f15ea70bc9f46411d8e5b5",
       "kind": "manual_owner",
       "request_comment": {
         "author": {
@@ -3033,8 +3021,21 @@
         "updated_at": "2026-10-24T16:15:47Z",
         "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6386522040"
       },
+      "result_comment": {
+        "author": {
+          "id": 208912933,
+          "login": "NickNicky19"
+        },
+        "body_sha256": "feb30778ef0cf96103c99df94ddbd8aded7fa8afa0a61e1019ca39770a873167",
+        "created_at": "2026-10-24T16:16:15Z",
+        "id": 6386527008,
+        "marker": "CODEX_RESULT",
+        "updated_at": "2026-10-24T16:16:15Z",
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6386527008"
+      },
       "run_id": "NFL-WEB-UPDATER-LIFETIME-BOUNDARY-20261024-161500Z",
-      "status": "ACTIVE"
+      "start_sha": "f7f7f1c81e56cfcf5986c8e019a146ca8a16c170",
+      "status": "COMPLETED"
     },
     "NFL-WEEKLY-PROVISIONAL-SOURCE-20261024-V1-REQUEST": {
       "audit_id": "NFL-WEEKLY-PROVISIONAL-SOURCE-20261024-V1-REVIEW",
@@ -3340,7 +3341,7 @@
       "status": "COMPLETED"
     }
   },
-  "revision": 140,
+  "revision": 141,
   "schema_version": "implementation-writer-state-v1",
   "sibling_probe_candidate": "winner_candidate",
   "transport_validation": {
@@ -3380,5 +3381,5 @@
     "source_head": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6",
     "tests_at": "2026-10-14T03:07:10.736645Z"
   },
-  "updated_at": "2026-10-24T16:15:50.510625Z"
+  "updated_at": "2026-10-24T16:16:16.179871Z"
 }
