@@ -1629,6 +1629,31 @@ jobs:
           task_mode=(--genuine-case)
           unset GH_TOKEN GITHUB_TOKEN
           task_mode+=(--capability-only)
+          task_ancestor_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-ancestor-preflight.XXXXXX")"
+          chmod 0700 "$task_ancestor_prefix"
+          PYTHONPYCACHEPREFIX="$task_ancestor_prefix" "$task_py" -P - <<'PYANCESTORS'
+          import json,stat
+          from pathlib import Path
+          def require_existing_ancestors(parents):
+              result=[]
+              for parent in parents:
+                  info=parent.lstat()
+                  if parent.is_symlink() or parent.resolve()!=parent or not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022:
+                      raise RuntimeError('UNPROTECTED_EXISTING_ANCESTOR')
+                  values={}
+                  for name in ('cgroup.controllers','cgroup.subtree_control'):
+                      control=parent/name;item=control.lstat()
+                      if control.is_symlink() or control.resolve()!=control or not stat.S_ISREG(item.st_mode) or item.st_uid!=0 or item.st_mode&0o022:
+                          raise RuntimeError('UNPROTECTED_EXISTING_ANCESTOR_CONTROL')
+                      with control.open('rb') as stream:raw=stream.read(4097)
+                      if len(raw)>4096 or b'memory' not in raw.split():
+                          raise RuntimeError('EXISTING_ANCESTOR_MEMORY_REQUIRED')
+                      values[name]=raw.hex()
+                  result.append(values)
+              return result
+          value=require_existing_ancestors((Path('/sys/fs/cgroup'),Path('/sys/fs/cgroup/system.slice')))
+          print(json.dumps({'status':'EXISTING_ANCESTOR_MEMORY_CONFIRMED_BEFORE_PRIVILEGE','ancestors':value},sort_keys=True))
+          PYANCESTORS
           trap 'task_exit=$?; sudo -n /usr/bin/systemctl stop "$task_unit" >/dev/null 2>&1 || :; exit "$task_exit"' EXIT
           sudo -n /usr/bin/systemd-run --unit "$task_unit" --working-directory="$task_code" --service-type=exec \
             -p User=root -p UMask=0022 -p MemoryAccounting=yes -p RemainAfterExit=yes -p "MemoryMax=$task_memory" -p MemorySwapMax=0 \
@@ -1757,6 +1782,31 @@ jobs:
               raise RuntimeError('ACTUAL_STEP_OUTPUT_FILE_REQUIRED')
           PYOUTPUT
           task_env+=(--setenv=GH_TOKEN "--setenv=GITHUB_OUTPUT=$GITHUB_OUTPUT")
+          task_ancestor_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-ancestor-preflight.XXXXXX")"
+          chmod 0700 "$task_ancestor_prefix"
+          PYTHONPYCACHEPREFIX="$task_ancestor_prefix" "$task_py" -P - <<'PYANCESTORS'
+          import json,stat
+          from pathlib import Path
+          def require_existing_ancestors(parents):
+              result=[]
+              for parent in parents:
+                  info=parent.lstat()
+                  if parent.is_symlink() or parent.resolve()!=parent or not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022:
+                      raise RuntimeError('UNPROTECTED_EXISTING_ANCESTOR')
+                  values={}
+                  for name in ('cgroup.controllers','cgroup.subtree_control'):
+                      control=parent/name;item=control.lstat()
+                      if control.is_symlink() or control.resolve()!=control or not stat.S_ISREG(item.st_mode) or item.st_uid!=0 or item.st_mode&0o022:
+                          raise RuntimeError('UNPROTECTED_EXISTING_ANCESTOR_CONTROL')
+                      with control.open('rb') as stream:raw=stream.read(4097)
+                      if len(raw)>4096 or b'memory' not in raw.split():
+                          raise RuntimeError('EXISTING_ANCESTOR_MEMORY_REQUIRED')
+                      values[name]=raw.hex()
+                  result.append(values)
+              return result
+          value=require_existing_ancestors((Path('/sys/fs/cgroup'),Path('/sys/fs/cgroup/system.slice')))
+          print(json.dumps({'status':'EXISTING_ANCESTOR_MEMORY_CONFIRMED_BEFORE_PRIVILEGE','ancestors':value},sort_keys=True))
+          PYANCESTORS
           trap 'task_exit=$?; sudo -n /usr/bin/systemctl stop "$task_unit" >/dev/null 2>&1 || :; exit "$task_exit"' EXIT
           sudo -n --preserve-env=GH_TOKEN /usr/bin/systemd-run --unit "$task_unit" --working-directory="$task_code" --service-type=exec \
             -p User=root -p UMask=0022 -p MemoryAccounting=yes -p RemainAfterExit=yes -p "MemoryMax=$task_memory" -p MemorySwapMax=0 \
