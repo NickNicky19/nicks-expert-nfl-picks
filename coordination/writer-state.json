@@ -1,39 +1,5 @@
 {
-  "active": {
-    "acquired_at": "2026-10-24T10:18:34.278858Z",
-    "authorized_coordination_sha": "90bcbea325afb7473fa35757f67d8db0a0bb2c2f",
-    "kind": "manual_owner",
-    "manual_gate_sha256": "4b651a5f19bf2cdbc32bb4de6528a746fa7c9e81f77ba1630fb549492ae98104",
-    "manual_gate_version": "phase2-manual-writer-v1",
-    "owner": {
-      "id": 208912933,
-      "login": "NickNicky19"
-    },
-    "request_comment": {
-      "author": {
-        "id": 208912933,
-        "login": "NickNicky19"
-      },
-      "body_sha256": "017c4d0cb5b175278caa0e9e3551ae5cf1bdae2ff71fbaf275d741426dd07b52",
-      "created_at": "2026-10-24T10:18:31Z",
-      "id": 6383015634,
-      "marker": "MANUAL_OWNER_AUTHORIZATION",
-      "updated_at": "2026-10-24T10:18:31Z",
-      "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6383015634"
-    },
-    "request_id": "NFL-WEB-FINITE-RESOURCE-RECOVERY-20261024-103000Z-REQUEST",
-    "run_id": "NFL-WEB-FINITE-RESOURCE-RECOVERY-20261024-103000Z",
-    "scope": [
-      "tests/test_operating_resource_bootstrap.py",
-      "tests/test_seed_checkpoint_frontier.py",
-      "tools/cloud-seed-integrity.json",
-      "tools/genuine_case_recovery.py",
-      "tools/operating_resource_bootstrap.py",
-      "tools/release_browser.cjs",
-      "tools/seed_checkpoint_frontier.py"
-    ],
-    "source_head": "ad0cbdbd09129d19e1ca1aa2f73e35a374217f8e"
-  },
+  "active": null,
   "audit_ids": [
     "manual-gate-review-P01-20261014-174819Z",
     "manual-gate-correction-plan-20261014-200233Z",
@@ -1377,6 +1343,22 @@
         "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6382599777"
       },
       "run_id": "NFL-WEEKLY-PROVISIONAL-SOURCE-20261024-V1"
+    },
+    {
+      "end_sha": "d1e18ba4ec43e9d914448aa9f8dba00206bf113a",
+      "result_comment": {
+        "author": {
+          "id": 208912933,
+          "login": "NickNicky19"
+        },
+        "body_sha256": "b32517dc2f6055529ecf0afbcd11eaa621f1b56cbd3e2a7206d7de027dbc5199",
+        "created_at": "2026-10-24T10:20:19Z",
+        "id": 6383032956,
+        "marker": "CODEX_RESULT",
+        "updated_at": "2026-10-24T10:20:19Z",
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6383032956"
+      },
+      "run_id": "NFL-WEB-FINITE-RESOURCE-RECOVERY-20261024-103000Z"
     }
   ],
   "finding_attempts": {
@@ -1930,6 +1912,7 @@
     },
     "NFL-WEB-FINITE-RESOURCE-RECOVERY-20261024-103000Z-REQUEST": {
       "audit_id": "NFL-WEB-FINITE-RESOURCE-RECOVERY-20261024-103000Z-AUDIT",
+      "end_sha": "d1e18ba4ec43e9d914448aa9f8dba00206bf113a",
       "kind": "manual_owner",
       "request_comment": {
         "author": {
@@ -1943,8 +1926,21 @@
         "updated_at": "2026-10-24T10:18:31Z",
         "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6383015634"
       },
+      "result_comment": {
+        "author": {
+          "id": 208912933,
+          "login": "NickNicky19"
+        },
+        "body_sha256": "b32517dc2f6055529ecf0afbcd11eaa621f1b56cbd3e2a7206d7de027dbc5199",
+        "created_at": "2026-10-24T10:20:19Z",
+        "id": 6383032956,
+        "marker": "CODEX_RESULT",
+        "updated_at": "2026-10-24T10:20:19Z",
+        "url": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6383032956"
+      },
       "run_id": "NFL-WEB-FINITE-RESOURCE-RECOVERY-20261024-103000Z",
-      "status": "ACTIVE"
+      "start_sha": "ad0cbdbd09129d19e1ca1aa2f73e35a374217f8e",
+      "status": "COMPLETED"
     },
     "NFL-WEB-FROZEN-COMPLETION-MANUAL-20261020-034043Z": {
       "audit_id": "NFL-WEB-FROZEN-COMPLETION-OWNER-20261020-034043Z",
@@ -3146,7 +3142,7 @@
       "status": "COMPLETED"
     }
   },
-  "revision": 132,
+  "revision": 133,
   "schema_version": "implementation-writer-state-v1",
   "sibling_probe_candidate": "winner_candidate",
   "transport_validation": {
@@ -3186,5 +3182,5 @@
     "source_head": "2887d6e13a3f14d2efb0d65a48d6d733d08a7cd6",
     "tests_at": "2026-10-14T03:07:10.736645Z"
   },
-  "updated_at": "2026-10-24T10:18:34.278858Z"
+  "updated_at": "2026-10-24T10:20:20.642759Z"
 }
