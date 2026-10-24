@@ -19,6 +19,8 @@ on:
           - NFL-WEB-RUNNER-MEMORY-READBACK-20261024
           - NFL-WEB-RUNNER-MEMORY-DETAIL-20261024
           - NFL-WEB-GENUINE-PRODUCTION-CASE-20261024
+          - NFL-WEB-GENERATED-BROWSER-ACCEPTANCE-20261024
+          - NFL-WEB-PUBLIC-BROWSER-ACCEPTANCE-20261024
       storage_approved:
         description: Repeat the preparation identifier after output-content and available-storage approval
         required: true
@@ -32,7 +34,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ inputs.confirmation == 'NFL-WEB-RUNNER-MEMORY-DETAIL-20261024' && 'one-time-runner-memory-detail' || inputs.confirmation == 'NFL-WEB-RUNNER-MEMORY-READBACK-20261024' && 'one-time-runner-memory-readback' || inputs.confirmation == 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024' && 'one-time-genuine-production-case' || 'one-time-fictional-seed-preparation' }}
+  group: ${{ inputs.confirmation == 'NFL-WEB-GENERATED-BROWSER-ACCEPTANCE-20261024' && 'one-time-generated-browser-acceptance' || inputs.confirmation == 'NFL-WEB-PUBLIC-BROWSER-ACCEPTANCE-20261024' && 'one-time-public-browser-acceptance' || inputs.confirmation == 'NFL-WEB-RUNNER-MEMORY-DETAIL-20261024' && 'one-time-runner-memory-detail' || inputs.confirmation == 'NFL-WEB-RUNNER-MEMORY-READBACK-20261024' && 'one-time-runner-memory-readback' || inputs.confirmation == 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024' && 'one-time-genuine-production-case' || 'one-time-fictional-seed-preparation' }}
   cancel-in-progress: false
 
 jobs:
@@ -762,7 +764,7 @@ jobs:
           python -m pip freeze --all
 
       - name: Retrieve exact failed artifact for this single closed continuation
-        timeout-minutes: 5
+        timeout-minutes: ${{ inputs.confirmation == 'NFL-WEB-CONTINUE-CHECKPOINT-22-OF-24-12540324398-20261024' && 16 || 5 }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1171,15 +1173,9 @@ jobs:
           PY
 
   genuine-production-case:
-    if: >-
-      github.repository == 'NickNicky19/nicks-expert-nfl-picks' &&
-      github.actor_id == '208912933' &&
-      github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/upgrade/phase2-reproducible-comparison' &&
-      github.run_attempt == 1 &&
-      inputs.confirmation == 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024' &&
-      inputs.storage_approved == 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024' &&
-      inputs.installed_source == github.sha
+    if: github.repository == 'NickNicky19/nicks-expert-nfl-picks' && github.actor_id == '208912933' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/upgrade/phase2-reproducible-comparison'
+      && github.run_attempt == 1 && inputs.confirmation == 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024' && inputs.storage_approved == 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024' && inputs.installed_source
+      == github.sha
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
@@ -1213,25 +1209,25 @@ jobs:
           print(json.dumps({'source':source,'early_capacity':'OBSERVED','resource_verdict':'UNKNOWN','operating_qualification':'NOT_RUN','sudo_operations':0},sort_keys=True))
           PY
       - name: Retrieve exact accepted application source without persisted credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.installed_source }}
           fetch-depth: 0
           persist-credentials: false
           path: source
       - name: Retrieve actual current production main with its full history
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: main
           fetch-depth: 0
           persist-credentials: false
           path: production
       - name: Use declared Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
       - name: Use declared Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
       - name: Install existing declared dependencies
@@ -1239,11 +1235,9 @@ jobs:
         run: |
           set -euo pipefail
           PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-real-pip-pyc.XXXXXX")" python -m pip install --no-compile -r source/requirements.txt
-      - name: Build the one genuine current-production case and preserve typed results
+      - name: Reviewed genuine controller template; executed only by the closed resource bridge
         id: real_case
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -1548,35 +1542,342 @@ jobs:
 
           if __name__=='__main__':main()
           PY
+        if: ${{ false }}
+      - name: Initialize fresh run-owned transaction TMPDIR before helper startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          test -z "${DBUS_SYSTEM_BUS_ADDRESS+x}"
+          test -z "${SYSTEMD_BUS_ADDRESS+x}"
+          umask 077
+          task_transaction="$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
+          test ! -e "$task_transaction"
+          mkdir -m 0700 "$task_transaction"
+          printf 'TMPDIR=%s\n' "$task_transaction" >> "$GITHUB_ENV"
+      - name: Baseline source and production evidence before any provider
+        id: genuine_baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset GH_TOKEN GITHUB_TOKEN
+          test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
+          task_code="$GITHUB_WORKSPACE/source"
+          test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '76ec6761a53b4762df8bca12d135bef8d503460dd49cc1dc270848f7d398f1c9'
+          test "$(sha256sum "$task_code/tools/genuine_case_recovery.py" | cut -d' ' -f1)" = '2a175d65b90b586303622e98380680f92e31de965a3707ead509985c749a74b9'
+          task_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-baseline-pyc.XXXXXX")";chmod 0700 "$task_prefix"
+          PYTHONPYCACHEPREFIX="$task_prefix" python -P "$task_code/tools/genuine_case_recovery.py" baseline > "$RUNNER_TEMP/nfl-genuine-baseline-$GITHUB_RUN_ID.json"
+      - name: Require cached-kernel unit capability without providers
+        id: unit_capability
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          task_sample=1
+          task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
+          test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '76ec6761a53b4762df8bca12d135bef8d503460dd49cc1dc270848f7d398f1c9'
+          test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
+          task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
+          task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
+          task_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-root-$task_sample-pyc.XXXXXX")";chmod 0700 "$task_prefix"
+          task_critical=(--critical-path "$task_code" --critical-path "$task_code/.git/objects"
+            --critical-path "$GITHUB_WORKSPACE/production" --critical-path "$RUNNER_TEMP" --critical-path "$TMPDIR"
+            --critical-path "$RUNNER_TEMP/nfl-real-production-case" --critical-path "$RUNNER_TEMP/nfl-genuine-recovery-$GITHUB_RUN_ID"
+            --critical-path "/var/tmp/nfl-operating-$GITHUB_RUN_ID-$task_sample" --critical-path /tmp --critical-path /var/tmp
+            --critical-path "$HOME" --critical-path "$task_py" --critical-path "$task_node" --critical-path "$task_git")
+          task_paths="$RUNNER_TEMP/nfl-genuine-runtime-paths-$task_sample.txt"
+          PYTHONPYCACHEPREFIX="$task_prefix" "$task_py" -P - <<'PYPATHS' > "$task_paths"
+          import pathlib,site,sys,sysconfig
+          values=[sys.executable,sys.prefix,sys.base_prefix,*site.getsitepackages(),*sysconfig.get_paths().values()]
+          for value in dict.fromkeys(values):
+              if not value:continue
+              if '\n' in value or '\r' in value:raise RuntimeError('RUNTIME_PATH_UNAVAILABLE')
+              print(pathlib.Path(value).resolve())
+          PYPATHS
+          while IFS= read -r task_path; do task_critical+=(--critical-path "$task_path"); done < "$task_paths"
+          task_env=(
+            "--setenv=PATH=$PATH"
+            "--setenv=HOME=$HOME"
+            "--setenv=TMPDIR=$TMPDIR"
+            "--setenv=RUNNER_TEMP=$RUNNER_TEMP"
+            "--setenv=GITHUB_ACTIONS=$GITHUB_ACTIONS"
+            "--setenv=RUNNER_ENVIRONMENT=$RUNNER_ENVIRONMENT"
+            "--setenv=GITHUB_RUN_ID=$GITHUB_RUN_ID"
+            "--setenv=GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT"
+            "--setenv=GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
+            "--setenv=GITHUB_EVENT_PATH=$GITHUB_EVENT_PATH"
+            "--setenv=GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
+            "--setenv=GITHUB_REPOSITORY_ID=$GITHUB_REPOSITORY_ID"
+            "--setenv=GITHUB_ACTOR_ID=$GITHUB_ACTOR_ID"
+            "--setenv=GITHUB_REF=$GITHUB_REF"
+            "--setenv=GITHUB_REF_NAME=$GITHUB_REF_NAME"
+            "--setenv=GITHUB_SHA=$GITHUB_SHA"
+            "--setenv=GITHUB_WORKFLOW_REF=$GITHUB_WORKFLOW_REF"
+            "--setenv=GITHUB_WORKFLOW_SHA=$GITHUB_WORKFLOW_SHA"
+            "--setenv=GITHUB_JOB=$GITHUB_JOB"
+            "--setenv=ImageOS=$ImageOS"
+            "--setenv=ImageVersion=$ImageVersion"
+            "--setenv=RUNNER_OS=$RUNNER_OS"
+            "--setenv=RUNNER_ARCH=$RUNNER_ARCH"
+            "--setenv=GITHUB_WORKSPACE=$task_code"
+            "--setenv=CAMPAIGN_ID=NFL-WEB-GENUINE-PRODUCTION-CASE-20261024"
+            --setenv=PYTHONDONTWRITEBYTECODE=1 "--setenv=PYTHONPYCACHEPREFIX=$task_prefix")
+          if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then task_env+=("--setenv=LD_LIBRARY_PATH=$LD_LIBRARY_PATH"); fi
+          task_mode=(--genuine-case)
+          unset GH_TOKEN GITHUB_TOKEN
+          task_mode+=(--capability-only)
+          trap 'task_exit=$?; sudo -n /usr/bin/systemctl stop "$task_unit" >/dev/null 2>&1 || :; exit "$task_exit"' EXIT
+          sudo -n /usr/bin/systemd-run --unit "$task_unit" --working-directory="$task_code" --service-type=exec \
+            -p User=root -p UMask=0022 -p MemoryAccounting=yes -p RemainAfterExit=yes -p "MemoryMax=$task_memory" -p MemorySwapMax=0 \
+            -p Delegate=memory -p DelegateSubgroup=supervisor -p RuntimeMaxSec=1230 -p TimeoutStopSec=30 \
+            -p KillMode=control-group -p StandardOutput=null -p StandardError=null \
+            "${task_env[@]}" "$task_py" -P "$task_code/tools/operating_resource_bootstrap.py" \
+            --unit "$task_unit" --memory-max "$task_memory" --uid "$(id -u)" --gid "$(id -g)" \
+            --run-id "$GITHUB_RUN_ID" --sample "$task_sample" --code "$task_code" "${task_critical[@]}" "${task_mode[@]}" >/dev/null 2>&1
+          task_poll_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-poll-$task_sample-pyc.XXXXXX")";chmod 0700 "$task_poll_prefix"
+          PYTHONPYCACHEPREFIX="$task_poll_prefix" "$task_py" -P - "$task_unit" 90 <<'PYPOLL'
+          import os,subprocess,sys,time
+          unit=sys.argv[1];limit=int(sys.argv[2]);run=os.environ['GITHUB_RUN_ID']
+          assert unit in ('nfl-operating-'+run+'-1.service','nfl-operating-'+run+'-2.service') and 0<limit<=1260
+          assert not any(k in os.environ for k in ('DBUS_SYSTEM_BUS_ADDRESS','SYSTEMD_BUS_ADDRESS'))
+          fields=('LoadState','ActiveState','SubState','MainPID','ControlPID','Result','ExecMainStatus')
+          deadline=time.monotonic()+limit
+          while True:
+              remaining=deadline-time.monotonic()
+              if remaining<=0:raise RuntimeError('EXACT_UNIT_WAIT_BOUND')
+              p=subprocess.run(['/usr/bin/systemctl','--system','--no-pager','show',unit,*['--property='+k for k in fields]],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=min(10,remaining))
+              if p.returncode!=0 or len(p.stdout)>8192:raise RuntimeError('UNIT_STATE_UNAVAILABLE')
+              rows=[line.split('=',1) for line in p.stdout.decode().splitlines()]
+              if len(rows)!=len(fields) or any(len(row)!=2 for row in rows) or {row[0] for row in rows}!=set(fields):raise RuntimeError('UNIT_STATE_SHAPE')
+              state=dict(rows)
+              if state['LoadState']!='loaded':raise RuntimeError('UNIT_NOT_LOADED')
+              if state['ActiveState']=='active' and state['SubState']=='exited' and state['MainPID']=='0' and state['ControlPID']=='0':
+                  if state['Result']!='success' or state['ExecMainStatus']!='0':raise RuntimeError('UNIT_ROOT_FAILED')
+                  break
+              if state['ActiveState'] not in ('active','activating'):raise RuntimeError('UNIT_STOPPED_BEFORE_CACHED_READ')
+              time.sleep(min(2,max(0,deadline-time.monotonic())))
+          PYPOLL
+          unset GH_TOKEN GITHUB_TOKEN
+          task_read_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-read-$task_sample-pyc.XXXXXX")";chmod 0700 "$task_read_prefix"
+          GITHUB_WORKSPACE="$task_code" CAMPAIGN_ID=NFL-WEB-GENUINE-PRODUCTION-CASE-20261024 \
+          PYTHONPYCACHEPREFIX="$task_read_prefix" "$task_py" -P "$task_code/tools/operating_resource_bootstrap.py" \
+            --unit "$task_unit" --memory-max "$task_memory" --uid "$(id -u)" --gid "$(id -g)" \
+            --run-id "$GITHUB_RUN_ID" --sample "$task_sample" --code "$task_code" "${task_critical[@]}" \
+            --genuine-case --read-unit-lifetime > "$RUNNER_TEMP/nfl-genuine-lifetime-$task_sample.json" 2>/dev/null
+          test "$(wc -c < "$RUNNER_TEMP/nfl-genuine-lifetime-$task_sample.json")" -le 8192
+          cat "$RUNNER_TEMP/nfl-genuine-lifetime-$task_sample.json"
+          sudo -n /usr/bin/systemctl stop "$task_unit" >/dev/null 2>&1 || :
+          task_stop_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-stop-$task_sample-pyc.XXXXXX")";chmod 0700 "$task_stop_prefix"
+          PYTHONPYCACHEPREFIX="$task_stop_prefix" "$task_py" -P - "$task_unit" <<'PYSTOPONE'
+          import os,subprocess,sys
+          unit=sys.argv[1]
+          assert unit in ('nfl-operating-'+os.environ['GITHUB_RUN_ID']+'-1.service','nfl-operating-'+os.environ['GITHUB_RUN_ID']+'-2.service')
+          fields=('LoadState','ActiveState','SubState','MainPID','ControlPID')
+          p=subprocess.run(['/usr/bin/systemctl','--system','--no-pager','show',unit,*['--property='+k for k in fields]],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=10)
+          if p.returncode not in (0,1) or len(p.stdout)>8192:raise RuntimeError('EXACT_UNIT_STOP_STATE_UNAVAILABLE')
+          rows=[line.split('=',1) for line in p.stdout.decode().splitlines()]
+          if len(rows)!=len(fields) or any(len(row)!=2 for row in rows) or {row[0] for row in rows}!=set(fields):raise RuntimeError('EXACT_UNIT_STOP_STATE_SHAPE')
+          state=dict(rows)
+          if not(state['LoadState'] in ('loaded','not-found') and state['ActiveState'] in ('inactive','failed') and state['SubState'] in ('dead','failed') and state['MainPID']=='0' and state['ControlPID']=='0'):raise RuntimeError('EXACT_UNIT_NOT_QUIESCENT')
+          PYSTOPONE
+      - name: Execute one genuine updater through the proven finite unit
+        id: genuine_unit
+        if: steps.unit_capability.outcome == 'success'
+        timeout-minutes: 24
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          task_sample=2
+          task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
+          test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '76ec6761a53b4762df8bca12d135bef8d503460dd49cc1dc270848f7d398f1c9'
+          test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
+          task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
+          task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
+          task_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-root-$task_sample-pyc.XXXXXX")";chmod 0700 "$task_prefix"
+          task_critical=(--critical-path "$task_code" --critical-path "$task_code/.git/objects"
+            --critical-path "$GITHUB_WORKSPACE/production" --critical-path "$RUNNER_TEMP" --critical-path "$TMPDIR"
+            --critical-path "$RUNNER_TEMP/nfl-real-production-case" --critical-path "$RUNNER_TEMP/nfl-genuine-recovery-$GITHUB_RUN_ID"
+            --critical-path "/var/tmp/nfl-operating-$GITHUB_RUN_ID-$task_sample" --critical-path /tmp --critical-path /var/tmp
+            --critical-path "$HOME" --critical-path "$task_py" --critical-path "$task_node" --critical-path "$task_git")
+          task_paths="$RUNNER_TEMP/nfl-genuine-runtime-paths-$task_sample.txt"
+          PYTHONPYCACHEPREFIX="$task_prefix" "$task_py" -P - <<'PYPATHS' > "$task_paths"
+          import pathlib,site,sys,sysconfig
+          values=[sys.executable,sys.prefix,sys.base_prefix,*site.getsitepackages(),*sysconfig.get_paths().values()]
+          for value in dict.fromkeys(values):
+              if not value:continue
+              if '\n' in value or '\r' in value:raise RuntimeError('RUNTIME_PATH_UNAVAILABLE')
+              print(pathlib.Path(value).resolve())
+          PYPATHS
+          while IFS= read -r task_path; do task_critical+=(--critical-path "$task_path"); done < "$task_paths"
+          task_env=(
+            "--setenv=PATH=$PATH"
+            "--setenv=HOME=$HOME"
+            "--setenv=TMPDIR=$TMPDIR"
+            "--setenv=RUNNER_TEMP=$RUNNER_TEMP"
+            "--setenv=GITHUB_ACTIONS=$GITHUB_ACTIONS"
+            "--setenv=RUNNER_ENVIRONMENT=$RUNNER_ENVIRONMENT"
+            "--setenv=GITHUB_RUN_ID=$GITHUB_RUN_ID"
+            "--setenv=GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT"
+            "--setenv=GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
+            "--setenv=GITHUB_EVENT_PATH=$GITHUB_EVENT_PATH"
+            "--setenv=GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
+            "--setenv=GITHUB_REPOSITORY_ID=$GITHUB_REPOSITORY_ID"
+            "--setenv=GITHUB_ACTOR_ID=$GITHUB_ACTOR_ID"
+            "--setenv=GITHUB_REF=$GITHUB_REF"
+            "--setenv=GITHUB_REF_NAME=$GITHUB_REF_NAME"
+            "--setenv=GITHUB_SHA=$GITHUB_SHA"
+            "--setenv=GITHUB_WORKFLOW_REF=$GITHUB_WORKFLOW_REF"
+            "--setenv=GITHUB_WORKFLOW_SHA=$GITHUB_WORKFLOW_SHA"
+            "--setenv=GITHUB_JOB=$GITHUB_JOB"
+            "--setenv=ImageOS=$ImageOS"
+            "--setenv=ImageVersion=$ImageVersion"
+            "--setenv=RUNNER_OS=$RUNNER_OS"
+            "--setenv=RUNNER_ARCH=$RUNNER_ARCH"
+            "--setenv=GITHUB_WORKSPACE=$task_code"
+            "--setenv=CAMPAIGN_ID=NFL-WEB-GENUINE-PRODUCTION-CASE-20261024"
+            --setenv=PYTHONDONTWRITEBYTECODE=1 "--setenv=PYTHONPYCACHEPREFIX=$task_prefix")
+          if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then task_env+=("--setenv=LD_LIBRARY_PATH=$LD_LIBRARY_PATH"); fi
+          task_mode=(--genuine-case)
+          test -n "$GH_TOKEN"
+          test -n "${GITHUB_OUTPUT:-}"
+          PYTHONPYCACHEPREFIX="$task_prefix" "$task_py" -P - <<'PYOUTPUT'
+          import os,re,stat
+          from pathlib import Path
+          p=Path(os.environ['GITHUB_OUTPUT']);temp=Path(os.environ['RUNNER_TEMP']).resolve();info=p.lstat()
+          if (not p.is_absolute() or p.is_symlink() or p.resolve()!=p or p.parent!=temp/'_runner_file_commands'
+                  or re.fullmatch(r'set_output_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',p.name) is None
+                  or not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1 or info.st_mode & 0o022):
+              raise RuntimeError('ACTUAL_STEP_OUTPUT_FILE_REQUIRED')
+          PYOUTPUT
+          task_env+=(--setenv=GH_TOKEN "--setenv=GITHUB_OUTPUT=$GITHUB_OUTPUT")
+          trap 'task_exit=$?; sudo -n /usr/bin/systemctl stop "$task_unit" >/dev/null 2>&1 || :; exit "$task_exit"' EXIT
+          sudo -n --preserve-env=GH_TOKEN /usr/bin/systemd-run --unit "$task_unit" --working-directory="$task_code" --service-type=exec \
+            -p User=root -p UMask=0022 -p MemoryAccounting=yes -p RemainAfterExit=yes -p "MemoryMax=$task_memory" -p MemorySwapMax=0 \
+            -p Delegate=memory -p DelegateSubgroup=supervisor -p RuntimeMaxSec=1230 -p TimeoutStopSec=30 \
+            -p KillMode=control-group -p StandardOutput=null -p StandardError=null \
+            "${task_env[@]}" "$task_py" -P "$task_code/tools/operating_resource_bootstrap.py" \
+            --unit "$task_unit" --memory-max "$task_memory" --uid "$(id -u)" --gid "$(id -g)" \
+            --run-id "$GITHUB_RUN_ID" --sample "$task_sample" --code "$task_code" "${task_critical[@]}" "${task_mode[@]}" >/dev/null 2>&1
+          task_poll_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-poll-$task_sample-pyc.XXXXXX")";chmod 0700 "$task_poll_prefix"
+          PYTHONPYCACHEPREFIX="$task_poll_prefix" "$task_py" -P - "$task_unit" 1260 <<'PYPOLL'
+          import os,subprocess,sys,time
+          unit=sys.argv[1];limit=int(sys.argv[2]);run=os.environ['GITHUB_RUN_ID']
+          assert unit in ('nfl-operating-'+run+'-1.service','nfl-operating-'+run+'-2.service') and 0<limit<=1260
+          assert not any(k in os.environ for k in ('DBUS_SYSTEM_BUS_ADDRESS','SYSTEMD_BUS_ADDRESS'))
+          fields=('LoadState','ActiveState','SubState','MainPID','ControlPID','Result','ExecMainStatus')
+          deadline=time.monotonic()+limit
+          while True:
+              remaining=deadline-time.monotonic()
+              if remaining<=0:raise RuntimeError('EXACT_UNIT_WAIT_BOUND')
+              p=subprocess.run(['/usr/bin/systemctl','--system','--no-pager','show',unit,*['--property='+k for k in fields]],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=min(10,remaining))
+              if p.returncode!=0 or len(p.stdout)>8192:raise RuntimeError('UNIT_STATE_UNAVAILABLE')
+              rows=[line.split('=',1) for line in p.stdout.decode().splitlines()]
+              if len(rows)!=len(fields) or any(len(row)!=2 for row in rows) or {row[0] for row in rows}!=set(fields):raise RuntimeError('UNIT_STATE_SHAPE')
+              state=dict(rows)
+              if state['LoadState']!='loaded':raise RuntimeError('UNIT_NOT_LOADED')
+              if state['ActiveState']=='active' and state['SubState']=='exited' and state['MainPID']=='0' and state['ControlPID']=='0':
+                  if state['Result']!='success' or state['ExecMainStatus']!='0':raise RuntimeError('UNIT_ROOT_FAILED')
+                  break
+              if state['ActiveState'] not in ('active','activating'):raise RuntimeError('UNIT_STOPPED_BEFORE_CACHED_READ')
+              time.sleep(min(2,max(0,deadline-time.monotonic())))
+          PYPOLL
+          unset GH_TOKEN GITHUB_TOKEN
+          task_read_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-read-$task_sample-pyc.XXXXXX")";chmod 0700 "$task_read_prefix"
+          GITHUB_WORKSPACE="$task_code" CAMPAIGN_ID=NFL-WEB-GENUINE-PRODUCTION-CASE-20261024 \
+          PYTHONPYCACHEPREFIX="$task_read_prefix" "$task_py" -P "$task_code/tools/operating_resource_bootstrap.py" \
+            --unit "$task_unit" --memory-max "$task_memory" --uid "$(id -u)" --gid "$(id -g)" \
+            --run-id "$GITHUB_RUN_ID" --sample "$task_sample" --code "$task_code" "${task_critical[@]}" \
+            --genuine-case --read-unit-lifetime > "$RUNNER_TEMP/nfl-genuine-lifetime-$task_sample.json" 2>/dev/null
+          test "$(wc -c < "$RUNNER_TEMP/nfl-genuine-lifetime-$task_sample.json")" -le 8192
+          cat "$RUNNER_TEMP/nfl-genuine-lifetime-$task_sample.json"
+          sudo -n /usr/bin/systemctl stop "$task_unit" >/dev/null 2>&1 || :
+          task_stop_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-stop-$task_sample-pyc.XXXXXX")";chmod 0700 "$task_stop_prefix"
+          PYTHONPYCACHEPREFIX="$task_stop_prefix" "$task_py" -P - "$task_unit" <<'PYSTOPONE'
+          import os,subprocess,sys
+          unit=sys.argv[1]
+          assert unit in ('nfl-operating-'+os.environ['GITHUB_RUN_ID']+'-1.service','nfl-operating-'+os.environ['GITHUB_RUN_ID']+'-2.service')
+          fields=('LoadState','ActiveState','SubState','MainPID','ControlPID')
+          p=subprocess.run(['/usr/bin/systemctl','--system','--no-pager','show',unit,*['--property='+k for k in fields]],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=10)
+          if p.returncode not in (0,1) or len(p.stdout)>8192:raise RuntimeError('EXACT_UNIT_STOP_STATE_UNAVAILABLE')
+          rows=[line.split('=',1) for line in p.stdout.decode().splitlines()]
+          if len(rows)!=len(fields) or any(len(row)!=2 for row in rows) or {row[0] for row in rows}!=set(fields):raise RuntimeError('EXACT_UNIT_STOP_STATE_SHAPE')
+          state=dict(rows)
+          if not(state['LoadState'] in ('loaded','not-found') and state['ActiveState'] in ('inactive','failed') and state['SubState'] in ('dead','failed') and state['MainPID']=='0' and state['ControlPID']=='0'):raise RuntimeError('EXACT_UNIT_NOT_QUIESCENT')
+          PYSTOPONE
+      - name: Always stop and verify only both exact run units
+        id: units_stopped
+        if: ${{ always() }}
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          unset GH_TOKEN GITHUB_TOKEN
+          for task_sample in 1 2; do
+            task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
+            sudo -n /usr/bin/systemctl stop "$task_unit" >/dev/null 2>&1 || :
+          done
+          task_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-cleanup-pyc.XXXXXX")";chmod 0700 "$task_prefix"
+          PYTHONPYCACHEPREFIX="$task_prefix" python -P - <<'PYSTOP'
+          import os,subprocess
+          fields=('LoadState','ActiveState','SubState','MainPID','ControlPID')
+          for sample in (1,2):
+              unit='nfl-operating-'+os.environ['GITHUB_RUN_ID']+'-'+str(sample)+'.service'
+              p=subprocess.run(['/usr/bin/systemctl','--system','--no-pager','show',unit,*['--property='+key for key in fields]],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=10)
+              if p.returncode not in (0,1) or len(p.stdout)>8192:raise RuntimeError('EXACT_UNIT_STOP_STATE_UNAVAILABLE')
+              rows=[line.split('=',1) for line in p.stdout.decode().splitlines()]
+              if len(rows)!=len(fields) or any(len(row)!=2 for row in rows) or {row[0] for row in rows}!=set(fields):raise RuntimeError('EXACT_UNIT_STOP_STATE_SHAPE')
+              state=dict(rows)
+              if not(state['LoadState'] in ('loaded','not-found') and state['ActiveState'] in ('inactive','failed') and state['SubState'] in ('dead','failed') and state['MainPID']=='0' and state['ControlPID']=='0'):raise RuntimeError('EXACT_UNIT_NOT_QUIESCENT')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:out.write('inactive=true\n')
+          PYSTOP
+      - name: Always collect typed primary evidence after unit quiescence
+        id: genuine_recovery
+        if: always() && steps.genuine_baseline.outcome == 'success' && steps.units_stopped.outputs.inactive == 'true'
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset GH_TOKEN GITHUB_TOKEN
+          test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
+          task_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-collect-pyc.XXXXXX")";chmod 0700 "$task_prefix"
+          PYTHONPYCACHEPREFIX="$task_prefix" python -P "$GITHUB_WORKSPACE/source/tools/genuine_case_recovery.py" collect > "$RUNNER_TEMP/nfl-genuine-collect-$GITHUB_RUN_ID.json"
       - name: Retain only the one typed bounded genuine release-review payload
         id: real_artifact
-        if: ${{ always() && steps.real_case.outputs.payload_ready == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && steps.genuine_recovery.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: genuine-production-review-${{ github.run_id }}
-          path: ${{ runner.temp }}/nfl-real-production-case/release-review.tar
+          path: ${{ steps.genuine_recovery.outputs.artifact_path }}
           retention-days: 1
           compression-level: 0
           if-no-files-found: error
-      - name: Require the complete genuine case while retaining failures honestly
+      - name: Require actual complete case and retention without whole-job claim
         if: ${{ always() }}
         shell: bash
-        env:
-          REVIEW_ARTIFACT_OUTCOME: ${{ steps.real_artifact.outcome }}
         run: |
           set -euo pipefail
-          python - <<'PY'
+          unset GH_TOKEN GITHUB_TOKEN
+          TASK_BASELINE='${{ steps.genuine_baseline.outcome }}' TASK_CAPABILITY='${{ steps.unit_capability.outcome }}' \
+          TASK_GENUINE='${{ steps.genuine_unit.outcome }}' TASK_STOPPED='${{ steps.units_stopped.outputs.inactive }}' \
+          TASK_RECOVERY='${{ steps.genuine_recovery.outcome }}' TASK_UPLOAD='${{ steps.real_artifact.outcome }}' \
+          python -P - <<'PYFINAL'
           import json,os
           from pathlib import Path
-          p=Path(os.environ['RUNNER_TEMP'])/'nfl-real-production-case/FINAL.json'
-          assert p.is_file(),'No complete typed genuine-case result exists'
-          value=json.loads(p.read_bytes())
-          assert os.environ.get('REVIEW_ARTIFACT_OUTCOME')=='success','The bounded review artifact was not successfully retained'
-          assert value['status']=='COMPLETE_GENUINE_NONDEPLOY_CASE',value['status']
-          assert value['artifact_tar_bytes']<=127*1024**2,'RETENTION_CAP'
-          assert value['operating_qualification']=='NOT_ESTABLISHED' and value['resource_verdict']=='UNKNOWN','HONEST_LIMITED_CLAIM'
-          print('One genuine nondeploy case completed; operating qualification and deployment remain unestablished.')
-          PY
+          p=Path(os.environ['RUNNER_TEMP'])/'nfl-real-production-case'/'FINAL.json';value=json.loads(p.read_bytes()) if p.is_file() else {}
+          assert all(os.environ.get(k)=='success' for k in ('TASK_BASELINE','TASK_CAPABILITY','TASK_GENUINE','TASK_RECOVERY','TASK_UPLOAD')),'GENUINE_CASE_OR_RETENTION_INCOMPLETE'
+          assert os.environ.get('TASK_STOPPED')=='true','EXACT_UNIT_CLEANUP_INCOMPLETE'
+          assert value.get('status')=='COMPLETE_GENUINE_NONDEPLOY_CASE' and value.get('source')==os.environ['GITHUB_SHA'],'ACTUAL_GENUINE_CASE_NOT_COMPLETE'
+          assert value.get('operating_qualification')=='NOT_ESTABLISHED' and value.get('resource_verdict')=='UNKNOWN','NO_WHOLE_JOB_OR_VM_CLAIM'
+          print('Genuine case and finite updater-unit checks completed; whole GitHub job/VM memory NOT_MEASURED; no deployment.')
+          PYFINAL
 
   inspect-runner-memory-detail:
     if: >-
@@ -1863,3 +2164,619 @@ jobs:
 
           if __name__=='__main__':raise SystemExit(main())
           PY
+
+  generated-browser-acceptance:
+    if: >-
+      github.repository == 'NickNicky19/nicks-expert-nfl-picks' &&
+      github.repository_id == '1411185749' &&
+      github.actor_id == '208912933' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/upgrade/phase2-reproducible-comparison' &&
+      github.run_attempt == 1 &&
+      inputs.confirmation == 'NFL-WEB-GENERATED-BROWSER-ACCEPTANCE-20261024' &&
+      inputs.storage_approved != '' &&
+      inputs.installed_source == github.sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Install the existing source dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          task_pip_cache="$(mktemp -d "$RUNNER_TEMP/nfl-browser-pip.XXXXXX")"
+          PYTHONPYCACHEPREFIX="$task_pip_cache" pip install --no-compile -r source/requirements.txt
+      - name: Verify the actual current source before artifact retrieval
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          task_source_cache="$(mktemp -d "$RUNNER_TEMP/nfl-browser-source.XXXXXX")"
+          PYTHONPYCACHEPREFIX="$task_source_cache" python source/tools/source_ci.py verify --root "$GITHUB_WORKSPACE/source" > "$RUNNER_TEMP/generated-browser-source-ci.json"
+      - name: Install pinned Playwright without browser download or privilege
+        shell: bash
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/nfl-browser-dependencies" --no-save --package-lock=false --ignore-scripts --no-audit --no-fund playwright@1.62.1
+      - name: Read one authenticated genuine artifact and validate before actual browser checks
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 022
+          task_reader_cache="$(mktemp -d "$RUNNER_TEMP/nfl-browser-reader.XXXXXX")"
+          PYTHONPYCACHEPREFIX="$task_reader_cache" python -P - <<'PY'
+          import hashlib, io, json, math, os, re, stat, struct, subprocess, sys, tarfile, time, types, zipfile
+          from pathlib import Path
+
+          CONF='NFL-WEB-GENERATED-BROWSER-ACCEPTANCE-20261024'
+          REPO='NickNicky19/nicks-expert-nfl-picks'
+          BRANCH='upgrade/phase2-reproducible-comparison'
+          WORKFLOW='.github/workflows/prepare-diagnostic-seed.yml'
+          BROWSER='f00a1f086d45958b04b3752bad0ea9bd447b4fccc508bfaa648ca33338b99064'
+          MIB=1024**2; GIB=1024**3; CAP=128*MIB
+          stage='INVOCATION'; aggregate={'schema_version':'genuine-generated-browser-acceptance-v1','status':'FAIL','resource_verdict':'UNKNOWN','operating_qualification':'NOT_ESTABLISHED','provider_calls':0,'deployment':False}
+          source=Path(os.environ['GITHUB_WORKSPACE'])/'source'
+          work=Path(os.environ['RUNNER_TEMP'])/('nfl-generated-browser-'+os.environ['GITHUB_RUN_ID'])
+          report=work/'report'; initialized=False
+          def need(v,c):
+              if not v:raise ValueError(c)
+          def sha(b):return hashlib.sha256(b).hexdigest()
+          def canonical(v):return json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          def pairs(items):
+              value={}
+              for key,item in items:need(key not in value,'DUPLICATE_JSON_KEY');value[key]=item
+              return value
+          def load(path,limit=8*MIB):
+              need(path.is_file() and not path.is_symlink() and path.stat().st_size<=limit,'BOUNDED_JSON')
+              return json.loads(path.read_bytes(),object_pairs_hook=pairs)
+          def left():
+              n=deadline-time.monotonic();need(n>0,'READER_DEADLINE');return n
+          def guard():
+              for p in (source,work,Path('/tmp'),Path.home()):
+                  s=os.statvfs(p if p.exists() else p.parent);need(s.f_bavail*s.f_frsize>=max(2*GIB,math.ceil(s.f_blocks*s.f_frsize*.2))+2*GIB,'FILESYSTEM_HEADROOM')
+          def clear_tokens(env):
+              return {k:v for k,v in env.items() if k not in ('GH_TOKEN','GITHUB_TOKEN','ACTIONS_RUNTIME_TOKEN','ACTIONS_ID_TOKEN_REQUEST_TOKEN') and not k.startswith(('ACTIONS_CACHE_','ACTIONS_RESULTS_'))}
+          def write(path,body,mode=0o644):
+              path.parent.mkdir(parents=True,exist_ok=True)
+              need(not path.is_symlink(),'OUTPUT_SYMLINK')
+              with path.open('wb') as f:f.write(body)
+              path.chmod(mode)
+          def copy_data(name,body,info):
+              need(recovery.safe_name(name) and name.startswith(('data/','output/data/')),'RESTORED_DATA_PATH')
+              need(info['bytes']==len(body) and info['sha256']==sha(body) and info['mode'] in (0o600,0o644),'RESTORED_DATA_BYTES')
+              target=source/name
+              need(not target.is_symlink() and all(not p.is_symlink() for p in target.parents),'RESTORED_DATA_ALIAS')
+              if recovery.LANE.match(name) and target.exists():
+                  need(target.is_file() and target.read_bytes()==body,'INHERITED_NATIVE_CHANGED')
+              if not sci.mutable(name):
+                  need(target.is_file() and target.read_bytes()==body and stat.S_IMODE(target.stat().st_mode)==info['mode'],'IMMUTABLE_DATA_DIFFERS')
+              else:write(target,body,info['mode'])
+          def zip_single(path,expected):
+              with path.open('rb') as f:
+                  size=path.stat().st_size;f.seek(max(0,size-65557));tail=f.read(65557);at=tail.rfind(b'PK\x05\x06')
+                  need(at>=0 and len(tail)-at>=22,'ZIP_DIRECTORY')
+                  _,disk,cd,dcount,count,length,offset,comment=struct.unpack('<4s4H2LH',tail[at:at+22]);end=size-len(tail)+at
+                  need(at+22+comment==len(tail) and not disk and not cd and dcount==count,'ZIP_LAYOUT')
+                  if count==65535 or length==0xffffffff or offset==0xffffffff or tail[max(0,at-20):at-16]==b'PK\x06\x07':
+                      need(end>=76,'ZIP64_BOUND');f.seek(end-20);sig,dd,zoff,disks=struct.unpack('<4sLQL',f.read(20));need(sig==b'PK\x06\x07' and dd==0 and disks==1,'ZIP64_LAYOUT')
+                      f.seek(zoff);sig,extra,_,_,dd,cd,dcount,count,length,offset=struct.unpack('<4sQ2H2L4Q',f.read(56))
+                      need(sig==b'PK\x06\x06' and extra==44 and dd==cd==0 and dcount==count and zoff+56==end-20,'ZIP64_DIRECTORY');end=zoff
+                  need(count==1 and length<=4096 and offset+length==end,'CLOSED_ZIP_DIRECTORY')
+              with zipfile.ZipFile(path) as z:
+                  items=z.infolist();need(len(items)==1,'CLOSED_ZIP_MEMBERS');item=items[0];kind=stat.S_IFMT(item.external_attr>>16)
+                  need(item.filename=='release-review.tar' and not item.is_dir() and item.header_offset==0 and not item.flag_bits&1 and item.compress_type in (0,8) and kind in (0,stat.S_IFREG) and item.file_size==expected['tar_bytes'] and item.file_size<=127*MIB and item.compress_size<=CAP,'CLOSED_ZIP_MEMBER')
+                  chunks=[];n=0
+                  with z.open(item) as f:
+                      while True:
+                          b=f.read(min(65536,expected['tar_bytes']+1-n))
+                          if not b:break
+                          n+=len(b);need(n<=expected['tar_bytes'],'TAR_STREAM_BOUND');chunks.append(b)
+                  raw=b''.join(chunks);need(n==expected['tar_bytes'] and sha(raw)==expected['tar_sha256'],'TAR_TRANSPORT_HASH');return raw
+
+          def execute():
+              global stage,deadline,sci,recovery,initialized
+              deadline=time.monotonic()+1080
+              expected={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','GITHUB_REPOSITORY':REPO,'GITHUB_REPOSITORY_ID':'1411185749','GITHUB_ACTOR_ID':'208912933','GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_RUN_ATTEMPT':'1','GITHUB_REF':'refs/heads/'+BRANCH,'GITHUB_JOB':'generated-browser-acceptance','GITHUB_WORKFLOW_REF':REPO+'/'+WORKFLOW+'@refs/heads/'+BRANCH}
+              need(all(os.environ.get(k)==v for k,v in expected.items()),'FIXED_INVOCATION')
+              need(re.fullmatch('[1-9][0-9]{0,19}',os.environ['GITHUB_RUN_ID']),'READER_RUN_ID')
+              current=os.environ['GITHUB_SHA'];need(re.fullmatch('[0-9a-f]{40}',current) and os.environ.get('GITHUB_WORKFLOW_SHA')==current,'WORKFLOW_SOURCE')
+              event=load(Path(os.environ['GITHUB_EVENT_PATH']),131072);inputs=event.get('inputs',{})
+              need(set(inputs)=={'confirmation','storage_approved','installed_source'} and inputs['confirmation']==CONF and inputs['installed_source']==current,'EXACT_THREE_INPUTS')
+              need(event.get('repository',{}).get('id')==1411185749 and event.get('sender',{}).get('id')==208912933,'EVENT_ACTOR')
+              need(type(inputs['storage_approved']) is str and len(inputs['storage_approved'])<=4096,'APPROVAL_INPUT_BOUND')
+              approval=json.loads(inputs['storage_approved'],object_pairs_hook=pairs)
+              keys={'schema_version','source','case_run_id','artifact_id','artifact_bytes','artifact_sha256','artifact_expires_at','tar_bytes','tar_sha256'}
+              need(type(approval) is dict and set(approval)==keys and approval['schema_version']=='genuine-browser-artifact-approval-v1' and approval['source']==current,'CLOSED_ARTIFACT_APPROVAL')
+              for k in ('case_run_id','artifact_id','artifact_bytes','tar_bytes'):need(type(approval[k]) is int and approval[k]>0,'APPROVAL_INTEGER')
+              need(approval['case_run_id']!=int(os.environ['GITHUB_RUN_ID']) and approval['artifact_bytes']<=CAP and approval['tar_bytes']<=127*MIB,'APPROVAL_BOUND')
+              for k in ('artifact_sha256','tar_sha256'):need(re.fullmatch('[0-9a-f]{64}',approval[k]),'APPROVAL_DIGEST')
+              guard();need(not work.exists() and not work.is_symlink(),'FRESH_READER_WORKSPACE')
+              work.mkdir(mode=0o700);report.mkdir(mode=0o700);initialized=True
+              sys.path.insert(0,str(source/'tools'))
+              import source_ci as sci
+              import operating_seed_transport as transport
+              import operating_resource_bootstrap as bootstrap
+              import genuine_case_recovery as recovery
+              need(sci.git(source,'rev-parse','HEAD').decode().strip()==current,'CHECKOUT_SOURCE')
+              ci=load(Path(os.environ['RUNNER_TEMP'])/'generated-browser-source-ci.json',65536)
+              need(ci.get('schema_version')=='source-ci-verification-v1' and ci['executed_commit']==current and ci['source_ci_commit']==current and type(ci['run_id']) is int,'FRESH_SOURCE_CI')
+              code_before=sci.source(source)
+              need(code_before['source_manifest_sha256']==ci['source_manifest_sha256'],'INSTALLED_SOURCE_CLOSURE')
+              need(sha((source/'tools/release_browser.cjs').read_bytes())==BROWSER,'REVIEWED_BROWSER_BYTES')
+              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='2a175d65b90b586303622e98380680f92e31de965a3707ead509985c749a74b9','REVIEWED_RECOVERY_BYTES')
+              api=sci.GitHub()
+              def identity():
+                  repo=api.get('');need(repo.get('id')==1411185749 and repo.get('full_name')==REPO and repo.get('private') is False,'PUBLIC_REPOSITORY')
+                  wf=api.get('/actions/workflows/prepare-diagnostic-seed.yml');need(wf.get('path')==WORKFLOW and wf.get('state')=='active','PREPARATION_WORKFLOW')
+                  run=api.get('/actions/runs/'+str(approval['case_run_id']));attempt=api.get('/actions/runs/'+str(approval['case_run_id'])+'/attempts/1')
+                  fixed={'id':approval['case_run_id'],'run_attempt':1,'head_sha':current,'workflow_id':wf['id'],'path':WORKFLOW,'event':'workflow_dispatch','head_branch':BRANCH,'status':'completed','conclusion':'success'}
+                  for value in (run,attempt):
+                      need(all(value.get(k)==v for k,v in fixed.items()) and (value.get('repository') or {}).get('id')==1411185749 and (value.get('head_repository') or {}).get('id')==1411185749,'COMPLETE_EXACT_CASE_RUN')
+                  need((run.get('actor') or {}).get('id')==208912933,'CASE_ACTOR')
+                  jobs=api.get('/actions/runs/'+str(approval['case_run_id'])+'/attempts/1/jobs?per_page=100')
+                  need(jobs.get('total_count')==len(jobs.get('jobs',[])),'COMPLETE_JOB_PAGE')
+                  selected=[j for j in jobs['jobs'] if j.get('name')=='genuine-production-case']
+                  need(len(selected)==1 and all(selected[0].get(k)==v for k,v in {'run_id':approval['case_run_id'],'head_sha':current,'status':'completed','conclusion':'success'}.items()),'COMPLETE_GENUINE_JOB')
+                  artifact=api.get('/actions/artifacts/'+str(approval['artifact_id']))
+                  fixed_art={'id':approval['artifact_id'],'name':'genuine-production-review-'+str(approval['case_run_id']),'size_in_bytes':approval['artifact_bytes'],'digest':'sha256:'+approval['artifact_sha256'],'expires_at':approval['artifact_expires_at'],'expired':False}
+                  need(all(artifact.get(k)==v for k,v in fixed_art.items()),'EXACT_ARTIFACT')
+                  link=artifact.get('workflow_run') or {}
+                  need(all(link.get(k)==v for k,v in {'id':approval['case_run_id'],'repository_id':1411185749,'head_repository_id':1411185749,'head_sha':current,'head_branch':BRANCH}.items()),'ARTIFACT_RUN_BINDING')
+                  created,expires=transport._stamp(artifact['created_at']),transport._stamp(artifact['expires_at'])
+                  now=transport.datetime.now(transport.timezone.utc)
+                  need(transport._stamp(run['run_started_at'])<=created<=transport._stamp(run['updated_at']) and created<=now<expires,'ARTIFACT_TIME')
+                  return {**fixed_art,'job_id':selected[0]['id'],'created_at':artifact['created_at'],'run_started_at':run['run_started_at'],'updated_at':run['updated_at']}
+              stage='AUTHENTICATED_ARTIFACT'
+              before=identity();archive=work/'artifact.zip'
+              transport._download(dict(artifact_id=approval['artifact_id'],archive_bytes=approval['artifact_bytes'],archive_sha256=approval['artifact_sha256']),archive,deadline=deadline)
+              need(identity()==before,'ARTIFACT_IDENTITY_CHANGED')
+              case_raw=zip_single(archive,approval);meta=recovery.controller_archive(case_raw,current,'COMPLETE_GENUINE_NONDEPLOY_CASE');entries=recovery.tar_entries(case_raw)
+              case=meta['RELEASE_CASE_MANIFEST.json'];need(case.get('run_id')==approval['case_run_id'] and case.get('attempt')==1 and case.get('provider_case_attempts')==1 and case.get('deployed') is False and case.get('main_written') is False and case.get('operating_qualification')=='NOT_ESTABLISHED' and case.get('resource_verdict')=='UNKNOWN','GENUINE_CASE_MANIFEST')
+              need(case['verification_scope']['complete_week_qualified'] is False and case['verification_scope']['full_board_verified'] is False,'CASE_SCOPE')
+              for name in ('source-ci-before','source-ci-before-data-commit','source-ci-after-stage'):
+                  proof=meta['SOURCE_CI_BINDINGS.json'][name]
+                  need(proof['source_ci_commit']==current and proof['source_manifest_sha256']==ci['source_manifest_sha256'] and proof['environment_sha256']==ci['environment_sha256'],'CASE_SOURCE_CI_BINDING')
+              need(meta['SOURCE_CI_BINDINGS.json']['source-ci-after-stage']['executed_commit']==case['local_data_commit']['commit'] and meta['SOURCE_CI_BINDINGS.json']['source-ci-after-stage']['executed_tree']==case['local_data_commit']['tree'],'CASE_LOCAL_DATA_COMMIT')
+              for key in ('GH_TOKEN','GITHUB_TOKEN','ACTIONS_RUNTIME_TOKEN','ACTIONS_ID_TOKEN_REQUEST_TOKEN'):os.environ.pop(key,None)
+              api.token=None;del api
+              stage='EXACT_RUNTIME_RESTORATION'
+              driver=bootstrap.genuine_driver(source,current);need(len(driver)==30854 and sha(driver)=='2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf','REVIEWED_ORIGINAL_CONTROLLER');module=types.ModuleType('verified_original_controller')
+              exec(compile(driver,'verified-controller','exec'),module.__dict__)
+              original=meta['INPUT_DATA_MANIFEST.json'];after=meta['OUTPUT_DATA_MANIFEST.json']['after'];main=original['production_main']
+              need(re.fullmatch('[0-9a-f]{40}',main) and case['production_main']==main,'PRODUCTION_COMMIT')
+              need(subprocess.run(['git','--no-replace-objects','-C',str(source),'merge-base','--is-ancestor',main,'refs/remotes/origin/main'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=min(30,left())).returncode==0,'PRODUCTION_MAIN_ANCESTRY')
+              expected_prod=original['production_files'];tree=sci.git(source,'ls-tree','-r','-l','-z',main,'--','data','output/data');found={}
+              for row in tree.split(b'\0'):
+                  if not row:continue
+                  header,name=row.split(b'\t',1);mode,kind,oid,size=header.decode().split();name=name.decode()
+                  need(recovery.safe_name(name) and mode=='100644' and kind=='blob' and int(size)<=128*MIB,'PRODUCTION_BLOB_ROLE')
+                  found[name]={'oid':oid,'bytes':int(size)}
+              need(set(found)==set(expected_prod) and sum(v['bytes'] for v in found.values())<=768*MIB,'COMPLETE_PRODUCTION_BASE')
+              process=subprocess.Popen(['git','--no-replace-objects','-C',str(source),'cat-file','--batch'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+              try:
+                  for name,entry in sorted(found.items()):
+                      left();process.stdin.write((entry['oid']+'\n').encode());process.stdin.flush();header=process.stdout.readline(200).decode().strip().split()
+                      need(header==[entry['oid'],'blob',str(entry['bytes'])],'PRODUCTION_BATCH_BLOB')
+                      chunks=[];remaining=entry['bytes']
+                      while remaining:
+                          block=process.stdout.read(min(65536,remaining));need(block,'PRODUCTION_BLOB_TRUNCATED');chunks.append(block);remaining-=len(block)
+                      need(process.stdout.read(1)==b'\n','PRODUCTION_BLOB_END');body=b''.join(chunks);want=expected_prod[name]
+                      need(want['blob']==entry['oid'] and want['bytes']==len(body) and want['sha256']==sha(body) and hashlib.sha1(b'blob '+str(len(body)).encode()+b'\0'+body).hexdigest()==entry['oid'],'PRODUCTION_BLOB_HASH')
+                      copy_data(name,body,{'bytes':len(body),'sha256':sha(body),'mode':0o644})
+                  process.stdin.close();need(process.wait(timeout=min(30,left()))==0,'PRODUCTION_BATCH_STATUS')
+              finally:
+                  if process.poll() is None:process.kill();process.wait()
+              need(module.inventory(source)==original['before'],'EXACT_INPUT_INVENTORY')
+              case_dir=work/'artifact';case_dir.mkdir();pages=case_dir/'pages';pages.mkdir()
+              for name in recovery.META:write(case_dir/name,entries[name],0o600)
+              bodies=recovery.tar_entries(entries['public-pages.tar'],True,meta['PAGES_MEMBERS_MANIFEST.json'])
+              for name,body in bodies.items():
+                  need(recovery.public_path(name),'PUBLIC_MEMBER');write(pages/name,body)
+                  if name.startswith('data/'):
+                      logical='output/'+name;info=after.get(logical)
+                      if info and info['bytes']==len(body) and info['sha256']==sha(body):copy_data(logical,body,info)
+                  else:need((source/'output'/name).read_bytes()==body,'IMMUTABLE_PUBLIC_SOURCE')
+              for name,body in entries.items():
+                  if name.startswith('receipts/'):logical=name[9:];copy_data(logical,body,after[logical])
+                  elif name.startswith('mutable/'):logical=name[8:];copy_data(logical,body,after[logical])
+              need(module.inventory(source)==after,'EXACT_OUTPUT_INVENTORY')
+              need(sci.source(source)['source_manifest_sha256']==code_before['source_manifest_sha256'],'SOURCE_UNCHANGED_BY_RESTORATION')
+              generation=json.loads((pages/'data/release-identity.json').read_bytes());need(generation==case['generation'] and generation['source_sha']==current,'GENUINE_GENERATION')
+              stage='FULL_OFFLINE_GENERATION_VALIDATION';guard()
+              validate="import contextlib,json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);import diagnostic_network_guard as guard;guard.install();import phase2_capture\nwith contextlib.redirect_stdout(sys.stderr): g=phase2_capture.validate_generation(Path(sys.argv[2]))\nprint(json.dumps({'generation_sha256':g['generation_sha256']}))"
+              env=clear_tokens(os.environ)
+              with (work/'VALIDATION.json').open('wb') as value,(work/'private-validation.log').open('wb') as log:
+                  checked=subprocess.run([sys.executable,'-P','-c',validate,str(source/'tools'),str(source)],env=env,stdin=subprocess.DEVNULL,stdout=value,stderr=log,timeout=min(600,left()))
+              need(checked.returncode==0,'FULL_GENERATION_VALIDATOR_REJECTED')
+              validated=load(work/'VALIDATION.json',65536);need(validated=={'generation_sha256':generation['generation_sha256']},'FULL_VALIDATION_IDENTITY')
+              stage='ACTUAL_BROWSER';guard()
+              browser_env=clear_tokens(os.environ)
+              browser_env['NODE_PATH']=str(Path(os.environ['RUNNER_TEMP'])/'nfl-browser-dependencies/node_modules')
+              browser_env['NFL_CHROMIUM_PATH']=next((p for p in ('/usr/bin/google-chrome','/usr/bin/google-chrome-stable','/usr/bin/chromium') if Path(p).is_file()),'')
+              need(browser_env['NFL_CHROMIUM_PATH'],'PREINSTALLED_CHROME_UNAVAILABLE')
+              result=report/'PRIVATE_BROWSER.json'
+              command=['node',str(source/'tools/release_browser.cjs'),'--manifest',str(case_dir/'RELEASE_CASE_MANIFEST.json'),'--artifact-root',str(case_dir),'--root',str(pages),'--result',str(result),'--profile-root',str(work/'profiles')]
+              with (work/'private-browser.log').open('wb') as log:
+                  checked=subprocess.run(command,env=browser_env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,timeout=min(440,left()))
+              need(checked.returncode==0,'BROWSER_CHECKS_REJECTED')
+              actual=load(result,128*1024)
+              need(actual.get('status') in ('PASS_EXECUTED_ACTUAL_CHECKS','PASS_EXECUTED_CHECKS_WITH_EXPLICIT_UNAVAILABLE_CASES') and actual['source']==current and actual['generation_sha256']==generation['generation_sha256'] and actual['report_id']==generation['selection_report_id'] and actual.get('playwright_routing_installed') is False and actual.get('provider_requests')==0,'ACTUAL_BROWSER_RESULT')
+              contexts=actual['contexts'];need([c['width'] for c in contexts]==[1280,390,320] and all(c['status']=='PASS' for c in contexts),'COMPLETE_BROWSER_CONTEXTS')
+              aggregate.update(status=actual['status'],source=current,case_run_id=approval['case_run_id'],artifact_id=approval['artifact_id'],artifact_sha256=approval['artifact_sha256'],tar_sha256=approval['tar_sha256'],generation_sha256=generation['generation_sha256'],report_sha256=generation['selection_report_id'],browser_script_sha256=BROWSER,private_report_sha256=sha(result.read_bytes()),validation='PASS_FULL_SAVED_GENERATION',viewports=[c['width'] for c in contexts],category_source_side_cases=len(contexts[0]['category_source_side_controls']),saved_ticket_count=sum(c['paper']['saved_ticket_count'] for c in contexts),unavailable_case_count=len(actual['unavailable']),playwright_version=actual['browser']['playwright'],chrome_version=actual['browser']['chrome_version'],physical_device=False)
+              aggregate.update(saved_rows=contexts[0]['independent_saved_rows']['complete_saved_rows'],supporting_groups=contexts[0]['independent_saved_rows']['complete_context_groups_reconciled'],populated_cache_contexts=sum(bool(c['ordinary_cache']['populated_storage']) for c in contexts),strategy_ui_contexts=sum(item['status']=='PASS_ACTUAL_STRATEGY_UI' for c in contexts for item in c['strategy_ui']))
+              need(aggregate['category_source_side_cases']==60 and aggregate['playwright_version']=='1.62.1' and re.fullmatch('[0-9.]{1,80}',aggregate['chrome_version']),'AGGREGATE_BROWSER_CONTRACT')
+
+          try:
+              execute()
+          except BaseException as error:
+              aggregate.update(status='FAIL',rejected_stage=stage,failure_class=type(error).__name__)
+          finally:
+              raw=canonical(aggregate)+b'\n';need(len(raw)<=8192,'AGGREGATE_BOUND')
+              if initialized:write(report/'BROWSER_ACCEPTANCE.json',raw,0o600)
+              print('CODEX_RESULT='+raw.decode().strip())
+          if aggregate['status']=='FAIL':raise SystemExit(1)
+          PY
+      - name: Publish only bounded sanitized acceptance metadata
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -P - <<'PY'
+          import hashlib,json,os,re
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/('nfl-generated-browser-'+os.environ['GITHUB_RUN_ID'])/'report/BROWSER_ACCEPTANCE.json'
+          fallback={'schema_version':'genuine-generated-browser-acceptance-v1','status':'FAIL','rejected_stage':'SETUP_OR_SOURCE','resource_verdict':'UNKNOWN','operating_qualification':'NOT_ESTABLISHED','provider_calls':0,'deployment':False}
+          allowed=set('schema_version status resource_verdict operating_qualification provider_calls deployment source case_run_id artifact_id artifact_sha256 tar_sha256 generation_sha256 report_sha256 browser_script_sha256 private_report_sha256 validation viewports category_source_side_cases saved_ticket_count unavailable_case_count playwright_version chrome_version physical_device saved_rows supporting_groups populated_cache_contexts strategy_ui_contexts rejected_stage failure_class'.split())
+          try:
+              assert p.is_file() and not p.is_symlink() and p.stat().st_size<=8192
+              value=json.loads(p.read_bytes());assert isinstance(value,dict) and set(value)<=allowed
+              assert value['schema_version']==fallback['schema_version'] and value['resource_verdict']=='UNKNOWN' and value['operating_qualification']=='NOT_ESTABLISHED' and value['provider_calls']==0 and value['deployment'] is False
+              for key,item in value.items():
+                  if key.endswith('sha256'):assert isinstance(item,str) and re.fullmatch('[0-9a-f]{64}',item)
+                  elif key=='source':assert item==os.environ['GITHUB_SHA']
+                  elif key=='viewports':assert item==[1280,390,320]
+                  elif type(item) is str:assert re.fullmatch('[A-Za-z0-9_.-]{1,100}',item)
+                  else:assert type(item) in (int,bool) and (type(item) is bool or 0<=item<=100000000000000000000)
+          except Exception:
+              value=fallback
+          p.parent.mkdir(parents=True,exist_ok=True)
+          raw=json.dumps(value,sort_keys=True,separators=(',',':')).encode()+b'\n';p.write_bytes(raw)
+          print('CODEX_RESULT='+raw.decode().strip())
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('Generated-artifact browser acceptance: '+value['status']+'. Resource and operating qualification remain unestablished.\n')
+
+          PY
+      - name: Retain only sanitized aggregate acceptance evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: genuine-generated-browser-${{ github.run_id }}
+          path: ${{ runner.temp }}/nfl-generated-browser-${{ github.run_id }}/report/BROWSER_ACCEPTANCE.json
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  public-browser-acceptance:
+    if: >-
+      github.repository == 'NickNicky19/nicks-expert-nfl-picks' &&
+      github.repository_id == '1411185749' &&
+      github.actor_id == '208912933' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/upgrade/phase2-reproducible-comparison' &&
+      github.run_attempt == 1 &&
+      inputs.confirmation == 'NFL-WEB-PUBLIC-BROWSER-ACCEPTANCE-20261024' &&
+      inputs.storage_approved != '' &&
+      inputs.installed_source == github.sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Install the existing source dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          task_pip_cache="$(mktemp -d "$RUNNER_TEMP/nfl-browser-pip.XXXXXX")"
+          PYTHONPYCACHEPREFIX="$task_pip_cache" pip install --no-compile -r source/requirements.txt
+      - name: Verify the actual current source before artifact retrieval
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          task_source_cache="$(mktemp -d "$RUNNER_TEMP/nfl-browser-source.XXXXXX")"
+          PYTHONPYCACHEPREFIX="$task_source_cache" python source/tools/source_ci.py verify --root "$GITHUB_WORKSPACE/source" > "$RUNNER_TEMP/generated-browser-source-ci.json"
+      - name: Install pinned Playwright without browser download or privilege
+        shell: bash
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/nfl-browser-dependencies" --no-save --package-lock=false --ignore-scripts --no-audit --no-fund playwright@1.62.1
+      - name: Read one authenticated Hourly Pages artifact and verify the exact public deployment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 022
+          task_reader_cache="$(mktemp -d "$RUNNER_TEMP/nfl-browser-reader.XXXXXX")"
+          PYTHONPYCACHEPREFIX="$task_reader_cache" python -P - <<'PY'
+          import hashlib, io, json, math, os, re, stat, struct, subprocess, sys, tarfile, time, types, zipfile
+          from pathlib import Path
+
+          CONF='NFL-WEB-PUBLIC-BROWSER-ACCEPTANCE-20261024'
+          REPO='NickNicky19/nicks-expert-nfl-picks'
+          BRANCH='upgrade/phase2-reproducible-comparison'
+          WORKFLOW='.github/workflows/prepare-diagnostic-seed.yml'
+          BROWSER='f00a1f086d45958b04b3752bad0ea9bd447b4fccc508bfaa648ca33338b99064'
+          MIB=1024**2; GIB=1024**3; CAP=128*MIB
+          stage='INVOCATION'; aggregate={'schema_version':'genuine-generated-browser-acceptance-v1','status':'FAIL','resource_verdict':'UNKNOWN','operating_qualification':'NOT_ESTABLISHED','provider_calls':0,'deployment':False}
+          source=Path(os.environ['GITHUB_WORKSPACE'])/'source'
+          work=Path(os.environ['RUNNER_TEMP'])/('nfl-public-browser-'+os.environ['GITHUB_RUN_ID'])
+          report=work/'report'; initialized=False
+          def need(v,c):
+              if not v:raise ValueError(c)
+          def sha(b):return hashlib.sha256(b).hexdigest()
+          def canonical(v):return json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          def pairs(items):
+              value={}
+              for key,item in items:need(key not in value,'DUPLICATE_JSON_KEY');value[key]=item
+              return value
+          def load(path,limit=8*MIB):
+              need(path.is_file() and not path.is_symlink() and path.stat().st_size<=limit,'BOUNDED_JSON')
+              return json.loads(path.read_bytes(),object_pairs_hook=pairs)
+          def left():
+              n=deadline-time.monotonic();need(n>0,'READER_DEADLINE');return n
+          def guard():
+              for p in (source,work,Path('/tmp'),Path.home()):
+                  s=os.statvfs(p if p.exists() else p.parent);need(s.f_bavail*s.f_frsize>=max(2*GIB,math.ceil(s.f_blocks*s.f_frsize*.2))+2*GIB,'FILESYSTEM_HEADROOM')
+          def clear_tokens(env):
+              return {k:v for k,v in env.items() if k not in ('GH_TOKEN','GITHUB_TOKEN','ACTIONS_RUNTIME_TOKEN','ACTIONS_ID_TOKEN_REQUEST_TOKEN') and not k.startswith(('ACTIONS_CACHE_','ACTIONS_RESULTS_'))}
+          def write(path,body,mode=0o644):
+              path.parent.mkdir(parents=True,exist_ok=True)
+              need(not path.is_symlink(),'OUTPUT_SYMLINK')
+              with path.open('wb') as f:f.write(body)
+              path.chmod(mode)
+          def copy_data(name,body,info):
+              need(recovery.safe_name(name) and name.startswith(('data/','output/data/')),'RESTORED_DATA_PATH')
+              need(info['bytes']==len(body) and info['sha256']==sha(body) and info['mode'] in (0o600,0o644),'RESTORED_DATA_BYTES')
+              target=source/name
+              need(not target.is_symlink() and all(not p.is_symlink() for p in target.parents),'RESTORED_DATA_ALIAS')
+              if recovery.LANE.match(name) and target.exists():
+                  need(target.is_file() and target.read_bytes()==body,'INHERITED_NATIVE_CHANGED')
+              if not sci.mutable(name):
+                  need(target.is_file() and target.read_bytes()==body and stat.S_IMODE(target.stat().st_mode)==info['mode'],'IMMUTABLE_DATA_DIFFERS')
+              else:write(target,body,info['mode'])
+          def zip_single(path,expected):
+              with path.open('rb') as f:
+                  size=path.stat().st_size;f.seek(max(0,size-65557));tail=f.read(65557);at=tail.rfind(b'PK\x05\x06')
+                  need(at>=0 and len(tail)-at>=22,'ZIP_DIRECTORY')
+                  _,disk,cd,dcount,count,length,offset,comment=struct.unpack('<4s4H2LH',tail[at:at+22]);end=size-len(tail)+at
+                  need(at+22+comment==len(tail) and not disk and not cd and dcount==count,'ZIP_LAYOUT')
+                  if count==65535 or length==0xffffffff or offset==0xffffffff or tail[max(0,at-20):at-16]==b'PK\x06\x07':
+                      need(end>=76,'ZIP64_BOUND');f.seek(end-20);sig,dd,zoff,disks=struct.unpack('<4sLQL',f.read(20));need(sig==b'PK\x06\x07' and dd==0 and disks==1,'ZIP64_LAYOUT')
+                      f.seek(zoff);sig,extra,_,_,dd,cd,dcount,count,length,offset=struct.unpack('<4sQ2H2L4Q',f.read(56))
+                      need(sig==b'PK\x06\x06' and extra==44 and dd==cd==0 and dcount==count and zoff+56==end-20,'ZIP64_DIRECTORY');end=zoff
+                  need(count==1 and length<=4096 and offset+length==end,'CLOSED_ZIP_DIRECTORY')
+              with zipfile.ZipFile(path) as z:
+                  items=z.infolist();need(len(items)==1,'CLOSED_ZIP_MEMBERS');item=items[0];kind=stat.S_IFMT(item.external_attr>>16)
+                  need(item.filename=='artifact.tar' and not item.is_dir() and item.header_offset==0 and not item.flag_bits&1 and item.compress_type in (0,8) and kind in (0,stat.S_IFREG) and item.file_size==expected['tar_bytes'] and item.file_size<=127*MIB and item.compress_size<=CAP,'CLOSED_ZIP_MEMBER')
+                  chunks=[];n=0
+                  with z.open(item) as f:
+                      while True:
+                          b=f.read(min(65536,expected['tar_bytes']+1-n))
+                          if not b:break
+                          n+=len(b);need(n<=expected['tar_bytes'],'TAR_STREAM_BOUND');chunks.append(b)
+                  raw=b''.join(chunks);need(n==expected['tar_bytes'] and sha(raw)==expected['tar_sha256'],'TAR_TRANSPORT_HASH');return raw
+
+          def execute():
+              global stage,deadline,sci,recovery,initialized
+              deadline=time.monotonic()+1080
+              expected={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','GITHUB_REPOSITORY':REPO,'GITHUB_REPOSITORY_ID':'1411185749','GITHUB_ACTOR_ID':'208912933','GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_RUN_ATTEMPT':'1','GITHUB_REF':'refs/heads/'+BRANCH,'GITHUB_JOB':'public-browser-acceptance','GITHUB_WORKFLOW_REF':REPO+'/'+WORKFLOW+'@refs/heads/'+BRANCH}
+              need(all(os.environ.get(k)==v for k,v in expected.items()),'FIXED_INVOCATION')
+              current=os.environ['GITHUB_SHA'];need(re.fullmatch('[0-9a-f]{40}',current) and os.environ.get('GITHUB_WORKFLOW_SHA')==current,'WORKFLOW_SOURCE')
+              need(re.fullmatch('[1-9][0-9]{0,19}',os.environ['GITHUB_RUN_ID']),'READER_RUN_ID')
+              event=load(Path(os.environ['GITHUB_EVENT_PATH']),131072);inputs=event.get('inputs',{})
+              need(set(inputs)=={'confirmation','storage_approved','installed_source'} and inputs['confirmation']==CONF and inputs['installed_source']==current,'EXACT_THREE_INPUTS')
+              need(event.get('repository',{}).get('id')==1411185749 and event.get('sender',{}).get('id')==208912933,'EVENT_ACTOR')
+              need(type(inputs['storage_approved']) is str and len(inputs['storage_approved'])<=4096,'APPROVAL_INPUT_BOUND')
+              approval=json.loads(inputs['storage_approved'],object_pairs_hook=pairs)
+              keys={'schema_version','source','hourly_run_id','hourly_run_attempt','runtime_data_commit','artifact_id','artifact_bytes','artifact_sha256','artifact_expires_at','tar_bytes','tar_sha256'}
+              need(type(approval) is dict and set(approval)==keys and approval['schema_version']=='public-browser-artifact-approval-v1' and approval['source']==current,'CLOSED_ARTIFACT_APPROVAL')
+              for k in ('hourly_run_id','hourly_run_attempt','artifact_id','artifact_bytes','tar_bytes'):need(type(approval[k]) is int and 0<approval[k]<=9007199254740991,'APPROVAL_INTEGER')
+              need(approval['hourly_run_id']!=int(os.environ['GITHUB_RUN_ID']) and approval['artifact_bytes']<=CAP and approval['tar_bytes']<=127*MIB,'APPROVAL_BOUND')
+              for k in ('artifact_sha256','tar_sha256'):need(re.fullmatch('[0-9a-f]{64}',approval[k]),'APPROVAL_DIGEST')
+              need(re.fullmatch('[0-9a-f]{40}',approval['runtime_data_commit']),'ACTUAL_DATA_COMMIT')
+              guard();need(not work.exists() and not work.is_symlink(),'FRESH_READER_WORKSPACE');work.mkdir(mode=0o700);report.mkdir(mode=0o700);initialized=True
+              sys.path.insert(0,str(source/'tools'))
+              import source_ci as sci
+              import operating_seed_transport as transport
+              import genuine_case_recovery as recovery
+              need(sci.git(source,'rev-parse','HEAD').decode().strip()==current,'CHECKOUT_SOURCE')
+              ci=load(Path(os.environ['RUNNER_TEMP'])/'generated-browser-source-ci.json',65536)
+              code=sci.source(source)
+              need(ci.get('schema_version')=='source-ci-verification-v1' and ci['executed_commit']==current and ci['source_manifest_sha256']==code['source_manifest_sha256'],'FRESH_INSTALLED_SOURCE_CI')
+              need(sha((source/'tools/release_browser.cjs').read_bytes())==BROWSER,'REVIEWED_BROWSER_BYTES')
+              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='2a175d65b90b586303622e98380680f92e31de965a3707ead509985c749a74b9','REVIEWED_RECOVERY_BYTES')
+              api=sci.GitHub()
+              def identity():
+                  repo=api.get('');need(repo.get('id')==1411185749 and repo.get('full_name')==REPO and repo.get('private') is False,'PUBLIC_REPOSITORY')
+                  wf=api.get('/actions/workflows/hourly.yml');need(wf.get('path')=='.github/workflows/hourly.yml' and wf.get('state')=='active','HOURLY_WORKFLOW')
+                  run=api.get('/actions/runs/'+str(approval['hourly_run_id']));attempt=api.get('/actions/runs/'+str(approval['hourly_run_id'])+'/attempts/'+str(approval['hourly_run_attempt']))
+                  fixed={'id':approval['hourly_run_id'],'run_attempt':approval['hourly_run_attempt'],'workflow_id':wf['id'],'path':'.github/workflows/hourly.yml','head_branch':'main','status':'completed','conclusion':'success'}
+                  for value in (run,attempt):
+                      need(all(value.get(k)==v for k,v in fixed.items()) and value.get('event') in ('push','schedule','workflow_dispatch') and re.fullmatch('[0-9a-f]{40}',value.get('head_sha','')) and (value.get('repository') or {}).get('id')==1411185749 and (value.get('head_repository') or {}).get('id')==1411185749,'EXACT_SUCCESSFUL_HOURLY')
+                  need(all(run[k]==attempt[k] for k in ('head_sha','event','run_started_at','created_at')),'HOURLY_ATTEMPT_BINDING')
+                  jobs=api.get('/actions/runs/'+str(approval['hourly_run_id'])+'/attempts/'+str(approval['hourly_run_attempt'])+'/jobs?per_page=100')
+                  need(jobs.get('total_count')==len(jobs.get('jobs',[]))==1,'CLOSED_HOURLY_JOBS');job=jobs['jobs'][0]
+                  need(job.get('name')=='update' and all(job.get(k)==v for k,v in {'run_id':approval['hourly_run_id'],'head_sha':run['head_sha'],'status':'completed','conclusion':'success'}.items()),'COMPLETE_HOURLY_UPDATE')
+                  steps=job.get('steps',[]);names=[s.get('name') for s in steps]
+                  required=['Verify qualified Phase 2 source CI before provider build','Build unchanged projection engine','Required explicit-route source and coherent-generation verification','Commit validated data and immutable receipts','Stage approved Pages fields without altering retained originals']
+                  need(len(set(names))==len(names) and all(n in names and steps[names.index(n)].get('conclusion')=='success' for n in required) and [names.index(n) for n in required]==sorted(names.index(n) for n in required),'MANDATORY_HOURLY_STEPS')
+                  need(any(s.get('name') in ('Deploy validated output','Deploy validated output (retry)') and s.get('conclusion')=='success' for s in steps),'ACTUAL_DEPLOYMENT_STEP')
+                  artifact=api.get('/actions/artifacts/'+str(approval['artifact_id']))
+                  fixed_art={'id':approval['artifact_id'],'name':'github-pages','size_in_bytes':approval['artifact_bytes'],'digest':'sha256:'+approval['artifact_sha256'],'expires_at':approval['artifact_expires_at'],'expired':False}
+                  need(all(artifact.get(k)==v for k,v in fixed_art.items()),'EXACT_PAGES_ARTIFACT');link=artifact.get('workflow_run') or {}
+                  need(all(link.get(k)==v for k,v in {'id':approval['hourly_run_id'],'repository_id':1411185749,'head_repository_id':1411185749,'head_sha':run['head_sha'],'head_branch':'main'}.items()),'PAGES_ARTIFACT_RUN_BINDING')
+                  created,expires=transport._stamp(artifact['created_at']),transport._stamp(artifact['expires_at']);now=transport.datetime.now(transport.timezone.utc)
+                  need(transport._stamp(run['run_started_at'])<=created<=transport._stamp(run['updated_at']) and created<=now<expires,'PAGES_ARTIFACT_TIME')
+                  return {**fixed_art,'job_id':job['id'],'head_sha':run['head_sha'],'event':run['event'],'created_at':artifact['created_at'],'run_started_at':run['run_started_at'],'updated_at':run['updated_at']}
+              stage='AUTHENTICATED_HOURLY_PAGES';before=identity();archive=work/'artifact.zip'
+              transport._download(dict(artifact_id=approval['artifact_id'],archive_bytes=approval['artifact_bytes'],archive_sha256=approval['artifact_sha256']),archive,deadline=deadline)
+              need(identity()==before,'HOURLY_OR_ARTIFACT_CHANGED');pages_tar=zip_single(archive,approval)
+              data_commit=approval['runtime_data_commit']
+              need(sci._descendant(source,data_commit,'refs/remotes/origin/main'),'ACTUAL_MAIN_DATA_COMMIT')
+              descriptor=sci.git(source,'ls-tree','-l',data_commit,'--','output/data/release-identity.json').decode().strip().split()
+              need(len(descriptor)==5 and descriptor[0:2]==['100644','blob'] and descriptor[4]=='output/data/release-identity.json' and int(descriptor[3])<=2*MIB,'COMMITTED_GENERATION_ROLE')
+              generation_bytes=sci.git(source,'cat-file','blob',descriptor[2]);need(len(generation_bytes)==int(descriptor[3]) and hashlib.sha1(b'blob '+str(len(generation_bytes)).encode()+b'\0'+generation_bytes).hexdigest()==descriptor[2],'COMMITTED_GENERATION_BLOB')
+              generation=json.loads(generation_bytes,object_pairs_hook=pairs);runtime_source=generation['source_sha']
+              need(re.fullmatch('[0-9a-f]{40}',runtime_source) and sci._descendant(source,before['head_sha'],runtime_source) and sci._descendant(source,runtime_source,data_commit),'TRUTHFUL_RUNTIME_ANCESTRY')
+              for commit in (before['head_sha'],runtime_source,data_commit):
+                  need(sci.source(source,commit,actual=False)['source_manifest_sha256']==code['source_manifest_sha256'],'HOURLY_CODE_EQUALS_REVIEWED_SOURCE')
+              parents=sci.git(source,'rev-list','--parents','-n','1',data_commit).decode().strip().split()
+              logs=api.get('/actions/jobs/'+str(before['job_id'])+'/logs',logs=True).decode('utf-8-sig')
+              commit_lines=[]
+              for line in logs.splitlines():
+                  line=re.sub(r'^\d{4}-\d\d-\d\dT[0-9:.]+Z\s+','',line)
+                  match=re.fullmatch(r'\[main ([0-9a-f]{7,40})\] Scheduled update \(phase1\)',line)
+                  if match:commit_lines.append(match.group(1))
+              if data_commit!=runtime_source:
+                  need(parents==[data_commit,runtime_source] and len(commit_lines)==1 and data_commit.startswith(commit_lines[0]) and sci.git(source,'show','-s','--format=%s',data_commit).decode().strip()=='Scheduled update (phase1)','ACTUAL_HOURLY_DATA_COMMIT_LOG')
+              else:need(not commit_lines,'NO_NEW_COMMIT_MUST_MATCH_ACTUAL_LOG')
+              stage='EXACT_RUNTIME_GIT_CHECKOUT';guard();runtime=work/'runtime'
+              sci.git(source,'worktree','add','--detach',str(runtime),data_commit)
+              need(sci.source(runtime)['source_manifest_sha256']==code['source_manifest_sha256'],'ACTUAL_RUNTIME_SOURCE_BYTES')
+              source_env=dict(os.environ);cache=work/'source-ci-cache';cache.mkdir();source_env['PYTHONPYCACHEPREFIX']=str(cache)
+              with (work/'RUNTIME_SOURCE_CI.json').open('wb') as value,(work/'private-source-ci.log').open('wb') as log:
+                  checked=subprocess.run([sys.executable,str(runtime/'tools/source_ci.py'),'verify','--root',str(runtime)],env=source_env,cwd=runtime,stdin=subprocess.DEVNULL,stdout=value,stderr=log,timeout=min(240,left()))
+              need(checked.returncode==0,'ACTUAL_RUNTIME_SOURCE_CI_REJECTED');runtime_ci=load(work/'RUNTIME_SOURCE_CI.json',65536)
+              need(runtime_ci['executed_commit']==data_commit and runtime_ci['executed_tree']==sci.git(source,'rev-parse',data_commit+'^{tree}').decode().strip() and runtime_ci['source_manifest_sha256']==ci['source_manifest_sha256'] and runtime_ci['environment_sha256']==ci['environment_sha256'],'ACTUAL_RUNTIME_CI_BINDING')
+              need(identity()==before,'HOURLY_CHANGED_AFTER_SOURCE_CI')
+              for key in ('GH_TOKEN','GITHUB_TOKEN','ACTIONS_RUNTIME_TOKEN','ACTIONS_ID_TOKEN_REQUEST_TOKEN'):os.environ.pop(key,None)
+              api.token=None;del api;del logs
+              stage='FULL_SAVED_GENERATION_AND_PAGES_VALIDATION';guard();case_dir=work/'artifact';case_dir.mkdir();pages=case_dir/'pages'
+              validate="import contextlib,json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);import diagnostic_network_guard as guard;guard.install();import phase2_capture\nwith contextlib.redirect_stdout(sys.stderr): phase2_capture.stage_pages(Path(sys.argv[2]),Path(sys.argv[3]))\nprint(json.dumps({'generation_sha256':json.loads((Path(sys.argv[2])/'output/data/release-identity.json').read_bytes())['generation_sha256']}))"
+              with (work/'VALIDATION.json').open('wb') as value,(work/'private-validation.log').open('wb') as log:
+                  checked=subprocess.run([sys.executable,'-P','-c',validate,str(source/'tools'),str(runtime),str(pages)],env=clear_tokens(os.environ),cwd=runtime,stdin=subprocess.DEVNULL,stdout=value,stderr=log,timeout=min(600,left()))
+              need(checked.returncode==0 and load(work/'VALIDATION.json',65536)=={'generation_sha256':generation['generation_sha256']},'FULL_SAVED_GENERATION_REJECTED')
+              members={}
+              for file in sorted(pages.rglob('*')):
+                  if not file.is_file():continue
+                  name=file.relative_to(pages).as_posix();need(recovery.public_path(name) and not file.is_symlink(),'APPROVED_PAGES_MEMBER');members[name]={'bytes':file.stat().st_size,'sha256':sha(file.read_bytes())}
+              need(0<len(members)<=20000 and sum(i['bytes'] for i in members.values())<=900000000,'COMPLETE_PAGES_BOUND')
+              actual_pages=recovery.tar_entries(pages_tar,True,members)
+              need(set(actual_pages)==set(members) and all(len(body)==members[name]['bytes'] and sha(body)==members[name]['sha256'] for name,body in actual_pages.items()),'ACTUAL_PAGES_ARTIFACT_EQUALS_REPRODUCED_STAGE')
+              need(actual_pages['data/release-identity.json']==generation_bytes,'ACTUAL_ARTIFACT_GENERATION')
+              stage='ACTUAL_CANONICAL_PUBLIC_BYTES'
+              import urllib.request,urllib.error
+              class NoRedirect(urllib.request.HTTPRedirectHandler):
+                  def redirect_request(self,*args,**kw):return None
+              site='https://nicknicky19.github.io/nicks-expert-nfl-picks/';opener=urllib.request.build_opener(NoRedirect())
+              for name,info in members.items():
+                  left();request=urllib.request.Request(site+name,headers={'User-Agent':'nfl-release-browser-review-v1','Cache-Control':'no-cache','Accept-Encoding':'identity'})
+                  with opener.open(request,timeout=min(30,left())) as response:
+                      need(response.status==200 and response.geturl()==site+name and response.headers.get('Content-Encoding','identity')=='identity','CANONICAL_PUBLIC_RESPONSE')
+                      body=response.read(info['bytes']+1)
+                  need(len(body)==info['bytes'] and sha(body)==info['sha256'],'CANONICAL_PUBLIC_BYTES_DIFFER')
+              marker=dict(schema_version='public-deployment-review-v1',status='AUTHENTICATED_HOURLY_PAGES_DEPLOYMENT',source=runtime_source,installed_source=current,installed_source_manifest_sha256=code['source_manifest_sha256'],runtime_data_commit=data_commit,runtime_data_tree=runtime_ci['executed_tree'],hourly=dict(run_id=approval['hourly_run_id'],run_attempt=approval['hourly_run_attempt'],head_sha=before['head_sha'],event=before['event'],job_id=before['job_id'],workflow_path='.github/workflows/hourly.yml'),source_ci=runtime_ci,artifact=dict(id=approval['artifact_id'],name='github-pages',zip_bytes=approval['artifact_bytes'],zip_sha256=approval['artifact_sha256'],tar_bytes=approval['tar_bytes'],tar_sha256=approval['tar_sha256']),pages=dict(members_sha256=sha(canonical(members)),release_identity_sha256=sha(generation_bytes),generation_sha256=generation['generation_sha256']),generation=generation,expected_site_url=site)
+              write(case_dir/'PUBLIC_DEPLOYMENT_REVIEW.json',canonical(marker)+b'\n',0o600)
+              stage='ACTUAL_PUBLIC_BROWSER';guard();browser_env=clear_tokens(os.environ)
+              browser_env['NODE_PATH']=str(Path(os.environ['RUNNER_TEMP'])/'nfl-browser-dependencies/node_modules')
+              browser_env['NFL_CHROMIUM_PATH']=next((p for p in ('/usr/bin/google-chrome','/usr/bin/google-chrome-stable','/usr/bin/chromium') if Path(p).is_file()),'')
+              need(browser_env['NFL_CHROMIUM_PATH'],'PREINSTALLED_CHROME_UNAVAILABLE');result=report/'PRIVATE_BROWSER.json'
+              command=['node',str(source/'tools/release_browser.cjs'),'--manifest',str(case_dir/'PUBLIC_DEPLOYMENT_REVIEW.json'),'--artifact-root',str(case_dir),'--root',str(pages),'--url',site,'--result',str(result),'--profile-root',str(work/'profiles')]
+              with (work/'private-browser.log').open('wb') as log:
+                  checked=subprocess.run(command,env=browser_env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,timeout=min(440,left()))
+              need(checked.returncode==0,'ACTUAL_PUBLIC_BROWSER_REJECTED');actual=load(result,128*1024)
+              need(actual.get('status') in ('PASS_EXECUTED_ACTUAL_CHECKS','PASS_EXECUTED_CHECKS_WITH_EXPLICIT_UNAVAILABLE_CASES') and actual['source']==runtime_source and actual['generation_sha256']==generation['generation_sha256'] and actual['report_id']==generation['selection_report_id'] and actual.get('playwright_routing_installed') is False and actual.get('provider_requests')==0 and actual.get('review_contract')=='public-deployment-review-v1','ACTUAL_PUBLIC_BROWSER_RESULT')
+              contexts=actual['contexts'];need([c['width'] for c in contexts]==[1280,390,320] and all(c['status']=='PASS' for c in contexts),'COMPLETE_BROWSER_CONTEXTS')
+              aggregate.update(status=actual['status'],source=current,hourly_run_id=approval['hourly_run_id'],runtime_source=runtime_source,runtime_data_commit=data_commit,artifact_id=approval['artifact_id'],artifact_sha256=approval['artifact_sha256'],tar_sha256=approval['tar_sha256'],generation_sha256=generation['generation_sha256'],report_sha256=generation['selection_report_id'],browser_script_sha256=BROWSER,private_report_sha256=sha(result.read_bytes()),validation='PASS_FULL_SAVED_GENERATION',viewports=[c['width'] for c in contexts],category_source_side_cases=len(contexts[0]['category_source_side_controls']),saved_ticket_count=sum(c['paper']['saved_ticket_count'] for c in contexts),unavailable_case_count=len(actual['unavailable']),playwright_version=actual['browser']['playwright'],chrome_version=actual['browser']['chrome_version'],physical_device=False,public_members_verified=len(members),target='ACTUAL_PUBLIC_URL')
+              aggregate.update(saved_rows=contexts[0]['independent_saved_rows']['complete_saved_rows'],supporting_groups=contexts[0]['independent_saved_rows']['complete_context_groups_reconciled'],populated_cache_contexts=sum(bool(c['ordinary_cache']['populated_storage']) for c in contexts),strategy_ui_contexts=sum(item['status']=='PASS_ACTUAL_STRATEGY_UI' for c in contexts for item in c['strategy_ui']))
+              need(aggregate['category_source_side_cases']==60 and aggregate['playwright_version']=='1.62.1' and re.fullmatch('[0-9.]{1,80}',aggregate['chrome_version']),'AGGREGATE_BROWSER_CONTRACT')
+
+          try:
+              execute()
+          except BaseException as error:
+              aggregate.update(status='FAIL',rejected_stage=stage,failure_class=type(error).__name__)
+          finally:
+              raw=canonical(aggregate)+b'\n';need(len(raw)<=8192,'AGGREGATE_BOUND')
+              if initialized:write(report/'BROWSER_ACCEPTANCE.json',raw,0o600)
+              print('CODEX_RESULT='+raw.decode().strip())
+          if aggregate['status']=='FAIL':raise SystemExit(1)
+          PY
+      - name: Publish only bounded sanitized acceptance metadata
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -P - <<'PY'
+          import hashlib,json,os,re
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/('nfl-public-browser-'+os.environ['GITHUB_RUN_ID'])/'report/BROWSER_ACCEPTANCE.json'
+          fallback={'schema_version':'genuine-generated-browser-acceptance-v1','status':'FAIL','rejected_stage':'SETUP_OR_SOURCE','resource_verdict':'UNKNOWN','operating_qualification':'NOT_ESTABLISHED','provider_calls':0,'deployment':False}
+          allowed=set('schema_version status resource_verdict operating_qualification provider_calls deployment source case_run_id hourly_run_id runtime_source runtime_data_commit public_members_verified target artifact_id artifact_sha256 tar_sha256 generation_sha256 report_sha256 browser_script_sha256 private_report_sha256 validation viewports category_source_side_cases saved_ticket_count unavailable_case_count playwright_version chrome_version physical_device saved_rows supporting_groups populated_cache_contexts strategy_ui_contexts rejected_stage failure_class'.split())
+          try:
+              assert p.is_file() and not p.is_symlink() and p.stat().st_size<=8192
+              value=json.loads(p.read_bytes());assert isinstance(value,dict) and set(value)<=allowed
+              assert value['schema_version']==fallback['schema_version'] and value['resource_verdict']=='UNKNOWN' and value['operating_qualification']=='NOT_ESTABLISHED' and value['provider_calls']==0 and value['deployment'] is False
+              for key,item in value.items():
+                  if key.endswith('sha256'):assert isinstance(item,str) and re.fullmatch('[0-9a-f]{64}',item)
+                  elif key=='source':assert item==os.environ['GITHUB_SHA']
+                  elif key in ('runtime_source','runtime_data_commit'):assert isinstance(item,str) and re.fullmatch('[0-9a-f]{40}',item)
+                  elif key=='viewports':assert item==[1280,390,320]
+                  elif type(item) is str:assert re.fullmatch('[A-Za-z0-9_.-]{1,100}',item)
+                  else:assert type(item) in (int,bool) and (type(item) is bool or 0<=item<=100000000000000000000)
+          except Exception:
+              value=fallback
+          p.parent.mkdir(parents=True,exist_ok=True)
+          raw=json.dumps(value,sort_keys=True,separators=(',',':')).encode()+b'\n';p.write_bytes(raw)
+          print('CODEX_RESULT='+raw.decode().strip())
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('Public deployment browser acceptance: '+value['status']+'. Resource and operating qualification remain unestablished.\n')
+          PY
+      - name: Retain only sanitized aggregate acceptance evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: public-generated-browser-${{ github.run_id }}
+          path: ${{ runner.temp }}/nfl-public-browser-${{ github.run_id }}/report/BROWSER_ACCEPTANCE.json
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
