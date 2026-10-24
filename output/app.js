@@ -588,8 +588,25 @@ async function checkMeta() {
 
 // ---------------------------------------------------------------- load
 
+// Optional enhancement starts only AFTER the original R0 render.
+function startWeeklyOverlay() {
+  const api = globalThis.WeeklyAdaptiveOverlay, board = S.data;
+  if (!S.weeklyOverlayReady || !board || typeof api?.load !== "function" || S.weeklyOverlayRequestBoard === board) return;
+  S.weeklyOverlayRequestBoard = board;
+  const boardHash = S.weeklyOverlayBoardHash;
+  Promise.resolve().then(() => api.load(board, boardHash)).then(overlay => {
+    if (S.data !== board || S.weeklyOverlayRequestBoard !== board || !S.weeklyOverlayReady) return;
+    S.weeklyOverlay = overlay;
+    if (overlay && S.gameView) renderGame();
+    else if (overlay && S.tab === "props") renderProps();
+  }).catch(() => { /* Original R0 remains usable even if the helper fails. */ });
+}
+globalThis.addEventListener("weekly-adaptive-overlay-ready", () => startWeeklyOverlay());
+
 async function load() {
   S.data = await getJSON(`data/week.json?t=${Date.now()}`);
+  S.weeklyOverlay = null; S.weeklyOverlayReady = false;
+  S.weeklyOverlayBoardHash = null;
   S.rosKey = null; S.gradeKey = null;
   S.future = null; S.futureLoading = null; S.ideas = null; S.teamWeeksMap = null; S.teamOppsMap = null;
   S.generatedAt = S.data.generated_at;
@@ -871,7 +888,7 @@ function pickCard(pick) {
     <div>
       <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)}</div>
       <div class="what">${pick.direction === "over" ? "Over" : "Under"} <b class="num">${pick.line}</b> ${label} <span class="muted">${oppText(p)}</span></div>
-      <div class="small">${LINE_FROM[pick.line_from] || "Our"} line, locked at kickoff · ${adj != null ? `our pregame proj <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}</div>
+      <div class="small">${LINE_FROM[pick.line_from] || "Our"} line, locked at kickoff · ${adj != null ? `R0 pregame proj <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}</div>
       ${progress(st, pick.line, pick.direction, pick.key)}
     </div>
     <div class="side">
@@ -881,21 +898,41 @@ function pickCard(pick) {
   </div>`;
 }
 
+// Display only: eligibility comes from the existing validated overlay reader.
+// R0 values remain the inputs to leans, rankings, pacing and saved selections.
+function selectedPropForecast(p, key, now = Date.now()) {
+  try {
+    const api = globalThis.WeeklyAdaptiveOverlay, overlay = S.weeklyOverlay;
+    if (typeof api?.card !== "function" || !api.card(overlay, p, key, now)) return null;
+    const row = overlay.rows.get(JSON.stringify([p.game_id, p.id, key]));
+    const labels = { point_mean: "mean", point_median: "median", binary_probability: "TD probability" };
+    if (!row || !labels[row.product] || !Number.isFinite(row.forecast_value)) return null;
+    return { value: row.forecast_value, label: labels[row.product], binary: row.product === "binary_probability",
+      text: row.product === "binary_probability" ? `${(100 * row.forecast_value).toFixed(1)}%` : row.forecast_value.toFixed(2),
+      frozen: now >= Date.parse(row.kickoff_utc) };
+  } catch (_) { return null; }
+}
+
 function propChip(p, raw) {
   const prop = pv(p, raw);
-  const line = S.lines[`${p.id}|${prop.key}`] ?? prop.line;
+  const selected = selectedPropForecast(p, prop.key);
+  const customLine = S.lines[`${p.id}|${prop.key}`];
+  const edited = customLine != null && customLine !== prop.line;
+  const line = customLine ?? prop.line;
   const st = propStatus(p, prop.key, line, prop.lean);
   const arrow = prop.key === "anytime_td"
-    ? `<span class="muted"> ${Math.round(100 * (prop.td_chance || 0))}%</span>`
+    ? selected ? "" : `<span class="muted"> ${Math.round(100 * (prop.td_chance || 0))}%</span>`
     : prop.lean ? `<span class="arrow">${prop.lean === "over" ? "▲" : "▼"}</span>` : "";
   const cls = [prop.lean ? `lean-${prop.lean}` : "", st && prop.lean && (st.res === "hit" || st.res === "miss") ? st.res : ""].join(" ");
-  const lineText = prop.key === "anytime_td" ? "" : `<b>${line}</b><span class="src ${prop.line_from || "ours"}">${LINE_TAG[prop.line_from] || "est"}</span>`;
+  const lineText = prop.key === "anytime_td" ? "" : `<b>${line}</b><span class="src ${selected && edited ? "" : prop.line_from || "ours"}">${selected && edited ? "custom" : LINE_TAG[prop.line_from] || "est"}</span>`;
   const cur = st && st.v != null ? `<span class="cur">${fmtStat(prop.key, st.v)}</span>` : "";
+  if (selected) return `<span class="pchip ${cls}" data-weekly-primary title="Selected forecast assumes participation; leans and ranking use the R0 reference">${SHORT[prop.key]}<b>${selected.text}</b><span class="src">${selected.frozen ? "frozen" : "provisional"} ${selected.label}</span>${lineText ? `<span class="muted"> · ${edited ? "Your line" : prop.line_from === "ours" || !prop.line_from ? "R0 line" : "book line"}</span>${lineText}` : ""}${arrow ? `<span class="muted"> R0 lean</span>${arrow}` : ""}${cur}</span>`;
   return `<span class="pchip ${cls}">${SHORT[prop.key]}${lineText}${arrow}${cur}</span>`;
 }
 
 function catCard(p, raw) {
   const prop = pv(p, raw);
+  const selected = selectedPropForecast(p, prop.key);
   const from = prop.line_from || "ours";
   const cat = S.data.categories[prop.key];
   const k = `${p.id}|${prop.key}`;
@@ -915,10 +952,11 @@ function catCard(p, raw) {
     lean = d > cat.lean ? "over" : d < -cat.lean ? "under" : null;
   }
   const leanPill = prop.key === "anytime_td"
-    ? `<span class="lean ${prop.lean ? "over" : "none"}">${Math.round(100 * (prop.td_chance || 0))}% TD chance</span>`
+    ? selected ? `<span class="lean none">${selected.text} ${selected.frozen ? "frozen provisional" : "provisional"} TD probability</span>`
+      : `<span class="lean ${prop.lean ? "over" : "none"}">${Math.round(100 * (prop.td_chance || 0))}% TD chance</span>`
     : from === "ours"
       ? `<span class="lean none" title="Leans are only called against real sportsbook lines">No book line</span>`
-      : `<span class="lean ${lean || "none"}">${lean ? `Lean ${lean}` : "No lean"}</span>`;
+      : `<span class="lean ${lean || "none"}">${selected ? "R0: " : ""}${lean ? `Lean ${lean}` : "No lean"}</span>`;
 
   const bars = vals.map((x) => `<div class="b ${x.v > line ? "o" : ""}" title="${x.s} week ${x.w} vs ${x.opp}: ${x.v}"><span>${fmtStat(prop.key, x.v)}</span><i style="height:${(100 * x.v) / top}%"></i></div>`).join("")
     + (nowV != null ? `<div class="b now" title="This week"><span>${fmtStat(prop.key, nowV)}</span><i style="height:${(100 * nowV) / top}%"></i></div>` : "");
@@ -928,7 +966,7 @@ function catCard(p, raw) {
   const liveLine = S.liveLines[p.id]?.[prop.key];
   const lineCell = prop.key === "anytime_td"
     ? `<div>Line<span class="n">0.5</span></div>`
-    : `<div>${edited ? "Your line" : LINE_FROM[from]}<input type="number" step="1" inputmode="decimal" value="${line}" data-line="${k}" aria-label="${cat.label} line"></div>`
+    : `<div>${edited ? "Your line" : selected && from === "ours" ? "R0 reference line" : LINE_FROM[from]}<input type="number" step="1" inputmode="decimal" value="${line}" data-line="${k}" aria-label="${cat.label} line"></div>`
       + (prop.dk_open != null && prop.dk_open !== prop.line ? `<div>DK opened<span class="n">${prop.dk_open}</span></div>` : "")
       + (liveLine != null && S.games[p.game_id]?.state === "in" ? `<div title="DraftKings' in-game line right now">DK live<span class="n" style="color:var(--amber)">${liveLine}</span></div>` : "")
       + (prop.sleeper && from !== "sleeper" ? `<div>Sleeper Picks<span class="n">${prop.sleeper.line}</span></div>` : "")
@@ -937,11 +975,12 @@ function catCard(p, raw) {
   const mfText = prop.mf_n
     ? ` Matchup vs ${p.opp}: <b>${prop.mf >= 1 ? "+" : ""}${fmt(100 * (prop.mf - 1))}%</b> (similar ${p.pos}s against them this season, ${prop.mf_n} game${prop.mf_n === 1 ? "" : "s"}).`
     : prop.mf != null ? ` No similar ${p.pos}s have faced ${p.opp} yet, so no matchup adjustment.` : "";
+  const selectedNote = selected ? ` Selected ${selected.label} assumes the player participates; accuracy is still being evaluated. ${selected.binary ? "R0 probability is shown separately; rankings use R0." : "Leans, rankings and on-pace estimates use the R0 reference. A point forecast does not give a bet-win probability."}` : "";
   const note = prop.key === "anytime_td"
-    ? `${vals.length ? `Scored in ${vals.filter((x) => x.v > 0).length} of ${gamesText}. ` : ""}Chance comes from Sleeper's projected TDs.`
+    ? `${vals.length ? `Scored in ${vals.filter((x) => x.v > 0).length} of ${gamesText}. ` : ""}${selected ? "R0 reference probability comes" : "Chance comes"} from Sleeper's projected TDs.`
     : (vals.length ? `Over in <b>${over}</b> of ${gamesText}${edited ? ` at your line (the ${LINE_FROM[from]} line is ${prop.line})` : ""}.` : "No games yet this season.")
         + mfText
-        + (from === "ours" && prop.key !== "fpts" ? " No sportsbook line yet, so this line is our projection." : "")
+        + (from === "ours" && prop.key !== "fpts" ? selected ? " No sportsbook line yet; the editable line is the R0 reference estimate." : " No sportsbook line yet, so this line is our projection." : "")
         + (prop.sleeper?.over ? ` Sleeper Picks pays ${prop.sleeper.over}x over, ${prop.sleeper.under}x under.` : "");
 
   return `<div class="cat" data-cat="${k}">
@@ -951,15 +990,17 @@ function catCard(p, raw) {
       return `<button class="add ${d} ${on ? "on" : ""}" data-add="${p.id}|${prop.key}|${d}|${line}" title="${on ? "Remove from" : "Add to"} My Picks">${on ? "\u2713" : "+"} ${d === "over" ? "Over" : "Under"} ${line}</button>`;
     }).join("")}</div>` : ""}
     <div class="cat-nums">
+      ${selected ? `<div data-weekly-primary><b>${selected.frozen ? "Frozen provisional" : "Provisional"} ${selected.label}${selected.binary ? "" : " forecast"}</b><span class="n">${selected.text}</span></div>` : ""}
       ${lineCell}
-      ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment, made before kickoff">Our proj (pregame)<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
+      ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment, made before kickoff">${selected ? "R0 reference forecast" : "Our proj (pregame)"}<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
+      ${selected?.binary ? `<div>R0 reference probability<span class="n">${(100 * (prop.td_chance || 0)).toFixed(1)}%</span></div>` : ""}
       ${st && !st.final && st.v != null && prop.adj != null && prop.key !== "anytime_td" ? `<div title="What he has so far plus our pregame projection for the time left">On pace<span class="n" style="color:var(--amber)">${fmt(st.v + prop.adj * remaining(S.games[p.game_id]), prop.key === "fpts" ? 2 : 1)}</span></div>` : ""}
       ${prop.proj != null ? `<div>Sleeper proj<span class="n">${fmtStat(prop.key, prop.proj)}</span></div>` : ""}
       ${avg != null ? `<div>Season avg<span class="n">${fmt(avg)}</span></div>` : ""}
       ${st ? `<div>${st.final ? "Final" : "Now"}<span class="n" style="color:var(--cyan)">${st.v == null ? "DNP" : fmtStat(prop.key, st.v)}</span></div>` : ""}
     </div>
     ${vals.length ? `<div class="bars">${bars}<div class="lineat" style="bottom:${(100 * line) / top}%"></div></div><div class="bars-x">${xs}</div>` : ""}
-    <div class="foot-n">${note}</div>
+    <div class="foot-n">${note}${selectedNote}</div>
   </div>`;
 }
 
@@ -1040,17 +1081,18 @@ function renderProps() {
       <div class="picks"><h3>Top Overs <span class="tag over">${picksFor("over").length}</span></h3>${pickList("over")}</div>
       <div class="picks"><h3>Top Unders <span class="tag under">${picksFor("under").length}</span></h3>${pickList("under")}</div>
     </div>
-    <p class="note">Top picks are the biggest gaps between our projection (Sleeper's, adjusted for how similar players have done against this defense this season) and the real DraftKings line, for players with 2+ games this season who aren't ruled out. They lock at kickoff with the pregame line; during the game you'll also see DraftKings' live line. <a href="#" data-goto="about">How it works</a></p>
+    <p class="note">Top picks use the R0 reference: the biggest gaps between its projection (Sleeper's, adjusted for how similar players have done against this defense this season) and the real DraftKings line, for players with 2+ games this season who aren't ruled out. They lock at kickoff with the pregame line; during the game you'll also see DraftKings' live line. <a href="#" data-goto="about">How it works</a></p>
 
+    <p class="note">Category forecasts marked provisional show the selected mean, median or TD probability, conditional on participation. R0 reference values are labeled separately. Top Picks, leans, rankings, fantasy points and game forecasts use R0.</p>
     <h2>Players <small>${list.length} shown</small></h2>
     <div class="filters">
       <div class="chips">${withFlex(["ALL", "QB", "RB", "WR", "TE"]).map((x) => `<button class="chip ${f.pos === x ? "on" : ""}" data-pos="${x}">${x === "ALL" ? "All" : x}</button>`).join("")}</div>
       <select id="f-game" aria-label="Game"><option value="">All games</option>${gameOpts}</select>
       <select id="f-cat" aria-label="Prop"><option value="">All props</option>${catOpts}</select>
       <select id="f-sort" aria-label="Sort">
-        <option value="proj" ${f.sort === "proj" ? "selected" : ""}>Sort: Projected points</option>
+        <option value="proj" ${f.sort === "proj" ? "selected" : ""}>Sort: R0 projected points</option>
         <option value="live" ${f.sort === "live" ? "selected" : ""}>Sort: Live points</option>
-        <option value="edge" ${f.sort === "edge" ? "selected" : ""}>Sort: Biggest lean</option>
+        <option value="edge" ${f.sort === "edge" ? "selected" : ""}>Sort: R0 biggest lean</option>
         <option value="name" ${f.sort === "name" ? "selected" : ""}>Sort: Name</option>
       </select>
       <input type="search" id="f-q" placeholder="Search player or team" value="${esc(f.q)}">
@@ -2695,9 +2737,10 @@ function renderAbout() {
     <h2>Lines</h2>
     <p>Every prop uses the real <b>DraftKings</b> line when DraftKings has posted one (ESPN carries DraftKings' player props). If DraftKings hasn't, it uses <b>Sleeper Picks</b>' line, and only after that our own estimate, which is labeled "est". Each card shows all of them side by side, plus where DraftKings' line opened.</p>
     <h2>Our projection</h2>
-    <p>Our projection starts from Sleeper's projection for the week and adjusts it for the matchup: we look at every player at the same position with a similar season average who has faced this defense <b>this season</b>, and compare what they did against it with what they usually do. With only a few games that adjustment is pulled toward zero, so early in the season it's small. Last season's games are never used, and every chart and hit rate shows this season only.</p>
+    <p>Supported category forecasts show a selected provisional mean, median or touchdown event probability when a valid forecast is available. They assume the player participates, and accuracy is still being evaluated. Expired or unavailable forecasts use the reference display. R0 is the retained reference model described below; its labeled forecasts still supply Top Picks, leans, rankings, fantasy points and game forecasts. Point forecasts do not give a bet-win probability. Exact website PPR remains on the reference model.</p>
+    <p>The R0 reference projection starts from Sleeper's projection for the week and adjusts it for the matchup: we look at every player at the same position with a similar season average who has faced this defense <b>this season</b>, and compare what they did against it with what they usually do. With only a few games that adjustment is pulled toward zero, so early in the season it's small. Last season's games are never used, and every chart and hit rate shows this season only.</p>
     <h2>Leans and top picks</h2>
-    <p>A lean means our projection is far enough above (over) or below (under) a real sportsbook line. There are no leans against our own estimate. Top Overs and Top Unders are the biggest gaps, measured in each category's typical spread, and only use real sportsbook lines. They include players with 2+ games this season who aren't out, doubtful or on IR, and lock at kickoff. During a game, cards also show DraftKings' live line.</p>
+    <p>A lean means the R0 reference projection is far enough above (over) or below (under) a real sportsbook line. There are no leans against our own estimate. Top Overs and Top Unders are the biggest gaps, measured in each category's typical spread, and only use real sportsbook lines. They include players with 2+ games this season who aren't out, doubtful or on IR, and lock at kickoff. During a game, cards also show DraftKings' live line.</p>
     <h2>How our lines compare with DraftKings</h2>
     <p>See the Track Record tab. In short: DraftKings' lines are sharper than a season average, and three or four weeks in, the matchup adjustment hasn't yet made a season average more accurate. That's why the real line is the one that counts, and why the adjustment is kept small until there's more data.</p>
     <h2>Our game lines</h2>
@@ -4817,6 +4860,7 @@ $("#reload").addEventListener("click", async () => {
   $("#banner").hidden = true;
   await load();
   render();
+  S.weeklyOverlayReady = true; startWeeklyOverlay();
   liveTick();
 });
 
@@ -4842,6 +4886,7 @@ $("#reload").addEventListener("click", async () => {
   $("#sc-btn").textContent = `${scoringName()} \u25be`;
   setTopHeight();
   render();
+  S.weeklyOverlayReady = true; startWeeklyOverlay();
   syncHash(false);
   liveTick();
   setInterval(() => { if (!document.hidden) checkMeta(); }, META_MS);

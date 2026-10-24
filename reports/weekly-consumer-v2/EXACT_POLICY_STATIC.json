@@ -1,0 +1,21 @@
+{
+  "CPU_seconds": 0.0012379999999999978,
+  "V1_policy_unchanged": true,
+  "actual_HTTP": 0,
+  "actual_policy_bytes_unchanged": true,
+  "consumer_logic_unchanged": true,
+  "engine_inventory_checks": 7,
+  "peak_RSS_bytes": 9961472,
+  "policy_sha256": "ca7eb1d7c3f2379229cd164f07576b6a51bdce40144fb316e4a3684c06691561",
+  "previous_fictional_test_receipt_unchanged": true,
+  "prior_local_commit": "126d5922037d9f198c96ded0caf94629158de2d2",
+  "published_lab_source": "752a03b82be2ba73cf4798da2682c7c33568e0b8",
+  "remote_mutations": 0,
+  "state": "STATIC_PASS",
+  "superseded_not_dispatched_lab_source": "27d5d189cf4d1d289752b1fe67e5e1f7ed42495a",
+  "superseded_not_dispatched_policy_sha256": "a80a8c3fd85cc58218fbeee0b855cbf6ad3f25b2cad048693f0949d2d09b5a70",
+  "tests_rerun": false,
+  "wall_seconds": 0.0012493770045693964,
+  "website_code_inventory_checks": 13,
+  "workflow_only_change": "V2 exact policy physical SHA256 replacement"
+}

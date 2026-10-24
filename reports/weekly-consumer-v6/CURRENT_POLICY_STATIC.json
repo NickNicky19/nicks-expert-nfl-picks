@@ -1,0 +1,36 @@
+{
+  "CPU_seconds": 0.040566794999999996,
+  "HTTP": 0,
+  "actual_new_NFL_outcomes_or_scores": 0,
+  "candidate_override_roles": [
+    "hourly",
+    "policy"
+  ],
+  "deployed": false,
+  "historical_reports_used": false,
+  "hosted_publication_or_deployment_acceptance": false,
+  "installed_acceptance": false,
+  "installed_port_acceptance": false,
+  "limits": {
+    "CPU_seconds": 1,
+    "wall_seconds": 5
+  },
+  "model_or_data_reads": 0,
+  "new_lab_source_sha": "93e2019144be7b51248ce548fe247c6dcd949b71",
+  "physical_sha256": {
+    "helper": "14d6efe2d3ac5d8763cd289a8bff790eb1878536d77e84ec812162e66135a0e0",
+    "hourly": "b07b889b4375efe4c208106032d3431a0bc6bbfeb86c3ab8450f600a550aaded",
+    "policy": "45e51a07a077ce0aedede608fcef2ddb3592828a0734843d37a3991e6673a546",
+    "schema": "68709b6cb3d9a420835fcd74ee5dd5392ae83c36f54cce985fcd0fa47c372db5"
+  },
+  "policy_physical_and_canonical_sha256": "45e51a07a077ce0aedede608fcef2ddb3592828a0734843d37a3991e6673a546",
+  "prior_V5_receipt_preserved": true,
+  "production_model_changed": false,
+  "recipe_metadata_sha256": "55d58159630e943a2af28f633ef39bd5b741ccc1ff27836c4d8041ff3640f8c3",
+  "root_pins_sha256": "beb9cea57c18cee51705f8b346a55436237d697f6c4f921ca3d5000b33837ccf",
+  "scope": "V6 four-file proposal only; root-supplied policy/hourly with13 current code checks; no installed edits",
+  "state": "PROPOSED_STATIC_CONTRACT_PASS",
+  "validator_sha256": "549ed975fa71897c16121a989b326594ea5484239b84555b3716da57cde773d6",
+  "wall_seconds": 0.04296764900209382,
+  "website_code_inventory_checks": 13
+}
