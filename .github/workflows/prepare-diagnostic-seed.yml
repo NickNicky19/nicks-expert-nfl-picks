@@ -17,6 +17,7 @@ on:
           - NFL-WEB-CONTINUE-VERIFIED-13-OF-24-12509203616-20261023
           - NFL-WEB-CONTINUE-CHECKPOINT-22-OF-24-12540324398-20261024
           - NFL-WEB-RUNNER-MEMORY-READBACK-20261024
+          - NFL-WEB-RUNNER-MEMORY-DETAIL-20261024
           - NFL-WEB-GENUINE-PRODUCTION-CASE-20261024
       storage_approved:
         description: Repeat the preparation identifier after output-content and available-storage approval
@@ -31,7 +32,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ inputs.confirmation == 'NFL-WEB-RUNNER-MEMORY-READBACK-20261024' && 'one-time-runner-memory-readback' || inputs.confirmation == 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024' && 'one-time-genuine-production-case' || 'one-time-fictional-seed-preparation' }}
+  group: ${{ inputs.confirmation == 'NFL-WEB-RUNNER-MEMORY-DETAIL-20261024' && 'one-time-runner-memory-detail' || inputs.confirmation == 'NFL-WEB-RUNNER-MEMORY-READBACK-20261024' && 'one-time-runner-memory-readback' || inputs.confirmation == 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024' && 'one-time-genuine-production-case' || 'one-time-fictional-seed-preparation' }}
   cancel-in-progress: false
 
 jobs:
@@ -1264,6 +1265,9 @@ jobs:
           STATIC={'app.js','index.html','style.css','reliability-ui.js','recovery.html'}
           SCHEMAS=set('baseline-capture-v2 matchup-inputs-v3 sleeper-selection-offers-v1 forecast-outcomes-v1 forecast-outcomes-v2 descriptive-statistic-outcomes-v1 descriptive-statistic-outcomes-v2 matchup-verification-v1 partial-schedule-baseline-v1 partial-registration-data-integrity-v2 partial-scope-data-integrity-v2 partial-completion-data-integrity-v2 completion-failure-data-integrity-v2 partial-completion-failure-v1 ranked-selection-observation-v1 ranked-selection-completion-v1 ranked-selection-decision-ledger-v1 derived-selection-ledger-v1 rich-scorecard-evidence-v1 selection-publication-run-v1 point-candidate-evaluation-v1 hosting-generation-proof-v1 generation-failure-v1 unqualified-native-preservation-v1 ranked-selection-failure-v1'.split())
           FIELDS=('proj','adj','mf','mf_n','values','line','line_from','lean','our_line','td_chance','source','sleeper','adj_h','line_h','proj_h')
+          NORMAL_DATA=('output/data','data/cache','data/forward','data/history','data/verification','data/shadow','data/offers','data/outcomes')
+          SOURCE_FIXTURE='data/verification/2026/w06/dcf4bce0b2d3a162bdea39217eb6ae0ee2545e3895cce129338afc715a5e8e2a.json.gz'
+          HEALTH_ANNOTATION="import json,pathlib,sys\np=pathlib.Path('output/data/health.json')\nd=json.loads(p.read_text())\nd['legacy_verifier']=sys.argv[1]\nd['historical_comparison']=sys.argv[2]\np.write_text(json.dumps(d,separators=(',',':'),allow_nan=False))\n"
           META={'RELEASE_CASE_MANIFEST.json','INPUT_DATA_MANIFEST.json','OUTPUT_DATA_MANIFEST.json','NEW_RECEIPTS_MANIFEST.json','PAGES_MEMBERS_MANIFEST.json','SOURCE_CI_BINDINGS.json'}
 
           def require(value, message):
@@ -1333,6 +1337,14 @@ jobs:
               players=[{'id':p['id'],'game_id':gid,'team':p['team'],'opp':p['opp'],'pos':p['pos'],'late':p.get('late',False),'props':sorted([{k:q.get(k) for k in ('key',*FIELDS)} for q in p['props']],key=lambda q:q['key'])} for p in board['players'] if p['game_id']==gid]
               picks={side:sorted([p for p in rows if p['game_id']==gid],key=lambda p:(p['player_id'],p['key'])) for side,rows in board['picks'].items()}
               return sha(canonical({'players':sorted(players,key=lambda p:p['id']),'picks':picks}))
+          def fresh_bytecode_prefix(out,tag):
+              cache=out/('pyc-'+tag)
+              cache.mkdir(mode=0o700,exist_ok=False)
+              info=cache.lstat()
+              require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode) and stat.S_IMODE(info.st_mode)==0o700,'BYTECODE_PREFIX_UNSAFE')
+              with os.scandir(cache) as entries:require(next(entries,None) is None,'BYTECODE_PREFIX_NOT_EMPTY')
+              return cache
+
           def failure_summary(log):
               with log.open('rb') as stream:
                   stream.seek(0,2);size=stream.tell();stream.seek(max(0,size-16384));text=stream.read().decode('utf-8','replace')
@@ -1343,14 +1355,17 @@ jobs:
                   if re.fullmatch(r'[A-Za-z0-9_.-]{1,80}\.py',basename):frames.append({'file':basename,'function':function[:80],'line':int(line)})
               result={'exception_class':'UNKNOWN','public_message':'UNKNOWN','public_code_frames':frames[-8:],'private_log_sha256':file_hash(log)}
               for line in reversed(text.splitlines()):
-                  match=re.fullmatch(r'([A-Za-z_][A-Za-z0-9_.]{0,100}): (.{0,1000})',line)
-                  if not match or match[1].split('.')[-1] not in known:continue
-                  message=match[2]
+                  if line.startswith('Source CI gate rejected: '):
+                      exception_class='Rejected';message=line[len('Source CI gate rejected: '):][:1000]
+                  else:
+                      match=re.fullmatch(r'([A-Za-z_][A-Za-z0-9_.]{0,100}): (.{0,1000})',line)
+                      if not match or match[1].split('.')[-1] not in known:continue
+                      exception_class=match[1].split('.')[-1];message=match[2]
                   if re.search(r'authorization|cookie|password|credential|token|secret|api[_-]?key|\bgh[pousr]_|\bgithub_pat_|\bsk-proj-',message,re.I):message='REDACTED_SENSITIVE_ERROR_MESSAGE'
                   message=re.sub(r'https?://\S+','<url>',message)
                   message=re.sub(r'/(?:workspace|tmp|home|runner|opt)/[^\s"\']+','<path>',message)
                   message=''.join(c if ord(c)>=32 else ' ' for c in message)[:240]
-                  result.update(exception_class=match[1].split('.')[-1],public_message=message);break
+                  result.update(exception_class=exception_class,public_message=message);break
               return result
           def collect_receipts(app,before,after):
               payload=[];receipts=[];errors=[]
@@ -1406,20 +1421,36 @@ jobs:
                   for name,body in encoded.items():
                       info=tarfile.TarInfo(name);info.size=len(body);info.mode=0o644;info.mtime=0;tar.addfile(info,io.BytesIO(body))
               require(target.stat().st_size<=CAP,'ACTUAL_RETENTION_CAP')
-          def git(root,*args):return subprocess.check_output(['git','--no-replace-objects','-c','core.hooksPath=/dev/null','-C',str(root),*args],stderr=subprocess.PIPE)
+          def git(root,*args,timeout=180):return subprocess.check_output(['git','--no-replace-objects','-c','core.hooksPath=/dev/null','-C',str(root),*args],stderr=subprocess.PIPE,timeout=timeout)
+          def commit_local_data(app,source,run,remaining):
+              require(git(app,'rev-parse','HEAD',timeout=remaining()).decode().strip()==source,'CAPTURE_HEAD_CHANGED_BEFORE_LOCAL_COMMIT')
+              command=['git','--no-replace-objects','-c','core.hooksPath=/dev/null']
+              run('git-config-name',command+['config','user.name','github-actions[bot]'],limit=1200)
+              run('git-config-email',command+['config','user.email','github-actions[bot]@users.noreply.github.com'],limit=1200)
+              paths=[name for name in NORMAL_DATA if (app/name).is_dir()]
+              require(paths[:2]==list(NORMAL_DATA[:2]),'NORMAL_DATA_DIRECTORIES_MISSING')
+              run('git-stage-data',command+['add','--',*paths],limit=1200)
+              staged=[n.decode() for n in git(app,'diff','--cached','--name-only','-z',timeout=remaining()).split(b'\0') if n]
+              require(all(n!=SOURCE_FIXTURE and n.startswith(tuple(d+'/' for d in NORMAL_DATA)) and n.endswith(('.json','.json.gz')) for n in staged),'LOCAL_COMMIT_HAS_NONDATA_SOURCE_CHANGE')
+              if staged:run('git-local-commit',command+['-c','commit.gpgsign=false','commit','-m','Scheduled update (phase1)'],limit=1200)
+              commit=git(app,'rev-parse','HEAD',timeout=remaining()).decode().strip()
+              return {'commit':commit,'tree':git(app,'rev-parse','HEAD^{tree}',timeout=remaining()).decode().strip(),'created':bool(staged),'captured_source':source,'changed_data_paths':staged,'pushed':False}
+
           def main():
               started=time.monotonic();source=invocation(os.environ,parse(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes()))
               app=Path(os.environ['GITHUB_WORKSPACE'])/'source';prod=Path(os.environ['GITHUB_WORKSPACE'])/'production';out=Path(os.environ['RUNNER_TEMP'])/'nfl-real-production-case';out.mkdir(exist_ok=False);logs=out/'private-logs';logs.mkdir()
               result={'schema_version':'genuine-current-production-case-v1','status':'FAILED','source':source,'run_id':int(os.environ['GITHUB_RUN_ID']),'attempt':1,'started_at':now(),'steps':[],'provider_case_attempts':0,'deployed':False,'main_written':False,'operating_qualification':'NOT_ESTABLISHED','resource_verdict':'UNKNOWN','job_aggregate_peak_bytes':None,'application_budget_seconds':1200,'termination_grace_seconds':90}
               before={};after={};pages={};ci={};main_files={};deadline=None;payload=[];receipts=[];representations={};pages_tar_valid=False
               wrapper=out/'entry.py';wrapper.write_text("import runpy,signal,sys\nfrom pathlib import Path\ndef stop(*_): raise TimeoutError('BOUNDED_APPLICATION_DEADLINE')\nsignal.signal(signal.SIGTERM,stop)\np=Path(sys.argv[1]);sys.argv=sys.argv[1:];sys.path.insert(0,str(p.parent));runpy.run_path(str(p),run_name='__main__')\n")
-              def run(tag,args,token=False,limit=180):
-                  env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',PYTHONPYCACHEPREFIX=str(out/('pyc-'+tag)),GITHUB_SHA=source)
+              def run(tag,args,token=False,limit=180,advisory=False):
+                  require(not advisory or tag in ('legacy-advisory','historical-comparison'),'UNEXPECTED_ADVISORY_CONTINUATION')
+                  cache=fresh_bytecode_prefix(out,tag)
+                  env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',PYTHONPYCACHEPREFIX=str(cache),GITHUB_SHA=source)
                   if not token:
                       for key in ('GH_TOKEN','GITHUB_TOKEN','ACTIONS_RUNTIME_TOKEN','ACTIONS_ID_TOKEN_REQUEST_TOKEN'):env.pop(key,None)
                   timeout=min(limit,max(.01,deadline-time.monotonic())) if deadline is not None else limit
                   command=[str(a).replace(str(app),'<app>').replace(str(out),'<case>').replace(sys.executable,'<python>') for a in args]
-                  public_function={'build-capture':'phase2_capture.run_capture(build_first=True)','validate':'phase2_capture.validate_generation','stage':'phase2_capture.stage_pages','pages-tar':'tar uploader-equivalent','source-ci-before':'source_ci.verify','source-ci-after-generation':'source_ci.verify','source-ci-after-stage':'source_ci.verify'}.get(tag,tag)
+                  public_function={'build-capture':'phase2_capture.run_capture(build_first=True)','validate':'phase2_capture.validate_generation','stage':'phase2_capture.stage_pages','pages-tar':'tar uploader-equivalent','source-ci-before':'source_ci.verify','source-ci-before-data-commit':'source_ci.verify','legacy-advisory':'verify.main','historical-comparison':'compare_lines.main','record-advisory-outcomes':'hourly.yml:Record advisory outcomes','source-ci-after-stage':'source_ci.verify'}.get(tag,tag)
                   require(timeout>.1,'APPLICATION_DEADLINE_EXHAUSTED');t=time.monotonic();log=logs/(tag+'.log');item={'name':tag,'public_function':public_function,'command':command,'started_at':now()};result['steps'].append(item)
                   with log.open('wb') as f:
                       p=subprocess.Popen(args,cwd=app,env=env,stdout=f,stderr=subprocess.STDOUT,start_new_session=True)
@@ -1432,10 +1463,14 @@ jobs:
                           item.update(status='TIMEOUT_OR_INTERRUPTION',seconds=time.monotonic()-t,returncode=p.returncode,failure_summary=failure_summary(log));raise
                   item.update(status='PASS' if code==0 else 'FAIL',seconds=time.monotonic()-t,returncode=code,log_sha256=file_hash(log),largest_individual_child_peak_rss_kib=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
                   if code:item['failure_summary']=failure_summary(log)
+                  if advisory:return 'success' if code==0 else 'failure'
                   require(code==0,'STAGE_FAILED_'+tag.upper().replace('-','_'))
                   if token:ci[tag]=parse(log.read_bytes());return ci[tag]
+              def remaining():
+                  seconds=180 if deadline is None else deadline-time.monotonic()
+                  require(seconds>.1,'APPLICATION_DEADLINE_EXHAUSTED');return seconds
               def fresh_main():
-                  value=git(prod,'ls-remote','origin','refs/heads/main').decode().strip().split()
+                  value=git(prod,'ls-remote','origin','refs/heads/main',timeout=remaining()).decode().strip().split()
                   require(len(value)==2 and value[1]=='refs/heads/main','MAIN_READBACK');return value[0]
               try:
                   result['early_headroom']=capacity((app,out));require(git(app,'rev-parse','HEAD').decode().strip()==source,'APPLICATION_HEAD')
@@ -1463,9 +1498,17 @@ jobs:
                   for tag,cmd in [('compile',[sys.executable,'-m','compileall','-q','pull','tools']),('js-app',['node','--check','output/app.js']),('js-reliability',['node','--check','output/reliability-ui.js']),('ui',['node','tests/test-ui.cjs']),('about',['node','tests/test-about.cjs']),('legacy',[sys.executable,'tools/preserve_legacy.py'])]:run(tag,cmd,limit=1200)
                   result['provider_case_attempts']=1;run('build-capture',[sys.executable,str(wrapper),str(app/'tools/phase2_capture.py'),'--mode','live','--build-and-capture'],limit=1200)
                   run('validate',[sys.executable,str(wrapper),str(app/'tools/phase2_capture.py'),'--mode','live','--validate-generation'],limit=1200)
-                  run('source-ci-after-generation',[sys.executable,'tools/source_ci.py','verify','--run-id',str(first['run_id'])],True,240)
+                  legacy_outcome=run('legacy-advisory',[sys.executable,'tools/verify.py'],limit=1200,advisory=True)
+                  comparison_outcome=run('historical-comparison',[sys.executable,'tools/compare_lines.py','--json','output/data/dk_backtest.json'],limit=1200,advisory=True)
+                  run('record-advisory-outcomes',[sys.executable,'-c',HEALTH_ANNOTATION,legacy_outcome,comparison_outcome],limit=1200)
+                  result['advisory_outcomes']={'legacy_verifier':legacy_outcome,'historical_comparison':comparison_outcome}
+                  run('git-fetch-main',['git','--no-replace-objects','-c','core.hooksPath=/dev/null','fetch','origin','main'],limit=1200)
+                  require(git(app,'rev-parse','FETCH_HEAD',timeout=remaining()).decode().strip()==main,'MAIN_MOVED_BEFORE_LOCAL_COMMIT')
+                  run('source-ci-before-data-commit',[sys.executable,'tools/source_ci.py','verify','--run-id',str(first['run_id'])],True,240)
+                  result['local_data_commit']=commit_local_data(app,source,run,remaining)
                   page_root=out/'pages';run('stage',[sys.executable,str(wrapper),str(app/'tools/phase2_capture.py'),'--mode','live','--stage-pages',str(page_root)],limit=1200)
-                  run('source-ci-after-stage',[sys.executable,'tools/source_ci.py','verify','--run-id',str(first['run_id'])],True,240)
+                  staged_ci=run('source-ci-after-stage',[sys.executable,'tools/source_ci.py','verify','--run-id',str(first['run_id'])],True,240)
+                  require(staged_ci['executed_commit']==result['local_data_commit']['commit'] and staged_ci['executed_tree']==result['local_data_commit']['tree'],'LOCAL_DATA_COMMIT_SOURCE_CI_BINDING')
                   run('pages-tar',['tar','--dereference','--hard-dereference','--directory',str(page_root),'-cf',str(out/'public-pages.tar'),'--exclude=.git','--exclude=.github','.'],limit=1200)
                   with tarfile.open(out/'public-pages.tar') as tar:
                       for member in tar:
@@ -1533,4 +1576,290 @@ jobs:
           assert value['artifact_tar_bytes']<=127*1024**2,'RETENTION_CAP'
           assert value['operating_qualification']=='NOT_ESTABLISHED' and value['resource_verdict']=='UNKNOWN','HONEST_LIMITED_CLAIM'
           print('One genuine nondeploy case completed; operating qualification and deployment remain unestablished.')
+          PY
+
+  inspect-runner-memory-detail:
+    if: >-
+      github.repository == 'NickNicky19/nicks-expert-nfl-picks' &&
+      github.actor_id == '208912933' &&
+      github.ref == 'refs/heads/upgrade/phase2-reproducible-comparison' &&
+      github.run_attempt == 1 &&
+      inputs.confirmation == 'NFL-WEB-RUNNER-MEMORY-DETAIL-20261024' &&
+      inputs.storage_approved == 'NFL-WEB-RUNNER-MEMORY-DETAIL-20261024' &&
+      inputs.installed_source == github.sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Diagnose read-only Runner.Worker metadata access without running a workload
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          """One read-only topology observation, never memory or operating qualification."""
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import sys
+          import time
+
+          CONFIRMATION = 'NFL-WEB-RUNNER-MEMORY-DETAIL-20261024'
+          WORKFLOW = 'NickNicky19/nicks-expert-nfl-picks/.github/workflows/prepare-diagnostic-seed.yml@refs/heads/upgrade/phase2-reproducible-comparison'
+          LIMIT = 16384
+
+          class Unsupported(Exception):
+              pass
+
+          def require(condition, code):
+              if not condition:raise Unsupported(code)
+
+          def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          def sha(value):return hashlib.sha256(value).hexdigest()
+          def pairs(items):
+              result={}
+              for key,value in items:
+                  require(key not in result,'DUPLICATE_JSON_KEY');result[key]=value
+              return result
+
+
+          # Closed metadata-only diagnostic context; never emit paths or exception text.
+          CONTEXT = {'phase':'INVOCATION','role':'EVENT','operation':'OPEN'}
+          COUNTERS = ('memory.current','memory.peak','memory.max','memory.swap.current','memory.swap.peak','memory.swap.max')
+          def operation(role, action):
+              CONTEXT.update(role=role, operation=action)
+          def metadata_role(path):
+              value=str(path)
+              fixed={'/proc/self/mountinfo':'SELF_MOUNTINFO','/proc/meminfo':'MEMINFO','/proc/1/ns/cgroup':'PID1_CGROUP_NAMESPACE'}
+              if value in fixed:return fixed[value]
+              if re.fullmatch(r'/proc/[1-9][0-9]{0,19}/stat',value):return 'ANCESTOR_STAT'
+              if re.fullmatch(r'/proc/[1-9][0-9]{0,19}/exe',value):return 'ANCESTOR_EXE'
+              if re.fullmatch(r'/proc/[1-9][0-9]{0,19}/cgroup',value):return 'ANCESTOR_MEMBERSHIP'
+              if re.fullmatch(r'/proc/[1-9][0-9]{0,19}/ns/cgroup',value):return 'ANCESTOR_CGROUP_NAMESPACE'
+              if Path(value).name in COUNTERS:return 'CGROUP_'+Path(value).name.upper().replace('.','_')
+              if Path(value).name=='memory.events':return 'CGROUP_MEMORY_EVENTS'
+              return 'EVENT_OR_REQUIRED_METADATA'
+          def failure(error):
+              result=dict(CONTEXT)
+              if isinstance(error,OSError):
+                  result['error']='OS_ERROR'
+                  result['errno']={1:'EPERM',2:'ENOENT',5:'EIO',13:'EACCES',20:'ENOTDIR',40:'ELOOP',116:'ESTALE'}.get(error.errno,'OTHER_OR_UNAVAILABLE')
+              elif isinstance(error,Unsupported):
+                  # The fixed guard code, never exception text from a library or OS.
+                  result['error']='REQUIRED_GUARD_REJECTED'
+              else:result['error']='METADATA_PARSE_REJECTED'
+              return result
+          def readlink(path):
+              operation(metadata_role(path),'READLINK')
+              return os.readlink(path)
+
+          def read(path,limit=16384):
+              operation(metadata_role(path),'OPEN')
+              fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+              try:
+                  operation(metadata_role(path),'FSTAT')
+                  require(stat.S_ISREG(os.fstat(fd).st_mode),'NONREGULAR_METADATA')
+                  parts=[];size=0
+                  while True:
+                      operation(metadata_role(path),'READ')
+                      data=os.read(fd,min(4096,limit-size+1))
+                      if not data:break
+                      size+=len(data);require(size<=limit,'METADATA_SIZE_BOUND');parts.append(data)
+                  return b''.join(parts)
+              finally:os.close(fd)
+
+          def integer(raw,maximum=None):
+              text=raw.strip()
+              require(re.fullmatch(rb'0|[1-9][0-9]{0,19}',text) is not None,'MALFORMED_COUNTER')
+              value=int(text)
+              require(maximum is None or value<=maximum,'COUNTER_BOUND')
+              return value
+
+          def maximum(raw):return None if raw.strip()==b'max' else integer(raw)
+
+          def identity(raw,pid):
+              require(len(raw)<=16384 and raw.startswith(str(pid).encode()+b' ('),'PROC_IDENTITY')
+              end=raw.rfind(b') ');require(end>0,'PROC_IDENTITY')
+              fields=raw[end+2:].split();require(len(fields)>=20,'PROC_FIELDS')
+              return raw[raw.index(b'(')+1:end],integer(fields[1]),integer(fields[19])
+
+          def membership(raw):
+              rows=raw.decode('ascii').splitlines();require(len(rows)==1 and rows[0].startswith('0::'),'CGROUP_V2_MEMBERSHIP')
+              value=rows[0][3:];path=Path(value)
+              require(path.is_absolute() and not value.startswith('//') and '..' not in path.parts and '\x00' not in value and str(path)==value,'CGROUP_MEMBERSHIP_PATH')
+              return path
+
+          def unescape(value):
+              return re.sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),value)
+
+          def mount(raw):
+              found=[]
+              for line in raw.decode().splitlines():
+                  halves=line.split(' - ')
+                  require(len(halves)==2,'MOUNTINFO_FIELDS')
+                  if halves[1].split()[0]!='cgroup2':continue
+                  fields=halves[0].split();require(len(fields)>=6,'MOUNTINFO_FIELDS')
+                  found.append((Path(unescape(fields[3])),Path(unescape(fields[4]))))
+              require(len(found)==1,'CGROUP_V2_MOUNT')
+              root,location=found[0]
+              require(root==Path('/') and location.is_absolute(),'HIDDEN_CGROUP_ANCESTORS')
+              return root,location
+
+          def memory(raw):
+              values={}
+              for line in raw.decode('ascii').splitlines():
+                  key,rest=line.split(':',1)
+                  if key not in ('MemTotal','MemAvailable','SwapTotal','SwapFree'):continue
+                  require(key not in values,'DUPLICATE_MEMORY_FIELD')
+                  fields=rest.split();require(len(fields)==2 and fields[1]=='kB','MEMORY_UNITS')
+                  values[key]=integer(fields[0].encode())*1024
+              require(set(values)=={'MemTotal','MemAvailable','SwapTotal','SwapFree'} and values['MemTotal']>0 and values['MemAvailable']<=values['MemTotal'] and values['SwapFree']<=values['SwapTotal'],'MEMORY_FIELDS')
+              return values
+
+          def oom(raw):
+              values={}
+              for line in raw.splitlines():
+                  fields=line.split();require(len(fields)==2,'OOM_COUNTER_FIELDS')
+                  key=fields[0].decode('ascii');require(key not in values,'DUPLICATE_OOM_COUNTER')
+                  values[key]=integer(fields[1])
+              required={'oom','oom_kill','oom_group_kill'};require(required<=set(values),'OOM_COUNTER_MISSING')
+              return {key:values[key] for key in sorted(required)}
+
+          def invocation(env,event):
+              fixed={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','GITHUB_REPOSITORY':'NickNicky19/nicks-expert-nfl-picks','GITHUB_REPOSITORY_ID':'1411185749','GITHUB_ACTOR_ID':'208912933','GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_RUN_ATTEMPT':'1','GITHUB_REF':'refs/heads/upgrade/phase2-reproducible-comparison','GITHUB_WORKFLOW_REF':WORKFLOW}
+              require(all(env.get(k)==v for k,v in fixed.items()),'UNTRUSTED_INVOCATION')
+              source=env.get('GITHUB_SHA','')
+              require(re.fullmatch('[0-9a-f]{40}',source) is not None and env.get('GITHUB_WORKFLOW_SHA')==source,'WORKFLOW_SOURCE_BINDING')
+              inputs=event.get('inputs')
+              require(type(inputs) is dict and set(inputs)=={'confirmation','storage_approved','installed_source'} and inputs==dict(confirmation=CONFIRMATION,storage_approved=CONFIRMATION,installed_source=source),'EXACT_INPUTS')
+              require(type(event.get('repository')) is dict and event['repository'].get('id')==1411185749 and event['repository'].get('full_name')=='NickNicky19/nicks-expert-nfl-picks' and type(event.get('sender')) is dict and event['sender'].get('id')==208912933,'EVENT_REPOSITORY_ACTOR')
+              run=env.get('GITHUB_RUN_ID','');require(re.fullmatch('[1-9][0-9]{0,19}',run) is not None,'RUN_IDENTITY')
+              return source,int(run)
+
+          def object_identity(path):
+              operation('CGROUP_DIRECTORY','RESOLVE_STAT_ACCESS')
+              require(not path.is_symlink() and path.resolve()==path,'CGROUP_PATH_ALIAS')
+              info=path.stat();require(stat.S_ISDIR(info.st_mode),'CGROUP_DIRECTORY')
+              return dict(object_sha256=sha(str((info.st_dev,info.st_ino)).encode()),owner_uid=info.st_uid,mode=stat.S_IMODE(info.st_mode),job_writable=os.access(path,os.W_OK))
+
+          def proc_record(pid,depth):
+              base=Path('/proc')/str(pid);raw=read(base/'stat');comm,parent,start=identity(raw,pid)
+              exe=Path(readlink(base/'exe')).name
+              role='worker' if comm==b'Runner.Worker' and exe=='Runner.Worker' else 'listener' if comm==b'Runner.Listener' and exe=='Runner.Listener' else 'observer' if pid==os.getpid() else 'ancestor'
+              group=membership(read(base/'cgroup'));namespace=readlink(base/'ns/cgroup')
+              require(identity(read(base/'stat'),pid)==(comm,parent,start),'PROC_CHANGED_DURING_READ')
+              return dict(pid=pid,parent=parent,start=start,group=group,namespace=namespace,public=dict(role=role,depth=depth,pid_sha256=sha(str(pid).encode()),membership_sha256=sha(str(group).encode()),membership_depth=len(group.parts)-1))
+
+          def observe():
+              root,location=mount(read('/proc/self/mountinfo',1024**2))
+              namespace=readlink('/proc/1/ns/cgroup');chain=[];seen=set();pid=os.getpid()
+              for depth in range(24):
+                  require(pid>0 and pid not in seen,'PROC_ANCESTRY_CYCLE');seen.add(pid)
+                  item=proc_record(pid,depth);require(item['namespace']==namespace,'CGROUP_NAMESPACE_MISMATCH');chain.append(item)
+                  if pid==1:break
+                  pid=item['parent']
+              else:raise Unsupported('PROC_ANCESTRY_BOUND')
+              workers=[v for v in chain if v['public']['role']=='worker'];require(len(workers)==1,'RUNNER_WORKER_ANCESTOR')
+              worker=workers[0];own=chain[0]
+              require(own['group']==worker['group'] or own['group'].is_relative_to(worker['group']),'OBSERVER_OUTSIDE_WORKER_CGROUP')
+              target=location/worker['group'].relative_to(root)
+              paths=[target,*[p for p in target.parents if p==location or location in p.parents]]
+              require(paths[-1]==location and len(paths)<=16,'CGROUP_ANCESTOR_BOUND')
+              scopes=[];issues=[];finite=[]
+              for depth,path in enumerate(paths):
+                  before=object_identity(path)
+                  if before['owner_uid']!=0 or before['mode']&0o022 or before['job_writable']:issues.append('SCOPE_NOT_ROOT_PROTECTED')
+                  item=dict(role='worker_scope' if depth==0 else 'cgroup_root' if path==location else 'visible_ancestor',depth=depth,path_sha256=sha(str(path).encode()),identity=before)
+                  try:
+                      counters={}
+                      for key in ('memory.current','memory.peak','memory.max','memory.swap.current','memory.swap.peak','memory.swap.max'):
+                          value=read(path/key);info=(path/key).stat()
+                          counters[key]=maximum(value) if key.endswith('.max') else integer(value)
+                          if info.st_uid!=0 or info.st_mode&0o022 or os.access(path/key,os.W_OK):issues.append('COUNTER_NOT_READ_ONLY_TO_JOB')
+                      require(counters['memory.peak']>=counters['memory.current'] and counters['memory.swap.peak']>=counters['memory.swap.current'],'PEAK_BELOW_CURRENT')
+                      item.update(counters=counters,oom=oom(read(path/'memory.events')),accounting_visible=True)
+                      if counters['memory.max'] is not None:finite.append(counters['memory.max'])
+                  except (OSError,Unsupported):
+                      item['accounting_visible']=False
+                      if path!=location:issues.append('VISIBLE_ANCESTOR_ACCOUNTING_UNAVAILABLE')
+                  require(object_identity(path)==before,'CGROUP_OBJECT_CHANGED');scopes.append(item)
+              # One observation cannot establish unmoved membership for a future job.
+              for prior in chain:
+                  current=proc_record(prior['pid'],prior['public']['depth'])
+                  require((current['parent'],current['start'],current['group'],current['namespace'])==(prior['parent'],prior['start'],prior['group'],prior['namespace']),'PROCESS_MEMBERSHIP_CHANGED')
+              return dict(status='UNKNOWN' if issues else 'TOPOLOGY_OBSERVED',issues=sorted(set(issues)),process_roles=[v['public'] for v in chain],scopes=scopes,physical_memory=memory(read('/proc/meminfo')),actual_finite_ancestor_limit_bytes=min(finite) if finite else None,namespace_sha256=sha(namespace.encode()),full_post_cleanup_observed=False,future_unmoved_subtree_established=False)
+
+
+          def partial_observe():
+              # Facts only. Failure here never qualifies the later mandatory checks.
+              value={'process_roles':[],'scopes':[],'failures':[]}
+              try:
+                  root,location=mount(read('/proc/self/mountinfo',1024**2))
+                  value['full_cgroup_mount_root_visible']=root==Path('/')
+                  value['physical_memory']=memory(read('/proc/meminfo'))
+                  pid=os.getpid();seen=set();chain=[]
+                  for depth in range(24):
+                      require(pid>0 and pid not in seen,'PROC_ANCESTRY_CYCLE');seen.add(pid)
+                      try:item=proc_record(pid,depth)
+                      except (OSError,Unsupported,ValueError,KeyError,TypeError,IndexError) as error:
+                          value['failures'].append(failure(error));break
+                      chain.append(item);value['process_roles'].append(item['public'])
+                      if pid==1:break
+                      pid=item['parent']
+                  workers=[v for v in chain if v['public']['role']=='worker']
+                  if len(workers)==1:
+                      worker=workers[0];own=chain[0]
+                      require(own['group']==worker['group'] or own['group'].is_relative_to(worker['group']),'OBSERVER_OUTSIDE_WORKER_CGROUP')
+                      target=location/worker['group'].relative_to(root)
+                      paths=[target,*[p for p in target.parents if p==location or location in p.parents]]
+                      require(paths[-1]==location and len(paths)<=16,'CGROUP_ANCESTOR_BOUND')
+                      for depth,path in enumerate(paths):
+                          item={'role':'worker_scope' if depth==0 else 'cgroup_root' if path==location else 'visible_ancestor','depth':depth,'path_sha256':sha(str(path).encode()),'counters':{}}
+                          try:
+                              before=object_identity(path);item['identity']=before
+                              for key in COUNTERS:
+                                  try:
+                                      raw=read(path/key);item['counters'][key]=maximum(raw) if key.endswith('.max') else integer(raw)
+                                  except (OSError,Unsupported,ValueError) as error:item.setdefault('failures',[]).append(failure(error))
+                              try:item['oom']=oom(read(path/'memory.events'))
+                              except (OSError,Unsupported,ValueError) as error:item.setdefault('failures',[]).append(failure(error))
+                              require(object_identity(path)==before,'CGROUP_OBJECT_CHANGED')
+                          except (OSError,Unsupported,ValueError,KeyError,TypeError,IndexError) as error:item.setdefault('failures',[]).append(failure(error))
+                          value['scopes'].append(item)
+              except (OSError,Unsupported,ValueError,KeyError,TypeError,IndexError) as error:value['failures'].append(failure(error))
+              value['qualified']=False
+              raw=canonical(value)
+              if len(raw)>6144:
+                  value={**{k:v for k,v in value.items() if k not in ('process_roles','scopes')},
+                      'process_roles':[v for v in value['process_roles'] if v['role'] in ('observer','worker')],
+                      'scopes':[v for v in value['scopes'] if v['role']=='worker_scope'],
+                      'omitted_process_role_count':len([v for v in value['process_roles'] if v['role'] not in ('observer','worker')]),
+                      'omitted_scope_count':len([v for v in value['scopes'] if v['role']!='worker_scope']),
+                      'complete_partial_facts_sha256':sha(raw),'partial_details_bounded':True}
+              return value
+
+          def main():
+              start=time.monotonic();record=dict(schema_version='runner-memory-detail-observation-v1',claim='CAPABILITY_OBSERVATION_ONLY_NOT_OPERATING_PASS',resource_verdict='UNKNOWN',operating_qualification='NOT_RUN',network_calls=0,provider_calls=0,artifact_uploads=0,privileged_operations=0,counter_resets=0)
+              code=0
+              try:
+                  raw=read(os.environ['GITHUB_EVENT_PATH'],131072);event=json.loads(raw,object_pairs_hook=pairs,parse_constant=lambda _:(_ for _ in ()).throw(Unsupported('NONFINITE_EVENT_JSON')))
+                  source,run=invocation(os.environ,event);record.update(source=source,run_id=run)
+                  CONTEXT['phase']='PARTIAL_FACTS';record['partial_facts']=partial_observe()
+                  CONTEXT['phase']='ALL_ORIGINAL_REQUIRED_CHECKS';record.update(observe())
+              except Unsupported as error:record.update(status='UNKNOWN',issues=[str(error)],read_failure=failure(error));code=3
+              except (OSError,ValueError,KeyError,TypeError,IndexError) as error:record.update(status='UNKNOWN',issues=['READ_ONLY_OBSERVATION_UNAVAILABLE'],read_failure=failure(error));code=3
+              record['observation_seconds']=time.monotonic()-start
+              raw=canonical(record)
+              if len(raw)>LIMIT:
+                  record={k:record[k] for k in ('schema_version','claim','resource_verdict','operating_qualification','source','run_id','partial_facts') if k in record};record.update(status='UNKNOWN',issues=['TECHNICAL_RECORD_BOUND']);raw=canonical(record);code=3
+              print('RUNNER_MEMORY_TOPOLOGY_JSON='+raw.decode())
+              print('RUNNER_MEMORY_TOPOLOGY_SHA256='+sha(raw))
+              return code
+
+          if __name__=='__main__':raise SystemExit(main())
           PY
