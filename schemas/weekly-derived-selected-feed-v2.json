@@ -1,0 +1,438 @@
+{
+  "$id": "weekly-derived-selected-feed-v2",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "coverage": {
+      "additionalProperties": false,
+      "properties": {
+        "fallback_counts": {
+          "additionalProperties": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "propertyNames": {
+            "enum": [
+              "private_ineligible_R0",
+              "outside_board_R0",
+              "started_R0"
+            ]
+          },
+          "type": "object"
+        },
+        "private_selected_rows": {
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "public_rows": {
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "private_selected_rows",
+        "public_rows",
+        "fallback_counts"
+      ],
+      "type": "object"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "durability_receipt_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "identity_scope_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "producer_policy_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "publication": {
+      "additionalProperties": false,
+      "properties": {
+        "api_job_id": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "authority_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "export_job": {
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "repository": {
+          "const": "NickNicky19/NFL-forecasting"
+        },
+        "run_attempt": {
+          "const": 1
+        },
+        "run_id": {
+          "pattern": "^[1-9][0-9]{0,19}$",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "weekly-derived-publication-v2"
+        },
+        "selected_body_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "source_sha": {
+          "pattern": "^[a-f0-9]{40}$",
+          "type": "string"
+        },
+        "source_version_catalog_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "version_catalog": {
+          "additionalProperties": false,
+          "properties": {
+            "current_values_used": {
+              "const": false
+            },
+            "public_policy_registration": {
+              "const": "REQUIRED_SEPARATELY; not automatic approval"
+            },
+            "rows": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "category": {
+                    "enum": [
+                      "anytime_td",
+                      "pass_att",
+                      "pass_cmp",
+                      "pass_int",
+                      "pass_td",
+                      "pass_yd",
+                      "rec",
+                      "rec_yd",
+                      "rush_att",
+                      "rush_rec_yd",
+                      "rush_yd"
+                    ]
+                  },
+                  "method_id": {
+                    "pattern": "^[A-Z0-9_]{1,100}$",
+                    "type": "string"
+                  },
+                  "model_version": {
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": "string"
+                  },
+                  "procedure_version": {
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "category",
+                  "method_id",
+                  "procedure_version",
+                  "model_version"
+                ],
+                "type": "object"
+              },
+              "maxItems": 256,
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "schema_version": {
+              "const": "weekly-generic-future-producer-v1-selected-version-catalog"
+            }
+          },
+          "required": [
+            "schema_version",
+            "rows",
+            "current_values_used",
+            "public_policy_registration"
+          ],
+          "type": "object"
+        },
+        "version_catalog_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "workflow_path": {
+          "const": ".github/workflows/lab.yml"
+        }
+      },
+      "required": [
+        "schema_version",
+        "authority_sha256",
+        "repository",
+        "source_sha",
+        "run_id",
+        "run_attempt",
+        "workflow_path",
+        "export_job",
+        "api_job_id",
+        "selected_body_sha256",
+        "source_version_catalog_sha256",
+        "version_catalog_sha256",
+        "version_catalog"
+      ],
+      "type": "object"
+    },
+    "publication_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "r0_identity_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "rights_authority_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "rights_receipt_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "rows": {
+      "items": {
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "category": {
+                  "enum": [
+                    "pass_td",
+                    "pass_cmp",
+                    "pass_att",
+                    "pass_int",
+                    "rush_att",
+                    "rec"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "forecast_value": {
+                  "minimum": 0
+                },
+                "prediction_functional": {
+                  "const": "expected_mean"
+                },
+                "product": {
+                  "const": "point_mean"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "category": {
+                  "enum": [
+                    "pass_yd",
+                    "rush_yd",
+                    "rec_yd",
+                    "rush_rec_yd"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "prediction_functional": {
+                  "const": "intended_median"
+                },
+                "product": {
+                  "const": "point_median"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "category": {
+                  "const": "anytime_td"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "forecast_value": {
+                  "maximum": 1,
+                  "minimum": 0
+                },
+                "prediction_functional": {
+                  "const": "event_probability"
+                },
+                "product": {
+                  "const": "binary_probability"
+                }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "category": {
+            "enum": [
+              "anytime_td",
+              "pass_att",
+              "pass_cmp",
+              "pass_int",
+              "pass_td",
+              "pass_yd",
+              "rec",
+              "rec_yd",
+              "rush_att",
+              "rush_rec_yd",
+              "rush_yd"
+            ]
+          },
+          "forecast_value": {
+            "type": "number"
+          },
+          "game_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "horizon": {
+            "const": "player_game"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "kickoff_utc": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "method_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "model_version": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "persistence_completed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "player_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "prediction_functional": {
+            "enum": [
+              "expected_mean",
+              "intended_median",
+              "event_probability"
+            ]
+          },
+          "procedure_version": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "product": {
+            "enum": [
+              "point_mean",
+              "point_median",
+              "binary_probability"
+            ]
+          },
+          "query_source_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "selection_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "source_cutoff_utc": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "source_policy_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "valid_until_utc": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "forecast_value",
+          "game_id",
+          "horizon",
+          "issued_at",
+          "kickoff_utc",
+          "method_id",
+          "model_version",
+          "persistence_completed_at",
+          "player_id",
+          "prediction_functional",
+          "procedure_version",
+          "product",
+          "query_source_sha256",
+          "selection_sha256",
+          "source_cutoff_utc",
+          "source_policy_sha256",
+          "valid_until_utc"
+        ],
+        "type": "object"
+      },
+      "maxItems": 5000,
+      "minItems": 1,
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "weekly-derived-selected-feed-v2"
+    },
+    "season": {
+      "type": "integer"
+    },
+    "state": {
+      "const": "DERIVED_SELECTED_ONLY"
+    },
+    "week": {
+      "maximum": 22,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "coverage",
+    "created_at",
+    "durability_receipt_sha256",
+    "expires_at",
+    "identity_scope_sha256",
+    "producer_policy_sha256",
+    "r0_identity_sha256",
+    "rights_authority_sha256",
+    "rights_receipt_sha256",
+    "rows",
+    "schema_version",
+    "season",
+    "state",
+    "week",
+    "publication",
+    "publication_sha256"
+  ],
+  "type": "object"
+}
