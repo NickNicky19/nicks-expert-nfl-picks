@@ -999,4 +999,61 @@ class AllocationTests(unittest.TestCase):
   for value in (True,-1):
    with self.subTest(value=value),self.assertRaises(RuntimeError):c.pretransport_plan({'archive_bytes':value})
 
+
+
+class ProductionCacheLifetimeBoundary(unittest.TestCase):
+    """Mocked consumers prove diagnostic adapters cannot alter measured updater calls."""
+    def fixture(self, directory):
+        root=Path(directory)/'fixture';root.mkdir();result=Path(directory)/'dataflow.json'
+        events=[];manifest=lambda *a,**kw:({},{});archive=lambda *a,**kw:{}
+        capture=SimpleNamespace(_manifest=manifest,_git_archive=archive,_public_archive_commit=lambda *a:None)
+        m={'capture':capture,'rel':SimpleNamespace(load_json=lambda *a:{'games':[{'id':'fictional-game'}]}),
+           'partial':SimpleNamespace(game_contract=lambda *a:{'original':'fictional-contract'})}
+        def production(name,fail=False):
+            def call(*a,**kw):
+                self.assertIs(capture._manifest,manifest);self.assertIs(capture._git_archive,archive)
+                events.append(name)
+                if fail:raise RuntimeError('actual production '+name+' failure')
+                return {}
+            return call
+        capture.run_capture=production('capture');capture.validate_generation=production('validate');capture.stage_pages=production('stage')
+        return root,result,m,events,production
+    def test_capture_and_validation_keep_original_functions_and_context_lifetimes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root,result,m,events,production=self.fixture(directory)
+            with patch.object(c,'require_offline'),patch.object(c,'execution_identity',return_value={'schema_version':'diagnostic-execution-source-v3','phase2_transition':{}}),patch.object(c,'_sample_context',return_value=(m,SimpleNamespace(calls=0))),patch.object(c,'external',side_effect=lambda *a:contextlib.nullcontext()),patch.object(c.seed_v1,'correction_declaration',return_value=({},[],[])),patch.object(c.seed_v1,'check_correction',return_value={'status':'CONTROL_ONLY'}),patch.object(c.subprocess,'run',side_effect=lambda *a,**kw:events.append('preserve')),patch.object(c,'_advisories',side_effect=production('advisory')),patch.object(c,'operation_lifetime',side_effect=AssertionError('adapter entered measured capture')):
+                c.sample_capture(Path(directory),root,result)
+            self.assertEqual(events,['preserve','capture','validate','advisory'])
+            self.assertEqual(json.loads(result.read_bytes())['status'],'CAPTURE_COMPLETE_PRECOMMIT_CI_PENDING')
+    def test_capture_failure_is_not_replaced_by_diagnostic_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root,result,m,events,production=self.fixture(directory);m['capture'].run_capture=production('capture',True)
+            with patch.object(c,'require_offline'),patch.object(c,'execution_identity',return_value={'schema_version':'diagnostic-execution-source-v3','phase2_transition':{}}),patch.object(c,'_sample_context',return_value=(m,SimpleNamespace(calls=0))),patch.object(c,'external',side_effect=lambda *a:contextlib.nullcontext()),patch.object(c.seed_v1,'correction_declaration',return_value=({},[],[])),patch.object(c.subprocess,'run',side_effect=lambda *a,**kw:events.append('preserve')),patch.object(c,'operation_lifetime',side_effect=AssertionError('adapter entered measured capture')):
+                with self.assertRaisesRegex(RuntimeError,'actual production capture failure'):c.sample_capture(Path(directory),root,result)
+            self.assertEqual(events,['preserve','capture']);self.assertEqual(json.loads(result.read_bytes())['status'],'CAPTURE_RUNNING')
+    def test_staging_is_unmodified_and_only_later_inventory_gets_bounded_adapter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root,result,m,events,production=self.fixture(directory);c.put(result,{'status':'CAPTURE_COMPLETE_PRECOMMIT_CI_PENDING','stages':{}})
+            original=m['capture']._manifest
+            @contextlib.contextmanager
+            def diagnostic(*a,**kw):
+                events.append('diagnostic-enter')
+                with patch.object(m['capture'],'_manifest',new=lambda *a,**kw:None):yield
+                events.append('diagnostic-exit')
+            def metrics(*a):
+                self.assertIsNot(m['capture']._manifest,original);events.append('metrics');return final_workload_control()
+            with patch.object(c,'require_offline'),patch.object(c,'execution_identity'),patch.object(c,'_sample_context',return_value=(m,SimpleNamespace(calls=0))),patch.object(c,'external',side_effect=lambda *a:contextlib.nullcontext()),patch.object(c,'commit',side_effect=production('commit')),patch.object(c,'operation_lifetime',side_effect=diagnostic),patch.object(c,'final_candidate_workload',side_effect=metrics):
+                c.sample_commit(Path(directory),root,result)
+            self.assertIs(m['capture']._manifest,original)
+            self.assertEqual(events,['commit','stage','diagnostic-enter','metrics','diagnostic-exit'])
+            self.assertEqual(json.loads(result.read_bytes())['status'],'PAGES_STAGED_FINAL_CI_PENDING')
+    def test_failed_staging_never_enters_diagnostic_collector(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root,result,m,events,production=self.fixture(directory);m['capture'].stage_pages=production('stage',True)
+            c.put(result,{'status':'CAPTURE_COMPLETE_PRECOMMIT_CI_PENDING','stages':{}})
+            with patch.object(c,'require_offline'),patch.object(c,'execution_identity'),patch.object(c,'_sample_context',return_value=(m,SimpleNamespace(calls=0))),patch.object(c,'external',side_effect=lambda *a:contextlib.nullcontext()),patch.object(c,'commit',side_effect=production('commit')),patch.object(c,'operation_lifetime',side_effect=AssertionError('adapter entered production stage')),patch.object(c,'final_candidate_workload') as collector:
+                with self.assertRaisesRegex(RuntimeError,'actual production stage failure'):c.sample_commit(Path(directory),root,result)
+                collector.assert_not_called()
+            self.assertEqual(events,['commit','stage']);self.assertEqual(json.loads(result.read_bytes())['status'],'CAPTURE_COMPLETE_PRECOMMIT_CI_PENDING')
+
 if __name__=='__main__':unittest.main(verbosity=2)

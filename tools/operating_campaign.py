@@ -1769,7 +1769,7 @@ def sample_capture(code,root,result):
         tick=time.monotonic()
         try:return action()
         finally:r['stages'][name]=time.monotonic()-tick;put(result,r)
-    with operation_lifetime(seed_v1, modules=(m,)),external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
+    with external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
         declaration,old_rows,old_outcomes=seed_v1.correction_declaration(root,m)
         before_board=m['rel'].load_json(root/'output/data/week.json')
         contracts={g['id']:m['partial'].game_contract(before_board,g['id']) for g in before_board['games']}
@@ -1792,10 +1792,15 @@ def sample_capture(code,root,result):
 def sample_commit(code,root,result):
     require_offline();execution_identity(code,root);m,provider=_sample_context(root);r=_load(result)
     if r.get('status')!='CAPTURE_COMPLETE_PRECOMMIT_CI_PENDING':raise RuntimeError('Wrong split-update frontier')
-    with operation_lifetime(seed_v1, modules=(m,)),external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
+    with external(m,provider,root),patch.object(m['capture'],'_public_archive_commit',side_effect=lambda ref,tree:assert_local_tree(root,ref,tree)):
         tick=time.monotonic();commit(root);r['stages']['local_git_commit']=time.monotonic()-tick
         tick=time.monotonic();m['capture'].stage_pages(root,root.parent/'sample-pages');r['stages']['pages_staging_archive_checks']=time.monotonic()-tick
-        tick=time.monotonic();r['final_candidate_workload']=final_candidate_workload(code,root,m,root.parent/'sample-pages');r['stages']['final_candidate_metrics']=time.monotonic()-tick
+        # This inventory is diagnostic-only; actual capture/validation/staging
+        # above retain the production functions and their native cache lifetimes.
+        tick=time.monotonic()
+        with operation_lifetime(seed_v1, modules=(m,)):
+            r['final_candidate_workload']=final_candidate_workload(code,root,m,root.parent/'sample-pages')
+        r['stages']['final_candidate_metrics']=time.monotonic()-tick
         if not r['final_candidate_workload']['decisions']['admitted']:r['status']='FINAL_CANDIDATE_WORKLOAD_NOT_ADMITTED'
         put(result,r)
         _check_final_workload(r['final_candidate_workload'],require_admitted=True)
