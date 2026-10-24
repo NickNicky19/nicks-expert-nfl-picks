@@ -48,6 +48,9 @@ jobs:
         run: |
           python -m unittest discover -s tests -v
           node --check output/app.js
+          node --check output/weekly-adaptive-overlay.js
+          python -m unittest discover -s tests -p test_weekly_adaptive_overlay.py -v
+          node tests/test-weekly-overlay.cjs
           node --check output/reliability-ui.js
           node tests/test-ui.cjs
       - name: Preserve original grading output
@@ -83,6 +86,8 @@ jobs:
           d['historical_comparison'] = os.environ['COMPARISON_OUTCOME']
           p.write_text(json.dumps(d, separators=(',', ':'), allow_nan=False))
           PY
+      - name: Prepare isolated provisional overlay (default R0)
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)"
       - name: Commit validated data and immutable receipts
         id: commit
         run: |

@@ -588,8 +588,25 @@ async function checkMeta() {
 
 // ---------------------------------------------------------------- load
 
+// Optional enhancement starts only AFTER the original R0 render.
+function startWeeklyOverlay() {
+  const api = globalThis.WeeklyAdaptiveOverlay, board = S.data;
+  if (!S.weeklyOverlayReady || !board || typeof api?.load !== "function" || S.weeklyOverlayRequestBoard === board) return;
+  S.weeklyOverlayRequestBoard = board;
+  const boardHash = S.weeklyOverlayBoardHash;
+  Promise.resolve().then(() => api.load(board, boardHash)).then(overlay => {
+    if (S.data !== board || S.weeklyOverlayRequestBoard !== board || !S.weeklyOverlayReady) return;
+    S.weeklyOverlay = overlay;
+    if (overlay && S.gameView) renderGame();
+    else if (overlay && S.tab === "props") renderProps();
+  }).catch(() => { /* Original R0 remains usable even if the helper fails. */ });
+}
+globalThis.addEventListener("weekly-adaptive-overlay-ready", () => startWeeklyOverlay());
+
 async function load() {
   S.data = await getJSON(`data/week.json?t=${Date.now()}`);
+  S.weeklyOverlay = null; S.weeklyOverlayReady = false;
+  S.weeklyOverlayBoardHash = null;
   S.rosKey = null; S.gradeKey = null;
   S.future = null; S.futureLoading = null; S.ideas = null; S.teamWeeksMap = null; S.teamOppsMap = null;
   S.generatedAt = S.data.generated_at;
@@ -950,6 +967,7 @@ function catCard(p, raw) {
       const on = minePick(p.id, prop.key, d);
       return `<button class="add ${d} ${on ? "on" : ""}" data-add="${p.id}|${prop.key}|${d}|${line}" title="${on ? "Remove from" : "Add to"} My Picks">${on ? "\u2713" : "+"} ${d === "over" ? "Over" : "Under"} ${line}</button>`;
     }).join("")}</div>` : ""}
+    ${globalThis.WeeklyAdaptiveOverlay?.card(S.weeklyOverlay, p, prop.key) || ""}
     <div class="cat-nums">
       ${lineCell}
       ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment, made before kickoff">Our proj (pregame)<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
@@ -4817,6 +4835,7 @@ $("#reload").addEventListener("click", async () => {
   $("#banner").hidden = true;
   await load();
   render();
+  S.weeklyOverlayReady = true; startWeeklyOverlay();
   liveTick();
 });
 
@@ -4842,6 +4861,7 @@ $("#reload").addEventListener("click", async () => {
   $("#sc-btn").textContent = `${scoringName()} \u25be`;
   setTopHeight();
   render();
+  S.weeklyOverlayReady = true; startWeeklyOverlay();
   syncHash(false);
   liveTick();
   setInterval(() => { if (!document.hidden) checkMeta(); }, META_MS);
