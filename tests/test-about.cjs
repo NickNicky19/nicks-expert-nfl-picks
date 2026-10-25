@@ -23,7 +23,9 @@ const pendingHtml = render(pending);
 assert.match(pendingHtml, /42 unique matched opportunities; 84 repeated captures excluded/);
 assert.match(pendingHtml, /42 pending, 0 unresolved, 0 confirmed DNP/);
 assert.equal((pendingHtml.match(/<td>Pending<\/td>/g) || []).length, 6);
-assert.match(pendingHtml, /Production picks use the retained baseline/);
+assert.match(pendingHtml, /Selected forecasts drive displayed prop leans and a separate provisional saved Top Picks stream when valid/);
+assert.match(pendingHtml, /Reference-policy records retain their original model and source/);
+assert.match(pendingHtml, /provisional selected Top stream has its own saved ranking policy and is not historical reference-policy evidence/);
 assert.match(pendingHtml, /does not select production picks/);
 assert.match(pendingHtml, /Full entry payout and entry-specific settlement remain unverified/);
 const resolved = structuredClone(pending);
@@ -39,4 +41,4 @@ assert.match(render(null), /One scheduled refresh runs each day at 8:06 a\.m\. A
 assert.match(render(null), /Deliberate manual and code-change runs may also occur/);
 assert.match(render(null), /Daily refreshes may miss registered timing checkpoints; later observations never fill a missed checkpoint/);
 assert.doesNotMatch(render(null), /An over is marked cleared|stats only go up|Timing capture and performance reporting are not implemented yet|schedule remains hourly|additional game-day runs/);
-console.log('18 About rendering assertions passed.');
+console.log('20 About rendering assertions passed.');

@@ -1771,8 +1771,10 @@ remain retained. Sixteen critical outcome, unknown-TD, My Picks, paper-ticket
 and grading functions were checked byte-for-byte against the starting source.
 The sparse local source initially lacked the board required by the About test.
 A later run with the exact current public board reached an obsolete baseline-only
-About assertion. Its narrow test correction is a separate ordinary scope step;
-the truthful selected/reference caption is preserved. Final checkout CI remains
+About assertion. A fresh two-path ordinary follow-up replaced that one assertion
+with three explicit selected/reference separation checks, retaining the other
+seventeen assertions. All twenty passed against the same current public board;
+the app and its truthful caption remained unchanged. Final checkout CI remains
 required. No physical Safari,
 throttled full-page transfer or public deployment claim follows from these tests.
 
@@ -1804,3 +1806,20 @@ The preceding ordinary intermediate `e415912` finished CI with 1,180 tests,
 controller bindings were reported; the Node subprocess also returned nonzero.
 This was an explicitly nonreleaseable intermediate, and its failure remains
 preserved. It is not a green result for this candidate or its later merge.
+
+The ordinary integration was published as `4bd10d38`, with all 28 changed blobs
+read back under its exact 32-path scope. The additional About test/handoff step
+uses the same finding's second attempt and a fresh authorization; it does not
+reset finding limits or reuse the closed lease. Source, native qualification,
+engine, model, timing and experimental registrations remain unchanged.
+
+Fifteen focused staging/recovery methods and twelve parser controls passed,
+including the actual proposed raw-controller retention functions with fictional
+current/frozen assets. Failed typed ranking evidence remains unqualified;
+current and original successful graphs stay distinct. Six execution-boundary
+controls passed, including bounded file transport and source/destination Git
+object checks. These tests do not execute a privileged resource unit or a whole
+updater. The final manual-only workflows preserve the daily schedule,
+noncancelling concurrency, source-CI boundaries and required complete checks.
+Their separate protected publication and final-source/current-main CI remain
+required before operating and production-artifact acceptance.
