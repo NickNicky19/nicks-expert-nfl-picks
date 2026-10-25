@@ -1240,7 +1240,7 @@ function renderProps() {
       <select id="f-cat" aria-label="Prop"><option value="">All props</option>${catOpts}</select>
       <select id="f-sort" aria-label="Sort">
         <option value="selected_edge" ${f.sort === "selected_edge" ? "selected" : ""}>Sort: New forecasts: biggest gap</option>
-        <option value="selected_value" ${f.sort === "selected_value" ? "selected" : ""} ${!f.cat || f.cat === "fpts" ? "disabled" : ""}>${f.cat === "anytime_td" ? "Sort: New TD probability: highest" : "Sort: New forecast: highest (choose prop)"}</option>
+        <option value="selected_value" ${f.sort === "selected_value" ? "selected" : ""} ${!f.cat || f.cat === "fpts" ? "disabled" : ""}>${f.cat === "anytime_td" ? "Sort: New TD probability: highest" : f.cat ? "Sort: New forecast: highest" : "Sort: New forecast: highest (choose prop)"}</option>
         <option value="proj" ${f.sort === "proj" ? "selected" : ""}>Sort: R0 projected points</option>
         <option value="live" ${f.sort === "live" ? "selected" : ""}>Sort: Live points</option>
         <option value="edge" ${f.sort === "edge" ? "selected" : ""}>Sort: R0 biggest lean</option>
@@ -4571,7 +4571,7 @@ function renderMine() {
       <button class="tbtn" data-mine-clear="all">Clear all</button>
       ${old ? `<button class="tbtn" data-mine-clear="old">Clear ${old} from earlier weeks</button>` : ""}
     </div>
-    <p class="note">Picks keep the line you added them at; change any line to the one you actually got (an alternate spread like -4.5, a different total). Overs show cleared as soon as they pass the line; unders, spreads and moneylines settle when the game is final (a push is a tie with the line).</p>`;
+    <p class="note">Picks keep the line you added them at; change any line to the one you actually got (an alternate spread like -4.5, a different total). Live prop values remain provisional, including overs already above the line: signed yardage and corrections can move down. Final equality with an integer line is a push.</p>`;
 }
 
 // ---------------------------------------------------------------- render and events

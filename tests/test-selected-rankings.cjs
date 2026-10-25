@@ -99,6 +99,8 @@ const clone = value => JSON.parse(JSON.stringify(value));
   eq(JSON.stringify(fixture.board), before, "canonical board unchanged");
   eq(source.includes('value="selected_edge"'), true, "new gap sort option");
   eq(source.includes('value="selected_value"'), true, "new category value/probability option");
+  eq(source.includes('Live prop values remain provisional, including overs already above the line'), true, 'My Picks caption matches provisional grading');
+  eq(source.includes('Overs show cleared as soon as they pass the line'), false, 'obsolete early-finality caption removed');
   if (process.env.SELECTED_RANKINGS_BROWSER === '1') {
     const {chromium}=require('playwright');
     const browser=await chromium.launch({executablePath:process.env.NFL_CHROMIUM_PATH||'/usr/bin/chromium',headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
