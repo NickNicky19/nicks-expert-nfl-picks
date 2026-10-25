@@ -216,8 +216,54 @@ function scopeAssets(kind) {
   }
   return { 'verification-scope': rawScope, 'release-identity': encode(generation), health: encode(health) };
 }
-let variant = 'valid', transferred = 0;
+let variant = 'valid', transferred = 0, selectedFixture = null;
 const requests = [];
+// BEGIN SELECTED RANKINGS FIXTURE
+function makeSelectedRankingsFixture(current,expired=false) {
+  // Actual pure producers and publication readers on two tiny NEW fictional
+  // generations; no model/native qualification or predictive claim is made.
+  const program=String.raw`import base64,copy,hashlib,json,sys,tempfile
+from pathlib import Path
+sys.path.insert(0,sys.argv[1]+'/tools')
+import weekly_adaptive_overlay as o
+import weekly_selected_rankings as r
+request=json.loads(sys.argv[2]);current=request['board'];raw=base64.b64decode(request['board_body'])
+first='2026-10-14T10:00:00+00:00';later='2026-10-15T10:00:00+00:00'
+original=copy.deepcopy(current);original['generated_at']=first
+for game in original['games']:game['state']='pre'
+player=original['players'][0];game=next(g for g in original['games'] if g['id']==player['game_id'])
+h='2'*64
+row=dict(player_id=player['id'],game_id=game['id'],category='rec',method_id='FICTIONAL_BROWSER_COUNT_MEAN',model_version=h,
+    procedure_version=h,product='point_mean',prediction_functional='expected_mean',forecast_value=2.5,horizon='player_game',
+    source_cutoff_utc='2026-10-14T09:00:00Z',issued_at='2026-10-14T08:00:00Z',persistence_completed_at='2026-10-14T08:01:00Z',
+    kickoff_utc=game['kickoff'],valid_until_utc='2026-10-14T10:30:00Z' if request['expired'] else game['kickoff'],
+    selection_sha256=h,source_policy_sha256=h,query_source_sha256=h,season=current['season'],week=current['week'],
+    team=player['team'],opponent=player['opp'],evidence_lane='original_pregame',operational_eligible=True)
+selected={'rows':[row]};review=dict(schema_version=o.REVIEW,approved=True,selected_input_sha256=o.digest(selected),website_source_sha='6'*40)
+first_overlay=o.prepare_overlay(original,o.sha(o.canonical(original)),selected,review,website_source_sha='6'*40,prepared_at=first)
+first_rank=r.prepare(original,o.sha(o.canonical(original)),first_overlay,o.digest(first_overlay),now=first,website_source_sha='6'*40)
+def atomic(path,value):path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(o.canonical(value))
+with tempfile.TemporaryDirectory(prefix='fictional-ranking-two-generation-') as temp:
+    data=Path(temp)/'data'
+    first_pointer=r.write_public(first_rank,data,atomic,clock=lambda:'2026-10-14T10:00:01+00:00')
+    now_overlay=o.prepare_overlay(current,hashlib.sha256(raw).hexdigest(),{},{},website_source_sha='7'*40,prepared_at=later,previous=first_overlay)
+    overlay_pointer=o.write_public(now_overlay,data,atomic)
+    now_rank=r.prepare(current,hashlib.sha256(raw).hexdigest(),now_overlay,o.digest(now_overlay),now=later,website_source_sha='7'*40,previous=first_rank,previous_receipt=first_pointer)
+    pointer=r.write_public(now_rank,data,atomic,clock=lambda:'2026-10-15T10:00:01+00:00')
+    all_files={'data/'+p.relative_to(data).as_posix():p.read_bytes() for p in data.rglob('*') if p.is_file()}
+    paths={'data/'+name for name in r.validate_document(now_rank,pointer,current,hashlib.sha256(raw).hexdigest(),now_overlay,root=data)}
+    ranking_files={name:all_files[name] for name in paths}
+    required=r.validate_public_graph(ranking_files,current,hashlib.sha256(raw).hexdigest(),now_overlay,website_source_sha='7'*40)
+    required=set(required)|{'data/weekly-adaptive-overlay.json',overlay_pointer['path']}
+    files={name:base64.b64encode(all_files[name]).decode() for name in required}
+    print(json.dumps(dict(assets=files,pointer=pointer,doc=now_rank,overlay=now_overlay,expired=request['expired']),sort_keys=True))`;
+  const input=JSON.stringify({board:current,board_body:encode(current).toString('base64'),expired});
+  assert.ok(Buffer.byteLength(input)<=120*1024,'Tiny fictional ranking fixture input bound');
+  const value=JSON.parse(cp.execFileSync('python',['-I','-B','-c',program,repo,input],{
+    timeout:30000,maxBuffer:1048576,stdio:['ignore','pipe','pipe']}));
+  return {...value,assets:new Map(Object.entries(value.assets).map(([name,body])=>['/'+name,Buffer.from(body,'base64')]))};
+}
+// END SELECTED RANKINGS FIXTURE
 function fictionalWeeklyAssets(current) {
   const hash=sha(encode(current)),identity=sha('FICTIONAL_WEEKLY_BROWSER_ONLY');
   const player=current.players[0],game=current.games.find(g=>g.id===player.game_id);
@@ -240,7 +286,14 @@ const server = http.createServer((req, res) => {
   requests.push(pathname);
   let bytes;
   if (!arg('--root')) {
-    if(pathname==='/data/weekly-adaptive-overlay.json'||pathname.startsWith('/data/weekly-adaptive/')){
+    if(selectedFixture&&variant.startsWith('rankings-')&&(pathname==='/data/weekly-adaptive-overlay.json'||pathname.startsWith('/data/weekly-adaptive/')||pathname==='/data/weekly-selected-rankings.json'||pathname.startsWith('/data/weekly-selected-rankings/'))){
+      bytes=selectedFixture.assets.get(pathname);
+      if(variant==='rankings-missing'&&pathname==='/data/weekly-selected-rankings.json')bytes=null;
+      if(variant==='rankings-corrupt'&&pathname==='/data/'+selectedFixture.pointer.path&&bytes){bytes=Buffer.from(bytes);bytes[0]^=1;}
+      if(!bytes){res.writeHead(404);res.end();return;}
+    }
+    else if(pathname==='/data/weekly-selected-rankings.json'||pathname.startsWith('/data/weekly-selected-rankings/')){res.writeHead(404);res.end();return;}
+    else if(pathname==='/data/weekly-adaptive-overlay.json'||pathname.startsWith('/data/weekly-adaptive/')){
       if(!variant.startsWith('weekly-')||variant==='weekly-missing'){res.writeHead(404);res.end();return;}
       const saved=fictionalWeeklyAssets(week);
       if(pathname==='/data/weekly-adaptive-overlay.json')bytes=encode(saved.pointer);
@@ -304,7 +357,7 @@ async function weeklyDisplayChecks(browser,origin) {
           });
           if(state==='weekly-valid'){
             assert.equal(actual.selected.value,5.25);assert.match(actual.primary,/Frozen provisional mean forecast\s*5\.25/);
-            assert.match(actual.component_text,/Current reference forecast/);assert.match(actual.component_text,/Lines, leans, ranking and saved selections use the reference model/);
+            assert.match(actual.component_text,/Current reference forecast/);assert.match(actual.component_text,/Leans use the selected forecast/);
             assert.ok(actual.visible>0,'Actual Props includes selected primary chip');
             originalBoard=actual.board;originalPicks=actual.picks;originalGrade=actual.grade;
           }else{
@@ -321,6 +374,68 @@ async function weeklyDisplayChecks(browser,origin) {
     return {status:'PASS_FICTIONAL_OPTIONAL_DISPLAY_CONTROLS',cases:results,provider_requests:0,
       qualified_selected_feed:false,disclosure:'Fictional consumer controls, not production forecast or predictive evidence.'};
   }finally{variant=savedVariant;week=savedWeek;fixture=savedFixture;}
+}
+
+async function selectedRankingsChecks(browser,origin) {
+  if(arg('--root'))return {status:'USE_ACTUAL_RELEASE_ARTIFACT_CHECKS'};
+  const previous={week,fixture,variant,selectedFixture},results=[];
+  try{
+    week=fictionalWeek();
+    for(const player of week.players){player.games_this_season=5;player.snap_share=.75;player.proj_ppr=12;player.injury=null;
+      for(const prop of player.props){prop.n=5;prop.over=2;prop.values=[1,2,3,4,5].map((v,i)=>({s:2026,w:i+1,opp:'BBB',v}));}}
+    const valid=makeSelectedRankingsFixture(week),expired=makeSelectedRankingsFixture(week,true);
+    for(const width of [1280,390,320]){
+      const context=await browser.newContext({viewport:{width,height:width===390?844:900},serviceWorkers:'block'});
+      await context.route('**/*',route=>route.request().url().startsWith(origin+'/')?route.continue():route.fulfill({status:200,contentType:'application/json',body:'{"events":[]}'}));
+      const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
+      try{
+        const originalBoard=JSON.stringify(week),reference=JSON.stringify(week.picks);let saved=null;
+        for(const state of ['rankings-valid','rankings-missing','rankings-corrupt','rankings-expired']){
+          variant=state;selectedFixture=state==='rankings-expired'?expired:valid;
+          if(state==='rankings-valid')await page.goto(origin+'/#/props');else await page.reload();
+          await page.waitForFunction(()=>S.weeklyOverlay!==null);
+          await page.evaluate(()=>startSelectedRankings(S.data,S.weeklyOverlay,WeeklyAdaptiveOverlay));
+          if(state==='rankings-valid'||state==='rankings-expired')await page.waitForFunction(()=>S.selectedRankings!==null);
+          const value=await page.evaluate(()=>({doc:S.selectedRankings,over:visibleTopPicks('over'),under:visibleTopPicks('under'),
+            board:JSON.stringify(S.data),reference:JSON.stringify(S.data.picks),selected:selectedPropForecast(S.byId['fixture-0'],'rec'),
+            default_sort:S.f.sort,stored:localStorage.getItem('nflprops.mine')}));
+          assert.equal(value.board,originalBoard);assert.equal(value.reference,reference);assert.equal(value.default_sort,'selected_edge');
+          if(state==='rankings-valid'){
+            assert.deepEqual(value.doc,valid.doc);assert.equal(value.selected.value,2.5);
+            assert.ok(value.under.some(v=>v.player_id==='fixture-0'&&v.forecast_source==='SELECTED'));
+            assert.ok(value.doc.frozen_proofs.length>0,'Actual prepared frozen original receipt is retained');
+            await page.locator('#f-cat').selectOption('rec');await page.locator('#f-sort').selectOption('selected_value');
+            const sorted=await page.evaluate(()=>filteredPlayers().map(p=>effectivePropForecast(p,p.props.find(v=>v.key==='rec'))?.value??null));
+            for(let i=1;i<sorted.length;i++)assert.ok(sorted[i]===null||sorted[i-1]!==null&&sorted[i-1]>=sorted[i]);
+            await page.locator('.picks-wrap .add.under').first().click();saved=await page.evaluate(()=>localStorage.getItem('nflprops.mine'));
+            assert.ok(saved);await page.locator('[data-tab="record"]').first().click();await page.waitForFunction(()=>S.tab==='record');
+            assert.match(await page.locator('#main').innerText(),/not a track record for the separate provisional selected-forecast Top Picks/);
+            await page.locator('[data-tab="props"]').first().click();await page.waitForFunction(()=>S.tab==='props');
+          }else if(state==='rankings-expired'){
+            assert.deepEqual(value.doc,expired.doc);assert.equal(value.selected,null);
+            assert.ok(!value.under.some(v=>v.player_id==='fixture-0'&&v.forecast_source==='SELECTED'),'Expiry does not become zero or a fresh ranking');
+          }else{assert.equal(value.doc,null);assert.deepEqual(value.over,week.picks.over);assert.deepEqual(value.under,week.picks.under);}
+          assert.equal(await page.evaluate(()=>localStorage.getItem('nflprops.mine')),saved);
+          assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth)<=width+1);
+          results.push({width,state,selected_top_count:value.over.length+value.under.length,reference_membership_unchanged:true});
+        }
+        // Hold an old valid response, change the selected overlay, then release
+        // it: neither its rows nor its Top membership may replace newer state.
+        selectedFixture=valid;variant='rankings-valid';await page.reload();await page.waitForFunction(()=>S.selectedRankings!==null);
+        const racing=await page.evaluate(async()=>{
+          const old=S.selectedRankings,board=S.data,overlay=S.weeklyOverlay,original=WeeklyAdaptiveOverlay.bound;
+          let release,started;const ready=new Promise(r=>{started=r;});let first=true;
+          const api={...WeeklyAdaptiveOverlay,bound:async(...args)=>{if(first){first=false;started();await new Promise(r=>{release=r;});}return original(...args);}};
+          S.selectedRankings=null;const pending=startSelectedRankings(board,overlay,api);await ready;
+          S.weeklyOverlay=Object.freeze({...overlay});release();await pending;
+          const stayed=S.selectedRankings===null;S.weeklyOverlay=overlay;S.selectedRankings=old;return stayed;
+        });
+        assert.equal(racing,true);assert.equal(await page.evaluate(()=>localStorage.getItem('nflprops.mine')),saved);assert.deepEqual(errors,[]);
+      }finally{await context.close();}
+    }
+    return {status:'PASS_ACTUAL_PRODUCER_FICTIONAL_RANKING_CONTROLS',cases:results,provider_requests:0,
+      reference_accuracy_or_registered_strategy_claim:false};
+  }finally{({week,fixture,variant,selectedFixture}=previous);}
 }
 
 async function presentationChecks(browser, origin, width) {
@@ -353,7 +468,7 @@ async function presentationChecks(browser, origin, width) {
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(origin + '/#/props');
     await page.waitForFunction(() => S.data && !ticking && document.querySelector('#f-sort'));
-    equal(await page.evaluate(() => S.f.sort), 'proj', 'default sort is unchanged');
+    equal(await page.evaluate(() => S.f.sort), 'selected_edge', 'default display sort is explicitly the new selected gap');
     equal(await page.evaluate(() => S.open.size), 0, 'cards remain collapsed initially');
     const original = await page.evaluate(() => JSON.stringify(S.data.players));
     const top = await page.evaluate(() => JSON.stringify(S.data.picks));
@@ -1108,6 +1223,9 @@ async function paperHistoricalAsyncChecks(browser, origin) {
   const measurements = [];
   const presentation = [];
   try {
+    const selectedOnly=args.includes('--selected-only');
+    const selected=['--weekly-only','--modern-only','--paper-only','--paper-readability-only','--paper-async-only'].some(flag=>args.includes(flag))?null:await selectedRankingsChecks(browser,origin);
+    if(selectedOnly){console.log(JSON.stringify({selected,scope:'FOCUSED_FICTIONAL_SELECTED_RANKINGS_UI_ONLY',app_sha256:sha(fs.readFileSync(path.join(staticRoot,'app.js'))),performance_claim:false},null,2));return;}
     const weekly=['--modern-only','--paper-only','--paper-readability-only','--paper-async-only'].some(flag=>args.includes(flag))?null:await weeklyDisplayChecks(browser,origin);
     if(args.includes('--weekly-only')){console.log(JSON.stringify({weekly,scope:'FOCUSED_FICTIONAL_WEEKLY_DISPLAY_UI_ONLY',app_sha256:sha(fs.readFileSync(path.join(staticRoot,'app.js'))),performance_claim:false},null,2));return;}
     const modern = ['--paper-only','--paper-readability-only','--paper-async-only'].some(flag=>args.includes(flag)) ? null : await modernAccuracyChecks(browser, origin);
@@ -1305,7 +1423,7 @@ async function paperHistoricalAsyncChecks(browser, origin) {
       }
     }
     const hosting = !arg('--root') ? await archiveAndDecoderChecks(browser, origin) : null;
-    const result = { hosting, weekly, modern, paperReadability, paperAsync, paper, fixture: arg('--root') ? 'AUTHORIZED_SAVED_DATA_ISOLATED_ROOT' : 'FICTIONAL_ONLY', public_deployment_test: false,
+    const result = { hosting, selected, weekly, modern, paperReadability, paperAsync, paper, fixture: arg('--root') ? 'AUTHORIZED_SAVED_DATA_ISOLATED_ROOT' : 'FICTIONAL_ONLY', public_deployment_test: false,
       external_network_requests: 0, app_sha256: sha(fs.readFileSync(path.join(staticRoot, 'app.js'))),
       html_sha256: sha(fs.readFileSync(path.join(staticRoot, 'index.html'))), measurements, presentation, requests: [...new Set(requests)], assertions: 'passed' };
     if (evidence) fs.writeFileSync(path.join(evidence, 'grading-browser-results.json'), JSON.stringify(result, null, 2) + '\n');

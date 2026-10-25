@@ -59,7 +59,7 @@ def check_current_port(root, pins, candidate_bodies=None):
         require(policy['publication_authority']['catalog_freezer_sha256'] == pins['new_catalog_freezer_sha256'], 'NEW_CATALOG')
         require(policy['procedures'] == pins['new_procedures'], 'NEW_RECIPES')
         require(policy['website_code_sha256']['output/app.js'] == pins['new_app_sha256'], 'NEW_UI')
-        actual = {name: sha(body(name)) for name in helper.CODE_FILES}
+        actual = {name: sha(body(name)) for name in policy['website_code_sha256']}
         require(actual == policy['website_code_sha256'], 'CURRENT_WEBSITE_CODE_INVENTORY')
         require(schema['$id'] == schema['properties']['schema_version']['const'] == helper.VERSION_V2, 'V2_SCHEMA')
         require(set(schema['properties']['rows']['items']['required']) == set(helper.overlay().ROW_FIELDS), 'PUBLIC_ROWS')

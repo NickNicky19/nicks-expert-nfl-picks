@@ -2,7 +2,7 @@
 // Actual display/load helpers with fictional inputs. No browser or provider.
 const assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "../output/app.js"), "utf8");
-const names = ["startWeeklyOverlay", "selectedPropForecast", "propChip", "catCard", "tdChanceText", "forecastAccuracyHtml"];
+const names = ["startWeeklyOverlay", "selectedPropForecast", "selectedRankingPolicy", "effectivePropForecast", "selectedPropGap", "propChip", "catCard", "tdChanceText", "forecastAccuracyHtml"];
 const functions = names.map(name => {
   const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
   assert.ok(match, "actual " + name); return match[0];
@@ -24,11 +24,13 @@ const original = JSON.stringify(board), storage = new Map([["nflprops.mine", "UN
 const state = { data: board, lines: {}, liveLines: {}, games: { [player.game_id]: board.games[0] }, weeklyOverlay: null,
   weeklyOverlayReady: true, weeklyOverlayBoardHash: "a".repeat(64), weeklyOverlayRequestBoard: null, tab: "props", gameView: null };
 let renders = 0;
+const rankingStarts = [];
 const context = { S: state, pv: (_p, p) => p, propStatus: () => ({ v: null, res: "unresolved", final: false }), minePick: () => false,
   esc: value => String(value),
   SHORT: { rec: "Rec", rush_yd: "Rush yds", anytime_td: "TD", fpts: "PPR" }, LINE_FROM: { dk: "DraftKings", ours: "Our estimate" }, LINE_TAG: { dk: "DK", ours: "est" },
   fmt: (v, n = 1) => Number(v).toFixed(n), fmtPts: v => Number(v).toFixed(1), fmtStat: (_k, v) => Number(v).toFixed(1),
   scoringName: () => "PPR", remaining: () => .5, resBadge: st => `<b>${st.res}</b>`, renderProps: () => { renders++; }, renderGame: () => { renders++; },
+  startSelectedRankings: (b, overlay) => rankingStarts.push({ b, overlay }),
   localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) } };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname, "../output/weekly-adaptive-overlay.js"), "utf8") + "\nDate.now=()=>" + now + ";\n" + functions + "\nthis.api={" + names.join(",") + "};", context);
@@ -76,7 +78,10 @@ const load = source.match(/async function load\([^]*?\n\}/)[0];
 check(load.includes("weeklyOverlayBoardHash = board.hash") && load.includes("await loadGrading()") && load.includes("S.verificationScope"), "bounded board binding preserves scope and grading path");
 (async () => {
   const originalHelper = context.WeeklyAdaptiveOverlay, pending = new Map(), calls = [];
-  context.WeeklyAdaptiveOverlay = { load: (b, hash) => { calls.push({ b, hash }); return new Promise((resolve, reject) => pending.set(b, { resolve, reject })); } };
+  // This startup-race control defers the loader boundary. The selected-ranking
+  // suite separately exercises the actual bounded physical-asset transport.
+  context.WeeklyAdaptiveOverlay = { bound() {}, validate() {} };
+  context.loadWeeklyOverlayBound = (b, hash) => { calls.push({ b, hash }); return new Promise((resolve, reject) => pending.set(b, { resolve, reject })); };
   state.weeklyOverlay = null; state.weeklyOverlayRequestBoard = null;
   a.startWeeklyOverlay(); await Promise.resolve(); await Promise.resolve();
   equal(calls.length, 1, "one optional request for a board"); equal(calls[0].hash, state.weeklyOverlayBoardHash, "loader receives actual bounded board hash");
@@ -85,8 +90,10 @@ check(load.includes("weeklyOverlayBoardHash = board.hash") && load.includes("awa
   a.startWeeklyOverlay(); await Promise.resolve(); await Promise.resolve();
   pending.get(nextBoard).resolve({ id: "NEW" }); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
   equal(state.weeklyOverlay.id, "NEW", "new board owns selected result");
+  equal(rankingStarts.length, 1, "new overlay starts one matching ranking read");
   pending.get(board).resolve({ id: "OLD" }); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
   equal(state.weeklyOverlay.id, "NEW", "delayed older board cannot overwrite newer selection");
+  equal(rankingStarts.length, 1, "obsolete overlay cannot start a ranking read");
   equal(renders, 1, "obsolete result causes no render");
   state.data = board; state.weeklyOverlay = null; state.weeklyOverlayRequestBoard = null;
   a.startWeeklyOverlay(); await Promise.resolve(); await Promise.resolve(); pending.get(board).reject(Error("OPTIONAL_UNAVAILABLE"));

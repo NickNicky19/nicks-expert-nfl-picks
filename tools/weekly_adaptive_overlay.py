@@ -236,16 +236,42 @@ def read_public(root):
     return pointer, doc
 
 
+def public_asset_limit(name):
+    """Exact weekly Pages roles; legacy overlay bounds retain their meaning."""
+    import re
+    if name in {"weekly-adaptive-overlay.js", "data/weekly-adaptive-overlay.json"} or (isinstance(name, str) and re.fullmatch(r"data/weekly-adaptive/[a-f0-9]{64}\.json", name)):
+        return MAX_BYTES
+    from weekly_selected_rankings import public_role
+    role = public_role(name)
+    return role[1] if role is not None else None
+
+
+def retained_public_asset(name):
+    """Only immutable classified older bodies/receipts may remain unstaged."""
+    import re
+    if isinstance(name, str) and re.fullmatch(r"data/weekly-adaptive/[a-f0-9]{64}\.json", name): return True
+    from weekly_selected_rankings import public_role
+    role = public_role(name)
+    return role is not None and role[0] in {"ranking_body", "ranking_receipt"}
+
+
 def validate_public_root(output):
     """Validate the new public graph freshly, including after the actual copy."""
     output = Path(output)
     allowed = {"weekly-adaptive-overlay.js"}
-    if not (output / "data/weekly-adaptive-overlay.json").exists(): return allowed
+    if not (output / "data/weekly-adaptive-overlay.json").exists():
+        if (output / "data/weekly-selected-rankings.json").exists(): raise ValueError("ranking graph has no overlay")
+        return allowed
     pointer, doc = read_public(output)
     board, board_sha = read_bound(output / "data/week.json", limit=16 * 1024 * 1024)
     validate_overlay(doc, board, board_sha)
     if pointer["display_board_sha256"] != board_sha: raise ValueError("overlay pointer has a different R0 board")
-    return allowed | {"data/weekly-adaptive-overlay.json", pointer["path"]}
+    allowed |= {"data/weekly-adaptive-overlay.json", pointer["path"]}
+    if (output / "data/weekly-selected-rankings.json").exists():
+        from weekly_selected_rankings import read_public as read_rankings, validate_document
+        ranking_pointer, rankings = read_rankings(output / "data")
+        allowed |= {"data/" + path for path in validate_document(rankings, ranking_pointer, board, board_sha, doc, root=output / "data")}
+    return allowed
 
 
 def stage_assets(root):
@@ -316,6 +342,11 @@ def main():
     doc = prepare_overlay(board, board_sha, selected, review, website_source_sha=args.website_source_sha,
                           prepared_at=now, previous=previous)
     write_public(doc, root / "output/data", atomic_json)
+    # A separate selection stream; reference/native histories stay untouched.
+    from weekly_selected_rankings import prepare_writer as prepare_rankings
+    ranking_pointer = prepare_rankings(root, board, board_sha, doc,
+        website_source_sha=args.website_source_sha, atomic_json=atomic_json)
+    print(json.dumps({"state": "SELECTED_RANKINGS_PERSISTED", "sha256": ranking_pointer["sha256"]}))
 
 
 if __name__ == "__main__": main()

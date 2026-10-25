@@ -23,7 +23,7 @@ const INJ_SHORT = { Questionable: "Q", Doubtful: "D", Out: "OUT", IR: "IR", PUP:
 
 const S = {
   data: null, track: null, generatedAt: null,
-  weeklyOverlay: null, weeklyOverlayReady: false, weeklyOverlayBoardHash: null, weeklyOverlayRequestBoard: null,
+  selectedRankings: null, weeklyOverlay: null, weeklyOverlayReady: false, weeklyOverlayBoardHash: null, weeklyOverlayRequestBoard: null,
   grading: null, gradingError: null, finalOutcomes: new Map(),
   gradingFilters: {}, gradingGroup: null, gradingShown: 100,
   byId: {}, byKey: {},
@@ -33,7 +33,7 @@ const S = {
   boxFinal: new Set(),
   liveAt: null,
   tab: "props",
-  f: { pos: "ALL", game: "", cat: "", q: "", hideOut: true, favs: false, sort: "proj" },
+  f: { pos: "ALL", game: "", cat: "", q: "", hideOut: true, favs: false, sort: "selected_edge" },
   ff: { pos: "FLEX", sort: "proj", desc: true, shown: 60 },
   open: new Set(), lines: {}, shown: 40,
   gameView: null,      // game id when a game's page is open
@@ -1294,17 +1294,47 @@ async function checkMeta() {
 
 // ---------------------------------------------------------------- load
 
+async function loadWeeklyOverlayBound(board, boardHash, api, milliseconds = 4000) {
+  if (!Number.isInteger(milliseconds) || milliseconds < 1 || milliseconds > 4000
+      || !/^[a-f0-9]{64}$/.test(boardHash) || typeof api?.bound !== "function" || typeof api?.validate !== "function") return null;
+  const deadline = performance.now() + milliseconds;
+  const remaining = () => {
+    const left = deadline - performance.now();
+    if (left <= 0) throw Error("Overlay operation deadline exceeded");
+    return Math.min(4000, Math.max(1, Math.ceil(left)));
+  };
+  let timer;
+  try {
+    return await Promise.race([(async () => {
+      const pointer = (await api.bound("data/weekly-adaptive-overlay.json", 4096, fetch, remaining())).value;
+      if (!pointer || typeof pointer !== "object" || Array.isArray(pointer)
+          || JSON.stringify(Object.keys(pointer).sort()) !== JSON.stringify(["schema_version", "path", "sha256", "bytes", "display_board_sha256"].sort())
+          || pointer.schema_version !== "weekly-adaptive-overlay-pointer-v1" || !/^[a-f0-9]{64}$/.test(pointer.sha256)
+          || pointer.path !== "data/weekly-adaptive/" + pointer.sha256 + ".json" || pointer.display_board_sha256 !== boardHash
+          || !Number.isInteger(pointer.bytes) || pointer.bytes < 1 || pointer.bytes > 4 * 1024 * 1024) return null;
+      const saved = await api.bound(pointer.path, 4 * 1024 * 1024, fetch, remaining());
+      remaining();
+      if (saved.hash !== pointer.sha256 || saved.bytes !== pointer.bytes) return null;
+      const overlay = api.validate(saved.value, board, boardHash);
+      remaining();
+      return Object.freeze({ ...overlay, assetHash: saved.hash });
+    })(), new Promise((_, reject) => { timer = setTimeout(() => reject(Error("Overlay operation deadline exceeded")), milliseconds); })]);
+  } catch (_) { return null; }
+  finally { clearTimeout(timer); }
+}
+
 function startWeeklyOverlay() {
   const api = globalThis.WeeklyAdaptiveOverlay, board = S.data;
-  if (!S.weeklyOverlayReady || !board || typeof api?.load !== "function" || S.weeklyOverlayRequestBoard === board) return;
+  if (!S.weeklyOverlayReady || !board || (typeof api?.bound !== "function" || typeof api?.validate !== "function") || S.weeklyOverlayRequestBoard === board) return;
   S.weeklyOverlayRequestBoard = board;
   const boardHash = S.weeklyOverlayBoardHash;
-  Promise.resolve().then(() => api.load(board, boardHash)).then(overlay => {
+  Promise.resolve().then(() => loadWeeklyOverlayBound(board, boardHash, api)).then(overlay => {
     if (S.data !== board || S.weeklyOverlayRequestBoard !== board || !S.weeklyOverlayReady) return;
     S.weeklyOverlay = overlay;
     if (overlay && S.gameView) renderGame();
     else if (overlay && S.tab === "props") renderProps();
-  }).catch(() => { /* The current reference remains usable if the optional helper fails. */ });
+    if (overlay) startSelectedRankings(board, overlay, api);
+  }).catch(() => { /* Original R0 remains usable even if the helper fails. */ });
 }
 globalThis.addEventListener("weekly-adaptive-overlay-ready", () => startWeeklyOverlay());
 
@@ -1312,6 +1342,7 @@ async function load() {
   const board = await boundJSON(`data/week.json?t=${Date.now()}`);
   S.data = board.value;
   S.weeklyOverlay = null; S.weeklyOverlayReady = false;
+  S.selectedRankings = null;
   S.weeklyOverlayBoardHash = board.hash;
   S.rosKey = null; S.gradeKey = null;
   S.future = null; S.futureLoading = null; S.ideas = null; S.teamWeeksMap = null; S.teamOppsMap = null;
@@ -1607,12 +1638,147 @@ function progress(st, line, dir, key) {
   let note = "";
   if (!st.final && st.v != null && key) {
     const gap = line - st.v;
-    note = dir === "under" ? `${fmtStat(key, gap)} to spare` : `needs ${fmtStat(key, Math.max(0, Math.floor(gap) + 1))} more`;
+    note = dir === "under" ? `${fmtStat(key, gap)} to spare` : gap < 0 ? "Above line; game not final" : `needs ${fmtStat(key, Math.max(0, Math.floor(gap) + 1))} more`;
   }
   return `<div class="prog ${cls}"><i style="width:${pct}%"></i></div>${note ? `<div class="prog-note">${note}</div>` : ""}`;
 }
 
 // ---------------------------------------------------------------- props tab
+
+function selectedRankingPolicy() {
+  return {"version":"selected-projection-gap-v1","top_n":12,"minimum_score":0.35,"minimum_games":2,"minimum_snap_share":0.5,"minimum_projected_ppr":{"QB":10,"RB":6,"WR":6,"TE":6},"projection_line_ratio":[0.4,2.5],"categories":{"pass_yd":{"lean":8,"scale":30,"minimum_line":150.5},"pass_td":{"lean":0.15,"scale":0.6,"minimum_line":0.5},"pass_cmp":{"lean":0.8,"scale":2.5,"minimum_line":12.5},"pass_att":{"lean":1,"scale":3,"minimum_line":20.5},"pass_int":{"lean":0.12,"scale":0.5,"minimum_line":0.5},"rush_yd":{"lean":4,"scale":12,"minimum_line":15.5},"rush_att":{"lean":0.8,"scale":3,"minimum_line":6.5},"rec":{"lean":0.3,"scale":1.2,"minimum_line":1.5},"rec_yd":{"lean":4,"scale":12,"minimum_line":15.5},"rush_rec_yd":{"lean":5,"scale":15,"minimum_line":25.5}},"unavailable":["Out","IR","PUP","Suspended","NA","Doubtful","COV","DNR"],"fallback":"same-opportunity R0 reference; unavailable is never zero","meaning":"descriptive scaled forecast gap, not win probability or EV","tie_order":["absolute_score_desc","game_id","player_id","category"]};
+}
+
+function rankingCanonical(value) {
+  if (Array.isArray(value)) return '[' + value.map(rankingCanonical).join(',') + ']';
+  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + rankingCanonical(value[k])).join(',') + '}';
+  return JSON.stringify(value);
+}
+
+function effectivePropForecast(p, prop, now = Date.now()) {
+  const selected = selectedPropForecast(p, prop.key, now);
+  if (selected) return { ...selected, source: 'SELECTED' };
+  const value = prop.key === 'anytime_td' ? prop.td_chance : prop.adj;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return { value, source: 'R0_FALLBACK', label: prop.key === 'anytime_td' ? 'TD probability' : 'reference', binary: prop.key === 'anytime_td', text: prop.key === 'anytime_td' ? (100 * value).toFixed(1) + '%' : value.toFixed(2) };
+}
+
+function selectedPropGap(p, prop, custom = false) {
+  const policy = selectedRankingPolicy(), cat = policy.categories[prop.key];
+  if (!cat || !['dk', 'sleeper'].includes(prop.line_from)) return null;
+  const forecast = effectivePropForecast(p, prop), line = custom ? S.lines[p.id + '|' + prop.key] ?? prop.line : prop.line;
+  if (!forecast || typeof line !== 'number' || !Number.isFinite(line)) return null;
+  const gap = forecast.value - line, lean = gap > cat.lean ? 'over' : gap < -cat.lean ? 'under' : null;
+  return { ...forecast, line, gap, lean, score: gap / cat.scale };
+}
+
+function selectedPlayerGap(p) {
+  return Math.max(0, ...p.props.filter(x => !S.f.cat || x.key === S.f.cat).map(x => {
+    const g = selectedPropGap(p, x); return g?.lean ? Math.abs(g.score) : 0;
+  }));
+}
+
+function visibleTopPicks(side) {
+  return S.selectedRankings ? S.selectedRankings.picks[side].filter(item => {
+    if (item.forecast_source !== 'SELECTED') return true;
+    const p = S.data.players.find(p => p.id === item.player_id && p.game_id === item.game_id);
+    return p && selectedPropForecast(p, item.key) !== null;
+  }) : S.data.picks[side];
+}
+
+function compareSelectedRankingItems(a, b) {
+  const gap = Math.abs(b.score) - Math.abs(a.score);
+  if (gap) return gap;
+  for (const key of ['game_id', 'player_id', 'key']) {
+    if (a[key] < b[key]) return -1;
+    if (a[key] > b[key]) return 1;
+  }
+  return 0;
+}
+
+async function validateSelectedRankings(doc, pointer, board, overlay) {
+  const policy = selectedRankingPolicy(), hash = /^[a-f0-9]{64}$/;
+  const fields = (value, expected) => value && typeof value === 'object' && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify(expected.split(',').sort());
+  const clock = value => {
+    if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(value) || !Number.isFinite(Date.parse(value))) throw Error('Ranking clock');
+    return Date.parse(value);
+  };
+  if (!fields(doc,'schema_version,policy,policy_sha256,season,week,display_board_sha256,overlay_sha256,prepared_at,website_source_sha,picks,frozen_proofs,fallback_counts')
+      || !fields(pointer,'schema_version,path,sha256,bytes,display_board_sha256,overlay_sha256,published_at')
+      || !fields(doc.picks,'over,under') || !fields(doc.fallback_counts,'started_without_selected_record,unavailable_forecast,expired_before_kickoff')
+      || Object.values(doc.fallback_counts).some(v=>!Number.isInteger(v)||v<0)
+      || !/^[a-f0-9]{40}$/.test(doc.website_source_sha) || !hash.test(pointer.sha256)
+      || pointer.path !== 'weekly-selected-rankings/' + pointer.sha256 + '.json'
+      || !Number.isInteger(pointer.bytes) || pointer.bytes<1 || pointer.bytes>262144) throw Error('Ranking closed fields');
+  const prepared=clock(doc.prepared_at),published=clock(pointer.published_at);
+  if (!doc || doc.schema_version !== 'weekly-selected-rankings-v1' || doc.policy_sha256 !== 'e8cebeadaa5debd04c06cad9c19e72485618c0f43f29a9b4553122cfeeed0696'
+      || rankingCanonical(doc.policy) !== rankingCanonical(policy) || doc.season !== board.season || doc.week !== board.week
+      || pointer.schema_version !== 'weekly-selected-rankings-pointer-v1' || pointer.display_board_sha256 !== overlay.boardHash
+      || doc.display_board_sha256 !== overlay.boardHash || doc.overlay_sha256 !== pointer.overlay_sha256
+      || doc.overlay_sha256 !== overlay.assetHash
+      || !hash.test(doc.overlay_sha256) || !Array.isArray(doc.frozen_proofs) || !doc.picks
+      || published < prepared || doc.frozen_proofs.length>24) throw Error('Invalid selected ranking contract');
+  const players = new Map(board.players.map(p => [p.game_id + '|' + p.id, p]));
+  const games = new Map(board.games.map(g => [g.id, g]));
+  const proofs = new Map(doc.frozen_proofs.map(p => {
+    if (!fields(p,'key,receipt_sha256,persisted_at') || !Array.isArray(p.key) || p.key.length!==4 || p.key.some(k=>typeof k!=='string') || !hash.test(p.receipt_sha256)) throw Error('Ranking proof');
+    clock(p.persisted_at);return [JSON.stringify(p.key),p];
+  }));
+  if (proofs.size !== doc.frozen_proofs.length) throw Error('Duplicate ranking proof');
+  const usedProofs=new Set();
+  for (const side of ['over', 'under']) {
+    if (!Array.isArray(doc.picks[side]) || doc.picks[side].length > policy.top_n) throw Error('Ranking size');
+    const seen = new Set();let previousItem=null;
+    for (const item of doc.picks[side]) {
+      if (!fields(item,'player_id,game_id,key,direction,line,line_from,adj,score,over,n,forecast_source,product,model_version,selected_row_sha256,selected_row_canonical,selected_at,kickoff_utc')) throw Error('Ranking item fields');
+      const p = players.get(item.game_id + '|' + item.player_id), g = games.get(item.game_id);
+      const prop = p?.props.find(x => x.key === item.key), cat = policy.categories[item.key];
+      const identity = JSON.stringify([item.game_id, item.player_id, item.key, side]), proof = proofs.get(identity);
+      if(proof)usedProofs.add(identity);
+      clock(item.selected_at);clock(item.kickoff_utc);
+      const completed = Date.parse(proof ? proof.persisted_at : pointer.published_at), kickoff = Date.parse(g?.kickoff);
+      if (!p || !g || !prop || !cat || seen.has(p.id) || item.direction !== side || item.kickoff_utc !== g.kickoff
+          || item.line !== prop.line || item.line_from !== prop.line_from || !['dk', 'sleeper'].includes(item.line_from)
+          || typeof item.adj !== 'number' || !Number.isFinite(item.adj) || !Number.isFinite(item.score)
+          || !Number.isInteger(item.over) || !Number.isInteger(item.n) || item.over < 0 || item.over > item.n
+          || !(Date.parse(item.selected_at) <= completed && completed < kickoff)
+          || proof && !hash.test(proof.receipt_sha256)) throw Error('Ranking source/clock');
+      seen.add(p.id);
+      const score = (item.adj - item.line) / cat.scale;
+      if (Math.abs(score - item.score) > 1e-10 || Math.abs(score) < policy.minimum_score || (side === 'over') !== (score > 0)) throw Error('Ranking score');
+      if(previousItem && compareSelectedRankingItems(previousItem,item)>0)throw Error('Ranking order');
+      previousItem=item;
+      if (item.forecast_source === 'SELECTED') {
+        const row = overlay.rows.get(JSON.stringify([item.game_id, item.player_id, item.key]));
+        if (!row || row.forecast_value !== item.adj || row.product !== item.product || row.model_version !== item.model_version
+            || !hash.test(item.selected_row_sha256) || Date.parse(item.selected_at) >= Date.parse(row.valid_until_utc)
+            || completed >= Date.parse(row.valid_until_utc) || proof && Date.parse(row.valid_until_utc)<kickoff) throw Error('Ranking model');
+        if (typeof item.selected_row_canonical !== 'string' || item.selected_row_canonical.length > 8192
+            || rankingCanonical(JSON.parse(item.selected_row_canonical)) !== rankingCanonical(row)) throw Error('Ranking row binding');
+        const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(item.selected_row_canonical)))].map(v => v.toString(16).padStart(2, '0')).join('');
+        if (digest !== item.selected_row_sha256) throw Error('Ranking row hash');
+      } else if (item.forecast_source !== 'R0_FALLBACK' || item.adj !== prop.adj || item.product !== 'reference_point'
+          || item.model_version !== null || item.selected_row_sha256 !== null || item.selected_row_canonical !== null) throw Error('Ranking fallback');
+    }
+  }
+  if(usedProofs.size!==proofs.size)throw Error('Ranking unused proof');
+  return doc;
+}
+
+async function startSelectedRankings(board, overlay, api) {
+  try {
+    const pointer = (await api.bound('data/weekly-selected-rankings.json', 4096, fetch, 2000)).value;
+    if (!pointer || !/^[a-f0-9]{64}$/.test(pointer.sha256) || pointer.path !== 'weekly-selected-rankings/' + pointer.sha256 + '.json'
+        || !Number.isInteger(pointer.bytes) || pointer.bytes < 1 || pointer.bytes > 262144) return;
+    const saved = await api.bound('data/weekly-selected-rankings/' + pointer.sha256 + '.json', 262144, fetch, 2000);
+    if (saved.hash !== pointer.sha256 || saved.bytes !== pointer.bytes || S.data !== board || S.weeklyOverlay !== overlay) return;
+    const doc = await validateSelectedRankings(saved.value, pointer, board, overlay);
+    if (S.data !== board || S.weeklyOverlay !== overlay) return;
+    S.selectedRankings = doc;
+    if (S.gameView) renderGame(); else if (S.tab === 'props') renderProps();
+  } catch (_) { /* Explicit R0 Top fallback; selected forecasts remain visible. */ }
+}
 
 function pickCard(pick) {
   const p = S.byId[pick.player_id];
@@ -1625,7 +1791,7 @@ function pickCard(pick) {
     <div>
       <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)}</div>
       <div class="what">${pick.direction === "over" ? "Over" : "Under"} <b class="num">${pick.line}</b> ${label} <span class="muted">${oppText(p)}</span></div>
-      <div class="small">${LINE_FROM[pick.line_from] || "Our"} line, locked at kickoff · ${adj != null ? `reference pregame proj <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}</div>
+      <div class="small">${LINE_FROM[pick.line_from] || "Our"} saved pregame line · ${adj != null ? `${pick.forecast_source === "SELECTED" ? `Selected ${pick.product === "point_mean" ? "mean" : "median"}` : pick.forecast_source === "R0_FALLBACK" ? "Reference fallback" : "Current reference"} <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}</div>
       ${progress(st, pick.line, pick.direction, pick.key)}
     </div>
     <div class="side">
@@ -1636,7 +1802,8 @@ function pickCard(pick) {
 }
 
 // Display only: typed eligibility belongs to the existing validated overlay.
-// Reference values remain the inputs to leans, rankings and saved selections.
+// Selected display gaps and the separately saved Top stream retain distinct identities.
+// Historical reference-policy receipts and personal saved lines are not rewritten.
 function selectedPropForecast(p, key, now = Date.now()) {
   try {
     const api = globalThis.WeeklyAdaptiveOverlay, overlay = S.weeklyOverlay;
@@ -1653,17 +1820,19 @@ function selectedPropForecast(p, key, now = Date.now()) {
 function propChip(p, raw) {
   const prop = pv(p, raw);
   const selected = selectedPropForecast(p, prop.key);
+  const effectiveGap = selected ? selectedPropGap(p, prop, true) : null;
+  const lean = selected ? effectiveGap?.lean : prop.lean;
   const customLine = S.lines[`${p.id}|${prop.key}`];
   const edited = customLine != null && customLine !== prop.line;
   const line = customLine ?? prop.line;
-  const st = propStatus(p, prop.key, line, prop.lean);
+  const st = propStatus(p, prop.key, line, lean);
   const arrow = prop.key === "anytime_td"
     ? selected ? "" : `<span class="muted"> ${tdChanceText(prop)}</span>`
-    : prop.lean ? `<span class="arrow">${prop.lean === "over" ? "▲" : "▼"}</span>` : "";
-  const cls = [prop.lean ? `lean-${prop.lean}` : "", st && prop.lean && (st.res === "hit" || st.res === "miss") ? st.res : ""].join(" ");
+    : lean ? `<span class="arrow">${lean === "over" ? "▲" : "▼"}</span>` : "";
+  const cls = [lean ? `lean-${lean}` : "", st && lean && (st.res === "hit" || st.res === "miss") ? st.res : ""].join(" ");
   const lineText = prop.key === "anytime_td" ? "" : `<b>${line}</b><span class="src ${selected && edited ? "" : prop.line_from || "ours"}">${selected && edited ? "custom" : LINE_TAG[prop.line_from] || "est"}</span>`;
   const cur = st && st.v != null ? `<span class="cur">${fmtStat(prop.key, st.v)}</span>` : "";
-  if (selected) return `<span class="pchip ${cls}" data-weekly-primary title="Selected forecast assumes participation; leans and ranking use the current reference">${SHORT[prop.key]}<b>${selected.text}</b><span class="src">${selected.frozen ? "frozen" : "provisional"} ${selected.label}</span>${lineText ? `<span class="muted"> · ${edited ? "Your line" : prop.line_from === "ours" || !prop.line_from ? "Reference line" : "book line"}</span>${lineText}` : ""}${arrow ? `<span class="muted"> Reference lean</span>${arrow}` : ""}${cur}</span>`;
+  if (selected) return `<span class="pchip ${cls}" data-weekly-primary title="Selected forecast assumes participation; lean is a projection gap, not a win probability">${SHORT[prop.key]}<b>${selected.text}</b><span class="src">${selected.frozen ? "frozen" : "provisional"} ${selected.label}</span>${lineText ? `<span class="muted"> · ${edited ? "Your line" : prop.line_from === "ours" || !prop.line_from ? "Reference line" : "book line"}</span>${lineText}` : ""}${arrow ? `<span class="muted"> selected lean</span>${arrow}` : ""}${cur}</span>`;
   return `<span class="pchip ${cls}">${SHORT[prop.key]}${lineText}${arrow}${cur}</span>`;
 }
 
@@ -1684,8 +1853,9 @@ function catCard(p, raw) {
   const avg = vals.length ? vals.reduce((a, x) => a + x.v, 0) / vals.length : null;
 
   let lean = prop.lean;
+  if (selected && !selected.binary) lean = selectedPropGap(p, prop, true)?.lean ?? null;
   if (edited && prop.adj != null && prop.key !== "anytime_td") {
-    const d = prop.adj - line;
+    const d = (selected?.value ?? prop.adj) - line;
     lean = d > cat.lean ? "over" : d < -cat.lean ? "under" : null;
   }
   const referenceTd = prop.key === "anytime_td" ? tdChanceText(prop) : null;
@@ -1694,7 +1864,7 @@ function catCard(p, raw) {
       : `<span class="lean ${prop.lean ? "over" : "none"}">${referenceTd} TD chance</span>`
     : from === "ours"
       ? `<span class="lean none" title="Leans are only called against real sportsbook lines">No book line</span>`
-      : `<span class="lean ${lean || "none"}">${lean ? `Lean ${lean}` : "No lean"}</span>`;
+      : `<span class="lean ${lean || "none"}">${selected ? "Selected: " : "Reference: "}${lean ? `Lean ${lean}` : "No lean"}</span>`;
 
   const bars = vals.map((x) => `<div class="b ${x.v > line ? "o" : ""}" title="${x.s} week ${x.w} vs ${x.opp}: ${x.v}"><span>${fmtStat(prop.key, x.v)}</span><i style="height:${(100 * x.v) / top}%"></i></div>`).join("")
     + (nowV != null ? `<div class="b now" title="This week"><span>${fmtStat(prop.key, nowV)}</span><i style="height:${(100 * nowV) / top}%"></i></div>` : "");
@@ -1704,7 +1874,7 @@ function catCard(p, raw) {
   const liveLine = S.liveLines[p.id]?.[prop.key];
   const lineCell = prop.key === "anytime_td"
     ? `<div>Line<span class="n">0.5</span></div>`
-    : `<div>${edited ? "Your line" : LINE_FROM[from]}<input type="number" step="1" inputmode="decimal" value="${line}" data-line="${k}" aria-label="${cat.label} line"></div>`
+    : `<div>${edited ? "Your line" : selected && from === "ours" ? "Current reference line" : LINE_FROM[from]}<input type="number" step="1" inputmode="decimal" value="${line}" data-line="${k}" aria-label="${cat.label} line"></div>`
       + (prop.dk_open != null && prop.dk_open !== prop.line ? `<div>DK opened<span class="n">${prop.dk_open}</span></div>` : "")
       + (liveLine != null && S.games[p.game_id]?.state === "in" ? `<div title="DraftKings' in-game line right now">DK live<span class="n" style="color:var(--amber)">${liveLine}</span></div>` : "")
       + (prop.sleeper && from !== "sleeper" ? `<div>Sleeper Picks<span class="n">${prop.sleeper.line}</span></div>` : "")
@@ -1713,14 +1883,14 @@ function catCard(p, raw) {
   const mfText = prop.mf_n
     ? ` Matchup vs ${p.opp}: <b>${prop.mf >= 1 ? "+" : ""}${fmt(100 * (prop.mf - 1))}%</b> (similar ${p.pos}s against them this season, ${prop.mf_n} game${prop.mf_n === 1 ? "" : "s"}).`
     : prop.mf != null ? ` No similar ${p.pos}s have faced ${p.opp} yet, so no matchup adjustment.` : "";
+  const selectedNote = selected ? ` Selected ${selected.label} assumes the player participates; accuracy is still being evaluated. ${selected.binary ? "Reference probability is shown separately; TD probabilities are sorted separately from numeric gaps." : "Leans use the selected forecast. Top Picks use saved sportsbook lines; your custom line changes only your displayed lean. On-pace estimates retain the reference forecast. A point forecast does not give a bet-win probability."}` : "";
   const note = prop.key === "anytime_td"
-    ? `${vals.length ? `Scored in ${vals.filter((x) => x.v > 0).length} of ${gamesText}. ` : ""}${selected ? "Reference TD chance" : "Chance"} comes from Sleeper's projected TDs.`
+    ? `${vals.length ? `Scored in ${vals.filter((x) => x.v > 0).length} of ${gamesText}. ` : ""}${selected ? "Current reference probability comes" : "Chance comes"} from Sleeper's projected TDs.`
     : (vals.length ? `Over in <b>${over}</b> of ${gamesText}${edited ? ` at your line (the ${LINE_FROM[from]} line is ${prop.line})` : ""}.` : "No games yet this season.")
         + mfText
-        + (from === "ours" && prop.key !== "fpts" ? " No sportsbook line yet, so this line is our projection." : "")
+        + (from === "ours" && prop.key !== "fpts" ? selected ? " No sportsbook line yet; the editable line is the Current reference estimate." : " No sportsbook line yet, so this line is our projection." : "")
         + (prop.sleeper?.over ? ` Sleeper Picks shows leg multipliers: ${prop.sleeper.over}x over, ${prop.sleeper.under}x under. Full payouts depend on the contest entry.` : "");
 
-  const selectedNote = selected ? ` Selected ${selected.label} assumes participation and remains provisional. ${selected.binary ? "" : "It does not give a bet-win probability. "}Lines, leans, ranking and saved selections use the reference model.` : "";
   return `<div class="cat" data-cat="${k}">
     <div class="cat-h"><span>${prop.key === "fpts" ? `Fantasy Points (${scoringName()})` : cat.label}</span>${leanPill}</div>
     ${prop.key !== "anytime_td" ? `<div class="cat-add">${["over", "under"].map((d) => {
@@ -1728,11 +1898,11 @@ function catCard(p, raw) {
       return `<button class="add ${d} ${on ? "on" : ""}" data-add="${p.id}|${prop.key}|${d}|${line}" title="${on ? "Remove from" : "Add to"} My Picks">${on ? "\u2713" : "+"} ${d === "over" ? "Over" : "Under"} ${line}</button>`;
     }).join("")}</div>` : ""}
     <div class="cat-nums">
-      ${selected ? `<div data-weekly-primary>${selected.frozen ? "Frozen provisional" : "Provisional"} ${selected.label}${selected.binary ? "" : " forecast"}<span class="n">${selected.text}</span></div>` : ""}
+      ${selected ? `<div data-weekly-primary><b>${selected.frozen ? "Frozen provisional" : "Provisional"} ${selected.label}${selected.binary ? "" : " forecast"}</b><span class="n">${selected.text}</span></div>` : ""}
       ${lineCell}
-      ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment, made before kickoff">${selected ? "Current reference forecast" : "Our proj (pregame)"}<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
+      ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment, made before kickoff">${selected ? "Current reference forecast" : "Current reference forecast (fallback)"}<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
       ${selected?.binary ? `<div>Current reference probability<span class="n">${referenceTd}</span></div>` : ""}
-      ${st && !st.final && st.v != null && prop.adj != null && prop.key !== "anytime_td" ? `<div title="What he has so far plus our pregame projection for the time left">On pace<span class="n" style="color:var(--amber)">${fmt(st.v + prop.adj * remaining(S.games[p.game_id]), prop.key === "fpts" ? 2 : 1)}</span></div>` : ""}
+      ${st && !st.final && st.v != null && prop.adj != null && prop.key !== "anytime_td" ? `<div title="What he has so far plus our pregame projection for the time left">Reference on pace<span class="n" style="color:var(--amber)">${fmt(st.v + prop.adj * remaining(S.games[p.game_id]), prop.key === "fpts" ? 2 : 1)}</span></div>` : ""}
       ${prop.proj != null ? `<div>Sleeper proj<span class="n">${fmtStat(prop.key, prop.proj)}</span></div>` : ""}
       ${avg != null ? `<div>Season avg<span class="n">${fmt(avg)}</span></div>` : ""}
       ${st ? `<div>${st.final ? "Final statistic" : S.games[p.game_id]?.state === "post" ? "Final evidence" : "Now"}<span class="n" style="color:var(--cyan)">${st.v == null ? st.res === "dnp" ? "DNP" : "Unresolved" : fmtStat(prop.key, st.v)}</span>${resBadge(st)}</div>` : ""}
@@ -1744,6 +1914,10 @@ function catCard(p, raw) {
 
 function displayedProps(p) {
   const props = p.props.filter((x) => !S.f.cat || x.key === S.f.cat);
+  if (S.tab === "props" && !S.gameView && S.f.sort === "selected_edge") return props.map((prop, index) => {
+    const gap = selectedPropGap(p, prop);
+    return {prop, index, score: gap?.lean ? Math.abs(gap.score) : -1};
+  }).sort((a, b) => b.score - a.score || (a.prop.key < b.prop.key ? -1 : a.prop.key > b.prop.key ? 1 : a.index - b.index)).map(x => x.prop);
   if (S.tab !== "props" || S.gameView || S.f.sort !== "edge") return props;
   // Presentation only: mirror the existing Biggest lean score, retaining saved props.
   return props.map((prop, index) => ({ prop, index,
@@ -1768,7 +1942,7 @@ function playerCard(p) {
         <div class="pname">${esc(p.name)}${injBadge(p)}${mineTag(p)}</div>
         <div class="pmeta"><span class="pos ${p.pos}">${p.pos}</span> ${p.team} ${oppText(p)} ${matchupText(p)} <span>· ${esc(gameStatus(g))}</span>${impliedFor(p) != null ? `<span class="muted" title="${p.team}'s points implied by the DraftKings spread and total">· ${p.team} ${impliedFor(p)} pts</span>` : ""}</div>
       </div>
-      <div class="pts"><div class="lbl">Proj</div><div class="v">${fmtPts(projPts(p))}</div></div>
+      <div class="pts"><div class="lbl">Reference points</div><div class="v">${fmtPts(projPts(p))}</div></div>
       <div class="pts"><div class="lbl">${g?.state === "post" ? "Final" : g?.state === "in" ? "Live" : "Avg"}</div>
         <div class="v ${c ? "live" : ""}" data-live-ppr="${p.id}">${c ? (c.none ? "DNP" : fmtPts(live)) : fmtPts(avgPts(p))}</div></div>
     </div>
@@ -1795,8 +1969,13 @@ function filteredPlayers() {
     name: (p) => p.name,
     edge: (p) => -Math.max(0, ...p.props.filter((x) => x.lean && x.adj != null && (!f.cat || x.key === f.cat))
       .map((x) => Math.abs(x.adj - x.line) / Math.max(1, x.line))),
+    selected_edge: (p) => -selectedPlayerGap(p),
+    selected_value: (p) => {
+      const selected = f.cat ? selectedPropForecast(p, f.cat) : null;
+      return selected ? -selected.value : Infinity;
+    },
   }[f.sort];
-  list.sort((a, b) => { const ka = key(a), kb = key(b); return ka < kb ? -1 : ka > kb ? 1 : 0; });
+  list.sort((a, b) => { const ka = key(a), kb = key(b); return ka < kb ? -1 : ka > kb ? 1 : f.sort.startsWith("selected_") ? a.id.localeCompare(b.id) : 0; });
   return list;
 }
 
@@ -1807,7 +1986,7 @@ function renderProps() {
     .map((g) => `<option value="${g.id}" ${f.game === g.id ? "selected" : ""}>${g.away} @ ${g.home}</option>`).join("");
   const catOpts = Object.entries(d.categories).map(([k, v]) => `<option value="${k}" ${f.cat === k ? "selected" : ""}>${v.label}</option>`).join("");
   const list = filteredPlayers();
-  const picksFor = (side) => d.picks[side].filter((x) => !f.game || x.game_id === f.game);
+  const picksFor = (side) => visibleTopPicks(side).filter((x) => (!f.game || x.game_id === f.game) && (!f.cat || x.key === f.cat));
   const pickList = (side) => picksFor(side).map(pickCard).join("") || `<div class="empty">No ${side} picks${f.game ? " in this game" : ""}.</div>`;
 
   const promo = !S.sync && !store("syncPromoHidden")
@@ -1816,18 +1995,20 @@ function renderProps() {
     : "";
   $("#main").innerHTML = promo + `
     <div class="picks-wrap">
-      <div class="picks"><h3>Top Overs <span class="tag over">${picksFor("over").length}</span></h3>${pickList("over")}</div>
-      <div class="picks"><h3>Top Unders <span class="tag under">${picksFor("under").length}</span></h3>${pickList("under")}</div>
+      <div class="picks"><h3>Top Overs <span class="tag over">${picksFor("over").length}</span></h3><div class="small">${S.selectedRankings ? "Selected forecasts · provisional" : "Current reference fallback"}</div>${pickList("over")}</div>
+      <div class="picks"><h3>Top Unders <span class="tag under">${picksFor("under").length}</span></h3><div class="small">${S.selectedRankings ? "Selected forecasts · provisional" : "Current reference fallback"}</div>${pickList("under")}</div>
     </div>
-    <p class="note">Top picks use the current reference: the biggest gaps between its projection (Sleeper's, adjusted for how similar players have done against this defense this season) and the real DraftKings line, for players with 2+ games this season who aren't ruled out. They lock at kickoff with the pregame line; during the game you'll also see DraftKings' live line. <a href="#" data-goto="about">How it works</a></p>
-    <p class="note">Category forecasts marked provisional show the selected mean, median or TD probability, conditional on participation. Reference values are labeled separately. Top Picks, leans, rankings, fantasy points and game forecasts use the current reference. Historical R0 records retain their original source identity.</p>
+    <p class="note">Top Picks use saved selected forecasts where available, with individually labeled Reference fallbacks. They rank forecast-minus-sportsbook-line gaps using fixed category scales, for eligible players with established roles. Selections and lines are saved before kickoff and frozen afterward. These gaps are not win probabilities or expected returns. Without a validated new selection snapshot, the lists explicitly fall back to the saved reference-policy picks. <a href="#" data-goto="about">How it works</a></p>
 
+    <p class="note">New forecasts are provisional and assume participation. Use <b>New forecasts: biggest gap</b>, or choose a prop and use <b>New forecast: highest</b>. Anytime TD sorts by its actual probability. Missing new values sort last in highest-forecast mode; fantasy points, on-pace estimates, game forecasts and the historical Record retain their exact recorded reference identities.</p>
     <h2>Players <small>${list.length} shown</small></h2>
     <div class="filters">
       <div class="chips">${withFlex(["ALL", "QB", "RB", "WR", "TE"]).map((x) => `<button class="chip ${f.pos === x ? "on" : ""}" data-pos="${x}">${x === "ALL" ? "All" : x}</button>`).join("")}</div>
       <select id="f-game" aria-label="Game"><option value="">All games</option>${gameOpts}</select>
       <select id="f-cat" aria-label="Prop"><option value="">All props</option>${catOpts}</select>
       <select id="f-sort" aria-label="Sort">
+        <option value="selected_edge" ${f.sort === "selected_edge" ? "selected" : ""}>Sort: New forecasts: biggest gap</option>
+        <option value="selected_value" ${f.sort === "selected_value" ? "selected" : ""} ${!f.cat || f.cat === "fpts" ? "disabled" : ""}>${f.cat === "anytime_td" ? "Sort: New TD probability: highest" : f.cat ? "Sort: New forecast: highest" : "Sort: New forecast: highest (choose prop)"}</option>
         <option value="proj" ${f.sort === "proj" ? "selected" : ""}>Sort: Reference projected points</option>
         <option value="live" ${f.sort === "live" ? "selected" : ""}>Sort: Live points</option>
         <option value="edge" ${f.sort === "edge" ? "selected" : ""}>Sort: Reference biggest lean</option>
@@ -3200,7 +3381,7 @@ function chatContext() {
     if (!p || !g || g.state !== "pre") return null;
     return `${p.name} (${p.pos} ${p.team}) ${x.direction} ${x.line} ${S.data.categories[x.key]?.label || x.key} (${x.line_from === "dk" ? "DraftKings" : x.line_from === "sleeper" ? "Sleeper Picks" : "our"} line; we project ${fmt(x.adj ?? x.proj, 1)})`;
   };
-  const picks = [...(S.data.picks.over || []), ...(S.data.picks.under || [])].sort((a, b) => b.score - a.score).map(pickLine).filter(Boolean).slice(0, 8);
+  const picks = [...visibleTopPicks("over"), ...visibleTopPicks("under")].sort((a, b) => Math.abs(b.score) - Math.abs(a.score)).map(pickLine).filter(Boolean).slice(0, 8);
   if (picks.length) bits.push(`Our top prop picks for games not started yet, best first: ${picks.join("; ")}.`);
   const leans = Object.values(S.games).filter((g) => g.state === "pre" && g.ours && g.odds && (g.ours.lean_spread || g.ours.lean_total))
     .map((g) => `${g.away} @ ${g.home}: ${[g.ours.lean_spread ? `${g.ours.lean_spread} against the spread (DraftKings ${g.odds.details})` : "", g.ours.lean_total ? `${g.ours.lean_total} ${g.odds.total} (we project ${fmt(g.ours.total, 1)})` : ""].filter(Boolean).join(", ")}`);
@@ -3519,7 +3700,7 @@ async function loadGradingRows(id, more = false) {
 function renderRecord() {
   renderLegacyRecord();
   const legacy = $("#main").innerHTML;
-  $("#main").innerHTML = gradingReportHtml() + `<details class="card"><summary>Separate legacy archive and historical benchmark</summary>${legacy}</details>`;
+  $("#main").innerHTML = `<p class="note">Saved grading and forecast accuracy retain each recorded model, policy and provenance. These are not a track record for the separate provisional selected-forecast Top Picks.</p>` + gradingReportHtml() + `<details class="card"><summary>Separate legacy archive and historical benchmark</summary>${legacy}</details>`;
 }
 function renderLegacyRecord() {
   const t = S.track;
@@ -3545,7 +3726,7 @@ function renderLegacyRecord() {
   }).join("");
   const nothing = graded(c.top_over) + graded(c.top_under) + graded(c.leans) === 0;
   $("#main").innerHTML = `
-    <h2>Track record <small>${c.weeks} archived week${c.weeks === 1 ? "" : "s"}</small></h2>
+    <h2>Reference-policy archive <small>${c.weeks} archived week${c.weeks === 1 ? "" : "s"}</small></h2>
     <p class="note">${t.grading_version ? "Statistical grading v2: unresolved data and pushes are excluded from hit-rate denominators. Historical regrading is not new prospective evidence." : "Legacy grading snapshot: these totals have not yet been rebuilt by the upgraded grader."} This is not a sportsbook-settled profit record.</p>
     <p class="note">Historical picks and results from before this edition was created came from <a href="https://github.com/joshuam0y/joshua-moy-expert-nfl-picks" target="_blank" rel="noopener">Joshua Moy's original project</a>. The forecasting code is retained as the original benchmark; statistical grading is versioned separately. Inherited historical picks are not new prospective forecasts from this edition.</p>
     ${nothing ? `<div class="card note" style="margin-bottom:10px">Grading started with week ${t.weeks[t.weeks.length - 1].week} of ${t.weeks[t.weeks.length - 1].season}. Only picks and leans saved before kickoff count, so this fills in as games go final. There's no backfill: Sleeper updates past weeks' projections after the games, so grading old weeks would look far better than it really is.</div>` : ""}
@@ -3579,8 +3760,8 @@ function renderAbout() {
   const cats = Object.entries(S.data.categories).filter(([k]) => k !== "anytime_td");
   $("#main").innerHTML = `<div class="about">
     <h2>Forecast comparison · Phase 2</h2>
-    <div class="card note"><p>Supported category forecasts display a selected provisional mean, signed median or touchdown event probability when a valid overlay is available. They assume participation; accuracy is still being evaluated. Missing or expired selected forecasts use the current reference display. Point forecasts do not give a bet-win probability. Exact website PPR, Top Picks, leans, rankings, fantasy and game forecasts remain on the current reference; historical R0 records keep their original source identity.</p></div>
-    <div class="card note"><p><b>Production picks use the retained baseline.</b> Raw Sleeper projections, matchup adjustments, and top-pick selection rules remain unchanged. Statistical grading and saved forecast comparisons do not establish greater predictive accuracy or profitability.</p>
+    <div class="card note"><p>Supported category forecasts display a selected provisional mean, signed median or touchdown event probability when a valid overlay is available. They assume participation; accuracy is still being evaluated. Missing or expired selected forecasts use the current reference display. Point forecasts do not give a bet-win probability. Selected forecasts drive displayed prop leans and a separate provisional saved Top Picks stream when valid. Exact website PPR, fantasy points, on-pace estimates and game forecasts retain the current reference. Historical R0 records retain their original source identity.</p></div>
+    <div class="card note"><p><b>Reference-policy records retain their original model and source.</b> Raw Sleeper projections, matchup adjustments and registered reference-selection policies remain unchanged. The provisional selected Top stream has its own saved ranking policy and is not historical reference-policy evidence. Statistical grading and saved forecast comparisons do not establish greater predictive accuracy or profitability.</p>
     <p>Top picks are projection-gap rankings, not calibrated win probabilities or positive-EV recommendations. DraftKings player-prop prices are not captured. A recent build does not verify the age of each quote.</p>
     <p>The comparison scorecard pairs raw Sleeper and the unchanged clone for receptions, rushing attempts and passing yards at the same forecast time. Repeated captures count once per player, game and statistic. Final games and confirmed participation are required for accuracy metrics.</p>
     <p>An experimental probability model saves shadow forecasts and fixed-prior comparison distributions. It does not select production picks. Calibration and profitability remain unproven; model promotion requires a forward holdout review and explicit approval.</p>
@@ -4300,15 +4481,15 @@ function renderGameProps(g, teams) {
   const st = gs(g.id);
   let list = S.data.players.filter((p) => p.game_id === g.id && p.props.length
     && (!st.team || p.team === st.team) && posMatch(p.pos, st.pos)
-    && (!st.leans || p.props.some((x) => x.lean && x.line_from !== "ours")));
-  const leanSize = (p) => Math.max(0, ...p.props.filter((x) => x.lean && x.adj != null).map((x) => Math.abs(x.adj - x.line) / Math.max(1, x.line)));
+    && (!st.leans || p.props.some((x) => selectedPropGap(p, x)?.lean)));
+  const leanSize = (p) => Math.max(0, ...p.props.map(x => { const gap = selectedPropGap(p, x); return gap?.lean ? Math.abs(gap.score) : 0; }));
   const key = { proj: (p) => -(projPts(p) ?? -1), live: (p) => -(livePPR(p) ?? -1), lean: (p) => -leanSize(p) }[st.sort];
   list = list.sort((a, b) => key(a) - key(b));
-  const picks = [...S.data.picks.over, ...S.data.picks.under].filter((x) => x.game_id === g.id);
+  const picks = [...visibleTopPicks("over"), ...visibleTopPicks("under")].filter((x) => x.game_id === g.id);
   return `<div class="gtool">
       ${teamSeg(teams, st.team)}
       ${seg("data-gpos", st.pos, withFlex(["ALL", "QB", "RB", "WR", "TE"]).map((x) => [x, x === "ALL" ? "All" : x]), "Position")}
-      ${seg("data-gsort", st.sort, [["proj", "Projected"], ["live", "Live pts"], ["lean", "Biggest lean"]], "Sort")}
+      ${seg("data-gsort", st.sort, [["proj", "Reference points"], ["live", "Live pts"], ["lean", "New forecast gap"]], "Sort")}
       <button class="tbtn ${st.leans ? "on" : ""}" data-gleans aria-pressed="${st.leans}">Leans only</button>
     </div>
     ${picks.length ? `<div class="picks game-picks"><h3>Top picks in this game</h3>${picks.map(pickCard).join("")}</div>` : ""}
@@ -5789,7 +5970,7 @@ document.addEventListener("change", (e) => {
     return;
   }
   const set = { "f-game": "game", "f-cat": "cat", "f-sort": "sort" }[t.id];
-  if (set) { S.f[set] = t.value; S.shown = 40; render(); return; }
+  if (set) { S.f[set] = t.value; if (set === "cat" && (!t.value || t.value === "fpts") && S.f.sort === "selected_value") S.f.sort = "selected_edge"; S.shown = 40; render(); return; }
   if (t.id === "f-out") { S.f.hideOut = t.checked; renderProps(); return; }
   if (t.id === "f-favs") { S.f.favs = t.checked; renderProps(); }
 });

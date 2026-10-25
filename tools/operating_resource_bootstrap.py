@@ -23,9 +23,16 @@ WORKFLOW = '.github/workflows/operating-diagnostic.yml'
 CAMPAIGN = 'NFL-WEB-OPERATING-SEED-THREE-20261020-B3'
 GENUINE_WORKFLOW = '.github/workflows/prepare-diagnostic-seed.yml'
 GENUINE_CONFIRMATION = 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024'
-GENUINE_DRIVER = '2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'
+GENUINE_DRIVER = 'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5'
 LEGACY_GENUINE_DRIVER = '2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf'
-GENUINE_DRIVER_BYTES = {LEGACY_GENUINE_DRIVER: 30854, GENUINE_DRIVER: 35468}
+WEEKLY_GENUINE_DRIVER = '2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'
+GENUINE_DRIVER_BYTES = {LEGACY_GENUINE_DRIVER: 30854, WEEKLY_GENUINE_DRIVER: 35468, GENUINE_DRIVER: 36877}
+GENUINE_DRIVER_CONTRACTS = {LEGACY_GENUINE_DRIVER: None,
+                          WEEKLY_GENUINE_DRIVER: 'genuine-current-production-controller-v2',
+                          GENUINE_DRIVER: 'genuine-current-production-controller-v3'}
+RANKING_CONTRACT = 'genuine-current-production-controller-v3'
+RANKING_FILES = ('tools/weekly_adaptive_overlay.py', 'tools/weekly_selected_rankings.py',
+                 'output/weekly-adaptive-overlay.js')
 LIFETIME_BACKEND = 'SYSTEMD_INVOCATION_CACHED_KERNEL_MEMORY_PEAK_V1'
 P5 = '441f0ccaa1b274708419643d993896b5ff6f2c4118e0016719c80a1746289328'
 RESOURCE = 'e02bc3926f709029f038bd2bd275247e8738ace9fb1645dfb67eff63d804d292'
@@ -233,7 +240,11 @@ def closure(code, *, genuine=False, allow_data=False):
     if (manifest.get('schema_version') != 'cloud-seed-code-integrity-v1'
             or set(manifest.get('files', {})) != seed_names):
         raise RuntimeError('Unsupported immutable seed dependency inventory')
-    names = sorted(set(FILES) | {'tools/' + name for name in seed_names} | ({GENUINE_WORKFLOW, 'tools/genuine_case_recovery.py'} if genuine else set()))
+    driver = genuine_driver(code, actual) if genuine else None
+    ranked = driver is not None and GENUINE_DRIVER_CONTRACTS[sha(driver)] == RANKING_CONTRACT
+    names = sorted(set(FILES) | {'tools/' + name for name in seed_names}
+                   | ({GENUINE_WORKFLOW, 'tools/genuine_case_recovery.py'} if genuine else set())
+                   | (set(RANKING_FILES) if ranked else set()))
     values = {}
     for name in names:
         path = code / name
@@ -255,7 +266,8 @@ def closure(code, *, genuine=False, allow_data=False):
     result = {'commit': actual, 'tree': git(code, 'rev-parse', actual + '^{tree}').decode().strip(),
             'files': values, 'source_closure_sha256': sha(canonical(values))}
     if genuine:
-        driver = genuine_driver(code, actual)
+        if genuine_driver(code, actual) != driver:
+            raise RuntimeError('Genuine controller changed during source closure')
         result['genuine_driver'] = {'workflow': GENUINE_WORKFLOW, 'sha256': sha(driver), 'bytes': len(driver)}
     return result
 

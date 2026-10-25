@@ -4,14 +4,17 @@ The selected typed forecast is the first projection in each supported category
 panel and the leading forecast in its collapsed chip. Counts show their mean,
 yards their signed median, and anytime rushing-or-receiving TD a genuine event
 probability. Values are labeled provisional and conditional on participation.
-The R0 forecast or TD probability is explicitly labeled as the reference.
+The current reference forecast or TD probability is explicitly labeled separately;
+historical original R0 records retain their original source identity.
 
 The display reads the existing validated overlay and its existing expiry/frozen
 eligibility rule. It never writes selected values into the canonical board or
-its projection/probability fields. Market and personal lines, saved Top Picks,
-lean/ranking calculations, pacing, scoring, grading and fantasy remain on R0;
-the page and rank controls say so. Point forecasts supply no bet-win probability.
-Exact website PPR stays on R0. Missing, expired or invalid overlays use the
+its projection/probability fields. Provisional selected Top Picks, directional
+leans and new-forecast sorts use their separately saved selected policy. Market
+and personal lines stay exact. Reference grading, registered ranked strategies,
+pacing, scoring and fantasy keep their own unchanged inputs and source cohorts.
+Point forecasts supply no bet-win probability. Exact website PPR stays on the
+reference. Missing, expired or invalid overlays use the
 existing reference display. Valid started forecasts retain their frozen value.
 
 Files: `output/app.js`, `output/index.html`,
@@ -67,8 +70,8 @@ receipts, data or Git history.
 
 The expanded app preserves the typed provisional primary display and the
 canonical board separately. Current reference forecasts, market/personal lines,
-Top Picks, rankings, scoring, grading and paper-ticket settlement continue to use
-their supported reference inputs. Historical original R0 identities remain
+registered strategies, scoring, grading and paper-ticket settlement keep their
+supported inputs. The later selected Top stream stays separate. Original R0 identities remain
 historical; the corrected current reference has its own closed source/schema
 binding. The website-only policy-v3 transition explicitly checks both roles.
 
@@ -83,3 +86,8 @@ Focused integrated app/loader checks do not replace fresh generated-artifact and
 public 320/390/desktop acceptance. Physical iPhone/Safari behavior is not inferred
 from Chromium emulation. Phase 2 public release verification remains pending at
 this source-preparation checkpoint.
+
+The 2026-10-25 integration preserves all earlier component evidence under its
+actual source, then checks the changed app. Its cache identity is
+`phase2-selected-rankings-v1`. Selected Top cards, gap sorts and reference Record
+cohorts are explicitly labeled; a display sort never creates a saved strategy.

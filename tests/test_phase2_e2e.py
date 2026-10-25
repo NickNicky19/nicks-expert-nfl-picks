@@ -3524,18 +3524,125 @@ class WeeklyPagesGraphTests(unittest.TestCase):
         for mutation in ("source_script_same_size_restored_mtime", "destination_body"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 root, _, _, pointer, _ = self.fixture(directory)
-                output = root / "output"; actual_copy = shutil.copyfile; changed = []
-                def race(source, target):
-                    value = actual_copy(source, target)
+                output = root / "output"; actual_copy = phase2_capture._copy_weekly_asset; changed = []
+                def race(source, target, *args):
+                    value = actual_copy(source, target, *args)
                     if not changed and Path(source).relative_to(output).as_posix() == pointer["path"]:
                         changed.append(True)
                         path = output / "weekly-adaptive-overlay.js" if mutation.startswith("source_") else Path(target)
                         info = path.stat(); raw = path.read_bytes(); path.write_bytes(b"X" + raw[1:])
                         os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
                     return value
-                with patch.object(phase2_capture.shutil, "copyfile", side_effect=race), self.assertRaises(IntegrityError):
+                with patch.object(phase2_capture, "_copy_weekly_asset", side_effect=race), self.assertRaises(IntegrityError):
                     phase2_capture.stage_pages(root, Path(directory) / "raced")
                 self.assertEqual(changed, [True])
+
+
+class WeeklyRankedPagesGraphTests(unittest.TestCase):
+    """Real fictional ranking publication and bounded stage, never native proof."""
+
+    def fixture(self, directory, *, frozen=True):
+        import weekly_adaptive_overlay as weekly
+        import weekly_selected_rankings as rankings
+        from test_weekly_selected_rankings import fixture, NOW, PERSIST
+        root = Path(directory) / "root"; output = root / "output"; output.mkdir(parents=True)
+        board, doc = fixture()
+        def save(path, value):
+            path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(weekly.canonical(value))
+        save(output / "data/week.json", board)
+        weekly.write_public(doc, output / "data", save)
+        (output / "weekly-adaptive-overlay.js").write_text("// Fictional ranking presentation.\n")
+        original = rankings.prepare(board, weekly.digest(board), doc, weekly.digest(doc), now=NOW, website_source_sha="b" * 40)
+        first = rankings.write_public(original, output / "data", save, clock=lambda: PERSIST)
+        first_files = {first["path"], "weekly-selected-rankings/" + weekly.digest(first) + ".receipt.json"}
+        current = rankings.prepare(board, weekly.digest(board), doc, weekly.digest(doc),
+            now="2031-10-24T12:05:00+00:00", website_source_sha="b" * 40)
+        pointer = rankings.write_public(current, output / "data", save, clock=lambda: "2031-10-24T12:05:01+00:00")
+        if frozen:
+            board["games"][0]["state"] = "in"; board["generated_at"] = "2031-10-25T18:00:00+00:00"
+            doc = weekly.prepare_overlay(board, weekly.digest(board), {}, {}, website_source_sha="c" * 40,
+                prepared_at="2031-10-25T18:00:00+00:00", previous=doc)
+            save(output / "data/week.json", board); weekly.write_public(doc, output / "data", save)
+            current = rankings.prepare(board, weekly.digest(board), doc, weekly.digest(doc),
+                now="2031-10-25T18:00:00+00:00", website_source_sha="c" * 40,
+                previous=current, previous_receipt=pointer)
+            pointer = rankings.write_public(current, output / "data", save, clock=lambda: "2031-10-25T18:00:01+00:00")
+            self.assertEqual(len(current["frozen_proofs"]), 2)
+        return root, weekly, rankings, current, pointer, first_files, save
+
+    def rewrite(self, root, weekly, doc, pointer, save):
+        body = weekly.canonical(doc); checksum = hashlib.sha256(body).hexdigest()
+        pointer.update(path="weekly-selected-rankings/" + checksum + ".json", sha256=checksum, bytes=len(body))
+        data = root / "output/data"
+        save(data / pointer["path"], doc)
+        save(data / ("weekly-selected-rankings/" + weekly.digest(pointer) + ".receipt.json"), pointer)
+        save(data / "weekly-selected-rankings.json", pointer)
+
+    def test_current_and_frozen_original_graph_copies_exactly_and_retains_unused_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, weekly, rankings, doc, pointer, unused, _ = self.fixture(directory)
+            output = root / "output"; expected = weekly.stage_assets(root)
+            self.assertGreaterEqual(len(expected), 8)
+            before = {name: (output / name).read_bytes() for name in expected}
+            older = {name: (output / "data" / name).read_bytes() for name in unused}
+            stage = phase2_capture.stage_pages(root, Path(directory) / "pages")
+            self.assertEqual(weekly.validate_public_root(stage), expected)
+            self.assertEqual({name: (stage / name).read_bytes() for name in expected}, before)
+            for name, body in older.items():
+                self.assertEqual((output / "data" / name).read_bytes(), body)
+                self.assertFalse((stage / "data" / name).exists())
+            current = rankings.read_public(stage / "data")[1]
+            self.assertEqual(current, doc); self.assertEqual(current["website_source_sha"], "c" * 40)
+            original = rankings.read_public(output / "data")[1]
+            self.assertEqual(original, doc)
+
+    def test_ranked_missing_corrupt_wrong_generation_and_caps_never_use_alternative_history(self):
+        for mutation in ("missing_origin_receipt", "missing_origin_body", "corrupt_origin", "wrong_source", "wrong_week",
+                         "too_many_proofs", "oversized_current_body", "oversized_origin_receipt", "gzip_current", "unclassified"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root, weekly, _, doc, pointer, unused, save = self.fixture(directory)
+                data = root / "output/data"; original_name = doc["frozen_proofs"][0]["receipt_sha256"]
+                receipt = data / ("weekly-selected-rankings/" + original_name + ".receipt.json")
+                origin = data / load_json(receipt)["path"]
+                if mutation == "missing_origin_receipt": receipt.unlink()
+                elif mutation == "missing_origin_body": origin.unlink()
+                elif mutation == "corrupt_origin": origin.write_bytes(b"X" + origin.read_bytes()[1:])
+                elif mutation in ("wrong_source", "wrong_week", "too_many_proofs"):
+                    if mutation == "wrong_source": doc["website_source_sha"] = "d" * 40
+                    elif mutation == "wrong_week": doc["week"] += 1
+                    else: doc["frozen_proofs"] = [copy.deepcopy(doc["frozen_proofs"][0]) for _ in range(25)]
+                    self.rewrite(root, weekly, doc, pointer, save)
+                elif mutation.startswith("oversized_"):
+                    path = data / pointer["path"] if mutation.endswith("body") else receipt
+                    with path.open("r+b") as handle: handle.truncate(256 * 1024 + 1 if mutation.endswith("body") else 4097)
+                elif mutation == "gzip_current":
+                    path = data / pointer["path"]; path.write_bytes(gzip.compress(path.read_bytes(), mtime=0))
+                else: (data / "weekly-selected-rankings/private.json").write_text("{}")
+                self.assertTrue(all((data / name).exists() for name in unused))
+                with self.assertRaises(IntegrityError): phase2_capture.stage_pages(root, Path(directory) / "rejected")
+
+    def test_ranked_source_destination_races_and_growth_fail_after_real_bounded_copy(self):
+        for mutation in ("source_receipt_restored_mtime", "destination_body", "body_grows_before_copy"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root, weekly, _, doc, pointer, _, _ = self.fixture(directory)
+                output = root / "output"; actual = phase2_capture._copy_weekly_asset; changes = []
+                original = "data/weekly-selected-rankings/" + doc["frozen_proofs"][0]["receipt_sha256"] + ".receipt.json"
+                current = "data/" + pointer["path"]
+                alias = (output / "data/weekly-selected-rankings.json").read_bytes()
+                def race(source, target, *args):
+                    name = Path(source).relative_to(output).as_posix()
+                    if not changes and mutation == "body_grows_before_copy" and name == current:
+                        changes.append(True)
+                        with Path(source).open("r+b") as handle: handle.truncate(256 * 1024 + 1)
+                    value = actual(source, target, *args)
+                    if not changes and name == current:
+                        changes.append(True); path = output / original if mutation.startswith("source_") else Path(target)
+                        info = path.stat(); raw = path.read_bytes(); path.write_bytes(b"X" + raw[1:])
+                        os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+                    return value
+                with patch.object(phase2_capture, "_copy_weekly_asset", side_effect=race), self.assertRaises(IntegrityError):
+                    phase2_capture.stage_pages(root, Path(directory) / "raced")
+                self.assertEqual(changes, [True]); self.assertEqual((output / "data/weekly-selected-rankings.json").read_bytes(), alias)
 
 
 if __name__ == "__main__":

@@ -50,10 +50,10 @@ HEX64=re.compile(r'[0-9a-f]{64}')
 # Closed website-only additions to a separate B3-derived execution copy. These
 # do not repin the original seed, engine, historical policy or registration.
 WEEKLY_POLICY='config/weekly-derived-selected-policy-v3.json'
-WEEKLY_POLICY_SHA256='2580c2a9243061b039b7460aab5cc7b9cf53404d8dc299ade85acda346679eb9'
+WEEKLY_POLICY_SHA256='5ddd3af107f1a547fca3100be792a5c2c1b35d26415e1bb8eaf03164f9df4193'
 WEEKLY_EXECUTION_ADDITIONS={
     'config/weekly-derived-selected-policy-v1.json':'0bcdf8505d2f0d268ea97e5c17c26f2a8d7cb91ef2e089cd9e410f27eb36f1ae',
-    'config/weekly-derived-selected-policy-v2.json':'45e51a07a077ce0aedede608fcef2ddb3592828a0734843d37a3991e6673a546',
+    'config/weekly-derived-selected-policy-v2.json':'e8e037a00a22d3e0e07e41ed5816f2374e8f162a7fa78ea8cc45888ed2e2f094',
     WEEKLY_POLICY:WEEKLY_POLICY_SHA256,
     'output/weekly-adaptive-overlay.js':'d6657e82639aa001f64701672e25cc72bd6e55142127669a59396f9efe485a68',
 }
@@ -891,6 +891,7 @@ def install_execution_source(code,root):
         raise RuntimeError('Fictional configuration differs from the approved frozen seed')
     current=_source_ci_cli(code,'fingerprint');files=_execution_files(current)
     additions=_weekly_execution_additions(current)
+    if additions:_install_weekly_registrations(code,root,current)
     before=_evidence_inventory(root)
     actual=_installed_names(root,('pull','tools','output'))
     if not actual<=set(files):raise RuntimeError('Unsupported extra executable/static source in fixture')
@@ -1805,28 +1806,89 @@ def _weekly_display(root,m):
     source=git(root,'rev-parse','HEAD')
     if not _hex(source,HEX40):raise RuntimeError('Actual derived execution HEAD required')
     board_before=_bounded_file(root/'output/data/week.json',SOURCE_FILE_LIMIT)
+    ranker=_weekly_ranker(root)
+    fixture_clock=m['capture'].datetime
     missing=0
     def absent(_opener,request,*args,**kwargs):
         nonlocal missing
         missing+=1
         # No response from another population may be borrowed for this fixture.
         raise HTTPError(request.full_url,404,'No fictional lab publication',{},None)
-    with patch.object(OpenerDirector,'open',new=absent):
+    with patch.object(OpenerDirector,'open',new=absent),patch.dict(sys.modules,{'weekly_selected_rankings':ranker}),patch.object(ranker,'datetime',fixture_clock):
         module=_advisory_script(root/'tools/weekly_adaptive_overlay.py',
             ['--root',str(root),'--website-source-sha',source,'--feed-policy',WEEKLY_POLICY,
              '--feed-policy-sha256',WEEKLY_POLICY_SHA256],m['capture'].datetime)
     module.validate_public_root(root/'output')
     pointer,doc=module.read_public(root/'output')
+    ranking_pointer,ranking=ranker.read_public(root/'output/data')
+    expected_clock=fixture_clock.now(timezone.utc).isoformat()
     if (_bounded_file(root/'output/data/week.json',SOURCE_FILE_LIMIT)!=board_before
             or doc['website_source_sha']!=source or pointer['display_board_sha256']!=sha(board_before)):
         raise RuntimeError('Weekly display changed its reference board/source binding')
     if missing!=1 or doc['rows'] or doc['state']!='DISABLED_USE_R0':
         raise RuntimeError('Fictional weekly missing-feed branch was not exercised')
+    if (ranking['website_source_sha']!=source or ranking['display_board_sha256']!=sha(board_before)
+            or ranking['overlay_sha256']!=pointer['sha256']
+            or ranking['prepared_at']!=expected_clock or ranking_pointer['published_at']!=expected_clock):
+        raise RuntimeError('Fictional ranking source/board or preparation/completion clock changed')
+    ranking_rows=[item for side in ranking['picks'].values() for item in side]
+    if any(item['forecast_source']!='R0_FALLBACK' for item in ranking_rows):
+        raise RuntimeError('Missing fictional selected feed acquired selected ranking evidence')
     return dict(state=doc['state'],selected_rows=len(doc['rows']),website_source_sha=source,
         policy_file_sha256=WEEKLY_POLICY_SHA256,overlay_sha256=pointer['sha256'],
         mocked_missing_feed_requests=missing,provider_requests=0,
         coverage='ACTUAL_REGISTERED_WRITER_AND_GRAPH_CURRENT_REFERENCE_FALLBACK_ONLY',
-        accepted_selected_feed='NOT_EXERCISED_NO_MATCHING_FICTIONAL_LAB_PUBLICATION')
+        accepted_selected_feed='NOT_EXERCISED_NO_MATCHING_FICTIONAL_LAB_PUBLICATION',
+        rankings=dict(body_sha256=ranking_pointer['sha256'],schema_version=ranking['schema_version'],
+            prepared_at=ranking['prepared_at'],published_at=ranking_pointer['published_at'],
+            picks={side:len(items) for side,items in ranking['picks'].items()},frozen_proofs=len(ranking['frozen_proofs']),
+            source_counts={'R0_FALLBACK':len(ranking_rows),'SELECTED':0},
+            accuracy_or_registered_reference_strategy_claim=False))
+
+
+def _weekly_ranker(root):
+    """Load only actual copied source bytes, preserving the execution association."""
+    name='tools/weekly_selected_rankings.py'
+    return _weekly_source_module(root,name,_source_marker(root)['files'].get(name,{}))
+
+
+def _weekly_source_module(root,name,descriptor):
+    import types
+    if name not in ('tools/weekly_selected_rankings.py','tools/weekly_public_feed.py'):
+        raise RuntimeError('Unsupported weekly execution module')
+    path=root/name
+    body=_bounded_file(path,SOURCE_FILE_LIMIT)
+    if (descriptor.get('path')!=name or descriptor.get('mode')!='100644'
+            or descriptor.get('bytes')!=len(body) or descriptor.get('sha256')!=sha(body)):
+        raise RuntimeError('Derived ranking source changed before execution')
+    module=types.ModuleType(Path(name).stem);module.__file__=str(path)
+    exec(compile(body,str(path),'exec'),module.__dict__)
+    return module
+
+
+def _install_weekly_registrations(code,root,fingerprint):
+    """Transport only the closed eight actual public policy Git objects.
+
+    The normal candidate-source fetch still retains its full parent/source
+    closure. This typed transport also makes the two immutable registrations
+    available before any source-qualified optional writer can run.
+    """
+    name='tools/weekly_public_feed.py'
+    descriptor=next((item for item in fingerprint['files'] if item['path']==name),{})
+    module=_weekly_source_module(code,name,descriptor)
+    original=module.registration_objects(code)
+    if not isinstance(original,dict) or not 0<len(original)<=8:
+        raise RuntimeError('Closed public registration object set required')
+    for oid,item in original.items():
+        if (not _hex(oid,HEX40) or set(item)!={'type','body'} or item['type'] not in ('commit','tree','blob')
+                or type(item['body']) is not bytes or len(item['body'])>1<<20
+                or hashlib.sha1(item['type'].encode()+b' '+str(len(item['body'])).encode()+b'\0'+item['body']).hexdigest()!=oid):
+            raise RuntimeError('Public registration Git object changed')
+        result=subprocess.run(['git','--no-replace-objects','-c','core.hooksPath=/dev/null','-C',str(root),
+            'hash-object','-t',item['type'],'-w','--stdin'],input=item['body'],capture_output=True,check=True,timeout=15)
+        if result.stdout.decode().strip()!=oid:raise RuntimeError('Public registration Git write identity changed')
+    if module.registration_objects(root)!=original:
+        raise RuntimeError('Destination public registration closure differs')
 
 
 def sample_capture(code,root,result):

@@ -1728,6 +1728,79 @@ legacy gzip receipt behavior is retained. Focused growth, type, encoding,
 identity and interoperability controls passed. The required UI entrypoint also
 runs the imported overlay controls: 250 reported assertions/checks passed in the
 combined fictional Node run. These are software controls, not an actual browser,
-aggregate resource, hosted updater or public-deployment result. The current live
+aggregate resource, hosted updater or public-deployment result. The then-current live
 Pages backup was separately retrieved and all 25 files matched its immutable
 main-data commit; it is preserved in addition to earlier release evidence.
+
+### Selected-ranking coexistence — 2026-10-25
+
+The separate selected-ranking implementation merged through PR #4, followed by
+its caption correction. The current integration starts from Phase 2 source
+`e415912` and the actual main snapshot `89512ed`. It preserves the selected
+forecast display, provisional selected Top cards and selected-gap/value sorts
+alongside Phase 2 grading, accuracy and private paper tickets. This work does not
+replace the expanded app with the smaller main app or alter a forecasting model.
+
+Selected Top membership has its own prospective policy and completion evidence.
+It is not the historical reference Top cohort, the registered Biggest-lean or
+Projected-points strategy, or an accuracy observation. Reference comparisons
+continue to use their exact saved rows and model/engine/source/timing context.
+The interface labels current reference fallbacks and preserves historical R0
+identities. No missing historical selected strategy is reconstructed from a
+display sort or later outcome.
+
+The active selected-ranking pointer, body, completion and every required frozen
+origin are checked as one complete graph. Bodies retain their 256 KiB cap and
+receipts/pointers their 4 KiB caps. Source and destination reads remain bounded
+and freshly checked, including copying races; an unavailable or corrupt required
+origin is not replaced by another generation. Original thirteen-path and active
+fourteen-path registrations remain distinct retained Git identities. The
+current corrected execution registration binds the actual fourteen code paths
+without repinning the original model, catalog or experiment.
+
+The initial frontend passed 314 reported Node checks, 106 primary-render checks
+and 80 selected-ranking checks. Independent review then reproduced a missing
+physical-overlay binding using a consistently rehashed wrong-overlay pair.
+The repaired app reads the same two bounded overlay assets under one monotonic
+four-second deadline and binds rankings to the actual loaded bytes. The changed
+source passed 335 combined Node checks and 99 selected-ranking checks, including
+17 controlled Chromium checks at 320/390/1280. Browser fixture pages were
+intercepted at a secure origin; no external HTTP ran. These suites overlap and
+are not additive end-to-end test counts. The initial defect and old test receipts
+remain retained. Sixteen critical outcome, unknown-TD, My Picks, paper-ticket
+and grading functions were checked byte-for-byte against the starting source.
+The sparse local source initially lacked the board required by the About test.
+A later run with the exact current public board reached an obsolete baseline-only
+About assertion. Its narrow test correction is a separate ordinary scope step;
+the truthful selected/reference caption is preserved. Final checkout CI remains
+required. No physical Safari,
+throttled full-page transfer or public deployment claim follows from these tests.
+
+Status: selected-ranking coexistence implemented in the integration candidate;
+focused frontend tests passed. Complete source/integration CI, operating
+qualification, generated production artifact review, deployment and actual
+public verification remain pending. The earlier 985.876494-second updater-unit
+planning miss, full-fixture OOM and all original evidence remain retained.
+No full admitted 24-generation seed or season-long capacity is claimed. This
+checkpoint does not deploy the expanded grading, accuracy or paper builder.
+
+The later main `89512ed` Pages backup was downloaded and verified independently:
+32 files, 10,404,461 published bytes and a 10,444,800-byte uploader tar. Every file
+matched that immutable main tree; the ZIP SHA-256 is
+`f3a804a0644b446761449905c125a8ca11950403455caa7dc275436f4c9d5132`.
+It preserves the public selected-ranking deployment, rather than proving a
+modern Phase 2 recovery or a permanent artifact-retention arrangement.
+
+A connected frozen-origin control also reproduced inconsistent original period
+and receipt descriptor acceptance. The ranking reader now cross-checks original
+season/week, receipt bytes, board/overlay identities and preparation/completion
+clocks. The valid historical-publisher/current-publisher transition remains
+supported without changing original receipts. The retained 80-test backend run
+and subsequent ten affected-method run overlap; six rehashed negative controls
+cover this repair. Complete source/integration CI remains separate.
+
+The preceding ordinary intermediate `e415912` finished CI with 1,180 tests,
+12 errors and two failures. Missing uninstalled protected assets and mismatched
+controller bindings were reported; the Node subprocess also returned nonzero.
+This was an explicitly nonreleaseable intermediate, and its failure remains
+preserved. It is not a green result for this candidate or its later merge.

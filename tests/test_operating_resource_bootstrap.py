@@ -21,6 +21,15 @@ spec = importlib.util.spec_from_file_location('bootstrap_under_test', ROOT/'tool
 b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
 
 
+def changed_actual_controller_contract(raw):
+    start=b'          import datetime as dt, gzip, hashlib, json, math, os, re, resource, signal, stat, subprocess, sys, tarfile, time\n'
+    end=b"          if __name__=='__main__':main()\n"
+    first,last=raw.index(start),raw.index(end)+len(end)
+    block=raw[first:last];changed=block.replace(b'genuine-current-production-controller-v3',b'genuine-current-production-controller-v9',1)
+    if changed==block:raise AssertionError('Actual current controller contract unavailable')
+    return raw[:first]+changed+raw[last:]
+
+
 def args(code=Path('/fictional/code'), **changes):
     value = dict(unit='nfl-operating-123-1.service', memory_max=8*1024**3, uid=1001, gid=1001,
                  run_id=123, sample=1, code=code, critical_path=['/fictional/dependencies'], capability_only=False)
@@ -162,6 +171,24 @@ class SourceClosure(unittest.TestCase):
         value=self.check()
         self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.CURRENT_MAIN_WEEKLY_INTEGRITY)
         self.assertEqual(len(b.SEED_CONTRACTS[b.FINISHED22_SEED_INTEGRITY]),12)
+
+    def test_ranked_genuine_closure_requires_actual_ranker_source_and_fresh_bytes(self):
+        commit=subprocess.check_output(['git','-C',str(SOURCE),'rev-parse','HEAD'],text=True).strip()
+        driver=b.genuine_driver(SOURCE,commit)
+        self.assertEqual(b.GENUINE_DRIVER_CONTRACTS[b.sha(driver)],b.RANKING_CONTRACT)
+        names=set(b.RANKING_FILES)|{b.GENUINE_WORKFLOW,'tools/genuine_case_recovery.py'}
+        for name in names:
+            body=(SOURCE/name).read_bytes();path=self.code/name;path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_bytes(body);self.objects[name]=body
+        def checked():
+            with patch.object(b,'__file__',str(self.code/'tools/operating_resource_bootstrap.py')), \
+                    patch.object(b,'git',side_effect=self.git),patch.object(b,'genuine_driver',return_value=driver), \
+                    patch.dict(os.environ,GITHUB_SHA='1'*40):return b.closure(self.code,genuine=True)
+        value=checked()
+        self.assertTrue(set(b.RANKING_FILES)<=set(value['files']))
+        path=self.code/'tools/weekly_selected_rankings.py';original=path.read_bytes();info=path.stat()
+        path.write_bytes(original[:-1]+bytes([original[-1]^1]));os.utime(path,ns=(info.st_atime_ns,info.st_mtime_ns))
+        with self.assertRaisesRegex(RuntimeError,'differs from committed source'):checked()
 
     def test_retained_finished22_contract_uses_actual_5eb_source_bytes(self):
         old='5eb4a2f07750951df8a6e348eb46d08f8fe7fd3d'
@@ -413,22 +440,23 @@ class GenuineRoute(unittest.TestCase):
         self.assertFalse(b.arguments(raw).genuine_case)
     def test_actual_reviewed_inline_source_bytes_and_changed_source_rejected(self):
         commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
-        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),35468);self.assertEqual(b.sha(raw),b.GENUINE_DRIVER)
+        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),36877);self.assertEqual(b.sha(raw),b.GENUINE_DRIVER)
         with patch.object(b,'git',return_value=b'not the actual source'):
             with self.assertRaisesRegex(RuntimeError,'actual source'):b.genuine_driver(ROOT,commit)
         original=(ROOT/b.GENUINE_WORKFLOW).read_bytes()
-        changed=original.replace(b'genuine-current-production-controller-v2',b'genuine-current-production-controller-v9',1)
+        changed=changed_actual_controller_contract(original)
         self.assertNotEqual(changed,original);self.assertEqual(len(changed),len(original))
         with patch.object(b,'regular_bytes',return_value=changed),patch.object(b,'git',return_value=changed):
             with self.assertRaisesRegex(RuntimeError,'Unknown genuine controller'):b.genuine_driver(ROOT,commit)
     def test_legacy_controller_reader_keeps_actual_retained_source_association(self):
-        legacy='25826e015e70cad74a375e9a5028e7cada5d5c88'
-        # Read the real retained Git object; mock only its physical replay root.
-        original=subprocess.check_output(['git','-C',str(ROOT),'show',legacy+':'+b.GENUINE_WORKFLOW])
-        with patch.object(b,'regular_bytes',return_value=original),patch.object(b,'git',return_value=original):
-            raw=b.genuine_driver(ROOT,legacy)
-        self.assertEqual(len(raw),30854);self.assertEqual(b.sha(raw),b.LEGACY_GENUINE_DRIVER)
-        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.GENUINE_DRIVER:35468})
+        for legacy,digest,length in [('25826e015e70cad74a375e9a5028e7cada5d5c88',b.LEGACY_GENUINE_DRIVER,30854),
+                ('e415912b9c3d3ff52e8f435517af02e794d97fa4',b.WEEKLY_GENUINE_DRIVER,35468)]:
+            # Read the real retained Git object; mock only its physical replay root.
+            original=subprocess.check_output(['git','-C',str(ROOT),'show',legacy+':'+b.GENUINE_WORKFLOW])
+            with patch.object(b,'regular_bytes',return_value=original),patch.object(b,'git',return_value=original):
+                raw=b.genuine_driver(ROOT,legacy)
+            self.assertEqual(len(raw),length);self.assertEqual(b.sha(raw),digest)
+        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.WEEKLY_GENUINE_DRIVER:35468,b.GENUINE_DRIVER:36877})
     def test_direct_data_only_descendant_and_unchanged_source(self):
         def git(code,*argv):
             if argv==('rev-parse','HEAD'):return b'2'*40
@@ -636,6 +664,18 @@ class GenuineRecovery(unittest.TestCase):
                 with self.assertRaises(ValueError):r.encoded(path,limit=1)
             link=path.with_name('link');link.symlink_to(path)
             with self.assertRaisesRegex(ValueError,'NONREGULAR'):r.encoded(link)
+
+    def test_encoded_reader_does_not_block_when_regular_file_is_replaced_by_fifo(self):
+        r=self.r
+        with tempfile.TemporaryDirectory() as raw:
+            path=Path(raw)/'record';path.write_bytes(b'fictional')
+            opening=r.os.open
+            def replace(name,flags):
+                self.assertTrue(flags&os.O_NONBLOCK)
+                path.unlink();os.mkfifo(path)
+                return opening(name,flags)
+            with patch.object(r.os,'open',side_effect=replace),self.assertRaisesRegex(ValueError,'FILE_REPLACED'):
+                r.encoded(path,True)
     def test_union_baseline_skips_both_saved_versions_and_hides_unknown_names(self):
         r=self.r
         with tempfile.TemporaryDirectory() as raw:
@@ -824,6 +864,39 @@ class GenuineRecovery(unittest.TestCase):
                 with patch.object(r.types,'ModuleType') as execution:
                     with self.assertRaisesRegex(ValueError,'DEPENDENCY_DIFFERS_FROM_DISPATCH'):r.checked_source_ci(root,'a'*40)
                     execution.assert_not_called()
+
+    def test_new_ranker_dependency_is_git_bound_before_loading(self):
+        import hashlib
+        r=self.r;name='tools/weekly_selected_rankings.py';expected=(ROOT/name).read_bytes()
+        with tempfile.TemporaryDirectory() as raw:
+            root=Path(raw);path=root/name;path.parent.mkdir();path.write_bytes(expected)
+            oid=hashlib.sha1(b'blob '+str(len(expected)).encode()+b'\0'+expected).hexdigest()
+            def git(_root,*args):
+                if args[0]=='ls-tree':return ('100644 blob '+oid+'\t'+name+'\0').encode()
+                if args[:2]==('cat-file','-s'):return str(len(expected)).encode()
+                if args[0]=='cat-file':return expected
+                raise AssertionError(args)
+            with patch.object(r,'fixed_git',side_effect=git):
+                self.assertEqual(r.authenticated_bytes(root,'a'*40,name),expected)
+                info=path.stat();path.write_bytes(expected[:-1]+bytes([expected[-1]^1]));os.utime(path,ns=(info.st_atime_ns,info.st_mtime_ns))
+                with self.assertRaisesRegex(ValueError,'DEPENDENCY_DIFFERS_FROM_DISPATCH'):
+                    r.authenticated_bytes(root,'a'*40,name)
+
+    def test_ranker_exec_uses_authenticated_overlay_and_restores_import_namespace(self):
+        import types
+        import weekly_adaptive_overlay as w
+        r=self.r;raw=(ROOT/'tools/weekly_selected_rankings.py').read_bytes()
+        untrusted=types.ModuleType('weekly_adaptive_overlay')
+        untrusted.digest=lambda _:self.fail('Unchecked imported overlay was used')
+        with patch.dict(sys.modules,weekly_adaptive_overlay=untrusted),patch.object(r,'authenticated_bytes',return_value=raw) as source:
+            checked=r.checked_rankings(Path('/fictional/source'),'a'*40,w)
+            source.assert_called_once_with(Path('/fictional/source'),'a'*40,'tools/weekly_selected_rankings.py')
+            self.assertIs(checked.overlay,w);self.assertIs(sys.modules['weekly_adaptive_overlay'],untrusted)
+            self.assertEqual(checked.POLICY_SHA,w.digest(checked.POLICY))
+        with patch.dict(sys.modules,weekly_adaptive_overlay=untrusted),patch.object(r,'authenticated_bytes',side_effect=r.Rejected('DEPENDENCY_DIFFERS_FROM_DISPATCH')),patch.object(r.types,'ModuleType') as execution:
+            with self.assertRaisesRegex(ValueError,'DEPENDENCY_DIFFERS_FROM_DISPATCH'):
+                r.checked_rankings(Path('/fictional/source'),'a'*40,w)
+            execution.assert_not_called();self.assertIs(sys.modules['weekly_adaptive_overlay'],untrusted)
     def test_real_local_source_ci_dependency_is_verified_before_use(self):
         r=self.r;head=subprocess.check_output(['/usr/bin/git','-C',str(SOURCE),'rev-parse','HEAD']).decode().strip()
         checked=r.checked_source_ci(SOURCE,head)
@@ -999,14 +1072,210 @@ class GenuineRecovery(unittest.TestCase):
         r=self.r;original=(ROOT/r.WORKFLOW).read_bytes()
         with patch.object(r,'authenticated_bytes',return_value=original):
             self.assertEqual(r.checked_driver(ROOT,'a'*40),r.DRIVER)
-        changed=original.replace(b'genuine-current-production-controller-v2',b'genuine-current-production-controller-v9',1)
+        changed=changed_actual_controller_contract(original)
         self.assertNotEqual(changed,original);self.assertEqual(len(changed),len(original))
         with patch.object(r,'authenticated_bytes',return_value=changed):
             with self.assertRaisesRegex(ValueError,'CLOSED_DRIVER_IDENTITY'):r.checked_driver(ROOT,'a'*40)
-        legacy=subprocess.check_output(['git','-C',str(ROOT),'show','25826e015e70cad74a375e9a5028e7cada5d5c88:'+r.WORKFLOW])
-        with patch.object(r,'authenticated_bytes',return_value=legacy):
-            self.assertEqual(r.checked_driver(ROOT,'25826e015e70cad74a375e9a5028e7cada5d5c88'),r.LEGACY_DRIVER)
-        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.DRIVER:35468})
+        for source,digest in [('25826e015e70cad74a375e9a5028e7cada5d5c88',r.LEGACY_DRIVER),
+                ('e415912b9c3d3ff52e8f435517af02e794d97fa4',r.WEEKLY_DRIVER)]:
+            legacy=subprocess.check_output(['git','-C',str(ROOT),'show',source+':'+r.WORKFLOW])
+            with patch.object(r,'authenticated_bytes',return_value=legacy):
+                self.assertEqual(r.checked_driver(ROOT,source),digest)
+        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.WEEKLY_DRIVER:35468,r.DRIVER:36877})
+
+    def ranked_fixture(self, directory):
+        import weekly_adaptive_overlay as w
+        import weekly_selected_rankings as rankings
+        from test_weekly_selected_rankings import fixture, NOW, PERSIST
+        root=Path(directory)/'root';output=root/'output';data=output/'data';data.mkdir(parents=True)
+        board,doc=fixture()
+        def save(path,value):
+            path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(w.canonical(value))
+        save(data/'week.json',board);w.write_public(doc,data,save)
+        (output/self.r.WEEKLY_JS).write_bytes(b'// Fictional authenticated static\n')
+        original=rankings.prepare(board,w.digest(board),doc,w.digest(doc),now=NOW,website_source_sha='b'*40)
+        original_pointer=rankings.write_public(original,data,save,clock=lambda:PERSIST)
+        board['games'][0]['state']='in';board['generated_at']='2031-10-25T18:00:00+00:00'
+        doc=w.prepare_overlay(board,w.digest(board),{},{},website_source_sha='c'*40,
+            prepared_at='2031-10-25T18:00:00+00:00',previous=doc)
+        save(data/'week.json',board);w.write_public(doc,data,save)
+        current=rankings.prepare(board,w.digest(board),doc,w.digest(doc),now='2031-10-25T18:00:00+00:00',
+            website_source_sha='c'*40,previous=original,previous_receipt=original_pointer)
+        pointer=rankings.write_public(current,data,save,clock=lambda:'2031-10-25T18:00:01+00:00')
+        names=w.stage_assets(root)
+        files={name:(output/name).read_bytes() for name in names};files['data/week.json']=(data/'week.json').read_bytes()
+        return root,w,rankings,current,pointer,files
+
+    def test_ranked_graph_keeps_frozen_original_source_and_rejects_missing_corrupt_extra(self):
+        r=self.r
+        with tempfile.TemporaryDirectory() as directory:
+            _,w,rankings,current,pointer,files=self.ranked_fixture(directory)
+            self.assertEqual(len(current['frozen_proofs']),2);self.assertGreaterEqual(len(files),9)
+            origin='data/weekly-selected-rankings/'+current['frozen_proofs'][0]['receipt_sha256']+'.receipt.json'
+            original_body='data/'+r.parsed(files[origin])['path']
+            self.assertEqual(r.parsed(files[original_body])['website_source_sha'],'b'*40)
+            self.assertEqual(current['website_source_sha'],'c'*40)
+            with patch.object(r,'weekly_overlay',w),patch.object(r,'weekly_rankings',rankings),patch.object(r,'weekly_static',files[r.WEEKLY_JS]):
+                r.weekly_pages(files,'c'*40)
+                for name in (origin,original_body,r.RANKING_POINTER):
+                    changed=dict(files);changed.pop(name)
+                    with self.subTest(missing=name),self.assertRaises(ValueError):r.weekly_pages(changed,'c'*40)
+                changed=dict(files);changed[origin]=b'X'+changed[origin][1:]
+                with self.assertRaises(ValueError):r.weekly_pages(changed,'c'*40)
+                changed=dict(files);changed['data/weekly-selected-rankings/'+'0'*64+'.json']=b'{}'
+                with self.assertRaises(ValueError):r.weekly_pages(changed,'c'*40)
+                with self.assertRaises(ValueError):r.weekly_pages(files,'d'*40)
+
+    def test_ranked_roles_enforce_plain_per_role_caps_before_open_and_preserve_valid_neighbor(self):
+        import gzip
+        r=self.r
+        with tempfile.TemporaryDirectory() as directory:
+            root,w,rankings,current,pointer,files=self.ranked_fixture(directory)
+            with patch.object(r,'weekly_rankings',rankings):
+                for name,body in files.items():
+                    description=rankings.public_role(name)
+                    if description is None:continue
+                    logical='output/'+name;kind=r.role(logical)
+                    self.assertEqual(r.recording_limit(logical,kind),description[1])
+                    self.assertEqual(r.weekly_json(logical,body),r.parsed(body))
+                    with self.subTest(gzip=name),self.assertRaisesRegex(ValueError,'PLAIN_JSON'):
+                        r.weekly_json(logical,gzip.compress(body,mtime=0))
+                audit_name,audit_body=self.audit_fixture();neighbor=root/audit_name;neighbor.parent.mkdir(parents=True);neighbor.write_bytes(audit_body)
+                target=root/'output'/r.RANKING_POINTER
+                with target.open('wb') as stream:stream.truncate(4097)
+                recordings,records=r.recover([('source',root)],{})
+                self.assertIn(audit_body,self.members(recordings).values())
+                failed=next(v for v in records if v.get('logical_path')=='output/'+r.RANKING_POINTER)
+                self.assertEqual(failed['reason'],'ENCODED_BOUND')
+                encoded=r.encoded;calls=[]
+                def bounded(path,retain=False,limit=None):
+                    if path==target:calls.append((retain,limit))
+                    return encoded(path,retain,limit)
+                with patch.object(r,'encoded',side_effect=bounded):r.recover([('source',root)],{})
+                self.assertEqual(calls,[(False,4096)])
+
+    def test_ranked_complete_controller_requires_v3_and_failed_outputs_remain_unqualified(self):
+        r=self.r
+        with tempfile.TemporaryDirectory() as directory:
+            _,w,rankings,current,pointer,files=self.ranked_fixture(directory)
+            archive,_=self.controller_fixture();entries=r.tar_entries(archive)
+            case=r.parsed(entries['RELEASE_CASE_MANIFEST.json']);case.update(source='c'*40,
+                controller_contract=r.WEEKLY_CONTRACT,reviewed_main_base=r.REVIEWED_MAIN[r.WEEKLY_CONTRACT][0],
+                reviewed_main_source_tree=r.REVIEWED_MAIN[r.WEEKLY_CONTRACT][1])
+            entries['INPUT_DATA_MANIFEST.json']=r.canonical(dict(source='c'*40))
+            entries['RELEASE_CASE_MANIFEST.json']=r.canonical(case)
+            entries['PAGES_MEMBERS_MANIFEST.json']=r.canonical({n:dict(bytes=len(v),sha256=r.sha(v)) for n,v in files.items()})
+            entries['public-pages.tar']=self.tar(files,True)
+            with patch.object(r,'weekly_overlay',w),patch.object(r,'weekly_rankings',rankings),patch.object(r,'weekly_static',files[r.WEEKLY_JS]):
+                with self.assertRaisesRegex(ValueError,'RANKING_CONTROLLER_REQUIRED'):
+                    r.controller_archive(self.tar(entries),'c'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE')
+                case.update(controller_contract=r.RANKING_CONTRACT,reviewed_main_base=r.REVIEWED_MAIN[r.RANKING_CONTRACT][0],
+                    reviewed_main_source_tree=r.REVIEWED_MAIN[r.RANKING_CONTRACT][1])
+                entries['RELEASE_CASE_MANIFEST.json']=r.canonical(case)
+                r.controller_archive(self.tar(entries),'c'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE')
+                self.assertEqual(r.DRIVER_CONTRACTS[r.DRIVER],r.RANKING_CONTRACT)
+                r.controller_archive(self.tar(entries),'c'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.DRIVER)
+                with self.assertRaisesRegex(ValueError,'CONTROLLER_SOURCE_CONTRACT'):
+                    r.controller_archive(self.tar(entries),'c'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.WEEKLY_DRIVER)
+                with self.assertRaisesRegex(ValueError,'CONTROLLER_SOURCE_CONTRACT'):
+                    r.controller_archive(self.tar(entries),'c'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver='0'*64)
+                case['status']='FAILED';entries['RELEASE_CASE_MANIFEST.json']=r.canonical(case)
+                entries.pop('public-pages.tar');entries['PAGES_MEMBERS_MANIFEST.json']=b'{}'
+                outputs=r.parsed(entries['OUTPUT_DATA_MANIFEST.json'])
+                for name,body in files.items():
+                    if rankings.public_role(name) is None:continue
+                    logical='output/'+name;storage='mutable/'+logical;info=dict(bytes=len(body),sha256=r.sha(body))
+                    outputs['after'][logical]=info;outputs['representations'][logical]=dict(info,storage=storage);entries[storage]=body
+                entries['OUTPUT_DATA_MANIFEST.json']=r.canonical(outputs)
+                preserved=r.controller_archive(self.tar(entries),'c'*40,'FAILED')
+                self.assertEqual(preserved['RELEASE_CASE_MANIFEST.json']['status'],'FAILED')
+                case['controller_contract']=r.WEEKLY_CONTRACT;case['reviewed_main_base'],case['reviewed_main_source_tree']=r.REVIEWED_MAIN[r.WEEKLY_CONTRACT]
+                entries['RELEASE_CASE_MANIFEST.json']=r.canonical(case)
+                with self.assertRaisesRegex(ValueError,'RANKING_CONTROLLER_REQUIRED'):
+                    r.controller_archive(self.tar(entries),'c'*40,'FAILED')
+
+
+class GenuineRawRankedRetention(unittest.TestCase):
+    """Execute actual installed inline controller helpers; never main/providers."""
+
+    def controller(self):
+        import types
+        commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
+        raw=b.genuine_driver(ROOT,commit)
+        self.assertEqual(b.sha(raw),b.GENUINE_DRIVER)
+        module=types.ModuleType('genuine_installed_controller_under_test')
+        exec(compile(raw,str(ROOT/b.GENUINE_WORKFLOW)+'::genuine-controller','exec'),module.__dict__)
+        self.assertEqual(module.CONTROLLER_CONTRACT,b.RANKING_CONTRACT)
+        return module
+
+    def fixture(self,directory):
+        helper=GenuineRecovery();helper.setUp()
+        return helper.ranked_fixture(directory)
+
+    def test_later_failure_preserves_all_five_typed_ranked_assets_as_unqualified_mutable(self):
+        raw=self.controller()
+        with tempfile.TemporaryDirectory() as directory:
+            root,w,rankings,current,pointer,files=self.fixture(directory)
+            expected={'mutable/output/'+name for name in files if rankings.public_role(name) is not None}
+            self.assertEqual(len(expected),5)
+            original={name:(root/name[len('mutable/'):]).read_bytes() for name in expected}
+            after=raw.inventory(root)
+            payload,native,errors=raw.collect_receipts(root,{},after)
+            self.assertEqual({name for name,_ in payload},expected)
+            self.assertEqual(native,[]);self.assertEqual(errors,[])
+            payload,native,representations,failure,errors=raw.retention_delta(root,{},after,{},None)
+            self.assertEqual(failure,'NO_COMPLETE_PAGES_TAR');self.assertEqual(native,[]);self.assertEqual(errors,[])
+            self.assertEqual({name for name,_ in payload},expected)
+            self.assertEqual(set(representations),{name[len('mutable/'):] for name in expected})
+            for name,path in payload:
+                self.assertEqual(path.read_bytes(),original[name]);logical=name[len('mutable/'):]
+                self.assertEqual(representations[logical],dict(after[logical],storage=name))
+
+    def test_invalid_ranked_neighbor_is_not_exported_and_valid_typed_bytes_are_preserved(self):
+        import gzip
+        raw=self.controller()
+        for mutation in ('gzip_pointer','oversized_body','corrupt_origin_receipt','unclassified'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                root,w,rankings,current,pointer,files=self.fixture(directory)
+                expected={'mutable/output/'+name for name in files if rankings.public_role(name) is not None}
+                if mutation=='gzip_pointer':
+                    path=root/'output/data/weekly-selected-rankings.json';path.write_bytes(gzip.compress(path.read_bytes(),mtime=0))
+                elif mutation=='oversized_body':
+                    path=root/'output/data'/pointer['path']
+                    with path.open('r+b') as stream:stream.truncate(rankings.LIMIT+1)
+                elif mutation=='corrupt_origin_receipt':
+                    path=root/'output/data/weekly-selected-rankings'/(current['frozen_proofs'][0]['receipt_sha256']+'.receipt.json')
+                    path.write_bytes(b'X'+path.read_bytes()[1:])
+                else:
+                    path=root/'output/data/weekly-selected-rankings/unclassified.json';path.write_bytes(b'{}')
+                bad=path.relative_to(root).as_posix();after=raw.inventory(root)
+                payload,native,errors=raw.collect_receipts(root,{},after)
+                self.assertEqual(native,[]);self.assertTrue(any(v['path']==bad for v in errors))
+                self.assertEqual({name for name,_ in payload},expected-{'mutable/'+bad})
+                self.assertTrue(all(name!='mutable/'+bad for name,_ in payload))
+                for name,member in payload:self.assertEqual(w.sha(member.read_bytes()),after[name[len('mutable/'):]]['sha256'])
+                retained,native,representations,failure,again=raw.retention_delta(root,{},after,{},None)
+                self.assertEqual(failure,'RECEIPT_VALIDATION_ERRORS');self.assertEqual(native,[])
+                self.assertEqual({name for name,_ in retained},{name for name,_ in payload})
+                self.assertTrue(any(v['path']==bad for v in again))
+
+    def test_immutable_guard_detects_unused_original_ranking_and_overlay_changes(self):
+        from test_phase2_e2e import WeeklyRankedPagesGraphTests
+        raw=self.controller()
+        for kind in ('overlay_body','ranking_body','ranking_receipt'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as directory:
+                root,w,rankings,current,pointer,unused,_=WeeklyRankedPagesGraphTests().fixture(directory)
+                needed={'output/'+name for name in w.stage_assets(root)}
+                before=raw.inventory(root)
+                if kind=='overlay_body':names=[n for n in before if n.startswith('output/data/weekly-adaptive/') and n not in needed]
+                elif kind=='ranking_body':names=['output/data/'+n for n in unused if n.endswith('.json') and not n.endswith('.receipt.json')]
+                else:names=['output/data/'+n for n in unused if n.endswith('.receipt.json')]
+                self.assertTrue(names);name=names[0];self.assertNotIn(name,needed)
+                path=root/name;body=path.read_bytes();path.write_bytes(b'X'+body[1:])
+                after=raw.inventory(root);violations=raw.immutable_violations(before,after)
+                self.assertEqual([v['path'] for v in violations],[name])
+                self.assertEqual(violations[0]['before_sha256'],before[name]['sha256'])
+                self.assertEqual(violations[0]['after_sha256'],after[name]['sha256'])
 
 
 class DiagnosticLifetimeDependencyContract(unittest.TestCase):

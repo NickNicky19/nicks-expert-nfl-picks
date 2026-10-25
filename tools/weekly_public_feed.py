@@ -26,6 +26,13 @@ POLICY_V2="weekly-derived-selected-policy-v2"
 POLICY_V3="weekly-derived-selected-policy-v3"
 HISTORICAL_POLICY_PATH="config/weekly-derived-selected-policy-v2.json"
 HISTORICAL_POLICY_SHA256="45e51a07a077ce0aedede608fcef2ddb3592828a0734843d37a3991e6673a546"
+HISTORICAL_POLICY_SOURCE="315be5e86a1a3a93022b68c453739076487e2077"
+HISTORICAL_POLICY_TREE="dfdc11ac312a6a54c79e7379352106c315e13f5f"
+HISTORICAL_POLICY_BLOB="7474fb8b7a71fa9f4403805e9e21ce4add4c0310"
+ACTIVE_POLICY_SOURCE="89512ed952308dacc1f6a930915ddbcdccd460d9"
+ACTIVE_POLICY_TREE="c88d5b3740c820b30387ec2eaca2b0bceafd9a51"
+ACTIVE_POLICY_BLOB="27a50d900bcfc84363f3b581479cb4841bb1a134"
+ACTIVE_POLICY_SHA256="e8e037a00a22d3e0e07e41ed5816f2374e8f162a7fa78ea8cc45888ed2e2f094"
 CURRENT_EXECUTION="weekly-corrected-website-execution-v1"
 CURRENT_MODEL="sleeper-matchup-data-integrity-v2"
 AUTHORITY_V2="weekly-derived-publication-authority-v2"
@@ -37,7 +44,8 @@ PUBLICATION_FIELDS={"schema_version","authority_sha256","repository","source_sha
 MAX_BYTES=4<<20
 META_FIELDS={"schema_version","state","season","week","created_at","expires_at","producer_policy_sha256","rights_authority_sha256","rights_receipt_sha256","durability_receipt_sha256","r0_identity_sha256","identity_scope_sha256","rows","coverage"}
 ENGINE_FILES={"pull/build.py","pull/matchup.py","pull/scoring.py","pull/books.py","pull/gamemodel.py","pull/sources.py","pull/news.py"}
-CODE_FILES=ENGINE_FILES|{"config/release-mode.json","tools/reliability.py","tools/weekly_adaptive_overlay.py","tools/weekly_public_feed.py","output/app.js","output/weekly-adaptive-overlay.js"}
+LEGACY_CODE_FILES=ENGINE_FILES|{"config/release-mode.json","tools/reliability.py","tools/weekly_adaptive_overlay.py","tools/weekly_public_feed.py","output/app.js","output/weekly-adaptive-overlay.js"}
+CODE_FILES=LEGACY_CODE_FILES|{"tools/weekly_selected_rankings.py"}
 
 
 class FeedError(ValueError):pass
@@ -62,7 +70,7 @@ def policy_check(policy):
     require(policy.get("rights_authorities") and all(h(v) for v in policy["rights_authorities"]),"RIGHTS_REGISTRATION_PENDING")
     require(policy.get("r0_identities") and all(h(v) for v in policy["r0_identities"]),"R0_FREEZE_PENDING")
     require(h(policy.get("producer_policy_sha256")) and h(policy.get("source_policy_sha256")),"POLICY_SOURCE_HASH")
-    require(set(policy.get("engine_sha256",{}))==ENGINE_FILES and set(policy.get("website_code_sha256",{}))==CODE_FILES
+    require(set(policy.get("engine_sha256",{}))==ENGINE_FILES and set(policy.get("website_code_sha256",{}))==LEGACY_CODE_FILES
         and all(h(v) for v in policy["website_code_sha256"].values())
         and all(policy["engine_sha256"][k]==policy["website_code_sha256"][k] for k in ENGINE_FILES),"REGISTERED_ENGINE_INVENTORY")
     keys={"method_id","model_version","procedure_version","product","source_policy_sha256"}
@@ -322,7 +330,11 @@ def policy_check_v2(policy):
         and authority["catalog_registration_rule"]=="OWNED_SELECTED_VERSION_CATALOG_BEFORE_FEATURES_OR_VALUES","PUBLICATION_AUTHORITY_NOT_REGISTERED")
     require(policy.get("state")=="ROOT_REGISTERED" and policy.get("authority_kind")=="AUTOMATED_REGISTERED_POLICY"
         and policy.get("human_approval") is False and policy.get("public_raw_or_model_weights") is False,"REGISTERED_DERIVED_V2_POLICY_REQUIRED")
+    codes=policy.get("website_code_sha256",{})
+    require(type(codes) is dict and set(codes) in (LEGACY_CODE_FILES,CODE_FILES)
+        and all(h(value) for value in codes.values()),"REGISTERED_V2_CODE_INVENTORY")
     probe=copy.deepcopy(policy);probe["schema_version"]=POLICY
+    probe["website_code_sha256"].pop("tools/weekly_selected_rankings.py",None)
     for target,entries in probe.get("procedures",{}).items():
         require(isinstance(entries,list) and entries,"FIXED_PUBLICATION_RECIPES_REQUIRED")
         for entry in entries:
@@ -331,21 +343,74 @@ def policy_check_v2(policy):
     policy_check(probe)  # Original rights/R0/code/role/support gates stay required.
 
 
-def historical_policy_v2(root=None):
-    """Read the actual immutable public registration, never a caller's old label.
+def _registration_git(root,*args,data=None,limit=1<<20):
+    # Reuse the installed bounded command/environment machinery. This does not
+    # replace source-CI qualification or trust a working-tree policy pathname.
+    from source_ci import command,_git_environment
+    result,_=command(["git","--no-replace-objects","--no-lazy-fetch","-c","core.hooksPath=/dev/null",
+        "-c","core.fsmonitor=false","-C",str(root),*args],data=data,limit=limit,env=_git_environment())
+    return result
 
-    Its engine map and actual first-release R0 freeze retain their original
-    meaning. Current corrected website execution has a separate binding below.
-    """
+
+def _registration_object(root,oid,kind,bound):
+    require(type(oid) is str and re.fullmatch("[a-f0-9]{40}",oid),"REGISTRATION_OBJECT_ID")
+    request=(oid+"\n").encode()
+    checked=_registration_git(root,"cat-file","--batch-check",data=request,limit=256).decode().strip().split()
+    require(len(checked)==3 and checked[:2]==[oid,kind] and checked[2].isdigit()
+        and 0<int(checked[2])<=bound,"REGISTRATION_OBJECT_TYPE_SIZE")
+    size=int(checked[2]);stream=_registration_git(root,"cat-file","--batch",data=request,limit=size+256)
+    header,separator,body=stream.partition(b"\n")
+    require(separator and header.decode().split()==checked and len(body)==size+1 and body[-1:]==b"\n", "REGISTRATION_OBJECT_FRAMING")
+    body=body[:-1]
+    require(hashlib.sha1(kind.encode()+b" "+str(len(body)).encode()+b"\0"+body).hexdigest()==oid,"REGISTRATION_OBJECT_CONTENT")
+    return body
+
+
+def _registered_policy(root,source,tree,blob,expected,expected_bytes,*,objects_out=None):
     root=Path(root) if root is not None else Path(__file__).resolve().parents[1]
-    path=root/HISTORICAL_POLICY_PATH
-    require(not root.is_symlink() and path.resolve().is_relative_to(root.resolve())
-        and not any(p.is_symlink() for p in (path,*path.parents)),"HISTORICAL_POLICY_SCOPE")
-    require(path.is_file() and path.stat().st_size<=1<<20,"HISTORICAL_POLICY_BOUND")
-    with path.open("rb") as handle:body=handle.read((1<<20)+1)
-    require(len(body)<=1<<20 and sha(body)==HISTORICAL_POLICY_SHA256,"HISTORICAL_POLICY_IDENTITY")
-    historical=strict_public_json(body);policy_check_v2(historical)
-    return historical
+    commit=_registration_object(root,source,"commit",65536)
+    require(commit.splitlines()[0]==("tree "+tree).encode(),"REGISTRATION_SOURCE_TREE")
+    tree_body=_registration_object(root,tree,"tree",1<<20)
+    row=_registration_git(root,"ls-tree","-z",tree,"--","config",limit=512)
+    header,separator,name=row.partition(b"\t");fields=header.decode().split()
+    require(separator and name==b"config\0" and len(fields)==3 and fields[:2]==["040000","tree"],"REGISTRATION_CONFIG_TREE")
+    config_body=_registration_object(root,fields[2],"tree",1<<20)
+    leaf=_registration_git(root,"ls-tree","-z",fields[2],"--","weekly-derived-selected-policy-v2.json",limit=512)
+    require(leaf==("100644 blob "+blob+"\tweekly-derived-selected-policy-v2.json\0").encode(),"REGISTRATION_POLICY_PATH")
+    body=_registration_object(root,blob,"blob",1<<20)
+    require(len(body)==expected_bytes and sha(body)==expected,"REGISTRATION_POLICY_IDENTITY")
+    policy=strict_public_json(body);policy_check_v2(policy)
+    if objects_out is not None:
+        for oid,kind,value in ((source,"commit",commit),(tree,"tree",tree_body),(fields[2],"tree",config_body),(blob,"blob",body)):
+            if oid in objects_out:require(objects_out[oid]=={"type":kind,"body":value},"REGISTRATION_OBJECT_COLLISION")
+            objects_out[oid]={"type":kind,"body":value}
+    return policy
+
+
+def historical_policy_v2(root=None):
+    """Fresh exact315 commit/tree/blob bytes; the active pathname may advance."""
+    policy=_registered_policy(root,HISTORICAL_POLICY_SOURCE,HISTORICAL_POLICY_TREE,HISTORICAL_POLICY_BLOB,HISTORICAL_POLICY_SHA256,7706)
+    require(set(policy["website_code_sha256"])==LEGACY_CODE_FILES,"HISTORICAL_POLICY_CODE_SCOPE")
+    return policy
+
+
+def active_policy_v2(root=None):
+    """The separately registered14-path895 consumer; never the old R0 identity."""
+    policy=_registered_policy(root,ACTIVE_POLICY_SOURCE,ACTIVE_POLICY_TREE,ACTIVE_POLICY_BLOB,ACTIVE_POLICY_SHA256,7809)
+    require(set(policy["website_code_sha256"])==CODE_FILES,"ACTIVE_POLICY_CODE_SCOPE")
+    return policy
+
+
+def registration_objects(root):
+    """Fresh exact public315/895 policy source closure for derived-root transport.
+
+    These bytes are output-only, not a caller-supplied registration or engine
+    manifest. Both production policy readers still use their fixed identities.
+    """
+    objects={}
+    _registered_policy(root,HISTORICAL_POLICY_SOURCE,HISTORICAL_POLICY_TREE,HISTORICAL_POLICY_BLOB,HISTORICAL_POLICY_SHA256,7706,objects_out=objects)
+    _registered_policy(root,ACTIVE_POLICY_SOURCE,ACTIVE_POLICY_TREE,ACTIVE_POLICY_BLOB,ACTIVE_POLICY_SHA256,7809,objects_out=objects)
+    return objects
 
 
 def current_execution_contract(root=None):
@@ -361,19 +426,21 @@ def current_execution_contract(root=None):
 
 
 def policy_check_v3(policy,*,root=None):
-    """Website-only transition: historical R0 and current execution stay distinct.
-
-    Only the installed policy's current code inventory can change. The normal
-    writer still binds its physical file hash; source CI and every generation's
-    input/native/scope/clock checks remain separate and mandatory.
-    """
+    """Closed old13/current14 website dispatch; scientific R0 bytes stay original."""
     require(policy.get("schema_version")==POLICY_V3,"V3_POLICY_CONTRACT")
     historical=historical_policy_v2(root);execution=current_execution_contract(root)
-    require(set(policy)==set(historical)|{"historical_policy_sha256","current_execution"},"CLOSED_V3_POLICY_FIELDS")
     code=policy.get("website_code_sha256",{})
-    require(type(code) is dict and set(code)==CODE_FILES and all(h(v) for v in code.values()),"CLOSED_CURRENT_CODE_INVENTORY")
+    require(type(code) is dict and set(code) in (LEGACY_CODE_FILES,CODE_FILES) and all(h(v) for v in code.values()),"CLOSED_CURRENT_CODE_INVENTORY")
     require(all(code[name]==execution["engine_sha256"][name] for name in ENGINE_FILES),"CURRENT_ENGINE_CODE_MISMATCH")
     expected=copy.deepcopy(historical)
+    extras={"historical_policy_sha256","current_execution"}
+    if set(code)==CODE_FILES:
+        active=active_policy_v2(root)
+        require({k:v for k,v in active.items() if k!="website_code_sha256"}==
+            {k:v for k,v in historical.items() if k!="website_code_sha256"},"ACTIVE_SCIENTIFIC_REGISTRATION_CHANGED")
+        expected=copy.deepcopy(active);extras.add("active_policy_sha256")
+        expected["active_policy_sha256"]=ACTIVE_POLICY_SHA256
+    require(set(policy)==set(historical)|extras,"CLOSED_V3_POLICY_FIELDS")
     expected.update(schema_version=POLICY_V3,historical_policy_sha256=HISTORICAL_POLICY_SHA256,
         current_execution=execution,website_code_sha256=code)
     require(canonical(policy)==canonical(expected),"HISTORICAL_OR_CURRENT_EXECUTION_CHANGED")
@@ -387,6 +454,9 @@ def catalog_policy_v2(policy,catalog):
         and catalog["public_policy_registration"]=="REQUIRED_SEPARATELY; not automatic approval"
         and type(catalog["rows"]) is list and 0<len(catalog["rows"])<=256,"BEFORE_VALUES_VERSION_CATALOG_REQUIRED")
     effective=copy.deepcopy(policy);effective["schema_version"]=POLICY;effective["procedures"]={};seen=set()
+    # Only the row-semantics projection omits the ranking dependency. The
+    # original14-path policy/code review remains complete and source-bound.
+    effective["website_code_sha256"].pop("tools/weekly_selected_rankings.py",None)
     for row in catalog["rows"]:
         require(type(row) is dict and set(row)=={"category","method_id","procedure_version","model_version"}
             and h(row["procedure_version"]) and h(row["model_version"]) and digest(row) not in seen,"CLOSED_UNIQUE_ISSUED_VERSION_CATALOG")
@@ -520,9 +590,12 @@ def writer_input_v3(root,policy,board,*,website_source_sha,now,feed,fetch):
             authority_kind="AUTOMATED_REGISTERED_POLICY",human_approval=False,authority_policy_sha256=digest(policy),code_inventory_sha256=inventory,
             historical_policy_sha256=HISTORICAL_POLICY_SHA256,current_reference_model=CURRENT_MODEL,
             feed_sha256=digest(feed),reviewed_at=now,board_membership_sha256=feed["identity_scope_sha256"],publication_execution=proof)
-        return selected,review,dict(state="AUTOMATED_POLICY_ACCEPTED",rows=len(selected["rows"]),website_source_sha=website_source_sha,
+        if "active_policy_sha256" in policy:review["active_policy_sha256"]=policy["active_policy_sha256"]
+        receipt=dict(state="AUTOMATED_POLICY_ACCEPTED",rows=len(selected["rows"]),website_source_sha=website_source_sha,
             policy_sha256=digest(policy),review_sha256=digest(review),historical_policy_sha256=HISTORICAL_POLICY_SHA256,
             current_reference_model=CURRENT_MODEL,publication_execution=proof)
+        if "active_policy_sha256" in policy:receipt["active_policy_sha256"]=policy["active_policy_sha256"]
+        return selected,review,receipt
     except Exception as error:
         reason=str(error) if isinstance(error,FeedError) and re.fullmatch(r"[A-Z0-9_]+",str(error)) else "OPTIONAL_FEED_REJECTED"
         # A rejected modern policy never retries under the historical V2 policy.

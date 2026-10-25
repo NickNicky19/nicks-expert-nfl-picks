@@ -4,6 +4,7 @@
 const BROWSER_FAILURE_PHASES=Object.freeze(['B001','B002','B003','B004','B005','B006','B007','B008','B009','B010','B011','B012','B013','B014','B015','B016','B017','B018','B019','B020','B021','B022','B023','B024','B025','B026','B027','B028','B029']);
 const BROWSER_FAILURE_KINDS=Object.freeze(['ASSERTION','TIMEOUT','TYPE','REFERENCE','SYNTAX','RANGE','ERROR','OTHER','MODULE_NOT_FOUND','ENOENT','EACCES','ENOSPC','ENOMEM','FILESYSTEM_GUARD','BROWSER_DEADLINE']);
 let browserPhase='B001',browserViewport=0,browserDiagnosticIssued=false;
+const browserReviewStartedAt=Date.now();
 function browserFailureDiagnostic(error,forced='') {
   const names={AssertionError:'ASSERTION',TimeoutError:'TIMEOUT',TypeError:'TYPE',ReferenceError:'REFERENCE',SyntaxError:'SYNTAX',RangeError:'RANGE',Error:'ERROR'};
   const name=error&&typeof error.name==='string'?error.name:'';
@@ -27,6 +28,7 @@ const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const vm = require('node:vm');
+const cp = require('node:child_process');
 browserPhase='B002';
 const { chromium } = require('playwright');
 const argv = process.argv.slice(2);
@@ -95,6 +97,89 @@ function weeklyDisplayGraph(pointer,body,actualBoard,boardHash,source,helper) {
   return {pointer,doc};
 }
 // END WEEKLY DISPLAY GRAPH CONTRACT
+// BEGIN SELECTED RANKING GRAPH CONTRACT
+function rankingPublicLimit(name) {
+  if(name==='data/weekly-selected-rankings.json')return 4096;
+  if(/^data\/weekly-selected-rankings\/[a-f0-9]{64}\.receipt\.json$/.test(name))return 4096;
+  if(/^data\/weekly-selected-rankings\/[a-f0-9]{64}\.json$/.test(name))return 262144;
+  throw Error('RANKING_PUBLIC_PATH');
+}
+function rankingArtifactMembers(directory,io=fs) {
+  const result={},pointer='data/weekly-selected-rankings.json';
+  result[pointer]=readWeeklyAsset(path.join(directory,pointer),rankingPublicLimit(pointer),io);
+  const folder=path.join(directory,'data/weekly-selected-rankings'),info=io.lstatSync(folder);
+  assert.ok(info.isDirectory()&&!info.isSymbolicLink(),'RANKING_REGULAR_DIRECTORY');
+  const stream=io.opendirSync(folder);let count=0;
+  try{for(;;){const item=stream.readSync();if(!item)break;assert.ok(++count<=50,'RANKING_COMPLETE_GRAPH_BOUND');
+    const name='data/weekly-selected-rankings/'+item.name;
+    assert.ok(item.isFile()&&!item.isSymbolicLink(),'RANKING_REGULAR_MEMBER');
+    result[name]=readWeeklyAsset(path.join(directory,name),rankingPublicLimit(name),io);}}
+  finally{stream.closeSync();}
+  assert.ok(count>=2,'RANKING_CURRENT_BODY_AND_RECEIPT_REQUIRED');return result;
+}
+function checkedRankingSources(codeRoot,source,run=cp.execFileSync) {
+  assert.match(source,/^[a-f0-9]{40}$/);const sources={};
+  for(const name of ['weekly_adaptive_overlay.py','weekly_selected_rankings.py']){
+    const bytes=readWeeklyAsset(path.join(codeRoot,'tools',name),1<<20);
+    const original=run('git',['--no-lazy-fetch','--no-replace-objects','-c','core.hooksPath=/dev/null','-C',codeRoot,
+      'cat-file','blob',source+':tools/'+name],{timeout:10000,maxBuffer:1<<20,stdio:['ignore','pipe','pipe']});
+    assert.ok(bytes.equals(original),'RANKING_ACTUAL_IMMUTABLE_HELPER_SOURCE');
+    sources[name]={sha256:sha(bytes)};
+  }
+  return sources;
+}
+function validateRankingArtifact(directory,members,source,sources,expectedBoard,expectedOverlay,run=cp.execFileSync) {
+  // The actual versioned Python validator owns all original membership/proof
+  // semantics. Raw bytes preserve canonical float spelling and body identities.
+  const program=String.raw`import hashlib,json,os,stat,sys,types
+from pathlib import Path
+code=Path(sys.argv[1]);pages=Path(sys.argv[2]);request=json.loads(sys.argv[3])
+def read(path,cap):
+    assert not any(p.is_symlink() for p in (path,*path.parents))
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    with os.fdopen(fd,'rb') as stream:
+        first=os.fstat(stream.fileno());assert stat.S_ISREG(first.st_mode) and first.st_size<=cap
+        raw=stream.read(cap+1);last=os.fstat(stream.fileno());current=path.lstat()
+        identity=lambda value:(value.st_dev,value.st_ino,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
+        assert len(raw)<=cap and len(raw)==first.st_size and identity(first)==identity(last)==identity(current)
+    return raw
+for name in ('weekly_adaptive_overlay.py','weekly_selected_rankings.py'):
+    item=request['sources'][name];raw=read(code/'tools'/name,1<<20)
+    assert hashlib.sha256(raw).hexdigest()==item['sha256']
+    module=types.ModuleType(name[:-3]);module.__file__=str(code/'tools'/name)
+    sys.modules[name[:-3]]=module;exec(compile(raw,module.__file__,'exec'),module.__dict__)
+rank=sys.modules['weekly_selected_rankings'];overlay=sys.modules['weekly_adaptive_overlay']
+files={'data/weekly-selected-rankings.json':read(pages/'data/weekly-selected-rankings.json',4096)}
+folder=pages/'data/weekly-selected-rankings';assert folder.is_dir() and not folder.is_symlink()
+with os.scandir(folder) as entries:
+    for entry in entries:
+        assert len(files)<51 and entry.is_file(follow_symlinks=False)
+        name='data/weekly-selected-rankings/'+entry.name;role=rank.public_role(name);assert role is not None
+        files[name]=read(pages/name,role[1])
+board_body=read(pages/'data/week.json',16*1024**2)
+assert hashlib.sha256(board_body).hexdigest()==request['board_sha256']
+pointer=json.loads(read(pages/'data/weekly-adaptive-overlay.json',4096))
+assert pointer['sha256']==request['overlay_sha256'] and pointer['path']=='data/weekly-adaptive/'+pointer['sha256']+'.json'
+selected_body=read(pages/pointer['path'],4*1024**2)
+assert len(selected_body)==pointer['bytes'] and hashlib.sha256(selected_body).hexdigest()==pointer['sha256']
+board=json.loads(board_body);selected=json.loads(selected_body)
+required=rank.validate_public_graph(files,board,hashlib.sha256(board_body).hexdigest(),selected,website_source_sha=request['source'])
+assert set(files)==set(required)
+pointer=json.loads(files['data/weekly-selected-rankings.json']);doc=json.loads(files['data/'+pointer['path']])
+print(json.dumps(dict(required=sorted(required),source=doc['website_source_sha'],body_sha256=pointer['sha256'],
+    picks={side:len(items) for side,items in doc['picks'].items()},frozen_proofs=len(doc['frozen_proofs']),
+    bytes=sum(map(len,files.values())),members={name:dict(bytes=len(raw),sha256=hashlib.sha256(raw).hexdigest()) for name,raw in files.items()},
+    qualified_accuracy_claim=False),sort_keys=True))`;
+  const request=JSON.stringify({source,sources,board_sha256:expectedBoard,overlay_sha256:expectedOverlay});
+  assert.ok(Buffer.byteLength(request)<=4096,'RANKING_VALIDATION_BINDING_BOUND');
+  const bytes=run('python',['-I','-B','-c',program,path.resolve(__dirname,'..'),directory,request],
+    {timeout:30000,maxBuffer:65536,stdio:['ignore','pipe','pipe']});
+  const value=JSON.parse(bytes);assert.ok(Array.isArray(value.required)&&value.required.length<=51);
+  assert.equal(value.source,source);assert.deepEqual(value.required,Object.keys(members).sort());
+  for(const [name,raw]of Object.entries(members))assert.deepEqual(value.members[name],{bytes:raw.length,sha256:sha(raw)},'RANKING_DESTINATION_FRESH_BYTE_IDENTITY');
+  delete value.members;return value;
+}
+// END SELECTED RANKING GRAPH CONTRACT
 // BEGIN PUBLIC DEPLOYMENT REVIEW CONTRACT
 const PUBLIC_SITE='https://nicknicky19.github.io/nicks-expert-nfl-picks/';
 function publicDeploymentContract(value,url,actualGeneration,identityBytes,membersDigest) {
@@ -179,15 +264,22 @@ const weeklyBodyPath=path.join(root,weeklyPointer.path),weeklyModule={exports:{}
 vm.runInNewContext(weeklyScript.toString('utf8'),{module:weeklyModule},{timeout:2000});
 const weeklySaved=weeklyDisplayGraph(weeklyPointer,readWeeklyAsset(weeklyBodyPath,4*1024*1024),board,
   generation.bindings['data/week.json'],generation.source_sha,weeklyModule.exports);
+const rankingMembers=rankingArtifactMembers(root),rankingPointerBytes=rankingMembers['data/weekly-selected-rankings.json'];
+const rankingPointer=JSON.parse(rankingPointerBytes),rankingBodyBytes=rankingMembers['data/'+rankingPointer.path];
+const rankingSaved=JSON.parse(rankingBodyBytes);
+const rankingGraph=validateRankingArtifact(root,rankingMembers,generation.source_sha,
+  checkedRankingSources(path.resolve(__dirname,'..'),generation.source_sha),generation.bindings['data/week.json'],weeklyPointer.sha256);
 const result = {
   schema_version: 'actual-staged-release-browser-acceptance-v1', status: 'RUNNING',
-  started_at: new Date().toISOString(), source: marker.source,
+  started_at: new Date(browserReviewStartedAt).toISOString(), source: marker.source,
+  pre_browser_validation_seconds:(Date.now()-browserReviewStartedAt)/1000,
   app_sha256: appHash, generation_sha256: generation.generation_sha256,
   release_identity_file_sha256: sha(generationBytes), report_id: pointer.report_id,
   board_period: [board.season, board.week], original_board_generated_at: board.generated_at,
   weekly_display: {pointer_sha256:sha(weeklyPointerBytes),body_sha256:weeklyPointer.sha256,
     helper_sha256:sha(weeklyScript),website_source_sha:weeklySaved.doc.website_source_sha,
     state:weeklySaved.doc.state,rows:weeklySaved.doc.rows.length,qualified_accuracy_claim:false},
+  selected_rankings:{...rankingGraph,pointer_sha256:sha(rankingPointerBytes),qualified_reference_strategy_claim:false},
   contexts: [], checks: [], limitations: [
     'Local Chromium, not physical iPhone/Safari or deployed public acceptance.',
     'External requests are intercepted; zero provider requests are permitted.',
@@ -226,7 +318,7 @@ const server = http.createServer((req, res) => {
   } catch { res.writeHead(404); res.end('Unavailable static asset'); }
 });
 let browser;
-const hardStop = setTimeout(() => { reportBrowserFailure(null,'BROWSER_DEADLINE');result.status = 'FAIL'; result.error = 'Bounded 420-second browser review exhausted'; save(); if (browser) browser.close().finally(() => process.exit(2)); else process.exit(2); }, 420000);
+const hardStop = setTimeout(() => { reportBrowserFailure(null,'BROWSER_DEADLINE');result.status = 'FAIL'; result.error = 'Bounded 420-second browser review exhausted'; save(); if (browser) browser.close().finally(() => process.exit(2)); else process.exit(2); }, Math.max(1,420000-(Date.now()-browserReviewStartedAt)));
 const pageState = page => page.evaluate(() => ({ report_id: S.grading?.pointer.report_id, source: S.grading?.summary.source_sha,
   schema: S.grading?.summary.schema_version, report_schema: S.grading?.summary.report_schema_version,
   error: S.gradingError, part_error: S.grading?.partError, filters: { ...S.gradingFilters } }));
@@ -258,7 +350,8 @@ async function weeklyDisplay(page,network) {
       if(!primary||!primary.textContent.includes(selected.text))throw Error('Weekly primary caption/value mismatch');
       const text=template.content.textContent;
       const knownReference=row.product==='binary_probability'||pv(player,prop).adj!=null;
-      if(!/provisional/i.test(primary.textContent)||(knownReference&&!/Current reference (forecast|probability)/.test(text))||!text.includes('Lines, leans, ranking and saved selections use the reference model.'))throw Error('Weekly/reference captions conflated');
+      if(!/provisional/i.test(primary.textContent)||(knownReference&&!/Current reference (forecast|probability)/.test(text))||!text.includes('accuracy is still being evaluated')
+          ||(row.product!=='binary_probability'&&!text.includes('Top Picks use saved sportsbook lines')))throw Error('Weekly/reference captions conflated');
       examples.push({product:row.product,category:row.category,value:selected.value,frozen:selected.frozen,
         reference_status:knownReference?'KNOWN_SHOWN':'UNAVAILABLE_REFERENCE_FORECAST'});seen.add(row.product);
     }
@@ -274,6 +367,52 @@ async function weeklyDisplay(page,network) {
     visible_primary_cells:value.visible_primary_cells,
     selected_feed_coverage:weeklySaved.doc.rows.length?'ACTUAL_SAVED_PROVISIONAL_ROWS':'UNAVAILABLE_NO_ACCEPTED_SELECTED_ROWS',
     reference_board_and_storage_unchanged:true,provisional_rows_used_as_qualified_accuracy:false};
+}
+async function selectedRankingDisplay(page,network) {
+  await page.waitForFunction(()=>S.selectedRankings!==null,null,{timeout:12000});
+  const value=await page.evaluate(()=>({doc:S.selectedRankings,
+    board:JSON.stringify(S.data),reference_picks:JSON.stringify(S.data.picks),
+    record_caption:document.querySelector('#main')?.textContent||'',
+    rows:[...visibleTopPicks('over'),...visibleTopPicks('under')].length}));
+  assert.deepEqual(value.doc,rankingSaved,'Actual complete saved selected ranking document');
+  assert.match(value.record_caption,/not a track record for the separate provisional selected-forecast Top Picks/i);
+  const before=await records(page);await tab(page,'props');
+  const visible=await page.evaluate(()=>{
+    const over=visibleTopPicks('over'),under=visibleTopPicks('under');
+    for(const item of [...over,...under]){
+      const html=pickCard(item),template=document.createElement('template');template.innerHTML=html;
+      const label=item.forecast_source==='SELECTED'?'Selected':item.forecast_source==='R0_FALLBACK'?'Reference fallback':'Current reference';
+      if(!template.content.textContent.includes(label))throw Error('Selected Top source caption mismatch');
+      const add=template.content.querySelector('[data-add]');
+      if(!add||add.dataset.add!==[item.player_id,item.key,item.direction,item.line].join('|'))throw Error('Selected Top exact saved line');
+    }
+    return {over,under,board:JSON.stringify(S.data),reference_picks:JSON.stringify(S.data.picks),sort:S.f.sort};
+  });
+  assert.equal(visible.board,value.board);assert.equal(visible.reference_picks,value.reference_picks);
+  assert.deepEqual(await records(page),before);
+  assert.ok(network.some(r=>r.path==='data/weekly-selected-rankings.json'&&r.status===200));
+  assert.ok(network.some(r=>r.path==='data/'+rankingPointer.path&&r.status===200));
+  for(const name of rankingGraph.required.filter(n=>n.endsWith('.receipt.json')))assert.ok(!network.some(r=>r.path===name),'Proof dependencies are verified offline without eager browser downloads');
+  await tab(page,'record');await loaded(page);
+  return {visible_picks:{over:visible.over.length,under:visible.under.length},complete_proofs_verified:rankingGraph.frozen_proofs,
+    saved_stream_picks:rankingGraph.picks,reference_board_and_picks_unchanged:true,qualified_reference_history_or_accuracy:false};
+}
+async function missingSelectedRankings(page,cdp,blockedURLs,base) {
+  const before=await records(page),hash=await page.evaluate(()=>gradingHash(new TextEncoder().encode(JSON.stringify(S.data))));
+  try{
+    await cdp.send('Network.setCacheDisabled',{cacheDisabled:true});faultPath='/data/weekly-selected-rankings.json';
+    await cdp.send('Network.setBlockedURLs',{urls:[...blockedURLs,new URL('data/weekly-selected-rankings.json',base).href]});
+    await page.reload();await loaded(page);await page.waitForFunction(()=>S.weeklyOverlay!==null,null,{timeout:10000});await tab(page,'props');
+    await page.evaluate(()=>startSelectedRankings(S.data,S.weeklyOverlay,WeeklyAdaptiveOverlay));
+    const value=await page.evaluate(()=>({missing:S.selectedRankings===null,
+      over:visibleTopPicks('over'),under:visibleTopPicks('under'),original:S.data.picks,report:S.grading.pointer.report_id}));
+    assert.equal(value.missing,true);assert.deepEqual(value.over,value.original.over);assert.deepEqual(value.under,value.original.under);
+    assert.equal(value.report,pointer.report_id);assert.equal(await page.evaluate(()=>gradingHash(new TextEncoder().encode(JSON.stringify(S.data)))),hash);
+    assert.deepEqual(await records(page),before);
+  }finally{faultPath=null;await cdp.send('Network.setBlockedURLs',{urls:blockedURLs});await cdp.send('Network.setCacheDisabled',{cacheDisabled:false});}
+  await page.reload();await loaded(page);await page.waitForFunction(()=>S.selectedRankings!==null,null,{timeout:12000});
+  assert.deepEqual(await records(page),before);
+  return {status:'PASS_CONTROLLED_RANKING_DENIAL_EXPLICIT_REFERENCE_TOP_FALLBACK_AND_RECOVERY',qualified_accuracy_claim:false};
 }
 async function missingWeeklyDisplay(page,cdp,blockedURLs,base) {
   const before=await records(page),boardHash=await page.evaluate(()=>gradingHash(new TextEncoder().encode(JSON.stringify(S.data))));
@@ -542,7 +681,7 @@ async function ordinaryCache(page,cdp,network){
   let phase='';result.cache=[];
     const pointer=await page.evaluate(()=>S.grading.pointer),immutable='data/selection-grading/'+pointer.summary.path;
     const immutableHash=pointer.summary.encoded_sha256||pointer.summary.sha256;
-    for(const [relative,expectedHash] of [['app.js',expected.bindings['app.js']],[immutable,immutableHash]]){
+    for(const [relative,expectedHash] of [['app.js',expected.bindings['app.js']],[immutable,immutableHash],['data/'+rankingPointer.path,rankingPointer.sha256]]){
       phase='cache-warm';const first=await fetched(page,relative);assert.equal(first.sha256,expectedHash);
       const serverBefore=serverCounts.get(relative)||0,start=network.length;phase='cache-repeat';const second=await fetched(page,relative);assert.equal(second.sha256,expectedHash);
       await page.waitForTimeout(30);const details=phaseSummary('cache-repeat',start),response=details.responses.find(r=>r.path===relative);
@@ -605,6 +744,7 @@ browserPhase='B011';
 browserPhase='B012';
         await page.goto(origin+'#/record');review.state=await loaded(page);
         review.weekly_display=await weeklyDisplay(page,network);
+        review.selected_rankings=await selectedRankingDisplay(page,network);
 browserPhase='B013';
         const bindings=await page.evaluate(async names=>{const out={};for(const name of names){const r=await fetch(name,{cache:'no-store'});if(!r.ok)throw Error('Required actual binding unavailable');out[name]=await gradingHash(new Uint8Array(await r.arrayBuffer()));}return out;},['data/release-identity.json',...Object.keys(generation.bindings)]);
         assert.equal(bindings['data/release-identity.json'],sha(generationBytes));for(const [name,hash]of Object.entries(generation.bindings))assert.equal(bindings[name],hash);
@@ -645,6 +785,7 @@ browserPhase='B023';
         browserPhase='B025';review.ordinary_cache=await ordinaryCache(page,cdp,network);
         browserPhase='B026';review.missing_partition_and_recovery=await missingPartition(page,cdp,blockedURLs,origin);
         review.missing_weekly_display_and_recovery=await missingWeeklyDisplay(page,cdp,blockedURLs,origin);
+        review.missing_selected_rankings_and_recovery=await missingSelectedRankings(page,cdp,blockedURLs,origin);
         for(const item of review.paper.coverage)if(item.status.startsWith('UNAVAILABLE'))result.unavailable.push({width,...item});
         for(const kind of review.scoring_and_real_rules.unavailable)result.unavailable.push({width,kind,status:'UNAVAILABLE_ACTUAL_OUTCOME_POPULATION'});
         result.unavailable.push({width,kind:'natural_future_correction_transition',status:'UNAVAILABLE_NOT_FABRICATED'});

@@ -5,13 +5,15 @@ from pathlib import Path
 source_ci=None
 weekly_overlay=None
 weekly_static=None
+weekly_rankings=None
 
 CONF='NFL-WEB-GENUINE-PRODUCTION-CASE-20261024'
 REPO='NickNicky19/nicks-expert-nfl-picks'
 REF='refs/heads/upgrade/phase2-reproducible-comparison'
-DRIVER='2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'
+DRIVER='b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5'
 LEGACY_DRIVER='2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf'
-DRIVER_BYTES={LEGACY_DRIVER:30854,DRIVER:35468}
+WEEKLY_DRIVER='2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'
+DRIVER_BYTES={LEGACY_DRIVER:30854,WEEKLY_DRIVER:35468,DRIVER:36877}
 WORKFLOW='.github/workflows/prepare-diagnostic-seed.yml'
 MIB=1024**2
 CAP=127*MIB
@@ -31,6 +33,11 @@ WEEKLY_POINTER='data/weekly-adaptive-overlay.json'
 WEEKLY_BODY=re.compile(r'data/weekly-adaptive/[0-9a-f]{64}\.json\Z')
 WEEKLY_AUDIT=re.compile(r'data/weekly-adaptive-audit/[0-9a-f]{64}\.json\Z')
 WEEKLY_CONTRACT='genuine-current-production-controller-v2'
+RANKING_POINTER='data/weekly-selected-rankings.json'
+RANKING_CONTRACT='genuine-current-production-controller-v3'
+DRIVER_CONTRACTS={LEGACY_DRIVER:None,WEEKLY_DRIVER:WEEKLY_CONTRACT,DRIVER:RANKING_CONTRACT}
+REVIEWED_MAIN={WEEKLY_CONTRACT:('315be5e86a1a3a93022b68c453739076487e2077','dfdc11ac312a6a54c79e7379352106c315e13f5f'),
+    RANKING_CONTRACT:('89512ed952308dacc1f6a930915ddbcdccd460d9','c88d5b3740c820b30387ec2eaca2b0bceafd9a51')}
 REPORT=re.compile(r'data/selection-grading/(?:latest\.json|hosting\.json|[0-9a-f]{64}/(?:summary|outcomes|rows|rows-[0-9]{4}|manifest|registry|archive)\.json|[0-9a-f]{64}/snapshot-(?:app\.js|index\.html|data_(?:week|meta|verification-scope|forecast-scorecard|health|release-identity)\.json|data_selection-grading_latest\.json))\Z')
 SECRET=re.compile(r'\b(?:gh[pousr]_|github_pat_|sk-proj-|AKIA[A-Z0-9]{16}|xox[baprs]-)|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+\S+',re.I)
 PRIVATE=re.compile(r'^(?:authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|password|credentials?|tokens?|(?:access|refresh|id|auth|session|bearer)[-_]?tokens?|x[-_]?(?:auth[-_]?token|api[-_]?key)|secret|client[-_]?secret|api[_-]?key|localStorage|device_id|session_id|account_balance)$',re.I)
@@ -48,7 +55,15 @@ def parsed(raw):
     return json.loads(raw,object_pairs_hook=pairs,parse_constant=lambda _:(_ for _ in ()).throw(Rejected('NONFINITE_JSON')))
 def safe_name(name):
     return len(name)<=512 and bool(re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*',name)) and all(x not in ('.','..') for x in name.split('/'))
+def ranking_role(name):
+    logical=name[7:] if name.startswith('output/') else name
+    return weekly_rankings.public_role(logical) if weekly_rankings is not None else None
+def recording_limit(name,kind):
+    ranked=ranking_role(name)
+    return ranked[1] if ranked is not None else 4*MIB if kind and kind.startswith('weekly_') else ENCODED
 def role(name):
+    ranked=ranking_role(name)
+    if ranked is not None and name.startswith('output/') and safe_name(name):return 'weekly_'+ranked[0]
     if safe_name(name) and WEEKLY_AUDIT.fullmatch(name):return 'weekly_audit'
     if name=='output/'+WEEKLY_POINTER:return 'weekly_pointer'
     if safe_name(name) and name.startswith('output/') and WEEKLY_BODY.fullmatch(name[7:]):return 'weekly_overlay'
@@ -90,8 +105,12 @@ def decoded(raw,receipt=False,object_required=True):
     return value
 def weekly_json(name,raw):
     """Strictly typed preservation; never an original-evidence qualification."""
-    need(len(raw)<=4*MIB,'WEEKLY_JSON_BOUND')
+    ranked=ranking_role(name)
+    need(len(raw)<=(ranked[1] if ranked is not None else 4*MIB),'WEEKLY_JSON_BOUND')
     need(raw[:2]!=b'\x1f\x8b','WEEKLY_PLAIN_JSON_REQUIRED')
+    if ranked is not None:
+        logical=name[7:] if name.startswith('output/') else name
+        return weekly_rankings.validate_public_asset(logical,raw)
     value=decoded(raw)
     logical=name[7:] if name.startswith('output/') else name
     if WEEKLY_AUDIT.fullmatch(logical):
@@ -117,6 +136,11 @@ def weekly_json(name,raw):
 def weekly_pages(bodies,dispatch):
     """Recheck the exact modern public graph from actual tar bytes."""
     names={n for n in bodies if n==WEEKLY_JS or n==WEEKLY_POINTER or WEEKLY_BODY.fullmatch(n)}
+    ranking_present={n for n in bodies if n==RANKING_POINTER or n.startswith('data/weekly-selected-rankings/')}
+    if ranking_present:
+        need(weekly_rankings is not None,'RANKING_VALIDATOR_NOT_BOUND')
+        need(all(ranking_role(n) is not None for n in ranking_present),'RANKING_PUBLIC_ROLE')
+        need(WEEKLY_POINTER in names,'RANKING_OVERLAY_REQUIRED')
     if not names:return
     need(WEEKLY_JS in names and weekly_static is not None and bodies[WEEKLY_JS]==weekly_static,'WEEKLY_STATIC_SOURCE')
     if WEEKLY_POINTER not in names:
@@ -133,11 +157,15 @@ def weekly_pages(bodies,dispatch):
     board_raw=bodies['data/week.json'];board=decoded(board_raw)
     need(pointer['display_board_sha256']==sha(board_raw),'WEEKLY_POINTER_BOARD')
     weekly_overlay.validate_overlay(value,board,sha(board_raw))
+    if ranking_present:
+        required=weekly_rankings.validate_public_graph({n:bodies[n] for n in ranking_present},board,sha(board_raw),value,
+            website_source_sha=dispatch)
+        need(required==ranking_present,'RANKING_COMPLETE_GRAPH')
 def encoded(path,retain=False,limit=ENCODED):
     initial=path.lstat();need(stat.S_ISREG(initial.st_mode) and not path.is_symlink(),'NONREGULAR_FILE')
     need(initial.st_size<=limit,'ENCODED_BOUND')
     stamp=lambda s:(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
-    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW);body=[];digest=hashlib.sha256();size=0
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK);body=[];digest=hashlib.sha256();size=0
     with os.fdopen(fd,'rb') as stream:
         need(stamp(os.fstat(stream.fileno()))==stamp(initial),'FILE_REPLACED')
         while True:
@@ -192,7 +220,8 @@ def fixed_git(app,*args):
     need(result.returncode==0 and len(result.stdout)<=DECODED,'FIXED_GIT_REJECTED')
     return result.stdout
 def authenticated_bytes(app,dispatch,relative):
-    need(relative in ('tools/source_ci.py','tools/genuine_case_recovery.py','tools/weekly_adaptive_overlay.py','output/weekly-adaptive-overlay.js',WORKFLOW),'FIXED_DEPENDENCY')
+    need(relative in ('tools/source_ci.py','tools/genuine_case_recovery.py','tools/weekly_adaptive_overlay.py',
+        'tools/weekly_selected_rankings.py','output/weekly-adaptive-overlay.js',WORKFLOW),'FIXED_DEPENDENCY')
     row=fixed_git(app,'ls-tree','-z',dispatch,'--',relative)
     need(row.endswith(b'\0') and row.count(b'\0')==1,'DEPENDENCY_GIT_ENTRY')
     header,name=row[:-1].split(b'\t');mode,kind,oid=header.decode().split()
@@ -220,6 +249,17 @@ def checked_driver(app,dispatch):
     value=b''.join((row[10:] if row.startswith(b'          ') else b'')+b'\n' for row in block.splitlines())
     digest=sha(value);need(DRIVER_BYTES.get(digest)==len(value),'CLOSED_DRIVER_IDENTITY')
     return digest
+def checked_rankings(app,dispatch,overlay_module):
+    raw=authenticated_bytes(app,dispatch,'tools/weekly_selected_rankings.py')
+    module=types.ModuleType('genuine_verified_weekly_rankings');module.__file__=str(app/'tools/weekly_selected_rankings.py')
+    absent=object();prior=sys.modules.get('weekly_adaptive_overlay',absent)
+    sys.modules['weekly_adaptive_overlay']=overlay_module
+    try:exec(compile(raw,module.__file__,'exec'),module.__dict__)
+    finally:
+        if prior is absent:del sys.modules['weekly_adaptive_overlay']
+        else:sys.modules['weekly_adaptive_overlay']=prior
+    need(getattr(module,'overlay',None) is overlay_module,'RANKING_AUTHENTICATED_OVERLAY')
+    return module
 def allowed_leftover(name,tracked):
     if not safe_name(name):return False
     if source_ci.mutable(name):return True
@@ -244,7 +284,7 @@ def source_identity(app):
             need(allowed_leftover(name,tracked),'UNTRACKED_EXECUTABLE_SOURCE')
     return current
 def context():
-    global source_ci,weekly_overlay,weekly_static
+    global source_ci,weekly_overlay,weekly_static,weekly_rankings
     need(sys.flags.safe_path,'SAFE_PATH_STARTUP_REQUIRED')
     workspace=Path(os.environ['GITHUB_WORKSPACE']).resolve();app=workspace/'source';prod=workspace/'production'
     need(Path(__file__).resolve()==app/'tools/genuine_case_recovery.py','ACTUAL_HELPER_PATH')
@@ -257,11 +297,15 @@ def context():
     original=source_ci.source(app,dispatch,actual=False)
     need(original['source_manifest_sha256']==current['source_manifest_sha256'],'SOURCE_CLOSURE_CHANGED')
     driver=checked_driver(app,dispatch)
-    if driver==DRIVER:
+    contract=DRIVER_CONTRACTS[driver]
+    weekly_rankings=None
+    if contract in (WEEKLY_CONTRACT,RANKING_CONTRACT):
         weekly_raw=authenticated_bytes(app,dispatch,'tools/weekly_adaptive_overlay.py')
         weekly_overlay=types.ModuleType('genuine_verified_weekly_overlay');weekly_overlay.__file__=str(app/'tools/weekly_adaptive_overlay.py')
         exec(compile(weekly_raw,weekly_overlay.__file__,'exec'),weekly_overlay.__dict__)
         weekly_static=authenticated_bytes(app,dispatch,'output/weekly-adaptive-overlay.js')
+        if contract==RANKING_CONTRACT:
+            weekly_rankings=checked_rankings(app,dispatch,weekly_overlay)
     else:weekly_overlay=weekly_static=None
     temp=Path(os.environ['RUNNER_TEMP']);need(temp.is_absolute() and temp.resolve()==temp,'TEMP_ROOT')
     transaction=temp/('nfl-capture-transactions-'+run);state=temp/('nfl-genuine-recovery-'+run)
@@ -301,7 +345,7 @@ def recover(roots,before):
                 try:
                     need(issue is None,issue or 'NONREGULAR_FILE')
                     kind=role(name)
-                    info,_=encoded(path,limit=4*MIB if kind and kind.startswith('weekly_') else ENCODED);item.update(info)
+                    info,_=encoded(path,limit=recording_limit(name,kind));item.update(info)
                     if unchanged(name,info,before):continue
                     need(kind is not None,'ATOMIC_JSON_TARGET_UNAVAILABLE' if atomic_json_temp(name) else 'UNCLASSIFIED_ROLE')
                     queue.append((kind,origin,name,path,info,item))
@@ -312,7 +356,7 @@ def recover(roots,before):
         except (OSError,ValueError) as error:records.append({'origin':origin,'state':'UNAVAILABLE_SCAN','reason':str(error) if isinstance(error,Rejected) else type(error).__name__})
     for kind,origin,name,path,info,item in sorted(queue,key=lambda value:(not value[0].startswith('receipt'),value[1],value[2])):
         try:
-            info2,raw=encoded(path,True,4*MIB if kind.startswith('weekly_') else ENCODED);need(info2==info,'INCOMPLETE_OR_CHANGED_WRITE')
+            info2,raw=encoded(path,True,recording_limit(name,kind));need(info2==info,'INCOMPLETE_OR_CHANGED_WRITE')
             if kind=='receipt_temporary':need(raw[:2]==b'\x1f\x8b','ATOMIC_RECEIPT_GZIP_REQUIRED')
             value=weekly_json(name,raw) if kind.startswith('weekly_') else decoded(raw,kind.startswith('receipt'));item.update(role=kind,schema_version=value.get('schema_version'),state='UNQUALIFIED_PRESERVED')
             if kind.startswith('receipt'):item['payload_sha256']=sha(canonical(value))
@@ -334,7 +378,7 @@ def recover(roots,before):
     need(stream.tell()<=CAP-META_CAP-FINAL_CAP,'RECOVERY_TAR_BOUND')
     return stream.getvalue(),records
 def public_path(name):
-    return name in STATIC or name in (WEEKLY_JS,WEEKLY_POINTER) or bool(WEEKLY_BODY.fullmatch(name)) or 'output/'+name in BOARDS-{'output/data/game-status.json','output/data/matchup-proof.json'} or bool(re.fullmatch(r'data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json',name)) or bool(REPORT.fullmatch(name))
+    return ranking_role(name) is not None or name in STATIC or name in (WEEKLY_JS,WEEKLY_POINTER) or bool(WEEKLY_BODY.fullmatch(name)) or 'output/'+name in BOARDS-{'output/data/game-status.json','output/data/matchup-proof.json'} or bool(re.fullmatch(r'data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json',name)) or bool(REPORT.fullmatch(name))
 def tar_entries(raw,public=False,expected=None):
     need(len(raw)<=CAP and len(raw)%512==0,'TAR_BOUND')
     items={};seen=set();position=0;pending=None;count=0
@@ -362,18 +406,20 @@ def tar_entries(raw,public=False,expected=None):
         need(entry.type in (tarfile.REGTYPE,tarfile.AREGTYPE) and safe_name(name) and name not in seen,'TAR_REGULAR_ROLE')
         seen.add(name);items[name]=body;need(len(items)<=COUNT,'TAR_FILE_COUNT')
     raise Rejected('TAR_TERMINATOR_MISSING')
-def controller_archive(raw,dispatch,status):
+def controller_archive(raw,dispatch,status,*,driver=None):
     entries=tar_entries(raw)
     need(META<=set(entries),'CONTROLLER_METADATA_ROLES')
     meta={name:decoded(entries[name],object_required=False) for name in META}
     need(all(isinstance(meta[name],dict) for name in META-{'NEW_RECEIPTS_MANIFEST.json'}) and isinstance(meta['NEW_RECEIPTS_MANIFEST.json'],list),'CONTROLLER_METADATA_TYPES')
     case=meta['RELEASE_CASE_MANIFEST.json']
     need(case.get('schema_version')=='genuine-current-production-case-v1' and case.get('source')==dispatch and case.get('status')==status and meta['INPUT_DATA_MANIFEST.json'].get('source')==dispatch,'CONTROLLER_METADATA_SOURCE')
-    modern=case.get('controller_contract')==WEEKLY_CONTRACT
+    contract=case.get('controller_contract')
+    modern=contract in (WEEKLY_CONTRACT,RANKING_CONTRACT)
     need('controller_contract' not in case or modern,'CONTROLLER_CONTRACT')
+    if driver is not None:
+        need(driver in DRIVER_CONTRACTS and contract==DRIVER_CONTRACTS[driver],'CONTROLLER_SOURCE_CONTRACT')
     if modern:
-        need(case.get('reviewed_main_base')=='315be5e86a1a3a93022b68c453739076487e2077'
-            and case.get('reviewed_main_source_tree')=='dfdc11ac312a6a54c79e7379352106c315e13f5f','CONTROLLER_REVIEWED_MAIN_SOURCE')
+        need((case.get('reviewed_main_base'),case.get('reviewed_main_source_tree'))==REVIEWED_MAIN[contract],'CONTROLLER_REVIEWED_MAIN_SOURCE')
     outputs=meta['OUTPUT_DATA_MANIFEST.json'];after=outputs['after'];representations=outputs['representations']
     receipts={}
     for item in meta['NEW_RECEIPTS_MANIFEST.json']:
@@ -387,7 +433,9 @@ def controller_archive(raw,dispatch,status):
             payload=decoded(body,True);need(same(body,receipts[logical]) and same(body,after[logical]) and payload['schema_version']==receipts[logical]['schema_version'],'CONTROLLER_RECEIPT_BYTES');actual.add(logical)
         elif name.startswith('mutable/'):
             logical=name[len('mutable/'):]
-            weekly=bool(WEEKLY_AUDIT.fullmatch(logical)) or logical=='output/'+WEEKLY_POINTER or logical.startswith('output/') and bool(WEEKLY_BODY.fullmatch(logical[7:]))
+            ranked=ranking_role(logical)
+            need(ranked is None or contract==RANKING_CONTRACT,'RANKING_CONTROLLER_REQUIRED')
+            weekly=ranked is not None or bool(WEEKLY_AUDIT.fullmatch(logical)) or logical=='output/'+WEEKLY_POINTER or logical.startswith('output/') and bool(WEEKLY_BODY.fullmatch(logical[7:]))
             allowed=bool(CACHE.fullmatch(logical)) or logical in ('output/data/game-status.json','output/data/matchup-proof.json','output/data/selection-grading/hosting.json') or logical.startswith('output/') and public_path(logical[7:]) or bool(WEEKLY_AUDIT.fullmatch(logical))
             need(allowed and (not weekly or modern),'CONTROLLER_MUTABLE_ROLE')
             weekly_json(logical,body) if weekly else decoded(body)
@@ -399,7 +447,8 @@ def controller_archive(raw,dispatch,status):
     if 'public-pages.tar' in entries:
         bodies=tar_entries(entries['public-pages.tar'],True,pages)
         need(set(bodies)==set(pages) and all(same(body,pages[name]) for name,body in bodies.items()),'CONTROLLER_PAGES_MEMBERSHIP')
-        if any(n==WEEKLY_JS or n==WEEKLY_POINTER or WEEKLY_BODY.fullmatch(n) for n in bodies):
+        if any(ranking_role(n) is not None for n in bodies):need(contract==RANKING_CONTRACT,'RANKING_CONTROLLER_REQUIRED')
+        if any(n==WEEKLY_JS or n==WEEKLY_POINTER or WEEKLY_BODY.fullmatch(n) or ranking_role(n) is not None for n in bodies):
             need(modern,'WEEKLY_CONTROLLER_REQUIRED');weekly_pages(bodies,dispatch)
     else:need(status!='COMPLETE_GENUINE_NONDEPLOY_CASE','CONTROLLER_COMPLETE_PAGES_MISSING')
     if status=='COMPLETE_GENUINE_NONDEPLOY_CASE':
@@ -410,7 +459,7 @@ def controller_archive(raw,dispatch,status):
                 need(logical=='output/'+name and name in pages and item['sha256']==pages[name]['sha256'] and item['bytes']==pages[name]['bytes'],'CONTROLLER_PAGE_REFERENCE')
             else:need(storage in entries and storage=='mutable/'+logical,'CONTROLLER_MUTABLE_REFERENCE')
     return meta
-def controller(out,dispatch):
+def controller(out,dispatch,*,driver=None):
     report={'status':'UNAVAILABLE','reason':'MISSING_FINAL'};final_raw=None
     try:
         _,raw=encoded(out/'FINAL.json',True,FINAL_CAP);value=decoded(raw)
@@ -426,7 +475,7 @@ def controller(out,dispatch):
         final_raw=raw;report={'status':value['status'],'final_sha256':sha(raw)}
         info,archive=encoded(out/'release-review.tar',True,CAP)
         need(value.get('source')==dispatch and info['bytes']==value.get('artifact_tar_bytes') and info['sha256']==value.get('artifact_tar_sha256'),'CONTROLLER_TAR_BINDING')
-        controller_archive(archive,dispatch,value['status'])
+        controller_archive(archive,dispatch,value['status'],driver=driver)
         report['tar']=info
         return report,out/'release-review.tar',final_raw
     except (OSError,ValueError,TypeError,KeyError,RecursionError,EOFError) as error:
@@ -449,7 +498,7 @@ def collect(app,prod,transaction,state,identity):
     need(before.get('schema_version')=='genuine-recovery-baseline-v1' and before['identity']['dispatch_source']==identity['dispatch_source'] and before['identity']['run_id']==identity['run_id'] and before['identity']['source_manifest_sha256']==identity['source_manifest_sha256'],'BASELINE_BINDING')
     need(source_ci.git(prod,'rev-parse','HEAD').decode().strip()==before['production_commit'],'PRODUCTION_BASELINE_CHANGED')
     out=Path(os.environ['RUNNER_TEMP'])/'nfl-real-production-case'
-    parent,original,final_raw=controller(out,identity['dispatch_source'])
+    parent,original,final_raw=controller(out,identity['dispatch_source'],driver=identity['driver_sha256'])
     if parent['status']=='COMPLETE_GENUINE_NONDEPLOY_CASE' and original:
         return {'status':'CONTROLLER_SUCCESS_UNCHANGED','artifact_path':str(original),'artifact_sha256':parent['tar']['sha256'],'artifact_bytes':parent['tar']['bytes'],'operating_qualification':'NOT_ESTABLISHED'}
     try:roots,issues=transaction_roots(transaction)

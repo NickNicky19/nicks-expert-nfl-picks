@@ -20,7 +20,7 @@ def fixture():
         catalog_schema=f.CATALOG_V2,catalog_freezer_sha256='f'*64,catalog_registration_rule='OWNED_SELECTED_VERSION_CATALOG_BEFORE_FEATURES_OR_VALUES')
     policy=dict(schema_version=f.POLICY_V2,state='ROOT_REGISTERED',registration_id='weekly-adaptive-release-v1',authority_kind='AUTOMATED_REGISTERED_POLICY',human_approval=False,
         public_raw_or_model_weights=False,public_ref='lab-state',publication_authority=authority,producer_policy_sha256='1'*64,source_policy_sha256='e'*64,
-        rights_authorities=['2'*64],r0_identities=['3'*64],engine_sha256={n:'4'*64 for n in f.ENGINE_FILES},website_code_sha256={n:'4'*64 for n in f.CODE_FILES},
+        rights_authorities=['2'*64],r0_identities=['3'*64],engine_sha256={n:'4'*64 for n in f.ENGINE_FILES},website_code_sha256={n:'4'*64 for n in f.LEGACY_CODE_FILES},
         public_fields=list(f.overlay().ROW_FIELDS),public_roles={'pass_yd':['QB']},procedures={'pass_yd':[recipe]})
     catalog=dict(schema_version=f.CATALOG_V2,rows=[dict(category='pass_yd',method_id='P2_SELECTED',procedure_version='a'*64,model_version='b'*64)],
         current_values_used=False,public_policy_registration='REQUIRED_SEPARATELY; not automatic approval')
@@ -205,11 +205,9 @@ class CurrentStaticPortChecks(unittest.TestCase):
         policy['website_code_sha256'] = actual
         policy['engine_sha256'] = {name: actual[name] for name in f.ENGINE_FILES}
         body = f.canonical(policy)
-        original = (ROOT/'.github/workflows/hourly.yml').read_text()
-        import re
-        hourly, count = re.subn(r'(--feed-policy-sha256 )[a-f0-9]{64}', lambda match: match[1]+f.sha(body), original)
-        self.assertEqual(count, 1)
-        hourly = hourly.encode()
+        # A proposed V2 compatibility invocation, not the installed V3 workflow.
+        hourly = ('run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" '
+            '--feed-policy config/weekly-derived-selected-policy-v2.json --feed-policy-sha256 '+f.sha(body)+'\n').encode()
         pins = dict(policy_path='config/weekly-derived-selected-policy-v2.json',
             physical_sha256=dict(policy=f.sha(body), helper=f.sha((ROOT/'tools/weekly_public_feed.py').read_bytes()),
                 schema=f.sha((ROOT/'schemas/weekly-derived-selected-feed-v2.json').read_bytes()), hourly=f.sha(hourly)),
@@ -226,7 +224,7 @@ class CurrentStaticPortChecks(unittest.TestCase):
         self.assertFalse(result['installed_port_acceptance'])
         self.assertFalse(result['historical_reports_used'])
         self.assertFalse(result['hosted_publication_or_deployment_acceptance'])
-        self.assertEqual(result['website_code_inventory_checks'], 13)
+        self.assertEqual(result['website_code_inventory_checks'], 14)
         self.assertEqual(result['HTTP'], 0)
         self.assertEqual(result['model_or_data_reads'], 0)
 

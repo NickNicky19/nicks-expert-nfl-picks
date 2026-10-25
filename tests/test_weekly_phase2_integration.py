@@ -7,6 +7,8 @@ These checks do not qualify a native receipt, saved generation or deployment.
 from contextlib import ExitStack
 from copy import deepcopy
 import os
+import subprocess
+import zlib
 from pathlib import Path
 import sys
 import tempfile
@@ -29,7 +31,7 @@ def transition_fixture():
     current={name:execution['engine_sha256'].get(name,'6'*64) for name in f.CODE_FILES}
     policy=deepcopy(historical)
     policy.update(schema_version=f.POLICY_V3,historical_policy_sha256=f.HISTORICAL_POLICY_SHA256,
-        current_execution=deepcopy(execution),website_code_sha256=current)
+        current_execution=deepcopy(execution),website_code_sha256=current,active_policy_sha256=f.ACTIVE_POLICY_SHA256)
     return policy,historical,execution,feed,board,run,jobs
 
 
@@ -38,6 +40,8 @@ class WeeklyPhase2BindingChecks(unittest.TestCase):
         stack=ExitStack()
         stack.enter_context(patch.object(f,'historical_policy_v2',return_value=deepcopy(historical)))
         stack.enter_context(patch.object(f,'current_execution_contract',return_value=deepcopy(execution)))
+        active=deepcopy(historical);active['website_code_sha256']['tools/weekly_selected_rankings.py']='6'*64
+        stack.enter_context(patch.object(f,'active_policy_v2',return_value=active))
         return stack
 
     def test_historical_R0_and_current_corrected_execution_remain_distinct(self):
@@ -76,17 +80,29 @@ class WeeklyPhase2BindingChecks(unittest.TestCase):
         with self.adapters(historical,execution),self.assertRaisesRegex(f.FeedError,'CURRENT_ENGINE_CODE_MISMATCH'):f.policy_check_v3(policy)
 
     def test_actual_historical_registration_is_freshly_hashed_and_not_relabelled(self):
-        body=(ROOT/f.HISTORICAL_POLICY_PATH).read_bytes()
-        self.assertEqual(f.sha(body),f.HISTORICAL_POLICY_SHA256)
+        # Real retained public Git objects; no source/clock/model mocks here.
+        objects=f.registration_objects(ROOT)
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);path=root/f.HISTORICAL_POLICY_PATH;path.parent.mkdir(parents=True);path.write_bytes(body)
-            original=f.historical_policy_v2(root);self.assertEqual(original['schema_version'],f.POLICY_V2)
-            old=path.stat();changed=body.replace(b'ROOT_REGISTERED',b'ROOT_REGISTEREE',1)
-            self.assertNotEqual(changed,body);self.assertEqual(len(changed),len(body));path.write_bytes(changed)
-            os.utime(path,ns=(old.st_atime_ns,old.st_mtime_ns))
-            with self.assertRaisesRegex(f.FeedError,'HISTORICAL_POLICY_IDENTITY'):f.historical_policy_v2(root)
-            path.write_bytes(body);path.unlink();target=root/'original.json';target.write_bytes(body);path.symlink_to(target)
-            with self.assertRaisesRegex(f.FeedError,'HISTORICAL_POLICY_SCOPE'):f.historical_policy_v2(root)
+            root=Path(directory)
+            subprocess.run(['git','init','-q',str(root)],check=True,capture_output=True)
+            for oid,item in objects.items():
+                actual=subprocess.run(['git','-C',str(root),'hash-object','-w','-t',item['type'],'--stdin'],input=item['body'],capture_output=True,check=True).stdout.decode().strip()
+                self.assertEqual(actual,oid)
+            original=f.historical_policy_v2(root);active=f.active_policy_v2(root)
+            self.assertEqual(len(original['website_code_sha256']),13);self.assertEqual(len(active['website_code_sha256']),14)
+            self.assertEqual(original['engine_sha256'],active['engine_sha256']);self.assertEqual(original['r0_identities'],active['r0_identities'])
+            path=root/f.HISTORICAL_POLICY_PATH;path.parent.mkdir();path.write_text('NOT THE REGISTERED GIT POLICY')
+            self.assertEqual(f.historical_policy_v2(root),original)
+            self.assertEqual(f.active_policy_v2(root),active)
+            target=root/'.git/objects'/f.HISTORICAL_POLICY_BLOB[:2]/f.HISTORICAL_POLICY_BLOB[2:]
+            initial=target.read_bytes();decoded=zlib.decompress(initial);old=target.stat()
+            target.chmod(0o644)  # Only the new temporary Git object copy is corrupted.
+            target.write_bytes(zlib.compress(decoded.replace(b'ROOT_REGISTERED',b'ROOT_REGISTEREE',1)));os.utime(target,ns=(old.st_atime_ns,old.st_mtime_ns))
+            with self.assertRaises(ValueError):f.historical_policy_v2(root)
+            target.write_bytes(initial)
+            self.assertEqual(f.historical_policy_v2(root),original)
+            target.unlink()
+            with self.assertRaises(ValueError):f.historical_policy_v2(root)
 
     def test_actual_corrected_contract_is_closed_and_same_size_corruption_rejects(self):
         contract=f.current_execution_contract(ROOT)
@@ -147,13 +163,44 @@ class WeeklyPhase2BindingChecks(unittest.TestCase):
         with self.assertRaisesRegex(f.FeedError,'FEED_POLICY_BINDING'):f.validate_feed(feed,policy,board,now=NOW,fetch=transport(run,jobs,[]))
 
 
+    def test_original13_V3_layout_remains_separate_from_current14(self):
+        policy,historical,execution,*_=transition_fixture()
+        policy['website_code_sha256'].pop('tools/weekly_selected_rankings.py')
+        policy.pop('active_policy_sha256')
+        with self.adapters(historical,execution):self.assertEqual(f.policy_check_v3(policy),historical)
+        policy['active_policy_sha256']=f.ACTIVE_POLICY_SHA256
+        with self.adapters(historical,execution),self.assertRaisesRegex(f.FeedError,'CLOSED_V3_POLICY_FIELDS'):f.policy_check_v3(policy)
+
+    def test_current14_requires_actual_active_registration_identity(self):
+        policy,historical,execution,*_=transition_fixture()
+        for value in ('0'*64,None):
+            changed=deepcopy(policy)
+            if value is None:changed.pop('active_policy_sha256')
+            else:changed['active_policy_sha256']=value
+            with self.adapters(historical,execution),self.assertRaises(f.FeedError):f.policy_check_v3(changed)
+        active=deepcopy(historical);active['website_code_sha256']['tools/weekly_selected_rankings.py']='6'*64;active['producer_policy_sha256']='0'*64
+        with self.adapters(historical,execution),patch.object(f,'active_policy_v2',return_value=active),self.assertRaisesRegex(f.FeedError,'ACTIVE_SCIENTIFIC_REGISTRATION_CHANGED'):f.policy_check_v3(policy)
+
+    def test_V2_current14_semantics_preserve_legacy13_without_v1_expansion(self):
+        historical,feed,board,run,jobs=fixture();current=deepcopy(historical)
+        current['website_code_sha256']['tools/weekly_selected_rankings.py']='6'*64
+        self.assertIsNone(f.policy_check_v2(current))
+        self.assertEqual(f.validate_feed(feed,current,board,now=NOW,fetch=transport(run,jobs,[])),f.validate_feed(feed,historical,board,now=NOW,fetch=transport(run,jobs,[])))
+        v1=f.catalog_policy_v2(current,feed['publication']['version_catalog'])
+        self.assertEqual(set(v1['website_code_sha256']),f.LEGACY_CODE_FILES)
+        v1['website_code_sha256']['tools/weekly_selected_rankings.py']='6'*64
+        with self.assertRaisesRegex(f.FeedError,'REGISTERED_ENGINE_INVENTORY'):f.policy_check(v1)
+        current['website_code_sha256']['tools/unknown_ranker.py']=current['website_code_sha256'].pop('tools/weekly_selected_rankings.py')
+        with self.assertRaisesRegex(f.FeedError,'REGISTERED_V2_CODE_INVENTORY'):f.policy_check_v2(current)
+
+
 class WeeklyPhase2StaticChecks(unittest.TestCase):
     def metadata(self):
         import check_weekly_consumer_v3_static as checker
         historical=f.historical_policy_v2(ROOT);execution=f.current_execution_contract(ROOT)
         code={name:f.sha((ROOT/name).read_bytes())for name in f.CODE_FILES}
         policy=deepcopy(historical);policy.update(schema_version=f.POLICY_V3,
-            historical_policy_sha256=f.HISTORICAL_POLICY_SHA256,current_execution=execution,website_code_sha256=code)
+            historical_policy_sha256=f.HISTORICAL_POLICY_SHA256,current_execution=execution,website_code_sha256=code,active_policy_sha256=f.ACTIVE_POLICY_SHA256)
         body=f.canonical(policy);policy_path='config/weekly-derived-selected-policy-v3.json'
         # Fictional static proposal, not the installed production workflow.
         hourly=('run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" '
@@ -172,7 +219,7 @@ class WeeklyPhase2StaticChecks(unittest.TestCase):
         self.assertEqual(result['state'],'PROPOSED_STATIC_CONTRACT_PASS')
         self.assertEqual(result['current_reference_model'],f.CURRENT_MODEL)
         self.assertEqual(result['historical_policy_sha256'],f.HISTORICAL_POLICY_SHA256)
-        self.assertEqual(result['website_code_inventory_checks'],13)
+        self.assertEqual(result['website_code_inventory_checks'],14)
         self.assertFalse(result['installed_port_acceptance']);self.assertFalse(result['hosted_publication_or_deployment_acceptance'])
         self.assertEqual(result['HTTP'],0);self.assertEqual(result['model_or_data_reads'],0)
 

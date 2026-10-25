@@ -5,7 +5,7 @@ const { chromium } = require("playwright");
 const root = path.resolve(__dirname, ".."), source = fs.readFileSync(path.join(root, "output/app.js"), "utf8");
 new vm.Script(source); // Parse the complete changed application without booting it.
 const extract = name => { const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`)); assert(match, name); return match[0]; };
-const functions = ["selectedPropForecast", "propChip", "catCard", "displayedProps", "filteredPlayers", "renderProps", "tdChanceText"].map(extract).join("\n");
+const functions = ["selectedRankingPolicy", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "selectedPropForecast", "propChip", "catCard", "displayedProps", "filteredPlayers", "renderProps", "tdChanceText"].map(extract).join("\n");
 const helper = fs.readFileSync(path.join(root, "output/weekly-adaptive-overlay.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "output/style.css"), "utf8");
 const widths = process.env.WEEKLY_PRIMARY_CUSTOM_LINE_ONLY === "1" ? [390] : [320, 390, 1280];
@@ -69,13 +69,13 @@ ${functions}
         const selected = Object.fromEntries(p.props.map(x => [x.key, card(x.key).querySelector('[data-weekly-primary]')?.textContent || null]));
         const meansFirst = card("rush_att").querySelector('.cat-nums').firstElementChild.hasAttribute('data-weekly-primary');
         const text = document.querySelector('#main').textContent;
-        const snapshots = { selected, meansFirst, reference:card("rush_att").textContent.includes("Current reference forecast2.5"),
+        const snapshots = { selected, meansFirst, selectedGapNoLean:selectedPropGap(p,p.props[0]).lean===null, reference:card("rush_att").textContent.includes("Current reference forecast2.5"),
           negative:card("rush_yd").textContent.includes("-2.50"), referenceTD:card("anytime_td").textContent.includes("Current reference probability55%"),
           primaryTD:card("anytime_td").querySelector('.cat-h').textContent.includes("35.0% provisional TD probability"),
           tdHasNoDirectionalLean:card("anytime_td").querySelector('.lean').className === 'lean none',
           chips:[...document.querySelectorAll('.pchip[data-weekly-primary]')].map(x=>x.textContent),
           pointWarning:card("rush_att").textContent.includes("does not give a bet-win probability"),
-          referenceControls:text.includes("Top Picks, leans, rankings, fantasy points and game forecasts use the current reference"),
+          referenceControls:text.includes("historical Record retain their exact recorded reference identities"),
           referenceSort:[...document.querySelector('#f-sort').options].filter(x=>['proj','edge'].includes(x.value)).every(x=>x.textContent.includes('Reference')),
           line:card("rush_att").querySelector('input').value,
           orderUnchanged:JSON.stringify(displayedProps(p).map(x=>x.key))===JSON.stringify(baselineOrder),
@@ -84,6 +84,7 @@ ${functions}
         S.lines['fictional-player|rush_att']=6; renderProps();
         snapshots.customLine=document.querySelector('[data-line="fictional-player|rush_att"]').value;
         snapshots.customStillSelected=card('rush_att').querySelector('[data-weekly-primary]').textContent.includes('3.25');
+        snapshots.customSelectedUnder=selectedPropGap(p,p.props[0],true).lean==='under';
         const customBookChip=[...document.querySelectorAll('.pchip')].find(x=>x.textContent.startsWith('Carries')).textContent;
         snapshots.customBookLabel=customBookChip.includes('Your line6custom')&&!customBookChip.includes('book line');
         S.lines['fictional-player|rush_yd']=12;renderProps();
@@ -107,10 +108,10 @@ ${functions}
       check(result.selected.rush_yd,"Provisional median forecast-2.50","signed median is primary");
       check(result.selected.anytime_td,"Provisional TD probability35.0%","selected TD probability is primary");
       check(result.selected.fpts,null,"exact PPR is unchanged");
-      for (const key of ["meansFirst","reference","negative","referenceTD","primaryTD","tdHasNoDirectionalLean","pointWarning","referenceControls","referenceSort","orderUnchanged","rankUnchanged","noPageOverflow","customStillSelected","customBookLabel","customReferenceLabel","frozen","expired","expiredCannotBecomeFrozen","absentSameCards","absentSameChips","fantasyNoSelection","malformedFallback","boardUnchanged"]) check(result[key],true,key+" at width "+width);
+      for (const key of ["meansFirst","selectedGapNoLean","customSelectedUnder","reference","negative","referenceTD","primaryTD","tdHasNoDirectionalLean","pointWarning","referenceControls","referenceSort","orderUnchanged","rankUnchanged","noPageOverflow","customStillSelected","customBookLabel","customReferenceLabel","frozen","expired","expiredCannotBecomeFrozen","absentSameCards","absentSameChips","fantasyNoSelection","malformedFallback","boardUnchanged"]) check(result[key],true,key+" at width "+width);
       check(result.line,"4","market line unchanged"); check(result.customLine,"6","personal line unchanged");
       check(result.chips.length,3,"all supported selected chips are primary");
-      check(result.chips.some(x=>x.includes('3.25')&&x.includes('provisional mean')&&x.includes('Reference lean')),true,"chip labels Reference lean");
+      check(result.chips.every(x=>!x.includes('Reference lean')),true,"selected chips do not inherit reference direction");
       check(result.chips.some(x=>x.includes('35.0%')&&x.includes('provisional TD probability')),true,"chip uses selected TD probability");
       check(errors,[],"browser has no errors");
       await context.close();

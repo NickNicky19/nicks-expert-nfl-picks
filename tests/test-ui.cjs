@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 require('./test_weekly_public_feed_caption.cjs');
 require('./test-weekly-overlay.cjs');
+require('./test-selected-rankings.cjs');
 
 // Actual private paper helpers: no provider, storage or ticket-network mock is
 // mistaken for a production offer or an independently timestamped selection.

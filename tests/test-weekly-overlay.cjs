@@ -19,7 +19,7 @@ check(()=>{const d=doc({...row(),valid_until_utc:"2026-10-24T11:00:00Z"});assert
 check(()=>{assert.equal(overlay.card(null,board.players[0],"rush_att"),"");const d=doc();assert.match(overlay.card(overlay.validate(d,board,H),board.players[0],"rush_att",Date.parse("2026-10-25T18:00:00Z")),/Frozen provisional forecast/);});
 // Actual pinned website propStatus body: no imports, sources or real row values.
 const appPath=process.env.WEEKLY_OVERLAY_PINNED_APP || (fs.existsSync(path.join(root,"output/app.js"))?path.join(root,"output/app.js"):"/tmp/weekly-website-source-78965e0/output/app.js");
-if(fs.existsSync(appPath))check(()=>{const source=fs.readFileSync(appPath,"utf8"),start=source.indexOf("function propStatus("),end=source.indexOf("\nfunction twoPointScorers",start);assert(start>=0&&end>start);const fn=source.slice(start,end),modern=fn.includes("finalOutcomes"),context={S:{games:{g:{state:"post"}},finalOutcomes:new Map([["id",{status:"resolved",final_confirmed:true,actual:3}]])},finalIdentity:()=>"id",finalIdentityMatches:()=>true,current:()=>({stats:{rush_att:3}}),statValue:()=>3};vm.createContext(context);vm.runInContext(fn+"\nthis.status=propStatus({game_id:'g'},'rush_att',3,'over');",context);assert.equal(context.status.res,modern?"push":"miss");});
+if(fs.existsSync(appPath))check(()=>{const source=fs.readFileSync(appPath,"utf8"),start=source.indexOf("function propStatus("),end=source.indexOf("\nfunction twoPointScorers",start);assert(start>=0&&end>start);const fn=source.slice(start,end),modern=fn.includes("finalOutcomes"),context={S:{games:{g:{state:"post"}},finalOutcomes:new Map([["id",{status:"resolved",final_confirmed:true,actual:3}]])},finalIdentity:()=>"id",finalIdentityMatches:()=>true,current:()=>({stats:{rush_att:3}}),statValue:()=>3};vm.createContext(context);vm.runInContext(fn+"\nthis.status=propStatus({game_id:'g'},'rush_att',3,'over');",context);assert.equal(context.status.res,"push");});
 (async()=>{const before=JSON.stringify(board);assert.equal(await overlay.load(board,H,async()=>new Response("bad",{status:404})),null);assert.equal(JSON.stringify(board),before);checks++;
 const body=JSON.stringify(doc()),hash=require("node:crypto").createHash("sha256").update(body).digest("hex"),pointer={schema_version:"weekly-adaptive-overlay-pointer-v1",path:`data/weekly-adaptive/${hash}.json`,sha256:hash,bytes:Buffer.byteLength(body),display_board_sha256:H};
 const mock=async url=>new Response(url.endsWith("weekly-adaptive-overlay.json")?JSON.stringify(pointer):body,{status:200});assert(await overlay.load(board,H,mock));checks++;
@@ -41,38 +41,40 @@ assert.equal(await overlay.load(board,H,()=>new Promise(r=>{releaseFetch=r;}),20
 releaseFetch({body:{cancel:()=>{lateCancelled++;}}});await new Promise(r=>setImmediate(r));assert.equal(lateCancelled,1);checks++;
 const appSource=fs.readFileSync(appPath,"utf8");
 if(appSource.includes("function startWeeklyOverlay()")){
-  const bridge=appSource.slice(appSource.indexOf("function startWeeklyOverlay()"),appSource.indexOf("async function load() {"));
+  const bridge=appSource.slice(appSource.indexOf("async function loadWeeklyOverlayBound("),appSource.indexOf("async function load() {"));
   const startup=appSource.slice(appSource.indexOf("(async function start() {"));
-  async function boot(api){
+  const api={bound:overlay.bound,validate:overlay.validate};
+  async function boot(loadedAPI,fetcher=mock,budget=200){
     const order=[],listeners={},state={sc:{mode:"sleeper"},tab:"props",games:{}};
-    const context={S:state,WeeklyAdaptiveOverlay:api,console,Promise,location:{hash:""},WORKER_URL:"",META_MS:1000,
+    const context={S:state,WeeklyAdaptiveOverlay:loadedAPI,console,Promise,performance:require("node:perf_hooks").performance,setTimeout,clearTimeout,fetch:fetcher,
+      location:{hash:""},WORKER_URL:"",META_MS:1000,
       addEventListener:(name,fn)=>{listeners[name]=fn;},store:()=>null,
       load:async()=>{state.data=board;state.weeklyOverlay=null;state.weeklyOverlayReady=false;state.weeklyOverlayBoardHash=H;},
       takeYahooTokens:()=>{},applyHash:()=>{},currentLeague:()=>true,$:()=>({textContent:""}),scoringName:()=>"fictional",setTopHeight:()=>{},
-      render:()=>order.push("R0"),renderProps:()=>order.push("enhance"),renderGame:()=>order.push("game"),syncHash:()=>{},liveTick:()=>{},setInterval:()=>{}};
+      startSelectedRankings:()=>{},render:()=>order.push("R0"),renderProps:()=>order.push("enhance"),renderGame:()=>order.push("game"),syncHash:()=>{},liveTick:()=>{},setInterval:()=>{}};
     vm.createContext(context);vm.runInContext(bridge,context);
+    let enhancement;const actualBound=context.loadWeeklyOverlayBound;context.loadWeeklyOverlayBound=(b,h,a)=>(enhancement=actualBound(b,h,a,budget));
     await vm.runInContext(startup,context);
-    assert.equal(order[0],"R0");return {context,state,order,listeners};
+    assert.equal(order[0],"R0");return {context,state,order,listeners,settle:()=>enhancement};
   }
-  // Missing/stalled helper download never creates an initialization wait.
+  const drain=async run=>{await Promise.resolve();await run.settle();await new Promise(r=>setImmediate(r));};
   const absent=await boot(undefined);assert.deepEqual(absent.order,["R0"]);checks++;
-  const blocked=await boot({load:()=>new Promise(()=>{})});assert.deepEqual(blocked.order,["R0"]);checks++;
-  // Late helper and already-present helper both enhance only after R0 render.
-  absent.context.WeeklyAdaptiveOverlay={load:async()=>({fictional:true})};absent.listeners["weekly-adaptive-overlay-ready"]();
-  await new Promise(r=>setImmediate(r));assert.deepEqual(absent.order,["R0","enhance"]);checks++;
-  const ready=await boot({load:async()=>({fictional:true})});await new Promise(r=>setImmediate(r));assert.deepEqual(ready.order,["R0","enhance"]);checks++;
-  // Stalled fetch/body return R0 fallback; they cannot hold initial rendering.
+  const blocked=await boot(api,stalledFetch,20);assert.deepEqual(blocked.order,["R0"]);checks++;
+  await new Promise(r=>setTimeout(r,30));assert.equal(blocked.state.weeklyOverlay,null);
+  absent.context.WeeklyAdaptiveOverlay=api;absent.listeners["weekly-adaptive-overlay-ready"]();
+  await drain(absent);assert.deepEqual(absent.order,["R0","enhance"]);checks++;
+  const ready=await boot(api);await drain(ready);assert.deepEqual(ready.order,["R0","enhance"]);checks++;
+  assert.equal(ready.state.weeklyOverlay.assetHash,hash);checks++;
   for(const fetcher of [stalledFetch,stalledBody]){
-    const live=await boot({load:(b,h)=>overlay.load(b,h,fetcher,20)});assert.deepEqual(live.order,["R0"]);
+    const live=await boot(api,fetcher,20);assert.deepEqual(live.order,["R0"]);
     await new Promise(r=>setTimeout(r,30));assert.deepEqual(live.order,["R0"]);assert.equal(live.state.weeklyOverlay,null);checks++;
   }
-  // Obsolete-board results are never installed or rendered on the new board.
-  let resolveOld;const stale=await boot({load:()=>new Promise(r=>{resolveOld=r;})});
-  stale.state.data={...board,week:9};resolveOld({fictional:true});await new Promise(r=>setImmediate(r));
+  let resolveOld;const stale=await boot(api,url=>url.endsWith("weekly-adaptive-overlay.json")?new Promise(r=>{resolveOld=r;}):mock(url));
+  stale.state.data={...board,week:9};resolveOld(new Response(JSON.stringify(pointer)));await drain(stale);
   assert.deepEqual(stale.order,["R0"]);assert.equal(stale.state.weeklyOverlay,null);checks++;
-  // Repeated readiness notifications do not duplicate one board's request.
-  let calls=0;const once=await boot({load:async()=>{calls++;return null;}});
+  let calls=0;const once=await boot(api,url=>{calls++;return mock(url);});
   once.listeners["weekly-adaptive-overlay-ready"]();once.listeners["weekly-adaptive-overlay-ready"]();
-  await new Promise(r=>setImmediate(r));assert.equal(calls,1);checks++;
+  await drain(once);assert.equal(calls,2);checks++;
 }
-console.log(JSON.stringify({checks,state:"PASS",scope:"fictional bounded-loader/overlay; exact baseline equality semantics retained; no HTTP/provider/data"}));})().catch(e=>{console.error(e);process.exitCode=1;});
+
+console.log(JSON.stringify({checks,state:"PASS",scope:"fictional bounded-loader/overlay; explicit saved-final push semantics; no HTTP/provider/data"}));})().catch(e=>{console.error(e);process.exitCode=1;});

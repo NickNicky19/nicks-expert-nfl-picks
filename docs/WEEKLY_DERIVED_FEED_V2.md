@@ -7,9 +7,11 @@ available. There is no new scheduler or credential requirement.
 
 The selected forecast is the primary visible category projection, with its mean,
 median or genuine touchdown event-probability label and a provisional status.
-The canonical R0 board and its calculations remain available as the explicitly
-labeled reference. Lines, Top Picks, leans, rankings, pacing, fantasy and grading
-keep their existing R0 inputs. Point forecasts supply no bet-win probability.
+The canonical reference board and its calculations remain available separately.
+The later selected-ranking integration uses the issued forecasts for provisional
+Top Picks and selected-gap sorts. Saved reference grading, registered strategies,
+accuracy, pacing and fantasy retain their own inputs and model/source identities.
+Point forecasts supply no bet-win probability.
 Exact website PPR remains unsupported. Invalid, missing or expired optional
 inputs use R0; valid started rows retain their original frozen forecasts.
 
@@ -48,7 +50,7 @@ hosted attempts and all registrations remain retained under their own identities
 
 `tools/check_weekly_consumer_v3_static.py` accepts separately root-approved new pins
 and checks the current physical policy/helper/schema/workflow bytes, source and
-recipes, all thirteen actual website code files and the exact workflow policy
+recipes, the actual registered website code inventory and exact workflow policy
 hash. It opens no forecast, source-data or model files, makes no HTTP calls and
 uses no old report as acceptance. Its result is static source evidence only.
 A separately recorded current receipt must identify the exact checked bytes.
@@ -107,3 +109,18 @@ cohorts, not provisional display forecasts. New-source CI, actual optional feed
 acceptance and public deployment verification remain distinct checks. The
 ordinary integration candidate does not install its protected registration or
 claim those later checks passed.
+
+## Selected-ranking coexistence — 2026-10-25
+
+The original thirteen-path V2 registration is read from its exact retained Git
+commit, tree and blob. The later fourteen-path active V2 registration additionally
+binds `weekly_selected_rankings.py`. Neither replaces the other's source identity.
+Current corrected execution uses an explicit V3 registration with both historical
+registrations and the actual fourteen current code hashes. Current code never
+wears a historical engine or registration label.
+
+The public selected-ranking pointer, body, completion and required original
+frozen-selection dependencies form a separate complete graph. Their bounded
+readers and fresh source/destination validation do not qualify native forecasts
+or add selected observations to reference accuracy or registered strategies.
+The original model catalog, procedures, experiment and timing rules remain fixed.

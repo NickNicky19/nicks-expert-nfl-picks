@@ -445,8 +445,9 @@ class Campaign(unittest.TestCase):
         return fp,registered
     def test_weekly_absent_only_source_bound_additions_preserve_originals_and_are_committed(self):
         fp,registered=self.weekly_fixture();before=c._evidence_inventory(self.root);config=(self.root/'config/phase2.json').read_bytes()
-        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp),patch.dict(c.WEEKLY_EXECUTION_ADDITIONS,registered):
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp),patch.dict(c.WEEKLY_EXECUTION_ADDITIONS,registered),patch.object(c,'_install_weekly_registrations') as transport:
             c.install_execution_source(self.code,self.root);c.execution_identity(self.code,self.root,packaged=False)
+            transport.assert_called_once_with(self.code,self.root,fp)
         self.assertEqual(c._evidence_inventory(self.root),before);self.assertEqual((self.root/'config/phase2.json').read_bytes(),config)
         tracked=set(c.git(self.root,'ls-tree','-r','--name-only','HEAD').splitlines())
         self.assertTrue(set(registered)<=tracked)
@@ -454,18 +455,18 @@ class Campaign(unittest.TestCase):
     def test_weekly_existing_different_policy_is_not_replaced(self):
         fp,registered=self.weekly_fixture();name='config/weekly-derived-selected-policy-v1.json'
         original=b'{"fictional_existing_different":true}\n';(self.root/name).write_bytes(original)
-        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp),patch.dict(c.WEEKLY_EXECUTION_ADDITIONS,registered):
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp),patch.dict(c.WEEKLY_EXECUTION_ADDITIONS,registered),patch.object(c,'_install_weekly_registrations'):
             with self.assertRaisesRegex(RuntimeError,'configuration difference'):c.install_execution_source(self.code,self.root)
         self.assertEqual((self.root/name).read_bytes(),original)
     def test_weekly_changed_candidate_same_size_restored_mtime_is_not_copied(self):
         fp,registered=self.weekly_fixture();path=self.code/'config/weekly-derived-selected-policy-v1.json';info=path.stat()
         raw=bytearray(path.read_bytes());raw[0]^=1;path.write_bytes(raw);os.utime(path,ns=(info.st_atime_ns,info.st_mtime_ns))
-        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp),patch.dict(c.WEEKLY_EXECUTION_ADDITIONS,registered):
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp),patch.dict(c.WEEKLY_EXECUTION_ADDITIONS,registered),patch.object(c,'_install_weekly_registrations'):
             with self.assertRaisesRegex(RuntimeError,'configuration changed before copying'):c.install_execution_source(self.code,self.root)
         self.assertFalse((self.root/'config/weekly-derived-selected-policy-v1.json').exists())
     def test_weekly_installed_static_mutation_is_rejected_independently(self):
         fp,registered=self.weekly_fixture()
-        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp),patch.dict(c.WEEKLY_EXECUTION_ADDITIONS,registered):
+        with patch.object(c,'require_offline'),patch.object(c,'_source_ci_cli',return_value=fp),patch.dict(c.WEEKLY_EXECUTION_ADDITIONS,registered),patch.object(c,'_install_weekly_registrations'):
             c.install_execution_source(self.code,self.root)
             path=self.root/'output/weekly-adaptive-overlay.js';info=path.stat();raw=bytearray(path.read_bytes());raw[0]^=1;path.write_bytes(raw);os.utime(path,ns=(info.st_atime_ns,info.st_mtime_ns))
             with self.assertRaisesRegex(RuntimeError,'bytes differ'):c.execution_identity(self.code,self.root,packaged=False)
@@ -1122,21 +1123,97 @@ class WeeklyDisplayExecution(unittest.TestCase):
             root=Path(directory);(root/'config').mkdir();(root/'output/data').mkdir(parents=True)
             raw=b'{"fictional_wrapper_control":true}';(root/c.WEEKLY_POLICY).write_bytes(raw)
             board=b'{"fictional_board_control":true}';(root/'output/data/week.json').write_bytes(board)
-            events=[];source='2'*40;clock=object()
+            events=[];source='2'*40
+            class Clock(c.datetime):
+                @classmethod
+                def now(cls,tz=None):return cls.fromisoformat('2026-11-09T05:02:15+00:00')
+            clock=Clock;at=clock.now(c.timezone.utc).isoformat()
             pointer={'display_board_sha256':c.sha(board),'sha256':'3'*64};doc={'website_source_sha':source,'rows':[],'state':'DISABLED_USE_R0'}
             module=SimpleNamespace(validate_public_root=lambda path:events.append(('validate',path)),read_public=lambda path:(pointer,doc))
+            ranking={'schema_version':'weekly-selected-rankings-v1','website_source_sha':source,'display_board_sha256':c.sha(board),
+                'overlay_sha256':pointer['sha256'],'prepared_at':at,'picks':{'over':[],'under':[]},'frozen_proofs':[]}
+            ranker=SimpleNamespace(datetime=c.datetime,read_public=lambda path:({'published_at':at,'sha256':'4'*64},ranking))
             def script(path,args,actual_clock):
                 self.assertEqual(path,root/'tools/weekly_adaptive_overlay.py');self.assertIs(actual_clock,clock)
+                self.assertIs(sys.modules['weekly_selected_rankings'],ranker);self.assertIs(ranker.datetime,clock)
                 self.assertEqual(args[args.index('--website-source-sha')+1],source)
                 self.assertEqual(args[args.index('--feed-policy')+1],c.WEEKLY_POLICY)
                 with self.assertRaises(HTTPError):OpenerDirector().open(Request('https://example.invalid/fictional-control'))
                 events.append(('writer',path));return module
-            with patch.object(c,'git',side_effect=lambda path,*args:source if path==root and args==('rev-parse','HEAD') else self.fail('Wrong execution identity')),patch.object(c,'WEEKLY_POLICY_SHA256',c.sha(raw)),patch.object(c,'_advisory_script',side_effect=script):
+            with patch.object(c,'git',side_effect=lambda path,*args:source if path==root and args==('rev-parse','HEAD') else self.fail('Wrong execution identity')),patch.object(c,'WEEKLY_POLICY_SHA256',c.sha(raw)),patch.object(c,'_weekly_ranker',return_value=ranker),patch.object(c,'_advisory_script',side_effect=script):
                 value=c._weekly_display(root,{'capture':SimpleNamespace(datetime=clock)})
             self.assertEqual(value['website_source_sha'],source);self.assertEqual(value['mocked_missing_feed_requests'],1)
             self.assertEqual(value['accepted_selected_feed'],'NOT_EXERCISED_NO_MATCHING_FICTIONAL_LAB_PUBLICATION')
+            self.assertEqual(value['rankings']['prepared_at'],at);self.assertEqual(value['rankings']['published_at'],at)
             self.assertEqual(events,[('writer',root/'tools/weekly_adaptive_overlay.py'),('validate',root/'output')])
             self.assertEqual((root/'output/data/week.json').read_bytes(),board)
+    def test_actual_ranking_source_and_default_completion_clock_share_fixture_clock(self):
+        path=HERE/'tools/weekly_selected_rankings.py';body=path.read_bytes()
+        descriptor={'path':'tools/weekly_selected_rankings.py','mode':'100644','bytes':len(body),'sha256':c.sha(body)}
+        with patch.object(c,'_source_marker',return_value={'files':{descriptor['path']:descriptor}}):ranker=c._weekly_ranker(HERE)
+        class Clock(c.datetime):
+            @classmethod
+            def now(cls,tz=None):return cls.fromisoformat('2026-11-09T05:02:15+00:00')
+        expected=Clock.now(c.timezone.utc).isoformat();seen={}
+        def prepare(*args,**kwargs):seen.update(kwargs);return {}
+        with patch.object(ranker,'datetime',Clock):
+            self.assertEqual(ranker.write_public.__kwdefaults__['clock'](),expected)
+            with patch.object(ranker,'prepare',side_effect=prepare),patch.object(ranker,'write_public',return_value={}),patch.object(ranker,'validate_document'):
+                ranker.prepare_writer(HERE,{},'a'*64,{},website_source_sha='b'*40,atomic_json=lambda *a:None)
+        self.assertEqual(seen['now'],expected);self.assertEqual(seen['website_source_sha'],'b'*40)
+    def test_ranking_source_mutations_fail_before_execution(self):
+        name='tools/weekly_selected_rankings.py';path=HERE/name;body=path.read_bytes()
+        descriptor={'path':name,'mode':'100644','bytes':len(body),'sha256':c.sha(body)}
+        for field,value in [('path','tools/other.py'),('mode','100755'),('bytes',len(body)+1),('sha256','0'*64)]:
+            bad=dict(descriptor);bad[field]=value
+            with self.subTest(field=field),patch.object(c,'_source_marker',return_value={'files':{name:bad}}),self.assertRaisesRegex(RuntimeError,'ranking source changed'):c._weekly_ranker(HERE)
+        changed=bytes([body[0]^1])+body[1:]
+        with patch.object(c,'_source_marker',return_value={'files':{name:descriptor}}),patch.object(c,'_bounded_file',return_value=changed),self.assertRaisesRegex(RuntimeError,'ranking source changed'):
+            c._weekly_ranker(HERE)
+    def test_actual_eight_public_registration_objects_are_rehashed_at_both_roots(self):
+        """Eight exact public objects only; not a complete application Git copy."""
+        name='tools/weekly_public_feed.py';body=(HERE/name).read_bytes()
+        descriptor=dict(path=name,mode='100644',bytes=len(body),sha256=c.sha(body))
+        module=c._weekly_source_module(HERE,name,descriptor);expected=module.registration_objects(HERE)
+        self.assertEqual(len(expected),8)
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);subprocess.run(['git','init','-q',str(root)],check=True,capture_output=True)
+            c._install_weekly_registrations(HERE,root,{'files':[descriptor]})
+            self.assertEqual(module.registration_objects(root),expected)
+            self.assertFalse((root/'config').exists());self.assertFalse((root/'data').exists())
+    def test_actual_complete_ranking_bridge_and_frozen_dependency_failures(self):
+        """Actual producers/reader subprocesses; Git lookup alone is an explicit unit stub."""
+        script=r"""
+const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process'),vm=require('node:vm'),assert=require('node:assert/strict'),crypto=require('node:crypto');
+const root=process.argv[1],pages=process.argv[2],sha=b=>crypto.createHash('sha256').update(b).digest('hex');
+const testText=fs.readFileSync(root+'/tests/test-grading-browser.cjs','utf8'),fixtureBlock=testText.split('// BEGIN SELECTED RANKINGS FIXTURE\n')[1].split('// END SELECTED RANKINGS FIXTURE')[0];
+const releaseText=fs.readFileSync(root+'/tools/release_browser.cjs','utf8'),readBlock=releaseText.split('// BEGIN WEEKLY DISPLAY GRAPH CONTRACT\n')[1].split('// END WEEKLY DISPLAY GRAPH CONTRACT')[0],rankBlock=releaseText.split('// BEGIN SELECTED RANKING GRAPH CONTRACT\n')[1].split('// END SELECTED RANKING GRAPH CONTRACT')[0];
+const scope={fs,path,cp,assert,crypto,Buffer,Map,sha,repo:root,__dirname:path.join(root,'tools'),encode:v=>Buffer.from(JSON.stringify(v))};vm.createContext(scope);
+vm.runInContext(fixtureBlock+'\nglobalThis.make=makeSelectedRankingsFixture;'+readBlock+rankBlock+'\nglobalThis.collect=rankingArtifactMembers;globalThis.verify=validateRankingArtifact;globalThis.sources=checkedRankingSources;globalThis.limit=rankingPublicLimit;',scope);
+const board={season:2026,week:6,generated_at:'2026-10-15T10:00:00Z',games:[{id:'fictional-game',kickoff:'2026-10-15T00:15:00Z',state:'post'},{id:'fictional-pending',kickoff:'2026-10-20T17:00:00Z',state:'pre'}],players:[0,3].map(i=>({id:'fixture-'+i,game_id:i===3?'fictional-pending':'fictional-game',team:'AAA',opp:'BBB',pos:'WR',games_this_season:5,snap_share:.75,proj_ppr:12,injury:null,props:[{key:'rec',line:4.5,line_from:'dk',proj:4.8,adj:5,n:5,over:2}]})),picks:{over:[],under:[]}};
+const good=scope.make(board),expired=scope.make(board,true);let checks=0;
+assert.equal(good.doc.picks.under[0].adj,2.5);assert.equal(good.doc.frozen_proofs.length,1);assert.equal(expired.doc.picks.under.length,0);assert.equal(expired.overlay.rows.length,0);checks+=4;
+for(const [name,bytes]of good.assets){const file=path.join(pages,name.slice(1));fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,bytes);}fs.writeFileSync(path.join(pages,'data/week.json'),JSON.stringify(board));
+const gitStub=(command,args)=>{assert.equal(command,'git');assert.ok(args.includes('--no-lazy-fetch'));const name=args[args.length-1].split(':tools/')[1];assert.ok(['weekly_adaptive_overlay.py','weekly_selected_rankings.py'].includes(name));return fs.readFileSync(path.join(root,'tools',name));};
+const sources=scope.sources(root,'7'.repeat(40),gitStub),boardHash=sha(Buffer.from(JSON.stringify(board))),overlayPointer=JSON.parse(good.assets.get('/data/weekly-adaptive-overlay.json'));
+const verify=()=>scope.verify(pages,scope.collect(pages),'7'.repeat(40),sources,boardHash,overlayPointer.sha256);
+let value=verify();assert.equal(value.frozen_proofs,1);assert.equal(value.required.length,5);checks++;
+const receipt='data/weekly-selected-rankings/'+good.doc.frozen_proofs[0].receipt_sha256+'.receipt.json',receiptPath=path.join(pages,receipt),receiptBytes=fs.readFileSync(receiptPath);
+fs.unlinkSync(receiptPath);assert.throws(verify);fs.writeFileSync(receiptPath,receiptBytes);checks++;
+const originalPointer=JSON.parse(receiptBytes),originalPath=path.join(pages,'data',originalPointer.path),originalBytes=fs.readFileSync(originalPath),stamp=fs.statSync(originalPath);const damaged=Buffer.from(originalBytes);damaged[0]^=1;
+fs.writeFileSync(originalPath,damaged);fs.utimesSync(originalPath,stamp.atime,stamp.mtime);assert.throws(verify);fs.writeFileSync(originalPath,originalBytes);checks++;
+fs.writeFileSync(receiptPath,Buffer.alloc(4097));assert.throws(()=>scope.collect(pages));fs.writeFileSync(receiptPath,receiptBytes);checks++;
+const currentPath=path.join(pages,'data',good.pointer.path),currentBytes=fs.readFileSync(currentPath);fs.writeFileSync(currentPath,Buffer.alloc(262145));assert.throws(()=>scope.collect(pages));fs.writeFileSync(currentPath,currentBytes);checks++;
+assert.throws(()=>scope.limit('data/weekly-selected-rankings/private.json'));assert.throws(()=>scope.limit('data/weekly-selected-rankings/'+'a'.repeat(64)+'.json.gz'));checks+=2;
+assert.throws(()=>scope.sources(root,'7'.repeat(40),()=>Buffer.from('wrong immutable source')));checks++;
+const bad=structuredClone(sources);bad['weekly_selected_rankings.py'].sha256='0'.repeat(64);assert.throws(()=>scope.verify(pages,scope.collect(pages),'7'.repeat(40),bad,boardHash,overlayPointer.sha256));checks++;
+value=verify();assert.equal(value.required.length,5);checks++;
+console.log(JSON.stringify({checks,actual_producers:true,actual_python_graph_reader:true,git_source_lookup:'EXPLICIT_MATCHING_AND_MISMATCHING_UNIT_STUB',provider_requests:0,browser:false}));
+"""
+        with tempfile.TemporaryDirectory() as temp:
+            result=subprocess.run(['node','-e',script,str(HERE),temp],capture_output=True,text=True,timeout=60,check=True)
+        self.assertEqual(json.loads(result.stdout),{'checks':14,'actual_producers':True,'actual_python_graph_reader':True,
+            'git_source_lookup':'EXPLICIT_MATCHING_AND_MISMATCHING_UNIT_STUB','provider_requests':0,'browser':False})
     def test_actual_browser_graph_function_and_reviewed_decoder_controls(self):
         script=r"""
 const fs=require('node:fs'),assert=require('node:assert/strict'),crypto=require('node:crypto'),vm=require('node:vm'),path=require('node:path');
