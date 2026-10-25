@@ -863,10 +863,13 @@ function favBtn(p) {
 
 function resBadge(st) {
   if (!st) return "";
-  if (st.res === "hit") return `<span class="res hit">${st.final ? "HIT" : "CLEARED"}</span>`;
-  if (st.res === "miss") return `<span class="res miss">${st.final ? "MISS" : "LOST"}</span>`;
+  if (st.res === "hit" && st.final) return `<span class="res hit">HIT</span>`;
+  if (st.res === "miss" && st.final) return `<span class="res miss">MISS</span>`;
   if (st.res === "dnp") return `<span class="res dnp">DNP</span>`;
   if (st.res === "push") return `<span class="res dnp">PUSH</span>`;
+  if (st.res === "unresolved") return `<span class="res dnp" title="${esc(st.reason || "Awaiting evidence")}">UNRESOLVED</span>`;
+  if (st.res === "pending") return `<span class="res live" title="${esc(st.reason || "Awaiting final outcome")}">PENDING</span>`;
+  if (["above", "below", "equal"].includes(st.res)) return `<span class="res live">CURRENTLY ${st.res.toUpperCase()}</span>`;
   if (st.res === "live") return `<span class="res live">LIVE</span>`;
   return "";
 }
@@ -4482,15 +4485,28 @@ function gameBetLabel(m, g) {
 
 // Where a game bet stands: live margins and totals, then hit, miss or push at the final
 function gameBetStatus(m) {
+  if (!m || typeof m !== "object" || Array.isArray(m)) return { res: "unresolved", final: false, note: "Saved game selection unavailable" };
+  const validId = value => typeof value === "string" ? Boolean(value.trim()) : Number.isSafeInteger(value) && value >= 0;
+  if (!validId(m.gid)) return { res: "unresolved", final: false, note: "Saved game identity unavailable" };
   const g = S.games[m.gid];
-  if (!g || g.state === "pre" || g.home_score == null) return null;
+  if (!g) return null;
+  if (!validId(g.id) || String(g.id) !== String(m.gid)) return { res: "unresolved", final: false, note: "Saved game does not match this game" };
+  if (g.state === "pre") return null;
+  if (!["in", "post"].includes(g.state)) return { res: "unresolved", final: false, note: "Game status unavailable" };
+  if (!["spread", "total", "ml"].includes(m.market) || (m.market !== "ml" && !Number.isFinite(m.line)))
+    return { res: "unresolved", final: false, note: "Saved market or line missing/invalid" };
+  if (typeof m.side !== "string" || (m.market === "total" ? !["over", "under"].includes(m.side) : ![g.home, g.away].includes(m.side)))
+    return { res: "unresolved", final: false, note: "Saved side does not match this game/market" };
+  if (![g.home_score, g.away_score].every(score => Number.isSafeInteger(score) && score >= 0))
+    return { res: "unresolved", final: false, note: "Missing or invalid recorded game score" };
+  if (g.state === "post" && (typeof g.detail !== "string" || !/^Final(?:\/\d*OT)?$/i.test(g.detail.trim()))) return { res: "unresolved", final: false, note: "Final status unconfirmed; cancellation/void settlement unavailable" };
   const final = g.state === "post";
   const hs = g.home_score, as = g.away_score;
   if (m.market === "total") {
     const t = hs + as;
     const over = t > m.line;
-    const res = final ? (t === m.line ? "push" : over === (m.side === "over") ? "hit" : "miss") : over ? (m.side === "over" ? "hit" : "miss") : "live";
-    return { res, final, v: t, note: `${t} points${final ? "" : " so far"}${!final && !over ? `, ${fmt(m.line - t, 1)} under the line` : ""}`, pct: Math.min(100, (100 * t) / Math.max(m.line, 1)) };
+    const res = final ? (t === m.line ? "push" : over === (m.side === "over") ? "hit" : "miss") : t === m.line ? "equal" : over ? "above" : "below";
+    return { res, final, v: t, note: `${t} points${final ? "" : " so far"}${!final && t === m.line ? ", equal to the line" : !final && !over ? `, ${fmt(m.line - t, 1)} under the line` : ""}`, pct: Math.min(100, (100 * t) / Math.max(m.line, 1)) };
   }
   const mine = m.side === g.home ? hs - as : as - hs;
   if (m.market === "spread") {
@@ -4510,13 +4526,19 @@ function updateMineBadge() {
 }
 
 function renderMine() {
+  if (!Array.isArray(S.mine) || S.mine.some(m => !m || typeof m !== "object" || Array.isArray(m))) {
+    $("#main").innerHTML = `<h2>My Picks</h2><div class="card note" role="status">Stored selections contain an unsupported record. They have not been changed, and no totals were calculated.</div>`;
+    return;
+  }
+  const validGameId = value => typeof value === "string" ? Boolean(value.trim()) : Number.isSafeInteger(value) && value >= 0;
   const thisWeek = (m) => m.season === S.data.season && m.week === S.data.week;
-  const now = S.mine.filter((m) => thisWeek(m) && (m.kind === "game" ? S.games[m.gid] : S.byId[m.pid]));
+  const now = S.mine.filter((m) => thisWeek(m) && (m.kind === "game" ? validGameId(m.gid) && S.games[m.gid] : validGameId(m.pid) && S.byId[m.pid]));
   const old = S.mine.length - now.length;
+  const nonCurrent = S.mine.filter(m => !thisWeek(m)).length;
   if (!now.length) {
     $("#main").innerHTML = `<h2>My Picks</h2><div class="card empty-card">
       <p><b>Track any prop or game bet live.</b> Open a player on the Props tab and tap <span class="add over on demo">+ Over</span> or <span class="add under on demo">+ Under</span> on any line, tap <b>+</b> on a top pick, or open a game and tap <b>+</b> on its spread, total or moneyline. Your picks are saved on this device and follow the games live.</p>
-      ${old ? `<p class="note">${old} pick${old === 1 ? "" : "s"} from an earlier week. <button class="tbtn" data-mine-clear="old">Clear them</button></p>` : ""}
+      ${old ? `<p class="note">${old} saved selection${old === 1 ? " is" : "s are"} outside the current board and remain stored.${nonCurrent ? ` <button class="tbtn" data-mine-clear="old">Clear non-current periods</button>` : ""}</p>` : ""}
     </div>`;
     return;
   }
@@ -4530,27 +4552,42 @@ function renderMine() {
     return { m, p, g, st: propStatus(p, m.key, m.line, m.dir), prop: p.props.find((x) => x.key === m.key) };
   });
   const rank = (r) => (r.g.state === "in" ? 0 : r.g.state === "pre" ? 1 : 2);
-  rows.sort((a, b) => rank(a) - rank(b) || a.g.kickoff.localeCompare(b.g.kickoff) || a.m.at - b.m.at);
-  const hit = rows.filter((r) => r.st?.res === "hit").length;
-  const miss = rows.filter((r) => r.st?.res === "miss").length;
-  const push = rows.filter((r) => r.st?.res === "push").length;
+  rows.sort((a, b) => rank(a) - rank(b) || String(a.g.kickoff || "").localeCompare(String(b.g.kickoff || "")) || a.m.at - b.m.at);
+  const hit = rows.filter((r) => r.st?.final && r.st.res === "hit").length;
+  const miss = rows.filter((r) => r.st?.final && r.st.res === "miss").length;
+  const push = rows.filter((r) => r.st?.final && r.st.res === "push").length;
+  const dnp = rows.filter((r) => r.st?.final && r.st.res === "dnp").length;
+  const unresolved = rows.filter((r) => r.st?.res === "unresolved").length;
   const final = rows.filter((r) => r.st?.final).length;
   const live = rows.filter((r) => r.g.state === "in").length;
-  const entry = miss ? "lost" : hit + push === rows.length && hit ? "won" : "open";
-  const gameRow = ({ m, g, st }) => `<div class="pick mine ${st?.res || ""}" data-game="${g.id}">
-      <div class="av def"><img src="${logo(m.market === "total" ? g.home : m.side)}" alt=""></div>
+  const gameRow = ({ m, g, st }) => {
+    const identityKnown = validGameId(g.id) && validGameId(m.gid) && String(g.id) === String(m.gid);
+    const phaseKnown = ["pre", "in", "post"].includes(g.state);
+    const marketKnown = ["spread", "total", "ml"].includes(m.market);
+    const sideKnown = typeof m.side === "string" && (m.market === "total" ? ["over", "under"].includes(m.side) : [g.home, g.away].includes(m.side));
+    const actionable = identityKnown && marketKnown && sideKnown && [g.id, m.market, m.side].every(value => ["string", "number"].includes(typeof value) && String(value) && !String(value).includes("|"));
+    const lineKnown = m.market === "ml" || Number.isFinite(m.line);
+    const displayPick = { ...m, odds: Number.isFinite(m.odds) ? m.odds : null };
+    const title = identityKnown && marketKnown && sideKnown && lineKnown ? gameBetLabel(displayPick, g) : "Saved game selection unavailable";
+    const team = marketKnown && sideKnown && m.market !== "total" ? m.side : g.home;
+    const icon = identityKnown && typeof team === "string" && team ? `<img src="${esc(logo(team))}" alt="">` : "";
+    const scoresKnown = [g.home_score, g.away_score].every(score => Number.isSafeInteger(score) && score >= 0);
+    const action = actionable ? esc([g.id, m.market, m.side].join("|")) : "";
+    return `<div class="pick mine ${st?.res || ""}" ${identityKnown ? `data-game="${esc(g.id)}"` : ""}>
+      <div class="av def">${icon}</div>
       <div>
-        <div><b>${esc(gameBetLabel(m, g))}</b> <span class="ptag big">${m.market === "ml" ? "MONEYLINE" : m.market.toUpperCase()}</span>
-          ${m.market !== "ml" ? `<label class="mline">line <input type="number" step="0.5" inputmode="decimal" value="${m.line}" data-mline="g|${g.id}|${m.market}|${m.side}" aria-label="Your line"></label>` : ""}</div>
-        <div class="what">${g.away} @ ${g.home}${g.state !== "pre" ? ` · <b class="num">${g.away} ${g.away_score} - ${g.home} ${g.home_score}</b>` : ""}</div>
-        <div class="small">${esc(gameStatus(g))}${st?.note ? ` · ${esc(st.note)}` : ""}</div>
+        <div><b>${esc(title)}</b> <span class="ptag big">${marketKnown ? m.market === "ml" ? "MONEYLINE" : m.market.toUpperCase() : "UNAVAILABLE"}</span>
+          ${m.market !== "ml" ? `<label class="mline">line <input type="number" step="0.5" inputmode="decimal" value="${Number.isFinite(m.line) ? m.line : ""}" ${actionable ? `data-mline="g|${action}"` : "disabled"} aria-label="Your line"></label>` : ""}</div>
+        <div class="what">${identityKnown ? `${esc(g.away)} @ ${esc(g.home)}${g.state !== "pre" ? scoresKnown ? ` · <b class="num">${esc(g.away)} ${g.away_score} - ${esc(g.home)} ${g.home_score}</b>` : " · Score unavailable" : ""}` : "Saved game identity unavailable"}</div>
+        <div class="small">${identityKnown ? phaseKnown ? esc(gameStatus(g)) : "Game status unavailable" : "Game unavailable"}${st?.note ? ` · ${esc(st.note)}` : ""}</div>
         ${st?.pct != null ? `<div class="prog ${st.res === "hit" ? "hit" : st.res === "miss" ? "miss" : ""}"><i style="width:${st.pct}%"></i></div>` : ""}
       </div>
       <div class="side">
         ${st ? resBadge(st) : ""}
-        <button class="rm" data-rm-game="${g.id}|${m.market}|${m.side}" title="Remove" aria-label="Remove">×</button>
+        ${actionable ? `<button class="rm" data-rm-game="${action}" title="Remove" aria-label="Remove">×</button>` : `<span class="small">Stored record retained</span>`}
       </div>
     </div>`;
+  };
   const propRow = ({ m, p, g, st, prop }) => {
     const label = S.data.categories[m.key].label;
     const lineNow = prop?.line;
@@ -4571,19 +4608,20 @@ function renderMine() {
   $("#main").innerHTML = `
     <h2>My Picks <small>${S.data.season} week ${S.data.week}</small></h2>
     <div class="mine-sum card">
-      <div><div class="k">Hit</div><div class="v num" style="color:var(--green)">${hit}</div></div>
-      <div><div class="k">Missed</div><div class="v num" style="color:var(--red)">${miss}</div></div>
+      <div><div class="k">Final wins</div><div class="v num" style="color:var(--green)">${hit}</div></div>
+      <div><div class="k">Final losses</div><div class="v num" style="color:var(--red)">${miss}</div></div>
+      <div><div class="k">Push / DNP</div><div class="v num">${push} / ${dnp}</div></div>
+      <div><div class="k">Unresolved</div><div class="v num">${unresolved}</div></div>
       <div><div class="k">Live</div><div class="v num" style="color:var(--cyan)">${live}</div></div>
       <div><div class="k">Not started</div><div class="v num">${rows.filter((r) => r.g.state === "pre").length}</div></div>
-      <div class="entry ${entry}"><div class="k">All ${rows.length} together</div><div class="v">${entry === "won" ? "Won" : entry === "lost" ? "Lost" : `${hit} of ${rows.length}`}</div></div>
     </div>
     <div class="plist">${rows.map((r) => (r.m.kind === "game" ? gameRow(r) : propRow(r))).join("")}</div>
     <div class="gtool" style="margin-top:12px">
       ${final ? `<button class="tbtn" data-mine-clear="final">Clear finished</button>` : ""}
       <button class="tbtn" data-mine-clear="all">Clear all</button>
-      ${old ? `<button class="tbtn" data-mine-clear="old">Clear ${old} from earlier weeks</button>` : ""}
+      ${nonCurrent ? `<button class="tbtn" data-mine-clear="old">Clear ${nonCurrent} non-current period selections</button>` : ""}
     </div>
-    <p class="note">Picks keep the line you added them at; change any line to the one you actually got (an alternate spread like -4.5, a different total). Live prop values remain provisional, including overs already above the line: signed yardage and corrections can move down. Final equality with an integer line is a push.</p>`;
+    <p class="note">Counts describe individual selections, not a combined ticket. Game bets use your saved line and require a recorded Final status with valid whole-number scores. Live positions can reverse, including downward corrections. Player-prop results still use the current statistics feed; missing player data is not fully resolved by this update. Venue settlement and combined-ticket results are unavailable.</p>`;
 }
 
 // ---------------------------------------------------------------- render and events
