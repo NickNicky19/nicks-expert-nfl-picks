@@ -1823,3 +1823,68 @@ updater. The final manual-only workflows preserve the daily schedule,
 noncancelling concurrency, source-CI boundaries and required complete checks.
 Their separate protected publication and final-source/current-main CI remain
 required before operating and production-artifact acceptance.
+
+### Carried-prefix origin and execution identity — 2026-10-25
+
+Current-main integration `3d95100` has the actual main `89512ed` as its second
+parent. Its fresh push run 40153678640 and PR run 40153682022 both failed the
+retained suite: 1,218 tests, two errors and two failures. The PR actually checked
+out `4e2fcc061ea02f461ed1190c46c0e80a242b239b`, with parents main and that
+integration. Historical fixture setup tried to read a newly added JavaScript
+asset from older immutable sources where it did not exist; two other assertions
+expected the wrong historical inline controller. These failures remain retained.
+No passing source seal, hosted update or deployment is inferred from those runs.
+
+A separate direct construct-boundary inspection found an origin/execution head
+conflation in the diagnostic wrapper. Checked carried-original recovery records
+the original fictional history head separately from its execution prefix. The
+worker freshly verified both, then incorrectly required them to equal each
+other. The correction binds each recorded head to its own freshly verified
+counterpart. It preserves legacy same-head behavior, exact inventories, source
+and evidence lineage, original receipts and all existing qualification checks.
+This is a deterministic preparation correctness repair, not an OOM fix or an
+operating measurement. Both earlier exhausted finding counters stay unchanged.
+
+The wrapper's changed bytes have a new integrity identity. The privileged
+resource bootstrap recognizes only the explicitly closed new manifest alongside
+its retained historical contracts. Diagnostic workflow bootstrap pins require a
+separately bound hash-only protected operation after ordinary lease closure.
+No arbitrary manifest, caller-supplied source identity or old PASS flag qualifies
+the new source. Focused regression and final-source CI results remain separate
+from full retained-fixture replay and measured operating acceptance.
+
+Release status remains: features implemented in development; current-main source
+integrated; final regression/integration acceptance pending; current-source
+operating and production-rooted artifact acceptance pending; expanded public
+grading, accuracy and paper tickets not yet deployed or publicly verified.
+The daily cadence, retired Ticker, frozen production contracts, My Picks,
+separate genuine observations and completed original-archive review remain
+unchanged. No full admitted 24-generation seed or season-long capacity is claimed.
+
+The finished wrapper SHA-256 is
+`bf466be0a2aa6ab4dd7a241690b4f15ffe26b98df0415c0995fa099b162a2f2b`;
+its manifest is
+`2bdc73b06282e24ae523ab4cdce055aca31a1fcb14cee8cf36957bf98f875ecd`.
+The closed bootstrap SHA-256 is
+`989679c7bc85819a2f61976174ede7d8bd8d125ae924295d829ef066a1d6a5d1`.
+Two direct controls reproduced the old worker rejection. The finished continuation
+module passed 32 controls, including distinct/same/swapped heads, an independently
+wrong actual Git head, immutable inventories and exact tail clocks. Nineteen
+connected bootstrap/source-contract controls passed. These use real wrapper,
+hash, inventory and small Git operations; heavy qualification, tail captures and
+remote Git transport use explicitly identified unit doubles. They do not execute
+the retained full-size fixture, privileged backend or a whole updater. An initial
+local after-run had one missing-sibling-file setup error; the unchanged exact
+helper was then run from its complete ephemeral twelve-file layout. That failure
+is retained alongside the passing result.
+
+Historical controller controls now distinguish the actual F130/258/e415 inline
+legacy controller from the inert 315 main registration stub. Actual retained
+source bytes stay associated with their original commits; the stub is rejected,
+not treated as a runnable controller. The two historical e2e fixture setup errors
+remain unresolved in source: their exact test-only diff is prepared, without
+removing assertions or injecting current files under old identities. Independent
+review classifies this as the same coexistence finding, already at its installed
+two-attempt limit. A specific owner exception is required before that one test
+path can be repaired. Neither a renamed finding, old authorization, counter reset
+nor this carried-head scope is used to circumvent the limit.

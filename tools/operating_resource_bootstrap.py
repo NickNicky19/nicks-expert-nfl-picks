@@ -54,7 +54,11 @@ FINISHED22_SEED_INTEGRITY = '636b3cd2a966346df02ad30c516dc805e40ae082e1b4f5e7b75
 PREPARATION22_RETRIEVAL_INTEGRITY = '08a9fc62c6707d7385ac8388df8325bd9588f95caad3fdfc48762fdfa4b200a4'
 PREPARATION24_LIFETIME_INTEGRITY = '3c68e0b8e88b458dc5ecb0dce1376160e668e1941e3e2302bce3e35a38a08f77'
 CURRENT_MAIN_WEEKLY_INTEGRITY = 'a44be6d81cca14e6830cafe4f3811463e5854c05e828545aeb085bcb05ac3767'
+# Exact carried-prefix wrapper revision; historical manifests remain distinct.
+CARRIED_PREFIX_SEED_INTEGRITY = '2bdc73b06282e24ae523ab4cdce055aca31a1fcb14cee8cf36957bf98f875ecd'
 SEED_CONTRACTS = {
+    CARRIED_PREFIX_SEED_INTEGRITY: frozenset(SEED_NAMES | {
+        'seed_checkpoint_frontier.py', 'source_ci.py', 'operating_seed_transport.py'}),
     CURRENT_MAIN_WEEKLY_INTEGRITY: frozenset(SEED_NAMES | {
         'seed_checkpoint_frontier.py', 'source_ci.py', 'operating_seed_transport.py'}),
     PREPARATION24_LIFETIME_INTEGRITY: frozenset(SEED_NAMES | {

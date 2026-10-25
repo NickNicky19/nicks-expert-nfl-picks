@@ -379,15 +379,20 @@ def _worker(args):
             import seed_checkpoint_frontier as frontier
             selected,profile,spec=continuation_details()
             expected_head=PREFIX_HEAD if profile is None else record.get('execution_prefix_head')
+            expected_origin_head=PREFIX_HEAD
             if profile is not None:
                 checked=frontier.verify_copied_frontier(continuation_path(args),root,profile=profile)
+                # A carried-original recovery is an evidence-only descendant.
+                # Its actual execution HEAD and immutable bundle origin remain
+                # separate, freshly checked dependencies, not interchangeable.
+                expected_origin_head=checked['origin_fixture_head']
                 if (checked['fixture_head']!=expected_head or checked['inventory']!=prefix
                     or checked['origin_fixture_head']!=record.get('original_fixture_head')
                     or checked['evidence_recovery']!=record.get('evidence_recovery')):
                     raise RuntimeError('Authenticated copied prefix changed before construction')
             if (record['run_id']!=int(os.environ['GITHUB_RUN_ID']) or record['continuation_id']!=selected
                 or record['installer']!=load(w/'PREFLIGHT.json')['installer']
-                or record['original_fixture_head']!=expected_head or record['application_source']!=BASE
+                or record['original_fixture_head']!=expected_origin_head or record['application_source']!=BASE
                 or record['harness_sha256']!=HARNESS or record['input_contract_sha256']!=INPUTS
                 or record['first_remaining_generation']!=spec['count']+1 or record['target_generations']!=24
                 or record['freshly_replayed_prefix_generations']!=spec['count']

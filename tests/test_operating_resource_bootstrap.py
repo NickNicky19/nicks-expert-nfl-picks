@@ -169,8 +169,16 @@ class SourceClosure(unittest.TestCase):
 
     def test_latest_twelve_file_contract_binds_lifetime_helpers(self):
         value=self.check()
-        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.CURRENT_MAIN_WEEKLY_INTEGRITY)
+        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.CARRIED_PREFIX_SEED_INTEGRITY)
         self.assertEqual(len(b.SEED_CONTRACTS[b.FINISHED22_SEED_INTEGRITY]),12)
+
+    def test_retained_current_main_contract_uses_actual_3d_source_bytes(self):
+        old='3d95100af8d0671a1dcd29ce27605599ae0dc736'
+        for name in b.SEED_CONTRACTS[b.CURRENT_MAIN_WEEKLY_INTEGRITY]|{'cloud-seed-integrity.json'}:
+            raw=subprocess.check_output(['git','-C',str(SOURCE),'show',old+':tools/'+name])
+            (self.code/'tools'/name).write_bytes(raw);self.objects['tools/'+name]=raw
+        value=self.check()
+        self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.CURRENT_MAIN_WEEKLY_INTEGRITY)
 
     def test_ranked_genuine_closure_requires_actual_ranker_source_and_fresh_bytes(self):
         commit=subprocess.check_output(['git','-C',str(SOURCE),'rev-parse','HEAD'],text=True).strip()
@@ -206,8 +214,9 @@ class SourceClosure(unittest.TestCase):
         value=self.check()
         self.assertEqual(value['files']['tools/cloud-seed-integrity.json']['sha256'],b.PREPARATION22_RETRIEVAL_INTEGRITY)
 
-    def test_only_six_exact_contracts_are_recognized(self):
+    def test_only_seven_exact_contracts_are_recognized(self):
         self.assertEqual(set(b.SEED_CONTRACTS),{
+            b.CARRIED_PREFIX_SEED_INTEGRITY,
             b.CURRENT_MAIN_WEEKLY_INTEGRITY,
             b.PREPARATION24_LIFETIME_INTEGRITY,
             'bfb48f36d1db5b2980235238e1b869efb183f23095ff72cee33c1d88e84a3b26',
@@ -224,6 +233,10 @@ class SourceClosure(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):self.check()
     def test_self_consistent_new_helper_revision_not_accepted_under_old_manifest(self):
         name='tools/seed_checkpoint_frontier.py';raw=self.objects[name];changed=bytes([raw[0]^1])+raw[1:]
+        (self.code/name).write_bytes(changed);self.objects[name]=changed
+        with self.assertRaisesRegex(RuntimeError,'Immutable seed dependency changed'):self.check()
+    def test_self_consistent_carried_wrapper_mutation_cannot_borrow_new_manifest(self):
+        name='tools/cloud_seed_prepare.py';raw=self.objects[name];changed=bytes([raw[0]^1])+raw[1:]
         (self.code/name).write_bytes(changed);self.objects[name]=changed
         with self.assertRaisesRegex(RuntimeError,'Immutable seed dependency changed'):self.check()
     def test_self_consistent_unknown_manifest_not_accepted(self):
@@ -449,14 +462,21 @@ class GenuineRoute(unittest.TestCase):
         with patch.object(b,'regular_bytes',return_value=changed),patch.object(b,'git',return_value=changed):
             with self.assertRaisesRegex(RuntimeError,'Unknown genuine controller'):b.genuine_driver(ROOT,commit)
     def test_legacy_controller_reader_keeps_actual_retained_source_association(self):
-        for legacy,digest,length in [('25826e015e70cad74a375e9a5028e7cada5d5c88',b.LEGACY_GENUINE_DRIVER,30854),
-                ('e415912b9c3d3ff52e8f435517af02e794d97fa4',b.WEEKLY_GENUINE_DRIVER,35468)]:
+        for legacy,digest,length in [('f1303ee9dfac61fb47fb6820eabd1d04b36f173c',b.LEGACY_GENUINE_DRIVER,30854),
+                ('25826e015e70cad74a375e9a5028e7cada5d5c88',b.LEGACY_GENUINE_DRIVER,30854),
+                ('e415912b9c3d3ff52e8f435517af02e794d97fa4',b.LEGACY_GENUINE_DRIVER,30854)]:
             # Read the real retained Git object; mock only its physical replay root.
             original=subprocess.check_output(['git','-C',str(ROOT),'show',legacy+':'+b.GENUINE_WORKFLOW])
             with patch.object(b,'regular_bytes',return_value=original),patch.object(b,'git',return_value=original):
                 raw=b.genuine_driver(ROOT,legacy)
             self.assertEqual(len(raw),length);self.assertEqual(b.sha(raw),digest)
         self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.WEEKLY_GENUINE_DRIVER:35468,b.GENUINE_DRIVER:36877})
+    def test_actual315_registration_stub_cannot_become_a_genuine_controller(self):
+        source='315be5e86a1a3a93022b68c453739076487e2077'
+        original=subprocess.check_output(['git','-C',str(ROOT),'show',source+':'+b.GENUINE_WORKFLOW])
+        self.assertEqual(b.sha(original),'b1147e8107de5ac44122864cbdb51ade4be3224e956a94ddfb3b83ac9eafc3a9')
+        with patch.object(b,'regular_bytes',return_value=original),patch.object(b,'git',return_value=original):
+            with self.assertRaisesRegex(RuntimeError,'markers unavailable'):b.genuine_driver(ROOT,source)
     def test_direct_data_only_descendant_and_unchanged_source(self):
         def git(code,*argv):
             if argv==('rev-parse','HEAD'):return b'2'*40
@@ -1076,12 +1096,20 @@ class GenuineRecovery(unittest.TestCase):
         self.assertNotEqual(changed,original);self.assertEqual(len(changed),len(original))
         with patch.object(r,'authenticated_bytes',return_value=changed):
             with self.assertRaisesRegex(ValueError,'CLOSED_DRIVER_IDENTITY'):r.checked_driver(ROOT,'a'*40)
-        for source,digest in [('25826e015e70cad74a375e9a5028e7cada5d5c88',r.LEGACY_DRIVER),
-                ('e415912b9c3d3ff52e8f435517af02e794d97fa4',r.WEEKLY_DRIVER)]:
+        for source,digest in [('f1303ee9dfac61fb47fb6820eabd1d04b36f173c',r.LEGACY_DRIVER),
+                ('25826e015e70cad74a375e9a5028e7cada5d5c88',r.LEGACY_DRIVER),
+                ('e415912b9c3d3ff52e8f435517af02e794d97fa4',r.LEGACY_DRIVER)]:
             legacy=subprocess.check_output(['git','-C',str(ROOT),'show',source+':'+r.WORKFLOW])
             with patch.object(r,'authenticated_bytes',return_value=legacy):
                 self.assertEqual(r.checked_driver(ROOT,source),digest)
         self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.WEEKLY_DRIVER:35468,r.DRIVER:36877})
+
+    def test_actual315_registration_stub_is_rejected_by_saved_recovery(self):
+        r=self.r;source='315be5e86a1a3a93022b68c453739076487e2077'
+        original=subprocess.check_output(['git','-C',str(ROOT),'show',source+':'+r.WORKFLOW])
+        self.assertEqual(r.sha(original),'b1147e8107de5ac44122864cbdb51ade4be3224e956a94ddfb3b83ac9eafc3a9')
+        with patch.object(r,'authenticated_bytes',return_value=original):
+            with self.assertRaisesRegex(ValueError,'CLOSED_DRIVER_MARKERS'):r.checked_driver(ROOT,source)
 
     def ranked_fixture(self, directory):
         import weekly_adaptive_overlay as w
@@ -1291,14 +1319,19 @@ class DiagnosticLifetimeDependencyContract(unittest.TestCase):
             self.assertEqual(b.SEED_CONTRACTS[version],expected)
         self.assertEqual(b.SEED_CONTRACTS[b.SEED_INTEGRITY],frozenset(b.SEED_NAMES))
         self.assertEqual(b.SEED_CONTRACTS[b.CURRENT_MAIN_WEEKLY_INTEGRITY],expected)
-    def test_derivative_manifest_changes_only_current_source_ci_binding(self):
+        self.assertEqual(b.SEED_CONTRACTS[b.CARRIED_PREFIX_SEED_INTEGRITY],expected)
+    def test_carried_manifest_changes_only_wrapper_and_preserves_older_manifests(self):
         manifest=json.loads((ROOT/'tools/cloud-seed-integrity.json').read_bytes())
-        self.assertEqual(b.sha((ROOT/'tools/cloud-seed-integrity.json').read_bytes()),b.CURRENT_MAIN_WEEKLY_INTEGRITY)
+        self.assertEqual(b.sha((ROOT/'tools/cloud-seed-integrity.json').read_bytes()),b.CARRIED_PREFIX_SEED_INTEGRITY)
+        self.assertEqual(manifest['files']['cloud_seed_prepare.py'],
+            b.sha((ROOT/'tools/cloud_seed_prepare.py').read_bytes()))
         self.assertEqual(manifest['files']['source_ci.py'],
             'f3728b363e3556771b48e9e9ed761928ca9078fa842beae5551a982d7820b619')
         self.assertEqual(len(manifest['files']),12)
         self.assertNotIn('operating_resource_bootstrap.py',manifest['files'])
         retained=copy.deepcopy(manifest)
+        retained['files']['cloud_seed_prepare.py']='1deb47bc1424024db9e5743cb2c85191bc9416c8de28bba47b8bf8fbb5aa3586'
+        self.assertEqual(b.sha((json.dumps(retained,sort_keys=True,indent=2)+'\n').encode()),b.CURRENT_MAIN_WEEKLY_INTEGRITY)
         retained['files']['source_ci.py']='f7bb054c9299a226ae9f30aa71b8f5afeca07b2ee37c853aad7abc40360e59cd'
         self.assertEqual(b.sha((json.dumps(retained,sort_keys=True,indent=2)+'\n').encode()),b.PREPARATION24_LIFETIME_INTEGRITY)
 

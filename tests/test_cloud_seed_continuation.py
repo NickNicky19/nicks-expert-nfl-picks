@@ -212,6 +212,105 @@ class CopyPrefix(unittest.TestCase):
         self.assertEqual(record['original_artifact'],12540324398)
         self.assertEqual(record['origin_profile'],f.PROFILE22)
         self.assertEqual((root.parent/'progress.json').read_bytes(),self.progress)
+        # Exercise the real next worker boundary, not a duplicate of its guard.
+        # Model/native qualification, installer and next capture are explicit
+        # unit doubles; clone, fsck, inventories and both Git heads are real.
+        import operating_diagnostic as h
+        self.args.stage='construct';self.args.integrity=CODE/'tools/cloud-seed-integrity.json'
+        with patch.dict(os.environ,{'GITHUB_RUN_ID':'123','CONTINUATION_ID':p.CONTINUATION22_ID}), \
+                patch.object(p,'continuation_path',return_value=self.checkpoint), \
+                patch.object(f,'verify_copied_frontier',side_effect=checked), \
+                patch.object(p,'integrity'),patch.object(p,'installed'), \
+                patch.object(h,'require_offline'),patch.object(p,'continue_generations') as update:
+            p._worker(self.args)
+        update.assert_called_once_with(root,h,profile=f.PROFILE22,
+            prefix_generation=record['prefix_generation_sha256'],tail_path=self.work/'CONTINUATION_TAIL.json')
+        self.assertEqual(p.continuation_inventory(root),before)
+
+    def worker_control(self, *, profile=f.PROFILE22, carried=True, record_change=None, checked_change=None):
+        """Real worker/JSON/Git; fresh qualification and tail are explicit mocks."""
+        import operating_diagnostic as h
+        with tempfile.TemporaryDirectory(dir=self.base) as temporary:
+            base=Path(temporary);work=base/'work';work.mkdir();root=work/'construction/root'
+            subprocess.run(['git','clone','--quiet','--no-hardlinks',str(self.source),str(root)],
+                check=True,capture_output=True)
+            origin=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+            if carried:
+                item=root/'data/verification/worker-carried.json.gz';item.write_bytes(b'fictional worker bytes')
+                for command in [('add','--',item.relative_to(root).as_posix()),
+                        ('-c','user.name=FictionalUnitTest','-c','user.email=fictional@example.invalid',
+                         'commit','-qm','Tiny carried evidence worker control')]:
+                    subprocess.run(['git','-C',str(root),*command],check=True,capture_output=True)
+            execution=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+            prefix=p.continuation_inventory(root);p.write(work/'CONTINUATION_PREFIX.json',prefix)
+            lineage=dict(origin_bundle_head=origin,recovery_head=execution,addition_count=int(carried))
+            installer=dict(head='a'*40,tree='b'*40);p.write(work/'PREFLIGHT.json',dict(installer=installer))
+            spec=f.profile_identity(profile)
+            record=dict(run_id=123,continuation_id=p.CONTINUATION_ID if profile is None else p.CONTINUATION22_ID,
+                installer=installer,original_fixture_head=origin,application_source=p.BASE,
+                harness_sha256=p.HARNESS,input_contract_sha256=p.INPUTS,
+                first_remaining_generation=spec['count']+1,target_generations=24,
+                freshly_replayed_prefix_generations=spec['count'],prefix_inventory_sha256=p.rawhash(work/'CONTINUATION_PREFIX.json'))
+            if profile is not None:
+                record.update(execution_prefix_head=execution,evidence_recovery=lineage,origin_profile=profile,
+                    original_artifact=spec['artifact'],original_artifact_sha256=spec['digest'],
+                    residual_evidence_preserved=True,prefix_generation_sha256='c'*64)
+            if record_change:record_change(record)
+            p.write(work/'CONTINUATION.json',record)
+            checked=dict(fixture_head=execution,origin_fixture_head=origin,evidence_recovery=lineage,inventory=prefix)
+            if checked_change:checked_change(checked)
+            args=SimpleNamespace(stage='construct',integrity=CODE/'tools/cloud-seed-integrity.json',
+                app=str(base/'app'),work=str(work),output=str(base/'export'),continue_checkpoint=True)
+            with patch.dict(os.environ,{'GITHUB_RUN_ID':'123'}), \
+                    patch.object(p,'continuation_path',return_value=base/'checkpoint'), \
+                    patch.object(p,'continuation_details',return_value=(record['continuation_id'],profile,spec)), \
+                    patch.object(f,'verify_copied_frontier',return_value=checked) as verify, \
+                    patch.object(p,'integrity'),patch.object(p,'installed'),patch.object(h,'require_offline'), \
+                    patch.object(p,'PREFIX_HEAD',origin),patch.object(p,'continue_generations') as update:
+                p._worker(args)
+            self.assertEqual(verify.call_count,int(profile is not None))
+            update.assert_called_once()
+            self.assertEqual(update.call_args.args[:2],(root,h))
+            self.assertEqual(p.continuation_inventory(root),prefix)
+            return origin,execution
+
+    def test_actual_worker_distinguishes_carried_origin_and_execution_head(self):
+        origin,execution=self.worker_control()
+        self.assertNotEqual(origin,execution)
+
+    def test_actual_worker_keeps_legacy_and_no_addition_same_head_paths(self):
+        for profile in (None,f.PROFILE22):
+            with self.subTest(profile=profile):
+                origin,execution=self.worker_control(profile=profile,carried=False)
+                self.assertEqual(origin,execution)
+
+    def test_actual_worker_rejects_changed_pinned_heads_inventory_and_source(self):
+        record_changes={
+            'origin':lambda v:v.update(original_fixture_head='d'*40),
+            'execution':lambda v:v.update(execution_prefix_head='d'*40),
+            'lineage':lambda v:v.update(evidence_recovery={'changed':True}),
+            'inventory':lambda v:v.update(prefix_inventory_sha256='0'*64),
+            'installer':lambda v:v.update(installer={'head':'d'*40,'tree':'e'*40}),
+            'application':lambda v:v.update(application_source='d'*40),
+            'harness':lambda v:v.update(harness_sha256='d'*64),
+            'contract':lambda v:v.update(input_contract_sha256='d'*64),
+            'profile':lambda v:v.update(origin_profile='unknown'),
+            'target':lambda v:v.update(target_generations=23),
+            'artifact':lambda v:v.update(original_artifact_sha256='d'*64)}
+        for name,change in record_changes.items():
+            with self.subTest(record=name),self.assertRaisesRegex(RuntimeError,'prefix|binding'):
+                self.worker_control(record_change=change)
+        for name in ('origin_fixture_head','fixture_head','inventory','evidence_recovery'):
+            with self.subTest(checked=name),self.assertRaisesRegex(RuntimeError,'prefix'):
+                self.worker_control(checked_change=lambda v,k=name:v.update({k:'changed'}))
+        with self.subTest(case='swapped origin and execution'),self.assertRaisesRegex(RuntimeError,'prefix'):
+            self.worker_control(record_change=lambda v:v.update(
+                original_fixture_head=v['execution_prefix_head'],execution_prefix_head=v['original_fixture_head']))
+        # The record and fresh validator double agree on a wrong runtime HEAD;
+        # the separate, actual Git HEAD read must still stop advancement.
+        with self.subTest(case='coordinated wrong execution'),self.assertRaisesRegex(RuntimeError,'prefix'):
+            self.worker_control(record_change=lambda v:v.update(execution_prefix_head='d'*40),
+                checked_change=lambda v:v.update(fixture_head='d'*40))
 
 
     def test_actual_check_saved_profile_shape_reaches_real_frontier_copy(self):
