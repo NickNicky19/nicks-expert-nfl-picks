@@ -957,5 +957,59 @@ class ExtendedJointTests(unittest.TestCase):
         self.assertEqual(old_all,new_all)
 
 
+class PresenceModelReportDispatchTests(unittest.TestCase):
+    def test_both_presence_observations_preserve_separate_saved_memberships(self):
+        captures = []
+        for i, model in enumerate(corrected.PRESENCE_MODELS):
+            payload = receipt(BOUNDARY-timedelta(minutes=10), [row(player="fictional-source-"+str(i), top=True)])
+            hashes = corrected.source_hashes(model)
+            payload.update(schema_version=corrected.NATIVE, model=model, presence_contract=corrected.PRESENCE,
+                           engine_files=hashes, engine_sha256=digest(hashes))
+            captures.append(payload)
+        before = copy.deepcopy(captures)
+        decisions, _ = build_decisions(captures, timing_policy(), KICKOFF, ENGINE)
+        selected = [d for d in decisions if d["action"] == "SELECT"]
+        self.assertEqual(captures, before)
+        self.assertEqual({d["model_version"] for d in selected}, set(corrected.PRESENCE_MODELS))
+        for decision in selected:
+            self.assertEqual(decision["engine_files"], corrected.source_hashes(decision["model_version"]))
+            self.assertIs(decision["top_at_decision"], True)
+        bad = copy.deepcopy(captures[-1]); bad["model"] = "unsupported"
+        with self.assertRaises(IntegrityError):
+            build_decisions([bad], timing_policy(), KICKOFF, ENGINE)
+
+    def test_input_inventory_pins_all_three_actual_cache_namespaces(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            names = ["data/cache/stats_2026_07.json", "data/cache/stat-keys-fgm-v1/stats_2026_07.json",
+                     "data/cache/stat-keys-presence-fgm-v2/stats_2026_07.json"]
+            for name in names:
+                path = root/name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text('{}')
+            manifest, _ = _inventory([root])
+            self.assertEqual({item["path"] for item in manifest}, set(names))
+            self.assertTrue(all(item["bytes"] == 2 and item["pin_binding"] == "CONTENT_ADDRESSED_UNPINNED"
+                                for item in manifest))
+
+
+class SavedClassicReportTests(unittest.TestCase):
+    def test_actual_classic_lane_filename_and_saved_rows_are_preserved(self):
+        import classic_model_v1 as classic
+        from test_scorecard import classic_saved_fixture
+        _,native,_,at=classic_saved_fixture();before=copy.deepcopy(native)
+        with tempfile.TemporaryDirectory()as directory:
+            root=Path(directory)
+            identity=digest({"data":native["input_sha256"],"execution":native["execution_contract_sha256"],"mode":native["mode"]})
+            path=root/"data/current-classic/2026/w05"/(identity+".json.gz");path.parent.mkdir(parents=True)
+            immutable_write(path,native); original=path.read_bytes()
+            manifest,inputs=_inventory([root]);self.assertEqual(inputs["forward"],[native])
+            self.assertEqual(manifest[0]["path"],path.relative_to(root).as_posix())
+            policy=timing_policy();policy["registered_at"]=stamp(at-timedelta(days=1))
+            decisions,_=build_decisions(inputs["forward"],policy,at+timedelta(hours=3),ENGINE)
+            self.assertEqual({r["model_version"]for r in decisions},{classic.MODEL})
+            self.assertEqual(native,before);self.assertEqual(path.read_bytes(),original)
+            bad=path.with_name("0"*64+".json.gz");bad.write_bytes(original)
+            with self.assertRaises(IntegrityError):_inventory([root])
+
+
 if __name__ == "__main__":
     unittest.main()

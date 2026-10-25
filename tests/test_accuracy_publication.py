@@ -10,6 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "pull")]
 import data_integrity_v2 as corrected
+import classic_model_v1 as classic
 from reliability import IntegrityError, digest
 from accuracy_publication import project_accuracy, validate_accuracy
 from scorecard import descriptive_contract
@@ -21,11 +22,11 @@ def observation(player, category="rec", *, actual=0, raw=2, adjusted=1,
                 category=category, raw_projection=raw, adjusted_projection=adjusted,
                 actual=actual if status == "resolved" else None, evaluation_status=status,
                 outcome_provenance=provenance, model_version=model,
-                engine_sha256=digest(corrected.V2_SOURCE_SHA256 if model == corrected.MODEL else corrected.legacy_engine_hashes()))
+                engine_sha256=digest(corrected.source_hashes(model) if model in corrected.PRESENCE_MODELS else classic.ENGINE if model == classic.MODEL else corrected.legacy_engine_hashes()))
 
 
 def evaluation(rows=(), *, td=(), model="original_sleeper_matchup_baseline"):
-    return dict(model_version=model, statistic_contract=descriptive_contract(presence_aware=model == corrected.MODEL),
+    return dict(model_version=model, statistic_contract=descriptive_contract(presence_aware=model in corrected.PRESENCE_MODELS, model=model if model in (*corrected.PRESENCE_MODELS, classic.MODEL) else None),
                 rows=list(rows), paired_rows=[r for r in rows if r["category"] != "anytime_td" and r["raw_projection"] is not None and r["adjusted_projection"] is not None],
                 td_rows=list(td), capture_coverage=dict(unique_receipts=int(bool(rows)), duplicate_receipts=0,
                     eligible_capture_rows=dict(Counter(r["category"] for r in rows)),
@@ -148,6 +149,45 @@ for(const change of changes){const v=structuredClone(original);change(v);assert.
 '''
         result = subprocess.run(["node", "-e", script], input=json.dumps(value), text=True, capture_output=True, cwd=ROOT)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class ThreeSourceAccuracyTests(unittest.TestCase):
+    def test_all_three_closed_models_remain_distinct_and_crossed_engine_rejects(self):
+        models = ("original_sleeper_matchup_baseline", *corrected.PRESENCE_MODELS)
+        reports = [evaluation([observation("fictional-"+str(i), model=model)], model=model)
+                   for i, model in enumerate(models)]
+        before = copy.deepcopy(reports)
+        value = project_accuracy(reports)
+        validate_accuracy(value)
+        self.assertEqual(reports, before)
+        self.assertEqual({c["model_version"] for c in value["cohorts"]}, set(models))
+        self.assertEqual(len({c["engine_sha256"] for c in value["cohorts"]}), 3)
+        self.assertEqual(len({c["statistic_contract_sha256"] for c in value["cohorts"]}), 3)
+        bad = copy.deepcopy(value)
+        cohort = next(c for c in bad["cohorts"] if c["model_version"] == corrected.CLASSIC_MODEL)
+        cohort["engine_sha256"] = digest(corrected.source_hashes(corrected.MODEL))
+        with self.assertRaises(IntegrityError):
+            validate_accuracy(bad)
+        bad = copy.deepcopy(reports[-1]); bad["model_version"] = "unknown"
+        with self.assertRaises(IntegrityError):
+            project_accuracy([bad])
+
+
+class FourSourceAccuracyTests(unittest.TestCase):
+    def test_saved_classic_fourth_context_and_wrong_statistic_contract_reject(self):
+        models=("original_sleeper_matchup_baseline",corrected.MODEL,classic.MODEL,corrected.CLASSIC_MODEL)
+        reports=[evaluation([observation("fictional-"+str(i),model=model)],model=model)for i,model in enumerate(models)]
+        before=copy.deepcopy(reports);value=project_accuracy(reports);validate_accuracy(value)
+        self.assertEqual(reports,before);self.assertEqual({c["model_version"]for c in value["cohorts"]},set(models))
+        self.assertEqual(len({c["engine_sha256"]for c in value["cohorts"]}),4)
+        legacy=next(c for c in value["cohorts"]if c["model_version"]==classic.MODEL)
+        self.assertEqual(legacy["engine_sha256"],digest(classic.ENGINE))
+        self.assertEqual(legacy["statistic_contract_sha256"],digest(descriptive_contract(model=classic.MODEL)))
+        for wrong in [descriptive_contract(),descriptive_contract(presence_aware=True,model=corrected.MODEL),
+                      descriptive_contract(presence_aware=True,model=corrected.CLASSIC_MODEL)]:
+            invalid=copy.deepcopy(value)
+            next(c for c in invalid["cohorts"]if c["model_version"]==classic.MODEL)["statistic_contract_sha256"]=digest(wrong)
+            with self.assertRaises(IntegrityError):validate_accuracy(invalid)
 
 
 if __name__ == "__main__":

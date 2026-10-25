@@ -9,6 +9,7 @@ from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
 import inspect
+import math
 import os
 from pathlib import Path
 import re
@@ -30,6 +31,7 @@ from shadow import evaluate, make_shadow
 from verify import require_offline
 import data_integrity_v2 as corrected
 import partial_week
+import classic_model_v1 as classic
 from source_evidence import record_scoreboard
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,8 +69,26 @@ def read_native_baseline(path, root=ROOT, *, expected_hashes=None, now=None):
     It is not independent source authentication or proof of public publication.
     """
     now = utc(now or datetime.now(timezone.utc))
-    path, season, week = _point_location(root, path, "forward")
+    supplied = Path(path)
+    absolute = supplied if supplied.is_absolute() else Path(root).resolve() / supplied
+    classic_lane = absolute.is_relative_to(Path(root).resolve() / "data/current-classic")
+    path, season, week = _point_location(root, path, "current-classic" if classic_lane else "forward")
     payload = read(path)
+    if classic_lane:
+        try:
+            recognized = classic.native_contract(payload)
+        except (ValueError, TypeError, KeyError) as error:
+            raise IntegrityError("Unsupported saved Classic native contract") from error
+        if (expected_hashes is not None and expected_hashes != recognized
+                or payload["mode"] != "live"
+                or not utc(payload["forecast_generated_at"]) <= utc(payload["captured_at"]) <= now
+                or any((row["season"], row["week"]) != (season, week) for row in payload["rows"])
+                or path.name != digest({"data":payload["input_sha256"],
+                    "execution":payload["execution_contract_sha256"],"mode":payload["mode"]}) + ".json.gz"):
+            raise IntegrityError("Saved Classic native lane/period/identity/clock mismatch")
+        # A saved statistical observation is not source-qualified production or
+        # original-model experiment evidence. Those readers keep separate guards.
+        return payload
     modern = payload.get("schema_version") == corrected.NATIVE
     if modern:
         recognized = corrected.native_contract(payload)
@@ -79,7 +99,8 @@ def read_native_baseline(path, root=ROOT, *, expected_hashes=None, now=None):
         expected_hashes = corrected.legacy_engine_hashes()
     try:
         if (payload["schema_version"] != (corrected.NATIVE if modern else "baseline-capture-v1")
-                or payload["model"] != (corrected.MODEL if modern else point_challenger.BASELINE_MODEL) or payload["mode"] != "live"
+                or (payload["model"] not in corrected.PRESENCE_MODELS if modern else payload["model"] != point_challenger.BASELINE_MODEL)
+                or payload["mode"] != "live"
                 or payload["engine_files"] != expected_hashes
                 or payload["engine_sha256"] != digest(expected_hashes)
                 or not isinstance(payload["input_sha256"], str)
@@ -165,7 +186,9 @@ def _point_candidate_report(root):
     policy = load_json(Path(root) / "config/evaluation-policy.json")
     # The unchanged candidate module's default ROOT is part of its V1 contract.
     # A corrected source never lends it a changed root under an original label.
-    if (Path(root) / "pull/build.py").is_file() and hashlib.sha256((Path(root) / "pull/build.py").read_bytes()).hexdigest() == corrected.V2_SOURCE_SHA256["pull/build.py"]:
+    if ((Path(root) / "pull/build.py").is_file()
+            and hashlib.sha256((Path(root) / "pull/build.py").read_bytes()).hexdigest()
+                in {corrected.source_hashes(model)["pull/build.py"] for model in corrected.PRESENCE_MODELS}):
         report = corrected.legacy_candidate_evaluation(candidates, baselines, outcomes, registration, policy, now)
     else:
         report = point_challenger.evaluate(candidates, baselines, outcomes, registration, now=now, policy=policy)
@@ -375,7 +398,9 @@ def public_scorecard(report, data, source_sha):
 def _verification_route(config, data, at):
     if config.get("verification_mode") != corrected.VALIDATOR:
         return partial_week.dispatch(config, data, at)
-    if config.get("production_model") != corrected.MODEL or config.get("experimental_recording_enabled") is not False:
+    if (config.get("production_model") not in corrected.PRESENCE_MODELS
+            or config.get("production_model") != config.get("partial_week", {}).get("plan", {}).get("model")
+            or config.get("experimental_recording_enabled") is not False):
         raise IntegrityError("Corrected dispatch requires its explicit model and inactive recorders")
     corrected.validate_plan(config.get("partial_week", {}), data, at)
     return corrected.VALIDATOR
@@ -1095,7 +1120,7 @@ def _completed_partial_native(stage, path, spec):
 
 def _copy_evidence(stage, root, *, failed_generation=False):
     """Create-only evidence transfer; failure never deletes original evidence."""
-    for lane in ("forward", "history", "verification", "shadow", "offers", "outcomes"):
+    for lane in ("forward", "history", "verification", "shadow", "offers", "outcomes", "weekly-adaptive-audit"):
         for path in sorted((stage / "data" / lane).rglob("*")):
             if not path.is_file():
                 continue
@@ -1218,6 +1243,101 @@ def _recorded_frozen_population(build):
         build.assemble, build.kdef_entries = original_assemble, original_kdef
 
 
+def _weekly_policy(root, config):
+    """Optional display publication has an explicit, source-bound activation."""
+    setting = config.get("weekly_publication")
+    if setting is None:
+        return None
+    if (not isinstance(setting, dict) or set(setting) != {"path", "sha256"}
+            or not isinstance(setting["path"], str)
+            or re.fullmatch(r"config/weekly-derived-selected-policy-v[0-9]+\.json", setting["path"]) is None
+            or not isinstance(setting["sha256"], str) or re.fullmatch("[0-9a-f]{64}", setting["sha256"]) is None):
+        raise IntegrityError("Invalid explicit weekly-publication source setting")
+    path = Path(root) / setting["path"]
+    if (path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024
+            or not path.resolve().is_relative_to(Path(root).resolve())):
+        raise IntegrityError("Weekly-publication policy path/type/size mismatch")
+    with path.open("rb") as stream:
+        raw = stream.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024 or hashlib.sha256(raw).hexdigest() != setting["sha256"]:
+        raise IntegrityError("Weekly-publication policy bytes differ from the active setting")
+    import weekly_public_feed as weekly
+    policy = load_json(path)
+    weekly.policy_check_v3(policy, root=root)
+    return policy
+
+
+def _bind_current_website_reference(root, previous, config):
+    """Annotate actual baseline origins; frozen values and memberships stay intact."""
+    import weekly_public_feed as weekly
+    model = config["production_model"]
+    execution = weekly.current_execution_contract(root, model=model)
+    board = load_json(Path(root) / "output/data/week.json")
+    meta = load_json(Path(root) / "output/data/meta.json")
+    if (previous.get("season"), previous.get("week")) != (board["season"], board["week"]):
+        previous = {}
+    allowed = {point_challenger.BASELINE_MODEL, "sleeper-matchup-classic-fg-identity-v1", *corrected.PRESENCE_MODELS}
+    old_default = previous.get("execution_model", {}).get("model", point_challenger.BASELINE_MODEL)
+    if old_default not in allowed:
+        raise IntegrityError("Unsupported inherited website source identity")
+    old_players = {p["id"]: p for p in previous.get("players", [])}
+    old_games = {g["id"]: g for g in previous.get("games", [])}
+    games = {g["id"]: g for g in board["games"]}
+    generated = utc(board["generated_at"])
+    def started(game):
+        return game["state"] != "pre" or utc(game["kickoff"]) <= generated
+    for player in board["players"]:
+        old = old_players.get(player["id"])
+        inherited = old is not None and old["game_id"] == player["game_id"] and started(games[player["game_id"]])
+        origin = old.get("reference_model", old_default) if inherited else model
+        if origin not in allowed:
+            raise IntegrityError("Unsupported inherited player source identity")
+        player["reference_model"] = origin
+    for game in board["games"]:
+        old = old_games.get(game["id"])
+        origin = old.get("reference_model", old_default) if old and old.get("ours") and started(game) else model
+        if origin not in allowed:
+            raise IntegrityError("Unsupported inherited game source identity")
+        game["reference_model"] = origin
+    players = {p["id"]: p for p in board["players"]}
+    for picks in board["picks"].values():
+        for pick in picks:
+            player = players[pick["player_id"]]
+            if pick.get("game_id") != player["game_id"]:
+                raise IntegrityError("Website Top/player game identity changed")
+            if started(games[player["game_id"]]):
+                # Full saved pick dictionaries contribute to game_contract.
+                # Even adding a truthful label would change an absent-field
+                # historical contract; the frozen player's origin is separate.
+                continue
+            pick["reference_model"] = player["reference_model"]
+    board["execution_model"] = meta["execution_model"] = execution
+    atomic_json(Path(root) / "output/data/week.json", board)
+    atomic_json(Path(root) / "output/data/meta.json", meta)
+
+
+def _prepare_weekly_website(stage, source, config, source_sha):
+    """Run the existing optional selected writer inside the coherent generation."""
+    import weekly_public_feed as weekly
+    setting = config["weekly_publication"]
+    _weekly_policy(stage, config)  # Independently read/hash the copied destination.
+    # Only immutable public source objects are shared. No source-root data PASS
+    # is borrowed: the writer freshly verifies every copied policy/code file.
+    git_dir = subprocess.check_output(["git", "--no-replace-objects", "-C", str(source),
+        "rev-parse", "--absolute-git-dir"], text=True).strip()
+    pointer = Path(stage) / ".git"
+    if pointer.exists():
+        raise IntegrityError("Unexpected generation source-object namespace")
+    pointer.write_text("gitdir: " + git_dir + "\n")
+    # Use the actual existing CLI: it creates both the bounded overlay graph
+    # and the separately persisted selected-Top graph, after the optional feed.
+    import sys
+    subprocess.run([sys.executable, "-B", str(Path(stage) / "tools/weekly_adaptive_overlay.py"),
+        "--root", str(stage), "--website-source-sha", source_sha,
+        "--feed-policy", str(Path(stage) / setting["path"]),
+        "--feed-policy-sha256", setting["sha256"]], check=True)
+
+
 def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
     _checked = {}
     root = Path(root).resolve()
@@ -1234,6 +1354,10 @@ def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
         git_root = root if (root / ".git").exists() else ROOT
         source_sha = subprocess.check_output(["git", "-C", str(git_root), "rev-parse", "HEAD"], text=True).strip()
     config = load_json(root / "config/phase2.json")
+    weekly_policy = _weekly_policy(root, config)
+    if weekly_policy is not None:
+        import weekly_public_feed as weekly
+        weekly.code_review(root, weekly_policy, source_sha)
     current = load_json(root / "output/data/week.json")
     plan = config.get("partial_week", {}).get("plan", {})
     selected_state = None
@@ -1285,14 +1409,22 @@ def run_capture(root=ROOT, mode="live", replay_at=None, *, build_first=False):
                     if selected_state is not None:
                         build.sources.nfl_state = lambda: copy.deepcopy(selected_state)
                     population = (_recorded_frozen_population(build)
-                        if config.get("production_model") == corrected.MODEL else nullcontext())
+                        if config.get("production_model") in corrected.PRESENCE_MODELS else nullcontext())
+                    previous = load_json(stage / "output/data/week.json")
+                    def current_build():
+                        build.run()
+                        if weekly_policy is not None:
+                            _bind_current_website_reference(stage, previous, config)
                     with population:
-                        build_recorded.record_build(stage, mode="live", model=config.get("production_model", point_challenger.BASELINE_MODEL))
+                        build_recorded.record_build(stage, run=current_build, mode="live",
+                            model=config.get("production_model", point_challenger.BASELINE_MODEL))
                 finally:
                     for key, value in saved.items():
                         setattr(build, key, value)
                     build.books.ATHLETES = athlete_cache
                     build.sources.nfl_state = state_reader
+            if weekly_policy is not None:
+                _prepare_weekly_website(stage, root, config, source_sha)
             result = _run_capture(stage, mode, source_sha=source_sha, initial_board=initial, _checked=_checked)
             validate_generation(stage, _checked=_checked)
             _promote(stage, root, _checked=_checked)
@@ -1444,6 +1576,7 @@ def _same_generation_snapshot(name, actual, captured):
 
 def validate_generation(root, *, _checked=None):
     _checked = {} if _checked is None else _checked
+    _grading_history_assets(Path(root) / "output")
     generation = _validate_generation(root, _checked=_checked)
     base = Path(root) / "output/data/selection-grading"
     if (base / "hosting.json").exists():
@@ -1496,6 +1629,163 @@ def _weekly_asset_identity(path, output, bound, *, target=None, expected=None):
 
 def _copy_weekly_asset(source, target, output, bound, expected):
     return _weekly_asset_identity(source, output, bound, target=target, expected=expected)
+
+
+def _grading_history_assets(output):
+    """Preserve the existing public issued-record class with immutable identities."""
+    output = Path(output)
+    result = {}
+    directory = output / "data/grading-history"
+    if directory.is_symlink():
+        raise IntegrityError("Symlink grading-history directory")
+    for path in sorted(directory.rglob("*")) if directory.exists() else ():
+        if path.is_symlink():
+            raise IntegrityError("Symlink grading-history asset")
+        if path.is_dir():
+            continue
+        relative = path.relative_to(output).as_posix()
+        if re.fullmatch(r"data/grading-history/[0-9a-f]{64}\.json", relative) is None:
+            raise IntegrityError("Unclassified grading-history asset")
+        identity = _weekly_asset_identity(path, output, 12 * 1024 * 1024)
+        if identity[1] != path.stem:
+            raise IntegrityError("Issued grading-history checksum mismatch")
+        with path.open("rb") as stream:
+            raw = stream.read(12 * 1024 * 1024 + 1)
+        if len(raw) != identity[0] or hashlib.sha256(raw).hexdigest() != identity[1]:
+            raise IntegrityError("Issued grading-history changed while validating")
+        record = publication._json_bytes(raw)
+        publication._safe_value(record)
+        legacy = {"cumulative", "weeks"}
+        modern = legacy | {"grading_version", "settlement_status", "provenance_note"}
+        if (not isinstance(record, dict) or set(record) not in (legacy, modern)
+                or not isinstance(record["cumulative"], dict) or not isinstance(record["weeks"], list)
+                or set(record) == modern and (
+                    record["grading_version"] not in {"statistical-v2", "statistical-v3-identity-20261025",
+                        "statistical-presence-v3", "statistical-presence-fgm-identity-v4"}
+                    or record["settlement_status"] != "STATISTICAL_ONLY_NOT_VENUE_VERIFIED"
+                    or record["provenance_note"] != "Historical regrades are not new prospective predictions.")):
+            raise IntegrityError("Unsupported issued grading-history contract")
+        _issued_record_shape(record)
+        result[relative] = identity
+    return result
+
+
+def _issued_record_shape(record):
+    """Known issued statistical fields only; preserve their original values."""
+    def fields(value, allowed, required=()):
+        if type(value) is not dict or set(value) - set(allowed) or set(required) - set(value):
+            raise IntegrityError("Unknown issued statistical fields")
+    def count(value):
+        if type(value) is not int or value < 0:
+            raise IntegrityError("Invalid issued statistical count")
+    def number(value, *, nullable=False, minimum=None, maximum=None):
+        if value is None and nullable:
+            return
+        if (type(value) not in (int, float) or type(value) is float and not math.isfinite(value)
+                or minimum is not None and value < minimum or maximum is not None and value > maximum):
+            raise IntegrityError("Invalid issued statistical number")
+    def text(value, *, nullable=False):
+        if value is None and nullable:
+            return
+        if type(value) is not str or not value.strip():
+            raise IntegrityError("Invalid issued statistical identity")
+    def enum(value, allowed, *, nullable=False):
+        if value is None and nullable:
+            return
+        if type(value) is not str or value not in allowed:
+            raise IntegrityError("Invalid issued statistical label")
+    versions = {"statistical-v2", "statistical-v3-identity-20261025",
+                "statistical-presence-v3", "statistical-presence-fgm-identity-v4"}
+    settlement = "STATISTICAL_ONLY_NOT_VENUE_VERIFIED"
+    tally_fields = {"hit", "miss", "push", "dnp", "unresolved", "n_decided", "pct", "n"}
+    pick_fields = {"player_id", "game_id", "name", "key", "line", "line_from", "proj", "adj",
+                   "decision_projection", "direction", "actual", "result", "settlement_status"}
+    def tally(value, extras=()):
+        fields(value, tally_fields | set(extras))
+        for name in tally_fields & value.keys():
+            if name == "pct":
+                number(value[name], nullable=True, minimum=0, maximum=100)
+            else:
+                count(value[name])
+        if "picks" in value:
+            if type(value["picks"]) is not list:
+                raise IntegrityError("Invalid issued Top population")
+            for pick in value["picks"]:
+                fields(pick, pick_fields, ("player_id", "game_id", "key", "line", "actual", "result"))
+                for name in ("player_id", "game_id"):
+                    text(pick[name])
+                if "name" in pick:
+                    text(pick["name"], nullable=True)
+                enum(pick["key"], CATEGORIES)
+                enum(pick["result"], {"hit", "miss", "push", "dnp", "unresolved"})
+                for name in ("line", "proj", "adj", "decision_projection", "actual"):
+                    if name in pick:
+                        number(pick[name], nullable=True)
+                if "line_from" in pick:
+                    enum(pick["line_from"], {"dk", "sleeper"}, nullable=True)
+                if "direction" in pick:
+                    enum(pick["direction"], {"over", "under"})
+                if "settlement_status" in pick:
+                    enum(pick["settlement_status"], {settlement})
+        if "by_category" in value:
+            fields(value["by_category"], set(CATEGORIES))
+            for group in value["by_category"].values():
+                tally(group)
+    summary = {"top_over", "top_under", "leans", "by_venue", "dk_leans", "games", "ppr", "matchup"}
+    def aggregate(value, weekly):
+        fields(value, summary | ({"season", "week", "grading_version", "dk_leans_scope", "games_complete", "complete"}
+                                if weekly else {"weeks"}))
+        for name in (("season", "week") if weekly else ("weeks",)):
+            if name in value:
+                count(value[name])
+        if weekly:
+            if "grading_version" in value:
+                enum(value["grading_version"], versions)
+            if "dk_leans_scope" in value:
+                enum(value["dk_leans_scope"], {"all_real_line_sources_use_by_venue_for_book_breakdown"})
+            for name in ("games_complete", "complete"):
+                if name in value and type(value[name]) is not bool:
+                    raise IntegrityError("Invalid issued statistical completion")
+        for name in ("top_over", "top_under", "leans"):
+            if name in value:
+                tally(value[name], ("picks",) if name.startswith("top_") else ("by_category",))
+        for name, allowed in (("by_venue", {"dk", "sleeper"}), ("dk_leans", {"over", "under"}), ("games", {"spread", "total"})):
+            if name in value:
+                fields(value[name], allowed)
+                for group in value[name].values():
+                    tally(group)
+        if "ppr" in value:
+            fields(value["ppr"], {"n", "proj_mae", "average_mae", "adjusted_mae", "proj_bias", "sums"})
+            if "n" in value["ppr"]:
+                count(value["ppr"]["n"])
+            for name in ("proj_mae", "average_mae", "adjusted_mae", "proj_bias"):
+                if name in value["ppr"]:
+                    number(value["ppr"][name], nullable=True, minimum=None if name == "proj_bias" else 0)
+            if "sums" in value["ppr"]:
+                fields(value["ppr"]["sums"], {"raw_abs", "adjusted_abs", "bias"})
+                for name, metric in value["ppr"]["sums"].items():
+                    number(metric, minimum=None if name == "bias" else 0)
+        if "matchup" in value:
+            fields(value["matchup"], {"soft", "neutral", "tough"})
+            for group in value["matchup"].values():
+                fields(group, {"n", "vs_line"})
+                if "n" in group:
+                    count(group["n"])
+                if "vs_line" in group:
+                    number(group["vs_line"], nullable=True)
+    fields(record, {"cumulative", "weeks", "grading_version", "settlement_status", "provenance_note"},
+           ("cumulative", "weeks"))
+    if "grading_version" in record:
+        enum(record["grading_version"], versions)
+    if "settlement_status" in record:
+        enum(record["settlement_status"], {settlement})
+    if "provenance_note" in record:
+        enum(record["provenance_note"], {"Historical regrades are not new prospective predictions."})
+    if type(record["weeks"]) is not list:
+        raise IntegrityError("Invalid issued statistical weeks")
+    aggregate(record["cumulative"], False)
+    for week in record["weeks"]:
+        aggregate(week, True)
 
 
 def _weekly_stage_graph(output, names, limit):
@@ -1561,6 +1851,7 @@ def stage_pages(root, destination):
                    "data/dk_backtest.json", "data/forecast-scorecard.json", "data/offer-capture.json", "data/health.json",
                    "data/release-identity.json", "data/verification-scope.json"}
     staged_bytes = 0
+    grading_history = _grading_history_assets(output)
     for path in output.rglob("*"):
         if not path.is_file() or path.relative_to(output).as_posix() in excluded:
             continue
@@ -1570,7 +1861,7 @@ def stage_pages(root, destination):
         retained_weekly_asset = weekly is not None and weekly.retained_public_asset(name)
         allowed = (name in {"app.js", "index.html", "style.css", "reliability-ui.js", "recovery.html"}
                    or name in public_data or re.fullmatch(r"data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json", name) or report_asset
-                   or name in weekly_names or retained_weekly_asset)
+                   or name in weekly_names or retained_weekly_asset or name in grading_history)
         if (not allowed or any(part.startswith(".") for part in relative.parts)
                 or path.suffix not in (".js", ".css", ".html", ".json", ".png", ".svg", ".ico", ".txt")):
             raise IntegrityError("Unclassified Pages asset")
@@ -1587,7 +1878,9 @@ def stage_pages(root, destination):
             raise IntegrityError("Complete Pages stage exceeds conservative 900000000-byte budget")
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        if weekly_asset:
+        if name in grading_history:
+            _copy_weekly_asset(path, target, output, min(12 * 1024 * 1024, STAGING_BUDGET - staged_bytes), grading_history[name])
+        elif weekly_asset:
             _copy_weekly_asset(path, target, output, min(weekly.public_asset_limit(name), STAGING_BUDGET - staged_bytes), weekly_before[name])
         else:
             shutil.copyfile(path, target)

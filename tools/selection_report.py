@@ -23,6 +23,7 @@ from scorecard import (identity, bind_outcome, latest_outcomes, paired_forecasts
                        descriptive_forecasts, evaluate_descriptive, outcome_provenance)
 import grade
 import data_integrity_v2 as corrected
+import classic_model_v1 as classic
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "selection-report-v3"
@@ -30,8 +31,9 @@ LEGACY_VERSION = "selection-report-v2"
 EXTENDED_VERSION = "selection-report-v4"
 CHICAGO = ZoneInfo("America/Chicago")
 RESULTS = ("win", "loss", "push", "dnp", "pending", "unresolved", "excluded", "no_action", "not_due")
-PATTERNS = ("data/forward/**/*.json.gz", "data/outcomes/**/*.json.gz",
+PATTERNS = ("data/forward/**/*.json.gz", "data/current-classic/**/*.json.gz", "data/outcomes/**/*.json.gz",
             "data/offers/**/*.json.gz", "data/cache/stats_*.json",
+            "data/cache/stat-keys-fgm-v1/stats_*.json", "data/cache/stat-keys-presence-fgm-v2/stats_*.json",
             "data/verification/ranked-selections/**/*.json.gz", "data/verification/ranked-selection-completions/**/*.json.gz",
             "data/verification/ranked-selection-failures/**/*.json.gz",
             "output/data/archive/*.json", "output/data/weeks/*.json",
@@ -62,13 +64,16 @@ def _snapshots(receipts, policy, as_of, expected_hashes):
             continue
         seen.add(sha)
         modern = payload.get("schema_version") == corrected.NATIVE
+        classic_saved = payload.get("schema_version") == classic.CAPTURE
         if modern:
             corrected.native_contract(payload)
-        if not modern and (payload.get("schema_version") != "baseline-capture-v1"
+        elif classic_saved:
+            classic.native_contract(payload)
+        if not modern and not classic_saved and (payload.get("schema_version") != "baseline-capture-v1"
                 or payload.get("model") != policy["model"]):
             excluded["unsupported_forecast_contract"] += 1
             continue
-        expected = corrected.V2_SOURCE_SHA256 if modern else expected_hashes
+        expected = corrected.source_hashes(payload.get("model")) if modern else classic.ENGINE if classic_saved else expected_hashes
         if payload.get("engine_files") != expected or payload.get("engine_sha256") != digest(expected):
             excluded["unrecognized_engine"] += 1
             continue
@@ -561,7 +566,20 @@ def _inventory(roots, input_pins=None):
                 blob_sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
                 if name in blobs and blobs[name] != blob_sha:
                     raise IntegrityError("Input bytes differ from their declared Git pin")
-                if name.startswith("data/forward/") and value.get("schema_version") == "baseline-capture-v1":
+                if name.startswith("data/current-classic/"):
+                    classic.native_contract(value)
+                    parts = Path(name).parts
+                    if (len(parts) != 5 or len(parts[2]) != 4 or not parts[2].isdigit()
+                            or len(parts[3]) != 3 or parts[3][0] != "w" or not parts[3][1:].isdigit()
+                            or not 1 <= int(parts[3][1:]) <= 18
+                            or any((row["season"], row["week"]) != (int(parts[2]), int(parts[3][1:])) for row in value["rows"])):
+                        raise IntegrityError("Classic capture path/row period mismatch")
+                    capture_id = digest({"data": value["input_sha256"], "execution": value["execution_contract_sha256"], "mode": value["mode"]})
+                    if path.name != capture_id + ".json.gz":
+                        raise IntegrityError("Classic capture filename identity mismatch")
+                elif name.startswith("data/forward/") and value.get("schema_version") == classic.CAPTURE:
+                    raise IntegrityError("Classic capture must retain its original lane")
+                elif name.startswith("data/forward/") and value.get("schema_version") == "baseline-capture-v1":
                     capture_id = digest({"data": value["input_sha256"], "engine": value["engine_sha256"],
                                          "mode": value["mode"]})
                     if path.name != capture_id + ".json.gz":
@@ -573,7 +591,7 @@ def _inventory(roots, input_pins=None):
                                  "input_git_pin": pin, "git_blob_sha": blob_sha,
                                  "pin_binding": "LOCAL_GIT_BLOB_VERIFIED" if name in blobs else
                                                 "EXTERNAL_PIN_REFERENCE_ONLY" if pin else "CONTENT_ADDRESSED_UNPINNED"})
-                for prefix, lane in (("data/forward/", "forward"), ("data/outcomes/", "outcomes"),
+                for prefix, lane in (("data/forward/", "forward"), ("data/current-classic/", "forward"), ("data/outcomes/", "outcomes"),
                                      ("data/offers/", "offers"), ("output/data/archive/", "archives")):
                     if name.startswith(prefix):
                         data[lane].append(value)
@@ -617,9 +635,9 @@ def _original_boards(paths, roots, pins):
 
 
 def _descriptive_report(roots, output, inputs, outcomes, expected_hashes, now, pins, boards, *, model_version="original_sleeper_matchup_baseline"):
-    modern = model_version == corrected.MODEL
-    contract = descriptive_contract(presence_aware=modern)
-    first, pairs, coverage = descriptive_forecasts(inputs["forward"], corrected.V2_SOURCE_SHA256 if modern else expected_hashes,
+    modern = model_version in corrected.PRESENCE_MODELS
+    contract = descriptive_contract(presence_aware=modern, model=model_version if modern or model_version == classic.MODEL else None)
+    first, pairs, coverage = descriptive_forecasts(inputs["forward"], corrected.source_hashes(model_version) if modern else classic.ENGINE if model_version == classic.MODEL else expected_hashes,
                                                   now, model_version=model_version)
     extra = {key: row for key, row in first.items() if row["category"] in EXTRA_CATEGORIES}
     sink = output / "descriptive-evaluation"
@@ -901,7 +919,7 @@ def run_report(input_roots, output_root, *, now=None, expected_hashes=None, poli
         from accuracy_publication import project_accuracy
         report["forecast_accuracy"] = project_accuracy([
             _descriptive_report(roots, output / model, inputs, outcomes, expected_hashes, now, input_pins, boards, model_version=model)
-            for model in ("original_sleeper_matchup_baseline", corrected.MODEL)])
+            for model in ("original_sleeper_matchup_baseline", classic.MODEL, *corrected.PRESENCE_MODELS)])
     # Outputs are content-addressed; operational clocks live in a separate run receipt.
     report_id = digest(report)
     directory = output / "reports" / report_id
@@ -955,7 +973,7 @@ def main():
                         help="Optional frozen input reference; local Git blobs are verified when available.")
     parser.add_argument("--all-category-evaluation", action="store_true",
                         help="Opt-in local descriptive evaluation; primary/public-v1 behavior stays unchanged.")
-    parser.add_argument("--descriptive-model", choices=("original_sleeper_matchup_baseline", corrected.MODEL),
+    parser.add_argument("--descriptive-model", choices=("original_sleeper_matchup_baseline", classic.MODEL, *corrected.PRESENCE_MODELS),
                         default="original_sleeper_matchup_baseline",
                         help="Explicit local all-category model cohort; never pools original and corrected forecasts.")
     parser.add_argument("--original-board", action="append", type=Path, default=[],

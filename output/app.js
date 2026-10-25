@@ -530,7 +530,8 @@ function validateGradingRowContract(row, version) {
       || modern && !extended || !modern && (fields.some(key => Object.hasOwn(row, key)) || strategies.includes(row.cohort))) throw new Error('Unsupported grading row version');
   if (!modern) return;
   const engines = { original_sleeper_matchup_baseline: 'e8e8823f460e074485ee91a0dc1c1cfc43877146c4498ef074d15d2b5a735d07',
-    'sleeper-matchup-data-integrity-v2': '3909c7ac5470970182065576f057e8036f31ad30da13f1ef9999eb1108a183b4' };
+    'sleeper-matchup-data-integrity-v2': '3909c7ac5470970182065576f057e8036f31ad30da13f1ef9999eb1108a183b4',
+    'sleeper-matchup-classic-data-integrity-v2': '16d0ea1eb1ed7378427f3279bb4e1b7907d2370928b3ad30a2ca7dbe0bf6265b' };
   if (!fields.every(key => Object.hasOwn(row, key)) || row.strategy_version !== 'ranked-selection-policy-v1'
       || row.strategy_policy_sha256 !== '80d9ab617f8c6b331dc879ff3e83a8304a934944a01d40514567e6933d251250'
       || !strategies.includes(row.cohort) || !Object.hasOwn(engines, row.model_version) || row.engine_sha256 !== engines[row.model_version]
@@ -638,10 +639,12 @@ function validateForecastAccuracy(value) {
   };
   const models = {
     original_sleeper_matchup_baseline: ["e8e8823f460e074485ee91a0dc1c1cfc43877146c4498ef074d15d2b5a735d07","53f6016d59fe93f9ce09bc23c472f7e77471e7a80a8b1f75e78b2ab3ed4a258d"],
-    "sleeper-matchup-data-integrity-v2": ["3909c7ac5470970182065576f057e8036f31ad30da13f1ef9999eb1108a183b4","fd024229abd98a661f0ffa53866bf55bf13142e891b2e64ecee94012dcbe1948"] };
+    "sleeper-matchup-data-integrity-v2": ["3909c7ac5470970182065576f057e8036f31ad30da13f1ef9999eb1108a183b4","fd024229abd98a661f0ffa53866bf55bf13142e891b2e64ecee94012dcbe1948"],
+    "sleeper-matchup-classic-data-integrity-v2": ["16d0ea1eb1ed7378427f3279bb4e1b7907d2370928b3ad30a2ca7dbe0bf6265b","9a08bd9a3f7d2affbe8bee1ba4638fa53a9148d2f04f951f5bfa5fa296081f4e"],
+    "sleeper-matchup-classic-fg-identity-v1": ["9f605590fdd4a23bee01c977e606d964e280c8b567ee4de6e1b5bc9eadd46538","f35596bd8cae04f1ff1a6ee85b8e3e7963e05450c8c040a2bbb6e484db6b068f"] };
   const cats=[...PAPER_CATEGORIES,"fpts","anytime_td"], provenance=["missing","unknown_unverified","identity_quarantined","conflicting_outcome_evidence","saved_cache_descriptive_regrade","recorded_outcome_receipt"];
   fields(value,["schema_version","cohorts","capture_coverage","uncertainty","limitations"]);
-  if(value.schema_version!=="forecast-accuracy-public-v1"||!Array.isArray(value.cohorts)||value.cohorts.length>12||!Array.isArray(value.capture_coverage)||value.capture_coverage.length>2)fail();
+  if(value.schema_version!=="forecast-accuracy-public-v1"||!Array.isArray(value.cohorts)||value.cohorts.length>Object.keys(models).length*provenance.length||!Array.isArray(value.capture_coverage)||value.capture_coverage.length>Object.keys(models).length)fail();
   fields(value.uncertainty,["status","interval","calibration"]);
   const limitations=["Cumulative saved original pregame forecasts; independent of selection filters.","Model versions and selected outcome provenance are separate populations.","Component-derived PPR and saved direct-provider PPR are different comparators.","Recorded and formula-rederived TD probabilities are separate.","No mixed-unit accuracy, calibrated pick probability, promotion, profit or ROI claim."];
   if(value.uncertainty.status!=="UNAVAILABLE_DESCRIPTIVE_EXTENSION_NO_REGISTERED_INTERVAL"||value.uncertainty.interval!==null||value.uncertainty.calibration!=="DESCRIPTIVE_NOT_CONFIRMED"||JSON.stringify(value.limitations)!==JSON.stringify(limitations))fail();
@@ -901,7 +904,7 @@ const isDefault = () => S.sc.mode === "sleeper";
 
 function projPts(p) {
   if (p.pos === "K" || p.pos === "DEF") return p.proj_ppr;
-  if (isDefault()) return S.sc.half ? p.proj_half ?? p.proj_ppr : p.proj_ppr;
+  if (isDefault()) return S.sc.half ? (Number.isFinite(p.proj_half) ? p.proj_half : null) : p.proj_ppr;
   return p.proj && Object.keys(p.proj).length ? skillPts(p.proj, p.pos) : null;
 }
 
@@ -912,7 +915,7 @@ function logPts(p, x) {
 
 function avgPts(p) {
   if (p.pos === "K" || p.pos === "DEF") return p.avg_ppr;
-  if (isDefault()) return S.sc.half ? p.avg_half ?? p.avg_ppr : p.avg_ppr;
+  if (isDefault()) return S.sc.half ? (Number.isFinite(p.avg_half) ? p.avg_half : null) : p.avg_ppr;
   const pts = (p.log || []).map((x) => logPts(p, x)).filter((v) => v != null);
   return pts.length ? Math.round((pts.reduce((a, b) => a + b, 0) / pts.length) * 100) / 100 : null;
 }
@@ -926,7 +929,14 @@ function scoringName() {
 // The fantasy points prop in the current scoring (half PPR swaps in its own numbers)
 function pv(p, prop) {
   if (prop.key !== "fpts" || (isDefault() && !S.sc.half)) return prop;
-  if (isDefault()) return prop.adj_h == null ? prop : { ...prop, line: prop.line_h, adj: prop.adj_h, proj: prop.proj_h, over: prop.over_h, values: prop.values.map((x) => ({ ...x, v: x.h ?? x.v })) };
+  if (isDefault()) {
+    const values = prop.values.filter(x => Number.isFinite(x.h)).map(x => ({ ...x, v: x.h }));
+    const missing = !Number.isFinite(prop.adj_h) || !Number.isFinite(prop.line_h);
+    return { ...prop, line: missing ? null : prop.line_h, adj: missing ? null : prop.adj_h,
+      proj: Number.isFinite(prop.proj_h) ? prop.proj_h : null, lean: missing ? null : prop.lean,
+      over: missing ? 0 : values.filter(x => x.v > prop.line_h).length, n: values.length, values,
+      scoring_missing: missing };
+  }
   // Any other scoring: re-score his games and his projection, keep the matchup adjustment
   const byWeek = Object.fromEntries((p.log || []).map((x) => [x.w, x]));
   const values = prop.values.map((x) => { const g = byWeek[x.w]; const v = g ? logPts(p, g) : null; return { ...x, v: v ?? x.v }; });
@@ -1618,8 +1628,8 @@ function favBtn(p) {
 
 function resBadge(st) {
   if (!st) return "";
-  if (st.res === "hit" && st.final) return `<span class="res hit">WIN</span>`;
-  if (st.res === "miss" && st.final) return `<span class="res miss">LOSS</span>`;
+  if (st.res === "hit" && st.final) return `<span class="res hit">HIT</span>`;
+  if (st.res === "miss" && st.final) return `<span class="res miss">MISS</span>`;
   if (st.res === "dnp") return `<span class="res dnp">DNP</span>`;
   if (st.res === "push") return `<span class="res dnp">PUSH</span>`;
   if (st.res === "unresolved") return `<span class="res dnp" title="${esc(st.reason || "Awaiting evidence")}">UNRESOLVED</span>`;
@@ -1645,8 +1655,11 @@ function progress(st, line, dir, key) {
 
 // ---------------------------------------------------------------- props tab
 
-function selectedRankingPolicy() {
-  return {"version":"selected-projection-gap-v1","top_n":12,"minimum_score":0.35,"minimum_games":2,"minimum_snap_share":0.5,"minimum_projected_ppr":{"QB":10,"RB":6,"WR":6,"TE":6},"projection_line_ratio":[0.4,2.5],"categories":{"pass_yd":{"lean":8,"scale":30,"minimum_line":150.5},"pass_td":{"lean":0.15,"scale":0.6,"minimum_line":0.5},"pass_cmp":{"lean":0.8,"scale":2.5,"minimum_line":12.5},"pass_att":{"lean":1,"scale":3,"minimum_line":20.5},"pass_int":{"lean":0.12,"scale":0.5,"minimum_line":0.5},"rush_yd":{"lean":4,"scale":12,"minimum_line":15.5},"rush_att":{"lean":0.8,"scale":3,"minimum_line":6.5},"rec":{"lean":0.3,"scale":1.2,"minimum_line":1.5},"rec_yd":{"lean":4,"scale":12,"minimum_line":15.5},"rush_rec_yd":{"lean":5,"scale":15,"minimum_line":25.5}},"unavailable":["Out","IR","PUP","Suspended","NA","Doubtful","COV","DNR"],"fallback":"same-opportunity R0 reference; unavailable is never zero","meaning":"descriptive scaled forecast gap, not win probability or EV","tie_order":["absolute_score_desc","game_id","player_id","category"]};
+// Shared with the serialized writer; fixed descriptive gap policy, no fitting.
+function selectedRankingPolicy(board = S.data) {
+  const original = {"version":"selected-projection-gap-v1","top_n":12,"minimum_score":0.35,"minimum_games":2,"minimum_snap_share":0.5,"minimum_projected_ppr":{"QB":10,"RB":6,"WR":6,"TE":6},"projection_line_ratio":[0.4,2.5],"categories":{"pass_yd":{"lean":8,"scale":30,"minimum_line":150.5},"pass_td":{"lean":0.15,"scale":0.6,"minimum_line":0.5},"pass_cmp":{"lean":0.8,"scale":2.5,"minimum_line":12.5},"pass_att":{"lean":1,"scale":3,"minimum_line":20.5},"pass_int":{"lean":0.12,"scale":0.5,"minimum_line":0.5},"rush_yd":{"lean":4,"scale":12,"minimum_line":15.5},"rush_att":{"lean":0.8,"scale":3,"minimum_line":6.5},"rec":{"lean":0.3,"scale":1.2,"minimum_line":1.5},"rec_yd":{"lean":4,"scale":12,"minimum_line":15.5},"rush_rec_yd":{"lean":5,"scale":15,"minimum_line":25.5}},"unavailable":["Out","IR","PUP","Suspended","NA","Doubtful","COV","DNR"],"fallback":"same-opportunity R0 reference; unavailable is never zero","meaning":"descriptive scaled forecast gap, not win probability or EV","tie_order":["absolute_score_desc","game_id","player_id","category"]};
+  return ["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(board.execution_model?.model) ? {...original,
+    version:"selected-projection-gap-classic-v1",fallback:"same-opportunity reference identified by forecast_source and model_version; unavailable is never zero"} : original;
 }
 
 function rankingCanonical(value) {
@@ -1656,11 +1669,12 @@ function rankingCanonical(value) {
 }
 
 function effectivePropForecast(p, prop, now = Date.now()) {
+  if (![undefined, null, 'original_sleeper_matchup_baseline', 'sleeper-matchup-classic-fg-identity-v1', 'sleeper-matchup-classic-data-integrity-v2'].includes(p.reference_model)) return null;
   const selected = selectedPropForecast(p, prop.key, now);
   if (selected) return { ...selected, source: 'SELECTED' };
   const value = prop.key === 'anytime_td' ? prop.td_chance : prop.adj;
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  return { value, source: 'R0_FALLBACK', label: prop.key === 'anytime_td' ? 'TD probability' : 'reference', binary: prop.key === 'anytime_td', text: prop.key === 'anytime_td' ? (100 * value).toFixed(1) + '%' : value.toFixed(2) };
+  return { value, source: ["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(p.reference_model) ? 'CURRENT_BASELINE' : 'R0_FALLBACK', label: prop.key === 'anytime_td' ? 'TD probability' : 'reference', binary: prop.key === 'anytime_td', text: prop.key === 'anytime_td' ? (100 * value).toFixed(1) + '%' : value.toFixed(2) };
 }
 
 function selectedPropGap(p, prop, custom = false) {
@@ -1697,7 +1711,7 @@ function compareSelectedRankingItems(a, b) {
 }
 
 async function validateSelectedRankings(doc, pointer, board, overlay) {
-  const policy = selectedRankingPolicy(), hash = /^[a-f0-9]{64}$/;
+  const policy = selectedRankingPolicy(board), hash = /^[a-f0-9]{64}$/;
   const fields = (value, expected) => value && typeof value === 'object' && !Array.isArray(value)
     && JSON.stringify(Object.keys(value).sort()) === JSON.stringify(expected.split(',').sort());
   const clock = value => {
@@ -1712,7 +1726,7 @@ async function validateSelectedRankings(doc, pointer, board, overlay) {
       || pointer.path !== 'weekly-selected-rankings/' + pointer.sha256 + '.json'
       || !Number.isInteger(pointer.bytes) || pointer.bytes<1 || pointer.bytes>262144) throw Error('Ranking closed fields');
   const prepared=clock(doc.prepared_at),published=clock(pointer.published_at);
-  if (!doc || doc.schema_version !== 'weekly-selected-rankings-v1' || doc.policy_sha256 !== 'e8cebeadaa5debd04c06cad9c19e72485618c0f43f29a9b4553122cfeeed0696'
+  if (!doc || doc.schema_version !== 'weekly-selected-rankings-v1' || doc.policy_sha256 !== (["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(board.execution_model?.model) ? 'd56088350b8adf123816e4162e868aaecfd9e5181cd2f0780bb1053bd135e72f' : 'e8cebeadaa5debd04c06cad9c19e72485618c0f43f29a9b4553122cfeeed0696')
       || rankingCanonical(doc.policy) !== rankingCanonical(policy) || doc.season !== board.season || doc.week !== board.week
       || pointer.schema_version !== 'weekly-selected-rankings-pointer-v1' || pointer.display_board_sha256 !== overlay.boardHash
       || doc.display_board_sha256 !== overlay.boardHash || doc.overlay_sha256 !== pointer.overlay_sha256
@@ -1738,7 +1752,8 @@ async function validateSelectedRankings(doc, pointer, board, overlay) {
       if(proof)usedProofs.add(identity);
       clock(item.selected_at);clock(item.kickoff_utc);
       const completed = Date.parse(proof ? proof.persisted_at : pointer.published_at), kickoff = Date.parse(g?.kickoff);
-      if (!p || !g || !prop || !cat || seen.has(p.id) || item.direction !== side || item.kickoff_utc !== g.kickoff
+      if (!p || !g || !prop || !cat || ![undefined, null, 'original_sleeper_matchup_baseline', 'sleeper-matchup-classic-fg-identity-v1', 'sleeper-matchup-classic-data-integrity-v2'].includes(p.reference_model)
+          || seen.has(p.id) || item.direction !== side || item.kickoff_utc !== g.kickoff
           || item.line !== prop.line || item.line_from !== prop.line_from || !['dk', 'sleeper'].includes(item.line_from)
           || typeof item.adj !== 'number' || !Number.isFinite(item.adj) || !Number.isFinite(item.score)
           || !Number.isInteger(item.over) || !Number.isInteger(item.n) || item.over < 0 || item.over > item.n
@@ -1758,8 +1773,8 @@ async function validateSelectedRankings(doc, pointer, board, overlay) {
             || rankingCanonical(JSON.parse(item.selected_row_canonical)) !== rankingCanonical(row)) throw Error('Ranking row binding');
         const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(item.selected_row_canonical)))].map(v => v.toString(16).padStart(2, '0')).join('');
         if (digest !== item.selected_row_sha256) throw Error('Ranking row hash');
-      } else if (item.forecast_source !== 'R0_FALLBACK' || item.adj !== prop.adj || item.product !== 'reference_point'
-          || item.model_version !== null || item.selected_row_sha256 !== null || item.selected_row_canonical !== null) throw Error('Ranking fallback');
+      } else if (item.forecast_source !== (["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(p.reference_model) ? 'CURRENT_BASELINE' : 'R0_FALLBACK') || item.adj !== prop.adj || item.product !== 'reference_point'
+          || item.model_version !== (["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(p.reference_model) ? p.reference_model : null) || item.selected_row_sha256 !== null || item.selected_row_canonical !== null) throw Error('Ranking fallback');
     }
   }
   if(usedProofs.size!==proofs.size)throw Error('Ranking unused proof');
@@ -1791,7 +1806,7 @@ function pickCard(pick) {
     <div>
       <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)}</div>
       <div class="what">${pick.direction === "over" ? "Over" : "Under"} <b class="num">${pick.line}</b> ${label} <span class="muted">${oppText(p)}</span></div>
-      <div class="small">${LINE_FROM[pick.line_from] || "Our"} saved pregame line · ${adj != null ? `${pick.forecast_source === "SELECTED" ? `Selected ${pick.product === "point_mean" ? "mean" : "median"}` : pick.forecast_source === "R0_FALLBACK" ? "Reference fallback" : "Current reference"} <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}</div>
+      <div class="small">${LINE_FROM[pick.line_from] || "Our"} saved pregame line · ${adj != null ? `${pick.forecast_source === "SELECTED" ? `Selected ${pick.product === "point_mean" ? "mean" : "median"}` : pick.forecast_source === "CURRENT_BASELINE" || ["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(pick.reference_model) ? "Current baseline fallback" : "R0 reference"} <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}</div>
       ${progress(st, pick.line, pick.direction, pick.key)}
     </div>
     <div class="side">
@@ -1819,6 +1834,7 @@ function selectedPropForecast(p, key, now = Date.now()) {
 
 function propChip(p, raw) {
   const prop = pv(p, raw);
+  if (prop.scoring_missing) return `<span class="pchip"><span>FPts</span><span class="muted">Half PPR unavailable</span></span>`;
   const selected = selectedPropForecast(p, prop.key);
   const effectiveGap = selected ? selectedPropGap(p, prop, true) : null;
   const lean = selected ? effectiveGap?.lean : prop.lean;
@@ -1832,14 +1848,17 @@ function propChip(p, raw) {
   const cls = [lean ? `lean-${lean}` : "", st && lean && (st.res === "hit" || st.res === "miss") ? st.res : ""].join(" ");
   const lineText = prop.key === "anytime_td" ? "" : `<b>${line}</b><span class="src ${selected && edited ? "" : prop.line_from || "ours"}">${selected && edited ? "custom" : LINE_TAG[prop.line_from] || "est"}</span>`;
   const cur = st && st.v != null ? `<span class="cur">${fmtStat(prop.key, st.v)}</span>` : "";
-  if (selected) return `<span class="pchip ${cls}" data-weekly-primary title="Selected forecast assumes participation; lean is a projection gap, not a win probability">${SHORT[prop.key]}<b>${selected.text}</b><span class="src">${selected.frozen ? "frozen" : "provisional"} ${selected.label}</span>${lineText ? `<span class="muted"> · ${edited ? "Your line" : prop.line_from === "ours" || !prop.line_from ? "Reference line" : "book line"}</span>${lineText}` : ""}${arrow ? `<span class="muted"> selected lean</span>${arrow}` : ""}${cur}</span>`;
+  if (selected) return `<span class="pchip ${cls}" data-weekly-primary title="Selected forecast assumes participation; lean is a projection gap, not a win probability">${SHORT[prop.key]}<b>${selected.text}</b><span class="src">${selected.frozen ? "frozen" : "provisional"} ${selected.label}</span>${lineText ? `<span class="muted"> · ${edited ? "Your line" : prop.line_from === "ours" || !prop.line_from ? (["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes((p.reference_model || S.data.execution_model?.model)) ? "Baseline line" : (p.reference_model || S.data.execution_model?.model) === "original_sleeper_matchup_baseline" ? "R0 line" : "Reference line") : "book line"}</span>${lineText}` : ""}${arrow ? `<span class="muted"> selected lean</span>${arrow}` : ""}${cur}</span>`;
   return `<span class="pchip ${cls}">${SHORT[prop.key]}${lineText}${arrow}${cur}</span>`;
 }
 
 function catCard(p, raw) {
   const prop = pv(p, raw);
+  if (prop.scoring_missing) return `<div class="card"><h3>Fantasy Points · Half PPR</h3><p class="muted">Half PPR projection and line unavailable.</p></div>`;
   const selected = selectedPropForecast(p, prop.key);
   const from = prop.line_from || "ours";
+  const origin = p.reference_model || S.data.execution_model?.model;
+  const ref = ["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(origin) ? "Current baseline" : origin === "original_sleeper_matchup_baseline" ? "R0" : "Current";
   const cat = S.data.categories[prop.key];
   const k = `${p.id}|${prop.key}`;
   const line = S.lines[k] ?? prop.line;
@@ -1864,7 +1883,7 @@ function catCard(p, raw) {
       : `<span class="lean ${prop.lean ? "over" : "none"}">${referenceTd} TD chance</span>`
     : from === "ours"
       ? `<span class="lean none" title="Leans are only called against real sportsbook lines">No book line</span>`
-      : `<span class="lean ${lean || "none"}">${selected ? "Selected: " : "Reference: "}${lean ? `Lean ${lean}` : "No lean"}</span>`;
+      : `<span class="lean ${lean || "none"}">${selected ? "Selected: " : (["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes((p.reference_model || S.data.execution_model?.model)) ? "Current baseline: " : "R0: ")}${lean ? `Lean ${lean}` : "No lean"}</span>`;
 
   const bars = vals.map((x) => `<div class="b ${x.v > line ? "o" : ""}" title="${x.s} week ${x.w} vs ${x.opp}: ${x.v}"><span>${fmtStat(prop.key, x.v)}</span><i style="height:${(100 * x.v) / top}%"></i></div>`).join("")
     + (nowV != null ? `<div class="b now" title="This week"><span>${fmtStat(prop.key, nowV)}</span><i style="height:${(100 * nowV) / top}%"></i></div>` : "");
@@ -1874,7 +1893,7 @@ function catCard(p, raw) {
   const liveLine = S.liveLines[p.id]?.[prop.key];
   const lineCell = prop.key === "anytime_td"
     ? `<div>Line<span class="n">0.5</span></div>`
-    : `<div>${edited ? "Your line" : selected && from === "ours" ? "Current reference line" : LINE_FROM[from]}<input type="number" step="1" inputmode="decimal" value="${line}" data-line="${k}" aria-label="${cat.label} line"></div>`
+    : `<div>${edited ? "Your line" : selected && from === "ours" ? `${ref} reference line` : LINE_FROM[from]}<input type="number" step="1" inputmode="decimal" value="${line}" data-line="${k}" aria-label="${cat.label} line"></div>`
       + (prop.dk_open != null && prop.dk_open !== prop.line ? `<div>DK opened<span class="n">${prop.dk_open}</span></div>` : "")
       + (liveLine != null && S.games[p.game_id]?.state === "in" ? `<div title="DraftKings' in-game line right now">DK live<span class="n" style="color:var(--amber)">${liveLine}</span></div>` : "")
       + (prop.sleeper && from !== "sleeper" ? `<div>Sleeper Picks<span class="n">${prop.sleeper.line}</span></div>` : "")
@@ -1883,12 +1902,12 @@ function catCard(p, raw) {
   const mfText = prop.mf_n
     ? ` Matchup vs ${p.opp}: <b>${prop.mf >= 1 ? "+" : ""}${fmt(100 * (prop.mf - 1))}%</b> (similar ${p.pos}s against them this season, ${prop.mf_n} game${prop.mf_n === 1 ? "" : "s"}).`
     : prop.mf != null ? ` No similar ${p.pos}s have faced ${p.opp} yet, so no matchup adjustment.` : "";
-  const selectedNote = selected ? ` Selected ${selected.label} assumes the player participates; accuracy is still being evaluated. ${selected.binary ? "Reference probability is shown separately; TD probabilities are sorted separately from numeric gaps." : "Leans use the selected forecast. Top Picks use saved sportsbook lines; your custom line changes only your displayed lean. On-pace estimates retain the reference forecast. A point forecast does not give a bet-win probability."}` : "";
+  const selectedNote = selected ? ` Selected ${selected.label} assumes the player participates; accuracy is still being evaluated. ${selected.binary ? `${ref} probability is shown separately; TD probabilities are sorted separately from numeric gaps.` : `Leans use the selected forecast. Top Picks use saved sportsbook lines; your custom line changes only your displayed lean. On-pace estimates retain ${ref}. A point forecast does not give a bet-win probability.`}` : "";
   const note = prop.key === "anytime_td"
-    ? `${vals.length ? `Scored in ${vals.filter((x) => x.v > 0).length} of ${gamesText}. ` : ""}${selected ? "Current reference probability comes" : "Chance comes"} from Sleeper's projected TDs.`
+    ? `${vals.length ? `Scored in ${vals.filter((x) => x.v > 0).length} of ${gamesText}. ` : ""}${selected ? `${ref} reference probability comes` : "Chance comes"} from Sleeper's projected TDs.`
     : (vals.length ? `Over in <b>${over}</b> of ${gamesText}${edited ? ` at your line (the ${LINE_FROM[from]} line is ${prop.line})` : ""}.` : "No games yet this season.")
         + mfText
-        + (from === "ours" && prop.key !== "fpts" ? selected ? " No sportsbook line yet; the editable line is the Current reference estimate." : " No sportsbook line yet, so this line is our projection." : "")
+        + (from === "ours" && prop.key !== "fpts" ? selected ? ` No sportsbook line yet; the editable line is the ${ref} reference estimate.` : " No sportsbook line yet, so this line is our projection." : "")
         + (prop.sleeper?.over ? ` Sleeper Picks shows leg multipliers: ${prop.sleeper.over}x over, ${prop.sleeper.under}x under. Full payouts depend on the contest entry.` : "");
 
   return `<div class="cat" data-cat="${k}">
@@ -1900,9 +1919,9 @@ function catCard(p, raw) {
     <div class="cat-nums">
       ${selected ? `<div data-weekly-primary><b>${selected.frozen ? "Frozen provisional" : "Provisional"} ${selected.label}${selected.binary ? "" : " forecast"}</b><span class="n">${selected.text}</span></div>` : ""}
       ${lineCell}
-      ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment, made before kickoff">${selected ? "Current reference forecast" : "Current reference forecast (fallback)"}<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
-      ${selected?.binary ? `<div>Current reference probability<span class="n">${referenceTd}</span></div>` : ""}
-      ${st && !st.final && st.v != null && prop.adj != null && prop.key !== "anytime_td" ? `<div title="What he has so far plus our pregame projection for the time left">Reference on pace<span class="n" style="color:var(--amber)">${fmt(st.v + prop.adj * remaining(S.games[p.game_id]), prop.key === "fpts" ? 2 : 1)}</span></div>` : ""}
+      ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment, made before kickoff">${selected ? `${ref} reference forecast` : `${ref} reference forecast (fallback)`}<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
+      ${selected?.binary ? `<div>${ref} reference probability<span class="n">${referenceTd}</span></div>` : ""}
+      ${st && !st.final && st.v != null && prop.adj != null && prop.key !== "anytime_td" ? `<div title="What he has so far plus our pregame projection for the time left">${ref} on pace<span class="n" style="color:var(--amber)">${fmt(st.v + prop.adj * remaining(S.games[p.game_id]), prop.key === "fpts" ? 2 : 1)}</span></div>` : ""}
       ${prop.proj != null ? `<div>Sleeper proj<span class="n">${fmtStat(prop.key, prop.proj)}</span></div>` : ""}
       ${avg != null ? `<div>Season avg<span class="n">${fmt(avg)}</span></div>` : ""}
       ${st ? `<div>${st.final ? "Final statistic" : S.games[p.game_id]?.state === "post" ? "Final evidence" : "Now"}<span class="n" style="color:var(--cyan)">${st.v == null ? st.res === "dnp" ? "DNP" : "Unresolved" : fmtStat(prop.key, st.v)}</span>${resBadge(st)}</div>` : ""}
@@ -1942,7 +1961,7 @@ function playerCard(p) {
         <div class="pname">${esc(p.name)}${injBadge(p)}${mineTag(p)}</div>
         <div class="pmeta"><span class="pos ${p.pos}">${p.pos}</span> ${p.team} ${oppText(p)} ${matchupText(p)} <span>· ${esc(gameStatus(g))}</span>${impliedFor(p) != null ? `<span class="muted" title="${p.team}'s points implied by the DraftKings spread and total">· ${p.team} ${impliedFor(p)} pts</span>` : ""}</div>
       </div>
-      <div class="pts"><div class="lbl">Reference points</div><div class="v">${fmtPts(projPts(p))}</div></div>
+      <div class="pts"><div class="lbl">${["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes((p.reference_model || S.data.execution_model?.model)) ? "Current baseline points" : (p.reference_model || S.data.execution_model?.model) === "original_sleeper_matchup_baseline" ? "R0 points" : "Reference points"}</div><div class="v">${fmtPts(projPts(p))}</div></div>
       <div class="pts"><div class="lbl">${g?.state === "post" ? "Final" : g?.state === "in" ? "Live" : "Avg"}</div>
         <div class="v ${c ? "live" : ""}" data-live-ppr="${p.id}">${c ? (c.none ? "DNP" : fmtPts(live)) : fmtPts(avgPts(p))}</div></div>
     </div>
@@ -1995,12 +2014,12 @@ function renderProps() {
     : "";
   $("#main").innerHTML = promo + `
     <div class="picks-wrap">
-      <div class="picks"><h3>Top Overs <span class="tag over">${picksFor("over").length}</span></h3><div class="small">${S.selectedRankings ? "Selected forecasts · provisional" : "Current reference fallback"}</div>${pickList("over")}</div>
-      <div class="picks"><h3>Top Unders <span class="tag under">${picksFor("under").length}</span></h3><div class="small">${S.selectedRankings ? "Selected forecasts · provisional" : "Current reference fallback"}</div>${pickList("under")}</div>
+      <div class="picks"><h3>Top Overs <span class="tag over">${picksFor("over").length}</span></h3><div class="small">${S.selectedRankings ? "Selected forecasts · provisional" : (["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(S.data.execution_model?.model) ? "Current baseline fallback" : S.data.execution_model?.model === "original_sleeper_matchup_baseline" ? "R0 reference fallback" : "Current reference fallback")}</div>${pickList("over")}</div>
+      <div class="picks"><h3>Top Unders <span class="tag under">${picksFor("under").length}</span></h3><div class="small">${S.selectedRankings ? "Selected forecasts · provisional" : (["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(S.data.execution_model?.model) ? "Current baseline fallback" : S.data.execution_model?.model === "original_sleeper_matchup_baseline" ? "R0 reference fallback" : "Current reference fallback")}</div>${pickList("under")}</div>
     </div>
-    <p class="note">Top Picks use saved selected forecasts where available, with individually labeled Reference fallbacks. They rank forecast-minus-sportsbook-line gaps using fixed category scales, for eligible players with established roles. Selections and lines are saved before kickoff and frozen afterward. These gaps are not win probabilities or expected returns. Without a validated new selection snapshot, the lists explicitly fall back to the saved reference-policy picks. <a href="#" data-goto="about">How it works</a></p>
+    <p class="note">Top Picks use saved selected forecasts where available, with individually labeled ${["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(S.data.execution_model?.model) ? "current baseline" : S.data.execution_model?.model === "original_sleeper_matchup_baseline" ? "R0" : "Reference"} fallbacks. They rank forecast-minus-sportsbook-line gaps using fixed category scales, for eligible players with established roles. Selections and lines are saved before kickoff and frozen afterward. These gaps are not win probabilities or expected returns. Without a validated new selection snapshot, the lists explicitly fall back to ${["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(S.data.execution_model?.model) ? "the current baseline picks" : S.data.execution_model?.model === "original_sleeper_matchup_baseline" ? "the original R0 picks" : "the saved reference-policy picks"}. <a href="#" data-goto="about">How it works</a></p>
 
-    <p class="note">New forecasts are provisional and assume participation. Use <b>New forecasts: biggest gap</b>, or choose a prop and use <b>New forecast: highest</b>. Anytime TD sorts by its actual probability. Missing new values sort last in highest-forecast mode; fantasy points, on-pace estimates, game forecasts and the historical Record retain their exact recorded reference identities.</p>
+    <p class="note">New forecasts are provisional and assume participation. Use <b>New forecasts: biggest gap</b>, or choose a prop and use <b>New forecast: highest</b>. Anytime TD sorts by its actual probability. Missing new values sort last in highest-forecast mode; fantasy points, on-pace estimates, game forecasts and the historical Record retain their exact recorded reference identities.${["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(S.data.execution_model?.model) ? " Current baseline projections use the corrected classic engine; historical results are not its performance record." : ""}</p>
     <h2>Players <small>${list.length} shown</small></h2>
     <div class="filters">
       <div class="chips">${withFlex(["ALL", "QB", "RB", "WR", "TE"]).map((x) => `<button class="chip ${f.pos === x ? "on" : ""}" data-pos="${x}">${x === "ALL" ? "All" : x}</button>`).join("")}</div>
@@ -2009,9 +2028,9 @@ function renderProps() {
       <select id="f-sort" aria-label="Sort">
         <option value="selected_edge" ${f.sort === "selected_edge" ? "selected" : ""}>Sort: New forecasts: biggest gap</option>
         <option value="selected_value" ${f.sort === "selected_value" ? "selected" : ""} ${!f.cat || f.cat === "fpts" ? "disabled" : ""}>${f.cat === "anytime_td" ? "Sort: New TD probability: highest" : f.cat ? "Sort: New forecast: highest" : "Sort: New forecast: highest (choose prop)"}</option>
-        <option value="proj" ${f.sort === "proj" ? "selected" : ""}>Sort: Reference projected points</option>
+        <option value="proj" ${f.sort === "proj" ? "selected" : ""}>${["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(S.data.execution_model?.model) ? "Sort: Current baseline projected points" : S.data.execution_model?.model === "original_sleeper_matchup_baseline" ? "Sort: R0 projected points" : "Sort: Reference projected points"}</option>
         <option value="live" ${f.sort === "live" ? "selected" : ""}>Sort: Live points</option>
-        <option value="edge" ${f.sort === "edge" ? "selected" : ""}>Sort: Reference biggest lean</option>
+        <option value="edge" ${f.sort === "edge" ? "selected" : ""}>${["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(S.data.execution_model?.model) ? "Sort: Current baseline biggest lean" : S.data.execution_model?.model === "original_sleeper_matchup_baseline" ? "Sort: R0 biggest lean" : "Sort: Reference biggest lean"}</option>
         <option value="name" ${f.sort === "name" ? "selected" : ""}>Sort: Name</option>
       </select>
       <input type="search" id="f-q" placeholder="Search player or team" value="${esc(f.q)}">
@@ -3797,9 +3816,10 @@ function renderAbout() {
     <h2>Lines</h2>
     <p>Every prop uses the real <b>DraftKings</b> line when DraftKings has posted one (ESPN carries DraftKings' player props). If DraftKings hasn't, it uses <b>Sleeper Picks</b>' line, and only after that our own estimate, which is labeled "est". Each card shows all of them side by side, plus where DraftKings' line opened.</p>
     <h2>Our projection</h2>
-    <p>Our projection starts from Sleeper's projection for the week and adjusts it for the matchup: we look at every player at the same position with a similar season average who has faced this defense <b>this season</b>, and compare what they did against it with what they usually do. With only a few games that adjustment is pulled toward zero, so early in the season it's small. Last season's games are never used, and every chart and hit rate shows this season only.</p>
+    <p>Supported category forecasts show a provisional mean, median or touchdown probability, conditional on participation. Top Picks and new forecast-gap sorting use selected projections with explicit ${["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(S.data.execution_model?.model) ? "current baseline" : S.data.execution_model?.model === "original_sleeper_matchup_baseline" ? "R0" : "Reference"} fallbacks. Top selections, sportsbook lines and model identities are saved before kickoff and frozen afterward. Fixed category-scaled gaps are descriptive, not calibrated win probabilities or expected returns. Anytime TD has a separate probability sort. ${["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(S.data.execution_model?.model) ? `Current baseline model: ${S.data.execution_model.model === "sleeper-matchup-classic-data-integrity-v2" ? "sleeper-matchup-classic-data-integrity-v2" : "sleeper-matchup-classic-fg-identity-v1"}. ${S.data.execution_model.model === "sleeper-matchup-classic-data-integrity-v2" ? "Original R0 shadow evidence is retained separately; this current-only update produces no new original-model observation and does not activate the registered experiment." : "The original R0 shadow is captured separately under original code."} Historical classic results establish neither current-model accuracy nor selected-policy accuracy.` : "Fantasy points, on-pace estimates, game forecasts and the historical Record retain R0; old R0 results are not the record of the new selection policy."}</p>
+    <p>The ${["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(S.data.execution_model?.model) ? "current baseline" : "R0 reference"} projection starts from Sleeper's projection for the week and adjusts it for the matchup: we look at every player at the same position with a similar season average who has faced this defense <b>this season</b>, and compare what they did against it with what they usually do. With only a few games that adjustment is pulled toward zero, so early in the season it's small. Last season's games are never used, and every chart and hit rate shows this season only.</p>
     <h2>Leans and top picks</h2>
-    <p>A lean means our projection is far enough above (over) or below (under) a real sportsbook line. There are no leans against our own estimate. Top Overs and Top Unders are the biggest gaps, measured in each category's typical spread, and only use real sportsbook lines. They include players with 2+ games this season who aren't out, doubtful or on IR, and lock at kickoff. During a game, cards also show DraftKings' live line.</p>
+    <p>A lean means the ${["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(S.data.execution_model?.model) ? "current baseline" : "R0 reference"} projection is far enough above (over) or below (under) a real sportsbook line. There are no leans against our own estimate. Top Overs and Top Unders are the biggest gaps, measured in each category's typical spread, and only use real sportsbook lines. They include players with 2+ games this season who aren't out, doubtful or on IR, and lock at kickoff. During a game, cards also show DraftKings' live line.</p>
     <h2>How our lines compare with DraftKings</h2>
     <p>The Track Record tab includes a descriptive comparison with saved historical DraftKings lines. Its historical season-average benchmark differs from the raw Sleeper forecasts in the forward scorecard. Small historical samples do not establish future accuracy.</p>
     <h2>Our game lines</h2>
@@ -4489,7 +4509,7 @@ function renderGameProps(g, teams) {
   return `<div class="gtool">
       ${teamSeg(teams, st.team)}
       ${seg("data-gpos", st.pos, withFlex(["ALL", "QB", "RB", "WR", "TE"]).map((x) => [x, x === "ALL" ? "All" : x]), "Position")}
-      ${seg("data-gsort", st.sort, [["proj", "Reference points"], ["live", "Live pts"], ["lean", "New forecast gap"]], "Sort")}
+      ${seg("data-gsort", st.sort, [["proj", ["sleeper-matchup-classic-fg-identity-v1", "sleeper-matchup-classic-data-integrity-v2"].includes(S.data.execution_model?.model) ? "Current baseline points" : "R0 points"], ["live", "Live pts"], ["lean", "New forecast gap"]], "Sort")}
       <button class="tbtn ${st.leans ? "on" : ""}" data-gleans aria-pressed="${st.leans}">Leans only</button>
     </div>
     ${picks.length ? `<div class="picks game-picks"><h3>Top picks in this game</h3>${picks.map(pickCard).join("")}</div>` : ""}
@@ -5381,21 +5401,28 @@ function gameBetLabel(m, g) {
 
 // Where a game bet stands: live margins and totals, then hit, miss or push at the final
 function gameBetStatus(m) {
+  if (!m || typeof m !== "object" || Array.isArray(m)) return { res: "unresolved", final: false, note: "Saved game selection unavailable" };
+  const validId = value => typeof value === "string" ? Boolean(value.trim()) : Number.isSafeInteger(value) && value >= 0;
+  if (!validId(m.gid)) return { res: "unresolved", final: false, note: "Saved game identity unavailable" };
   const g = S.games[m.gid];
-  if (!g || g.state === "pre") return null;
+  if (!g) return null;
+  if (!validId(g.id) || String(g.id) !== String(m.gid)) return { res: "unresolved", final: false, note: "Saved game does not match this game" };
+  if (g.state === "pre") return null;
+  if (!["in", "post"].includes(g.state)) return { res: "unresolved", final: false, note: "Game status unavailable" };
   if (!["spread", "total", "ml"].includes(m.market) || (m.market !== "ml" && !Number.isFinite(m.line)))
     return { res: "unresolved", final: false, note: "Saved market or line missing/invalid" };
-  if (m.market === "total" ? !["over", "under"].includes(m.side) : ![g.home, g.away].includes(m.side))
+  if (typeof m.side !== "string" || (m.market === "total" ? !["over", "under"].includes(m.side) : ![g.home, g.away].includes(m.side)))
     return { res: "unresolved", final: false, note: "Saved side does not match this game/market" };
-  if (!Number.isFinite(g.home_score) || !Number.isFinite(g.away_score)) return { res: "unresolved", final: false, note: "Missing recorded game score" };
-  if (g.state === "post" && !/^Final(?:\/\d*OT)?$/i.test((g.detail || "").trim())) return { res: "unresolved", final: false, note: "Final status unconfirmed; cancellation/void settlement unavailable" };
+  if (![g.home_score, g.away_score].every(score => Number.isSafeInteger(score) && score >= 0))
+    return { res: "unresolved", final: false, note: "Missing or invalid recorded game score" };
+  if (g.state === "post" && (typeof g.detail !== "string" || !/^Final(?:\/\d*OT)?$/i.test(g.detail.trim()))) return { res: "unresolved", final: false, note: "Final status unconfirmed; cancellation/void settlement unavailable" };
   const final = g.state === "post";
   const hs = g.home_score, as = g.away_score;
   if (m.market === "total") {
     const t = hs + as;
     const over = t > m.line;
     const res = final ? (t === m.line ? "push" : over === (m.side === "over") ? "hit" : "miss") : t === m.line ? "equal" : over ? "above" : "below";
-    return { res, final, v: t, note: `${t} points${final ? "" : " so far"}${!final && !over ? `, ${fmt(m.line - t, 1)} under the line` : ""}`, pct: Math.min(100, (100 * t) / Math.max(m.line, 1)) };
+    return { res, final, v: t, note: `${t} points${final ? "" : " so far"}${!final && t === m.line ? ", equal to the line" : !final && !over ? `, ${fmt(m.line - t, 1)} under the line` : ""}`, pct: Math.min(100, (100 * t) / Math.max(m.line, 1)) };
   }
   const mine = m.side === g.home ? hs - as : as - hs;
   if (m.market === "spread") {
@@ -5415,13 +5442,19 @@ function updateMineBadge() {
 }
 
 function renderMine() {
+  if (!Array.isArray(S.mine) || S.mine.some(m => !m || typeof m !== "object" || Array.isArray(m))) {
+    $("#main").innerHTML = `<h2>My Picks</h2><div class="card note" role="status">Stored selections contain an unsupported record. They have not been changed, and no totals were calculated.</div>`;
+    return;
+  }
+  const validGameId = value => typeof value === "string" ? Boolean(value.trim()) : Number.isSafeInteger(value) && value >= 0;
   const thisWeek = (m) => m.season === S.data.season && m.week === S.data.week;
-  const now = S.mine.filter((m) => thisWeek(m) && (m.kind === "game" ? S.games[m.gid] : S.byId[m.pid]));
+  const now = S.mine.filter((m) => thisWeek(m) && (m.kind === "game" ? validGameId(m.gid) && S.games[m.gid] : validGameId(m.pid) && S.byId[m.pid]));
   const old = S.mine.length - now.length;
+  const nonCurrent = S.mine.filter(m => !thisWeek(m)).length;
   if (!now.length) {
     $("#main").innerHTML = `<h2>My Picks</h2><div class="card empty-card">
       <p><b>Track any prop or game bet live.</b> Open a player on the Props tab and tap <span class="add over on demo">+ Over</span> or <span class="add under on demo">+ Under</span> on any line, tap <b>+</b> on a top pick, or open a game and tap <b>+</b> on its spread, total or moneyline. Your picks are saved on this device and follow the games live.</p>
-      ${old ? `<p class="note">${old} pick${old === 1 ? "" : "s"} from an earlier week. <button class="tbtn" data-mine-clear="old">Clear them</button></p>` : ""}
+      ${old ? `<p class="note">${old} saved selection${old === 1 ? " is" : "s are"} outside the current board and remain stored.${nonCurrent ? ` <button class="tbtn" data-mine-clear="old">Clear non-current periods</button>` : ""}</p>` : ""}
     </div>`;
     return;
   }
@@ -5435,7 +5468,7 @@ function renderMine() {
     return { m, p, g, st: propStatus(p, m.key, m.line, m.dir), prop: p.props.find((x) => x.key === m.key) };
   });
   const rank = (r) => (r.g.state === "in" ? 0 : r.g.state === "pre" ? 1 : 2);
-  rows.sort((a, b) => rank(a) - rank(b) || a.g.kickoff.localeCompare(b.g.kickoff) || a.m.at - b.m.at);
+  rows.sort((a, b) => rank(a) - rank(b) || String(a.g.kickoff || "").localeCompare(String(b.g.kickoff || "")) || a.m.at - b.m.at);
   const hit = rows.filter((r) => r.st?.final && r.st.res === "hit").length;
   const miss = rows.filter((r) => r.st?.final && r.st.res === "miss").length;
   const push = rows.filter((r) => r.st?.final && r.st.res === "push").length;
@@ -5443,20 +5476,34 @@ function renderMine() {
   const unresolved = rows.filter((r) => r.st?.res === "unresolved").length;
   const final = rows.filter((r) => r.st?.final).length;
   const live = rows.filter((r) => r.g.state === "in").length;
-  const gameRow = ({ m, g, st }) => `<div class="pick mine ${st?.res || ""}" data-game="${g.id}">
-      <div class="av def"><img src="${logo(m.market === "total" ? g.home : m.side)}" alt=""></div>
+  const gameRow = ({ m, g, st }) => {
+    const identityKnown = validGameId(g.id) && validGameId(m.gid) && String(g.id) === String(m.gid);
+    const phaseKnown = ["pre", "in", "post"].includes(g.state);
+    const marketKnown = ["spread", "total", "ml"].includes(m.market);
+    const sideKnown = typeof m.side === "string" && (m.market === "total" ? ["over", "under"].includes(m.side) : [g.home, g.away].includes(m.side));
+    const actionable = identityKnown && marketKnown && sideKnown && [g.id, m.market, m.side].every(value => ["string", "number"].includes(typeof value) && String(value) && !String(value).includes("|"));
+    const lineKnown = m.market === "ml" || Number.isFinite(m.line);
+    const displayPick = { ...m, odds: Number.isFinite(m.odds) ? m.odds : null };
+    const title = identityKnown && marketKnown && sideKnown && lineKnown ? gameBetLabel(displayPick, g) : "Saved game selection unavailable";
+    const team = marketKnown && sideKnown && m.market !== "total" ? m.side : g.home;
+    const icon = identityKnown && typeof team === "string" && team ? `<img src="${esc(logo(team))}" alt="">` : "";
+    const scoresKnown = [g.home_score, g.away_score].every(score => Number.isSafeInteger(score) && score >= 0);
+    const action = actionable ? esc([g.id, m.market, m.side].join("|")) : "";
+    return `<div class="pick mine ${st?.res || ""}" ${identityKnown ? `data-game="${esc(g.id)}"` : ""}>
+      <div class="av def">${icon}</div>
       <div>
-        <div><b>${esc(gameBetLabel(m, g))}</b> <span class="ptag big">${m.market === "ml" ? "MONEYLINE" : m.market.toUpperCase()}</span>
-          ${m.market !== "ml" ? `<label class="mline">line <input type="number" step="0.5" inputmode="decimal" value="${m.line}" data-mline="g|${g.id}|${m.market}|${m.side}" aria-label="Your line"></label>` : ""}</div>
-        <div class="what">${g.away} @ ${g.home}${g.state !== "pre" ? ` · <b class="num">${g.away} ${g.away_score} - ${g.home} ${g.home_score}</b>` : ""}</div>
-        <div class="small">${esc(gameStatus(g))}${st?.note ? ` · ${esc(st.note)}` : ""}</div>
+        <div><b>${esc(title)}</b> <span class="ptag big">${marketKnown ? m.market === "ml" ? "MONEYLINE" : m.market.toUpperCase() : "UNAVAILABLE"}</span>
+          ${m.market !== "ml" ? `<label class="mline">line <input type="number" step="0.5" inputmode="decimal" value="${Number.isFinite(m.line) ? m.line : ""}" ${actionable ? `data-mline="g|${action}"` : "disabled"} aria-label="Your line"></label>` : ""}</div>
+        <div class="what">${identityKnown ? `${esc(g.away)} @ ${esc(g.home)}${g.state !== "pre" ? scoresKnown ? ` · <b class="num">${esc(g.away)} ${g.away_score} - ${esc(g.home)} ${g.home_score}</b>` : " · Score unavailable" : ""}` : "Saved game identity unavailable"}</div>
+        <div class="small">${identityKnown ? phaseKnown ? esc(gameStatus(g)) : "Game status unavailable" : "Game unavailable"}${st?.note ? ` · ${esc(st.note)}` : ""}</div>
         ${st?.pct != null ? `<div class="prog ${st.res === "hit" ? "hit" : st.res === "miss" ? "miss" : ""}"><i style="width:${st.pct}%"></i></div>` : ""}
       </div>
       <div class="side">
         ${st ? resBadge(st) : ""}
-        <button class="rm" data-rm-game="${g.id}|${m.market}|${m.side}" title="Remove" aria-label="Remove">×</button>
+        ${actionable ? `<button class="rm" data-rm-game="${action}" title="Remove" aria-label="Remove">×</button>` : `<span class="small">Stored record retained</span>`}
       </div>
     </div>`;
+  };
   const propRow = ({ m, p, g, st, prop }) => {
     const label = S.data.categories[m.key].label;
     const lineNow = prop?.line;
@@ -5488,9 +5535,9 @@ function renderMine() {
     <div class="gtool" style="margin-top:12px">
       ${final ? `<button class="tbtn" data-mine-clear="final">Clear finished</button>` : ""}
       <button class="tbtn" data-mine-clear="all">Clear all</button>
-      ${old ? `<button class="tbtn" data-mine-clear="old">Clear ${old} from earlier weeks</button>` : ""}
+      ${nonCurrent ? `<button class="tbtn" data-mine-clear="old">Clear ${nonCurrent} non-current period selections</button>` : ""}
     </div>
-    <p class="note">Each selection uses your own saved line. Equality is a statistical push on either side. Live values are currently above, below or equal and can change, including downward corrections. Only confirmed final statistical outcomes enter the win/loss counts; missing evidence is unresolved. These are individual statistical results, not verified venue settlement or combined-ticket economics.</p>`;
+    <p class="note">Each selection uses your own saved line. Equality is a statistical push on either side. Game bets require a recorded Final status with valid whole-number scores. Live values are currently above, below or equal and can change, including downward corrections. Only confirmed final statistical outcomes enter the win/loss counts; missing evidence is unresolved. These are individual statistical results, not verified venue settlement or combined-ticket economics.</p>`;
 }
 
 // ---------------------------------------------------------------- render and events

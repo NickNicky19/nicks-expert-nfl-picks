@@ -40,16 +40,11 @@ jobs:
       - name: Retained baseline and Phase 2 regression suites
         if: steps.mode.outputs.mode == 'phase1'
         run: |
-          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
-            PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-suite-pyc.XXXXXX")" python -m unittest discover -s tests -v
-          else
-            PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-legacy-suite-pyc.XXXXXX")" python -m unittest discover -s tests -p test_reliability.py -v
-            PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-recovery-suite-pyc.XXXXXX")" python -m unittest discover -s tests -p test_recovery.py -v
-          fi
+          PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-suite-pyc.XXXXXX")" python -m unittest discover -s tests -v
       - name: Python syntax
         run: PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-compile-pyc.XXXXXX")" python -m compileall -q pull tools
       - name: JavaScript and UI checks
-        run: node --check output/app.js && node --check output/reliability-ui.js && node --check output/weekly-adaptive-overlay.js && node tests/test-ui.cjs
+        run: node --check output/app.js && node --check output/reliability-ui.js && node --check output/weekly-adaptive-overlay.js && node tests/test-ui.cjs && node tests/test-weekly-overlay.cjs && node tests/test-selected-rankings.cjs && node tests/test-classic-ranking-model.cjs
       - name: About comparison states
         if: steps.mode.outputs.phase2_enabled == 'true'
         run: node tests/test-about.cjs

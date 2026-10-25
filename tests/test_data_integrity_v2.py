@@ -29,6 +29,9 @@ from evidence import read, write
 from test_reliability import NOW, fixture
 from test_scorecard import setup
 
+ACTIVE_MODEL = corrected.active_model(ROOT)
+ACTIVE_HASHES = corrected.source_hashes(ACTIVE_MODEL)
+
 DI_NOW = NOW + timedelta(days=8)  # Fictional modern era, after the unchanged registrations.
 
 
@@ -78,12 +81,12 @@ def corrected_fixture(root):
         reliability.atomic_json(root / "output/data/week.json", data)
         reliability.atomic_json(root / "output/data/meta.json", {key: data[key] for key in ("season", "week", "generated_at")})
     with patch.object(build_recorded, "datetime", Clock), patch.object(build.sources, "get_json", side_effect=replies):
-        original = build_recorded.record_build(root, run=run, model=corrected.MODEL)
+        original = build_recorded.record_build(root, run=run, model=ACTIVE_MODEL)
     baseline = status(data, DI_NOW - timedelta(minutes=2))
     write(root, "verification/partial-schedule-baselines", {"schema_version": "partial-schedule-baseline-v1",
           "season": 2026, "week": 6, "status": baseline})
     plan = {"schema_version": corrected.PLAN, "plan_id": "FICTIONAL_CORRECTED_PLAN_NOT_ACTIVATION",
-            "model": corrected.MODEL, "season": 2026, "week": 6,
+            "model": ACTIVE_MODEL, "season": 2026, "week": 6,
             "plan_prepared_at": reliability.stamp(DI_NOW - timedelta(minutes=1)),
             "effective_not_before": reliability.stamp(DI_NOW - timedelta(minutes=1)),
             "expires_at": reliability.stamp(DI_NOW + timedelta(days=3)), "validator_contract": corrected.VALIDATOR,
@@ -99,10 +102,10 @@ def corrected_fixture(root):
                            "season": 2026, "week": 6, "board": copy.deepcopy(data)})
     spec["initial_board_receipt"] = original_board.relative_to(root).as_posix()
     config = {"capture_enabled": True, "experimental_recording_enabled": False,
-              "challenger_production_enabled": False, "production_model": corrected.MODEL,
+              "challenger_production_enabled": False, "production_model": ACTIVE_MODEL,
               "verification_mode": corrected.VALIDATOR, "partial_week": spec}
     reliability.atomic_json(root / "config/phase2.json", config)
-    reliability.atomic_json(root / "data/cache/stats_2026_06.json", {})
+    reliability.atomic_json(root / "data/cache" / getattr(build, "STATS_CACHE_VERSION", "") / "stats_2026_06.json", {})
     registration, _ = corrected.register_plan(root, spec, DI_NOW, source_sha=corrected.recording_source(), initial_board=data)
     return data, reliability.load_json(root / "output/data/matchup-proof.json"), spec, registration.relative_to(root).as_posix(), original
 
@@ -177,11 +180,12 @@ class PresenceTests(unittest.TestCase):
                      "stats": {"gp": 1, "rec": None, "rush_yd": 0}}]
             with patch.object(build.sources, "week_stats", return_value=rows):
                 fresh = build.week_stats(2026, 5, True)
-            original = (Path(directory) / "stats_2026_05.json").read_bytes()
+            cached = Path(directory) / getattr(build, "STATS_CACHE_VERSION", "") / "stats_2026_05.json"
+            original = cached.read_bytes()
             with patch.object(build.sources, "week_stats", side_effect=AssertionError("No refetch")):
                 saved = build.week_stats(2026, 5, False)
             self.assertEqual(fresh, saved)
-            self.assertEqual(original, (Path(directory) / "stats_2026_05.json").read_bytes())
+            self.assertEqual(original, cached.read_bytes())
             self.assertIsNone(scoring.stat_value("rec", saved["fictional-1"]["stats"]))
 
     def test_legacy_sparse_assumption_is_distinct_from_supported_attributed_adapter(self):
@@ -247,7 +251,7 @@ class SelectorContractTests(unittest.TestCase):
             for enabled in (True, False):
                 reliability.atomic_json(path, dict(legacy, capture_enabled=enabled))
                 self.assertIs(release_mode.read_phase2(root), enabled)
-            modern = dict(legacy, production_model=corrected.MODEL, verification_mode=corrected.VALIDATOR,
+            modern = dict(legacy, production_model=ACTIVE_MODEL, verification_mode=corrected.VALIDATOR,
                           experimental_recording_enabled=False)
             for enabled in (True, False):
                 reliability.atomic_json(path, dict(modern, capture_enabled=enabled))
@@ -272,7 +276,7 @@ class SelectorContractTests(unittest.TestCase):
             self.assertEqual((root / "config/phase2.json").read_bytes(),
                              corrected._legacy_blob("config/phase2.json"))
         else:
-            self.assertEqual(config["production_model"], corrected.MODEL)
+            self.assertEqual(config["production_model"], ACTIVE_MODEL)
             self.assertEqual(config["verification_mode"], corrected.VALIDATOR)
             spec = config["partial_week"]
             initial = phase2_capture._initial_board(root, spec)
@@ -360,8 +364,112 @@ class CrossRecordTests(unittest.TestCase):
         self.assertFalse(rows[0]["week_confirmed_complete"])
 
 
+class ClassicScoringClosureTests(unittest.TestCase):
+    """Real fixed public Git objects; no source/provider or qualification doubles."""
+
+    def copy_objects(self, root, objects):
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        for oid, (kind, raw) in objects.items():
+            saved = subprocess.check_output(["git", "--no-replace-objects", "-C", str(root),
+                "hash-object", "-t", kind, "-w", "--stdin"], input=raw).decode().strip()
+            self.assertEqual(saved, oid)
+
+    def cold_score(self, repository):
+        program = """import sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import classic_model_v1 as c
+assert c.scoring(Path(sys.argv[2])).ppr_points({'rec':2,'rec_yd':10})==3
+print('COLD_CLASSIC_SCORING_VERIFIED')
+"""
+        env = {key:value for key,value in os.environ.items() if not key.startswith("GIT_")}
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        return subprocess.run([sys.executable, "-B", "-c", program, str(ROOT / "tools"), str(repository)],
+                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+
+    def test_fixed_scoring_closure_and_fresh_values(self):
+        import classic_model_v1 as classic
+        objects = classic.scoring_objects(ROOT)
+        self.assertEqual(set(objects), {classic.SCORING_SOURCE, classic.SCORING_TREE,
+                                       classic.SCORING_PULL_TREE, classic.SCORING_BLOB})
+        for oid, (kind, raw) in objects.items():
+            self.assertEqual(hashlib.sha1(kind.encode()+b" "+str(len(raw)).encode()+b"\0"+raw).hexdigest(), oid)
+        self.assertEqual(hashlib.sha256(objects[classic.SCORING_BLOB][1]).hexdigest(),
+                         classic.ENGINE["pull/scoring.py"])
+        objects.clear()
+        self.assertEqual(len(classic.scoring_objects(ROOT)), 4)
+        self.assertEqual(classic.scoring(ROOT).ppr_points({"rec":2,"rec_yd":10}), 3)
+
+    def test_fixed_tree_links_cannot_select_an_unrelated_object(self):
+        import classic_model_v1 as classic
+        # Link-negative controls only: actual parent bytes are still read.
+        for name, wrong in (("SCORING_PULL_TREE", classic.SCORING_TREE),
+                            ("SCORING_BLOB", "0" * 40)):
+            with self.subTest(link=name), patch.object(classic, name, wrong), \
+                    self.assertRaisesRegex(ValueError, "CLASSIC_SCORING_TREE_LINK"):
+                classic.scoring_objects(ROOT)
+
+    def test_minimal_independent_store_and_missing_dependency_fail_cold(self):
+        import classic_model_v1 as classic
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_objects(root, classic.scoring_objects(ROOT))
+            self.assertEqual(self.cold_score(root).returncode, 0)
+            for oid in (classic.SCORING_SOURCE, classic.SCORING_TREE,
+                        classic.SCORING_PULL_TREE, classic.SCORING_BLOB):
+                path = root / ".git/objects" / oid[:2] / oid[2:]
+                raw = path.read_bytes()
+                try:
+                    path.unlink()
+                    with self.subTest(missing=oid), self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                        classic.scoring_objects(root)
+                    self.assertNotEqual(self.cold_score(root).returncode, 0)
+                finally:
+                    path.write_bytes(raw)
+            self.assertEqual(self.cold_score(root).returncode, 0)
+
+    def test_inventory_transports_scoring_closure_and_rejects_warm_corruption(self):
+        import classic_model_v1 as classic
+        objects = {}
+        original = corrected.legacy_dependency_inventory(ROOT, _objects=objects)
+        descriptor = original["retained_classic_scoring"]
+        self.assertEqual(descriptor["commit"], classic.SCORING_SOURCE)
+        self.assertEqual({row[0] for row in descriptor["objects"]}, set(classic.scoring_objects(ROOT)))
+        for oid, kind, checksum in descriptor["objects"]:
+            self.assertEqual(objects[oid][0], kind)
+            self.assertEqual(hashlib.sha256(objects[oid][1]).hexdigest(), checksum)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.copy_objects(root, objects)
+            self.assertEqual(corrected.legacy_dependency_inventory(root), original)
+            self.assertEqual(self.cold_score(root).returncode, 0)
+            path = root / ".git/objects" / classic.SCORING_BLOB[:2] / classic.SCORING_BLOB[2:]
+            raw, before = path.read_bytes(), path.stat()
+            try:
+                path.chmod(before.st_mode | 0o200)  # Only this disposable local object.
+                path.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+                self.assertEqual(path.stat().st_size, before.st_size)
+                with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                    corrected.legacy_dependency_inventory(root)
+                with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                    classic.scoring(root)
+                self.assertNotEqual(self.cold_score(root).returncode, 0)
+            finally:
+                path.write_bytes(raw)
+                path.chmod(before.st_mode)
+            self.assertEqual(corrected.legacy_dependency_inventory(root), original)
+            self.assertEqual(self.cold_score(root).returncode, 0)
+
+
 class SourceVersionTests(unittest.TestCase):
     def test_actual_retained_corrected_inputs_bundle_and_failure_marker(self):
+        # Actual cold interpreters, retained original bytes and real validators.
+        for family, (commit, _, _) in corrected._retained_families().items():
+            with self.subTest(retained_family=family):
+                self._assert_retained_corrected_roundtrip(commit)
+
+    def _assert_retained_corrected_roundtrip(self, retained_commit):
         """Construct new fictional controls with actual retained B3 source."""
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -373,7 +481,7 @@ class SourceVersionTests(unittest.TestCase):
                 ("test_data_integrity_v2.py", "test_partial_week.py", "test_source_evidence.py",
                  "test_scorecard.py", "test_reliability.py")] + ["output/"+name for name in
                 ("app.js", "index.html", "style.css", "reliability-ui.js", "recovery.html")]
-            listing = corrected._git(ROOT, "ls-tree", "-r", "-z", corrected.RETAINED_CORRECTED_SOURCE, "--", *paths)
+            listing = corrected._git(ROOT, "ls-tree", "-r", "-z", retained_commit, "--", *paths)
             for item in listing.split(b"\0"):
                 if not item:
                     continue
@@ -389,7 +497,7 @@ class SourceVersionTests(unittest.TestCase):
             for oid, (kind, raw) in objects.items():
                 copied = subprocess.check_output(["git", "-C", str(source), "hash-object", "-t", kind, "-w", "--stdin"], input=raw).decode().strip()
                 self.assertEqual(copied, oid)
-            (source / ".git/HEAD").write_text(corrected.RETAINED_CORRECTED_SOURCE+"\n")
+            (source / ".git/HEAD").write_text(retained_commit+"\n")
             program = """import json,sys
 from pathlib import Path
 sys.path[:0]=[str(Path.cwd()/'tests'),str(Path.cwd()/'tools'),str(Path.cwd()/'pull')]
@@ -401,7 +509,7 @@ native,health,completion,scope=d.record_bundle(root,data,proof,status(data,DI_NO
 print(json.dumps(dict(inputs=inputs.relative_to(root).as_posix(),completion=completion.relative_to(root).as_posix(),spec=spec,at=DI_NOW.isoformat())))
 """
             env = {key:value for key,value in os.environ.items() if not key.startswith("GIT_")}
-            env.update(GITHUB_SHA=corrected.RETAINED_CORRECTED_SOURCE, PYTHONDONTWRITEBYTECODE="1")
+            env.update(GITHUB_SHA=retained_commit, PYTHONDONTWRITEBYTECODE="1")
             result = subprocess.check_output([sys.executable, "-B", "-c", program, str(runtime)],
                 cwd=source, env=env, stderr=subprocess.PIPE, timeout=60)
             index = json.loads(result.splitlines()[-1])
@@ -432,7 +540,7 @@ print(json.dumps(dict(inputs=inputs.relative_to(root).as_posix(),completion=comp
                 getter = build.sources.get_json
                 matchups = build.Matchups
                 actual_hash = corrected.model_input_hash
-                with patch.object(build_recorded, "engine_hashes", return_value=corrected.V2_SOURCE_SHA256), \
+                with patch.object(build_recorded, "engine_hashes", return_value=ACTIVE_HASHES), \
                         patch.object(build.sources, "get_json", side_effect=[response, later]), \
                         patch.object(corrected, "model_input_hash", wraps=actual_hash) as hashes:
                     def run():
@@ -440,7 +548,7 @@ print(json.dumps(dict(inputs=inputs.relative_to(root).as_posix(),completion=comp
                         self.assertIs(build.sources.get_json("https://api.sleeper.app/projections/nfl/2026/7"), later)
                         raise StopAfterInstrumentation()
                     with self.assertRaises(StopAfterInstrumentation):
-                        build_recorded.record_build(Path(directory), run=run, model=corrected.MODEL)
+                        build_recorded.record_build(Path(directory), run=run, model=ACTIVE_MODEL)
                     self.assertEqual(hashes.call_count, 2)
                     self.assertIs(hashes.call_args_list[0].args[0], response)
                     self.assertIs(hashes.call_args_list[1].args[0], later)
@@ -463,13 +571,13 @@ print(json.dumps(dict(inputs=inputs.relative_to(root).as_posix(),completion=comp
             self.assertEqual((ROOT / name).read_bytes(), corrected._legacy_blob(name))
         with self.assertRaises(reliability.IntegrityError):
             reliability.engine_hashes(ROOT)
-        self.assertEqual(reliability.engine_hashes(ROOT, version=corrected.MODEL), corrected.V2_SOURCE_SHA256)
+        self.assertEqual(reliability.engine_hashes(ROOT, version=ACTIVE_MODEL), ACTIVE_HASHES)
 
     def test_same_size_restored_mtime_mutation_cannot_inherit_source_trust(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             copy_corrected_engine(root)
-            self.assertEqual(corrected.engine_files(root), corrected.V2_SOURCE_SHA256)
+            self.assertEqual(corrected.engine_files(root), ACTIVE_HASHES)
             path = root / "pull/scoring.py"
             before, stat = path.read_bytes(), path.stat()
             path.write_bytes(before.replace(b"import math", b"import cmath", 1)[:len(before)])
@@ -497,7 +605,7 @@ print(json.dumps(dict(inputs=inputs.relative_to(root).as_posix(),completion=comp
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             copy_corrected_engine(root)
-            path, _ = reliability.capture(data, meta, root, NOW, corrected.engine_files(root), mode="live", model=corrected.MODEL)
+            path, _ = reliability.capture(data, meta, root, NOW, corrected.engine_files(root), mode="live", model=ACTIVE_MODEL)
             native = phase2_capture.read_native_baseline(path, root, now=NOW)
             self.assertEqual(native["schema_version"], corrected.NATIVE)
             _, _, policy = setup()
@@ -550,7 +658,7 @@ class CorrectedOperationalTests(unittest.TestCase):
         self.assertEqual(component["collected_at"], matching[0]["collected_at"])
         native, _, completion, scope = self.record()
         captured = phase2_capture.read_native_baseline(native, self.root, now=DI_NOW)
-        first, pairs, _ = scorecard.descriptive_forecasts([captured], corrected.V2_SOURCE_SHA256, DI_NOW, model_version=corrected.MODEL)
+        first, pairs, _ = scorecard.descriptive_forecasts([captured], ACTIVE_HASHES, DI_NOW, model_version=ACTIVE_MODEL)
         self.assertIn((2026, 6, "fictional-game", "fictional-1", "rec"), pairs)
         self.assertEqual(first[(2026, 6, "fictional-game", "fictional-1", "anytime_td")]["raw_projection"], 0)
         with tempfile.TemporaryDirectory() as directory:
@@ -679,14 +787,14 @@ class CorrectedOperationalTests(unittest.TestCase):
                 patch.object(phase2_capture, "make_shadow", side_effect=AssertionError("inactive shadow recorder")):
             report, health = phase2_capture.run_capture(self.root)
         self.assertIsNone(health["phase2"]["shadow_receipt"])
-        self.assertEqual(health["phase2"]["production_model"], corrected.MODEL)
+        self.assertEqual(health["phase2"]["production_model"], ACTIVE_MODEL)
         self.assertFalse(report["shadow"]["qualified_accuracy"])
         phase2_capture.validate_generation(self.root)
         self.assertEqual((self.root / "tools/rec_half_registration_v1.json").read_bytes(), (ROOT / "tools/rec_half_registration_v1.json").read_bytes())
 
     def test_modern_fresh_saved_unknowns_and_missing_source_never_become_zero(self):
         native, _, _, _ = self.record()
-        first, pairs, _ = scorecard.descriptive_forecasts([read(native)], corrected.V2_SOURCE_SHA256, DI_NOW, model_version=corrected.MODEL)
+        first, pairs, _ = scorecard.descriptive_forecasts([read(native)], ACTIVE_HASHES, DI_NOW, model_version=ACTIVE_MODEL)
         wanted = {key: row for key, row in pairs.items() if key[-1] in ("rec", "rec_yd")}
         board = copy.deepcopy(self.data)
         board["games"][0].update(state="post", detail="Final")
@@ -698,7 +806,7 @@ class CorrectedOperationalTests(unittest.TestCase):
         for value in (None, True, -1, .5, "bad"):
             entry = actual_row({"gp": 1, "rec": value, "rec_yd": 0})
             entry["stats"]["_presence"]["source_context"]["week"] = 6
-            reliability.atomic_json(self.root / "data/cache/stats_2026_06.json", {"fictional-1": entry})
+            reliability.atomic_json(self.root / "data/cache" / getattr(build, "STATS_CACHE_VERSION", "") / "stats_2026_06.json", {"fictional-1": entry})
             receipt = read(scorecard.snapshot_outcomes(self.root, wanted, at)[0])
             rows = scorecard.latest_outcomes([receipt])
             self.assertEqual(rows[(2026, 6, "fictional-game", "fictional-1", "rec")]["status"], "unresolved")
@@ -1329,6 +1437,110 @@ d.read_bundle(root,sys.argv[3],spec,now=r.utc(sys.argv[4]))
         with self.assertRaisesRegex(reliability.IntegrityError,'Cyclic'):
             corrected._frozen(self.root,frozen['game_id'],frozen['origin'],frozen['forecast_contract_sha256'],
                               self.t1,{self.origin},receipt=self.origin)
+
+
+class ComposedSourceDispatchTests(unittest.TestCase):
+    """Pure contract/route controls; cold retained validation is tested above."""
+
+    def test_old_identity_and_manifests_remain_separate_and_isolated(self):
+        self.assertEqual(corrected.MODEL, "sleeper-matchup-data-integrity-v2")
+        self.assertEqual(corrected.CLASSIC_MODEL, "sleeper-matchup-classic-data-integrity-v2")
+        self.assertEqual(corrected.V2_SOURCE_SHA256["pull/build.py"],
+                         "d8a1094af872c84e0fe092662a1241afc0eceaca8c27f7bea687e6a1be2f576c")
+        self.assertEqual(corrected.CLASSIC_SOURCE_SHA256["pull/build.py"],
+                         "726378a2ae5f7a1cedb1bd1538d49e77a5a6bbf9805c07eb89fc9fd4bdd92cbf")
+        for model in corrected.PRESENCE_MODELS:
+            value = corrected.source_hashes(model)
+            self.assertEqual(set(value), set(corrected.V2_PATHS))
+            value["pull/build.py"] = "0" * 64
+            self.assertNotEqual(value, corrected.source_hashes(model))
+        for unknown in (None, "", False, "sleeper-matchup-classic-data-integrity-v3", {}, []):
+            with self.subTest(unknown=unknown), self.assertRaises(reliability.IntegrityError):
+                corrected.source_hashes(unknown)
+
+    def test_actual_profile_rejects_other_model_and_unknown_explicit_arguments(self):
+        hashes = corrected.engine_files(ROOT)
+        self.assertEqual(hashes, corrected.source_hashes(corrected.active_model(ROOT)))
+        other = next(model for model in corrected.PRESENCE_MODELS if model != ACTIVE_MODEL)
+        for model in (other, "", False, {}):
+            with self.subTest(model=model), self.assertRaises(reliability.IntegrityError):
+                corrected.engine_files(ROOT, model=model)
+
+    def test_native_dispatch_is_exact_for_both_presence_sources(self):
+        for model in corrected.PRESENCE_MODELS:
+            hashes = corrected.source_hashes(model)
+            native = dict(schema_version=corrected.NATIVE, model=model,
+                          presence_contract=corrected.PRESENCE,
+                          engine_files=hashes, engine_sha256=reliability.digest(hashes))
+            self.assertEqual(corrected.native_contract(native), hashes)
+            other = next(name for name in corrected.PRESENCE_MODELS if name != model)
+            crossed = dict(native, engine_files=corrected.source_hashes(other),
+                           engine_sha256=reliability.digest(corrected.source_hashes(other)))
+            for bad in (crossed, dict(native, model="unknown"), dict(native, presence_contract="unknown"),
+                        dict(native, schema_version="baseline-capture-v1")):
+                with self.assertRaises(reliability.IntegrityError):
+                    corrected.native_contract(bad)
+
+    def test_old_input_dispatch_precedes_any_active_root_gate(self):
+        # Ordering-only doubles. The real old-source replay is exercised above.
+        for family, (commit, _, _) in corrected._retained_families().items():
+            payload = dict(schema_version=corrected.INPUTS, model=corrected.MODEL, code_commit=commit)
+            name = "data/verification/2026/w06/" + reliability.digest(payload) + ".json.gz"
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch("evidence.referenced", return_value=payload), \
+                    patch.object(corrected, "_retained_profile", return_value=family), \
+                    patch.object(corrected, "engine_files", side_effect=AssertionError("active-root gate")), \
+                    patch.object(corrected, "_retained_corrected_read", return_value=copy.deepcopy(payload)) as old:
+                self.assertEqual(corrected.recorded_inputs(Path(directory), name, 2026, 6), payload)
+                self.assertEqual(old.call_args.kwargs["family"], family)
+            payload["model"] = corrected.CLASSIC_MODEL
+            name = "data/verification/2026/w06/" + reliability.digest(payload) + ".json.gz"
+            with patch("evidence.referenced", return_value=payload), \
+                    patch.object(corrected, "_retained_profile", return_value=family), \
+                    patch.object(corrected, "_retained_corrected_read") as old:
+                with self.assertRaises(reliability.IntegrityError):
+                    corrected.recorded_inputs(ROOT, name, 2026, 6)
+                old.assert_not_called()
+
+    def test_old_completion_and_reproduction_keep_exact_retained_family(self):
+        import partial_week
+        for family, (commit, _, helpers) in corrected._retained_families().items():
+            completion = dict(schema_version="partial-completion-data-integrity-v2",
+                              validator_sha256=helpers["tools/data_integrity_v2.py"])
+            name = "data/verification/partial-completions/fictional.json.gz"
+            with patch.object(partial_week, "_saved", return_value=completion), \
+                    patch.object(corrected, "engine_files", side_effect=AssertionError("active-root gate")), \
+                    patch.object(corrected, "_retained_corrected_read", return_value=[{}, {}, {}]) as old:
+                self.assertEqual(corrected.read_bundle(ROOT, name, {}, now=DI_NOW), ({}, {}, {}))
+                self.assertEqual(old.call_args.kwargs["family"], family)
+                with self.assertRaises(reliability.IntegrityError):
+                    corrected.read_bundle(ROOT, name, {}, now=DI_NOW, _seen={name})
+            with patch.object(corrected, "_retained_profile", return_value=family), \
+                    patch.object(corrected, "_retained_corrected_read", return_value=3) as old:
+                self.assertEqual(corrected._reproduce_game(ROOT, {}, {},
+                    dict(model=corrected.MODEL, code_commit=commit)), 3)
+                self.assertEqual(old.call_args.args[1], "reproduce")
+                self.assertEqual(old.call_args.kwargs["family"], family)
+
+    def test_disabled_classic_and_exact_new_selector_have_no_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "config/phase2.json"
+            common = dict(capture_enabled=False, experimental_recording_enabled=False,
+                          challenger_production_enabled=False)
+            classic = dict(common, production_model="sleeper-matchup-classic-fg-identity-v1")
+            reliability.atomic_json(path, classic)
+            self.assertIs(release_mode.read_phase2(root), False)
+            modern = dict(common, production_model=corrected.CLASSIC_MODEL,
+                          verification_mode=corrected.VALIDATOR, capture_enabled=True)
+            reliability.atomic_json(path, modern)
+            self.assertIs(release_mode.read_phase2(root), True)
+            for bad in (dict(classic, capture_enabled=True), dict(classic, verification_mode=corrected.VALIDATOR),
+                        dict(modern, verification_mode=None), dict(modern, experimental_recording_enabled=True),
+                        dict(modern, production_model="unknown")):
+                reliability.atomic_json(path, bad)
+                with self.assertRaises(ValueError):
+                    release_mode.read_phase2(root)
 
 
 if __name__ == "__main__":

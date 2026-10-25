@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -36,6 +37,7 @@ RETAINED_TREE = "d02544420316557ddf1451a0753c2321e3d2a245"
 RETAINED_SOURCES = {
     RETAINED_SOURCE: RETAINED_TREE,
     "04519b54dfb76dcca7916fe6bf75d7e1711793b6": "10a5cc1539c51c8089fb7ff077447b6d17c4e13e",
+    "67c1c4a202d22b316e719446010ba1b39e66f9e4": "994ed7a0de513b7fed9d513db411eda0016342a9",
 }
 
 
@@ -83,16 +85,20 @@ def _retained_source(source_sha=RETAINED_SOURCE):
     tree(source_tree)
     if not entries or len(entries) > 512 or sum(len(raw) for _, _, raw in entries) > 16 * 1024**2:
         raise IntegrityError("Retained ranked source exceeds supported closure")
-    # Replay the actual previous dispatcher/report/wrapper together. The saved
-    # snapshot plan selector changed; native, scope, engine, clocks and policy
-    # still require the exact shared qualification dependencies below.
+    # Each entry above is an explicit immutable source/tree, not a caller's
+    # manifest. Replay that actual validator family with its own engine and
+    # helpers. Comparing old helpers to a newer installed family would either
+    # reject preserved evidence or validate it under the wrong implementation.
     changed = {"tools/selection_strategies.py", "tools/selection_report.py", "tools/selection_publication.py",
                "tools/phase2_capture.py"}
     from reliability import ENGINE_PATHS
     shared = (set(SOURCE_PATHS) | set(ENGINE_PATHS)) - changed
-    for name, _, raw in entries:
-        if name in shared and (ROOT / name).read_bytes() != raw:
-            raise IntegrityError("Retained ranked qualification dependency changed")
+    retained = {name: raw for name, _, raw in entries}
+    if (any(name not in retained for name in shared)
+            or {name: hashlib.sha256(retained[name]).hexdigest() for name in corrected.V2_PATHS}
+               != corrected.source_hashes(corrected.MODEL)):
+        raise IntegrityError("Retained ranked qualification family changed")
+    installed_before = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in shared}
     with tempfile.TemporaryDirectory(prefix="nfl-retained-ranked-") as directory:
         source = Path(directory)
         for name, _, raw in entries:
@@ -108,7 +114,7 @@ def _retained_source(source_sha=RETAINED_SOURCE):
             raise IntegrityError("Retained ranked tree changed during validation")
         for name, oid, raw in entries:
             if (git("cat-file", "blob", oid) != raw or (source / name).read_bytes() != raw
-                    or name in shared and (ROOT / name).read_bytes() != raw):
+                    or name in shared and hashlib.sha256((ROOT / name).read_bytes()).hexdigest() != installed_before[name]):
                 raise IntegrityError("Retained ranked source changed during validation")
 
 
@@ -150,18 +156,48 @@ try:
 except Exception as error:
  Path(sys.argv[1]).write_text(json.dumps({'error':type(error).__name__,'detail':str(error)[:400]}));sys.exit(2)
 """
-    request = canonical({"root": str(root), "operation": operation, "payload": payload, "at": stamp(at),
-                         "validation_now": stamp(phase2_capture.datetime.now(timezone.utc))})
-    if len(request) > 128 * 1024**2:
-        raise IntegrityError("Retained ranked replay request exceeds supported bound")
+    def evidence_inventory(base):
+        values = {}
+        for lane in ("data", "output/data"):
+            directory = Path(base) / lane
+            if directory.is_symlink():
+                raise IntegrityError("Symlink retained ranked evidence root")
+            for path in sorted(directory.rglob("*")) if directory.exists() else ():
+                if path.is_symlink():
+                    raise IntegrityError("Symlink retained ranked evidence")
+                if path.is_file():
+                    h = hashlib.sha256()
+                    with path.open("rb") as stream:
+                        for block in iter(lambda: stream.read(65536), b""):
+                            h.update(block)
+                    values[path.relative_to(base).as_posix()] = h.hexdigest()
+                elif not path.is_dir():
+                    raise IntegrityError("Nonregular retained ranked evidence")
+        return values
+    original_evidence = evidence_inventory(root) if operation == "completed" else None
     with _retained_source(source_sha) as source:
+        if operation == "completed":
+            # The old validator must see its actual old source AND an
+            # independently copied evidence root. Passing the current source
+            # root here would correctly reject its different engine/helper.
+            for lane in ("data", "output/data"):
+                if (root / lane).exists():
+                    shutil.copytree(root / lane, source / lane)
+            if evidence_inventory(source) != original_evidence or evidence_inventory(root) != original_evidence:
+                raise IntegrityError("Copied retained ranked evidence differs")
+        request = canonical({"root": str(source), "operation": operation, "payload": payload, "at": stamp(at),
+                             "validation_now": stamp(phase2_capture.datetime.now(timezone.utc))})
+        if len(request) > 128 * 1024**2:
+            raise IntegrityError("Retained ranked replay request exceeds supported bound")
         output = source / "retained-result.json"
         result = subprocess.run([sys.executable, "-c", program, str(output)], cwd=source, env=env,
                                 input=request, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
         if not output.is_file():
             raise IntegrityError("Retained ranked child did not produce a supported result")
         with output.open("rb") as handle: raw = handle.read(128 * 1024**2 + 1)
-        if len(raw) > 128 * 1024**2 or _dependency_closure(root) != before:
+        if (len(raw) > 128 * 1024**2 or _dependency_closure(root) != before
+                or operation == "completed" and (
+                    evidence_inventory(root) != original_evidence or evidence_inventory(source) != original_evidence)):
             raise IntegrityError("Retained ranked replay exceeded bound or dependencies changed")
         value = strict_json(raw.decode())
         if result.returncode:

@@ -89,7 +89,7 @@ const functions = names.map(name => {
 }).join('\n');
 const p = { id: 'fictional-player', game_id: 'fictional-game', team: 'AAA', pos: 'WR' };
 const kickoff = '2026-10-15T00:15:00Z';
-const state = { data: { season: 2026, week: 6 }, games: { 'fictional-game': { kickoff, state: 'post', home: 'AAA', away: 'BBB', home_score: 10, away_score: 7 } }, finalOutcomes: new Map(), slp: {}, live: {} };
+const state = { data: { season: 2026, week: 6 }, games: { 'fictional-game': { id: 'fictional-game', kickoff, state: 'post', home: 'AAA', away: 'BBB', home_score: 10, away_score: 7 } }, finalOutcomes: new Map(), slp: {}, live: {} };
 const context = { S: state, HASH64: /^[a-f0-9]{64}$/, GRADING_BASE: 'data/selection-grading/', esc: x => String(x ?? ''), fantasyPts: () => 0, fmt: x => String(x) };
 vm.createContext(context);
 vm.runInContext(functions + '\nthis.ui={finalIdentity,finalIdentityMatches,publicAssetPath,current,slpPlayed,propStatus,gameBetStatus,resBadge};', context);
@@ -415,5 +415,322 @@ const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8')
   assert.doesNotThrow(()=>context.validate(row,'selection-public-report-v6'));
   for(const change of [{schema_version:'unknown'},{schema_version:'selection-decision-v1'},{strategy_rank:0},{strategy_policy_sha256:'b'.repeat(64)},{engine_sha256:'c'.repeat(64)},{cohort:'unsupported'},{collected_at:'2026-11-01T10:03:00Z'},{original_selection_created_at:row.kickoff,recorded_selection_at:row.kickoff},{line_from:'ours'},{strategy_receipt_sha256:null}]) assert.throws(()=>context.validate({...row,...change},'selection-public-report-v6'));
   assert.throws(()=>context.validate(row,'selection-public-report-v5'));
-  console.log('Prospective row reader: 12 schema, source, registration, membership and clock controls passed.');
+  for (const [model,engine] of [['sleeper-matchup-data-integrity-v2','3909c7ac5470970182065576f057e8036f31ad30da13f1ef9999eb1108a183b4'],['sleeper-matchup-classic-data-integrity-v2','16d0ea1eb1ed7378427f3279bb4e1b7907d2370928b3ad30a2ca7dbe0bf6265b']]) {
+    assert.doesNotThrow(()=>context.validate({...row,model_version:model,engine_sha256:engine},'selection-public-report-v6'));
+    assert.throws(()=>context.validate({...row,model_version:model+'-unknown',engine_sha256:engine},'selection-public-report-v6'));
+    assert.throws(()=>context.validate({...row,model_version:model,engine_sha256:'0'.repeat(64)},'selection-public-report-v6'));
+  }
+  assert.throws(()=>context.validate({...row,model_version:'sleeper-matchup-classic-fg-identity-v1',engine_sha256:'9f605590fdd4a23bee01c977e606d964e280c8b567ee4de6e1b5bc9eadd46538'},'selection-public-report-v6'),'legacy Classic native records are not qualified ranked-strategy evidence');
+  console.log('Prospective row reader: 19 schema, source, registration, membership and clock controls passed.');
+}
+
+// Game-market finality is independent of the Phase 2 outcome publication.
+// These are actual application functions with fictional scoreboards/selections.
+// DOM/localStorage and kickoff formatting are presentation-only test doubles;
+// no modern outcome row, native proof or validator success is manufactured.
+{
+  const extract = name => {
+    const value = source.match(new RegExp(`^function ${name}\\([^]*?^\\}`, 'm'))?.[0];
+    assert.ok(value, 'actual ' + name + ' implementation found');
+    return value;
+  };
+  const constant = name => {
+    const key = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const value = source.match(new RegExp('^const ' + key + ' = .+;$', 'm'))?.[0];
+    assert.ok(value, 'actual ' + name + ' declaration found');
+    return value;
+  };
+  const main = { innerHTML: '' }, saved = new Map();
+  const S = { data: { season: 2026, week: 7 }, games: {}, byId: {}, mine: [] };
+  const context = { S,
+    document: { querySelector: selector => { assert.equal(selector, '#main'); return main; } },
+    localStorage: { getItem: key => saved.has(key) ? saved.get(key) : null,
+      setItem: (key, value) => saved.set(key, String(value)) },
+    kickoffText: () => 'Fictional scheduled kickoff' };
+  vm.createContext(context);
+  vm.runInContext(['$', 'esc', 'fmt', 'logo', 'ml'].map(constant).join('\n') + '\n'
+    + ['gameStatus', 'gameBetLabel', 'gameBetStatus', 'resBadge', 'renderMine', 'store'].map(extract).join('\n'), context);
+  let checks = 0;
+  const check = (name, run) => { run(); checks++; };
+  const game = (state = 'in', home = 30, away = 30, detail = 'Live') => ({
+    id: 'fixture-game', state, home: 'QAA', away: 'QAB', home_score: home, away_score: away,
+    detail, kickoff: '2026-10-24T12:00:00Z', offered_total: 99.5 });
+  const pick = (market = 'total', side = 'over', line = 50) => ({
+    kind: 'game', gid: 'fixture-game', market, side, line, odds: null,
+    season: 2026, week: 7, at: 1 });
+  const state = (g, m) => { S.games = { 'fixture-game': g }; S.mine = [m]; return context.gameBetStatus(m); };
+  for (const [score, result] of [[20, 'below'], [25, 'equal'], [30, 'above']]) check('provisional total ' + result, () => {
+    const status = state(game('in', score, score), pick());
+    assert.equal(status.res, result); assert.equal(status.final, false);
+    const badge = context.resBadge(status);
+    assert.ok(badge.includes('CURRENTLY ' + result.toUpperCase())); assert.doesNotMatch(badge, /HIT|MISS|WIN|LOSS|CLEARED|LOST/);
+    context.renderMine(); assert.doesNotMatch(main.innerHTML, /class="entry |All \d+ together/);
+    assert.match(main.innerHTML, /Final wins/);
+  });
+  const finals = [
+    ['total', 'over', 43.5, 24, 20, 'hit'], ['total', 'under', 43.5, 24, 20, 'miss'],
+    ['total', 'over', 44, 24, 20, 'push'], ['total', 'under', 44, 24, 20, 'push'],
+    ['spread', 'QAA', -3.5, 24, 20, 'hit'], ['spread', 'QAB', 3.5, 24, 20, 'miss'],
+    ['spread', 'QAA', -4, 24, 20, 'push'], ['spread', 'QAB', 4, 24, 20, 'push'],
+    ['ml', 'QAA', null, 24, 20, 'hit'], ['ml', 'QAB', null, 24, 20, 'miss'],
+    ['ml', 'QAA', null, 0, 0, 'push'], ['total', 'under', .5, 0, 0, 'hit'],
+    ['spread', 'QAA', 0, 0, 0, 'push'], ['total', 'over', 0, 0, 0, 'push'],
+  ];
+  for (const [market, side, line, home, away, result] of finals) check('final ' + market + ' ' + side + ' ' + line, () => {
+    const status = state(game('post', home, away, 'Final'), pick(market, side, line));
+    assert.equal(status.res, result); assert.equal(status.final, true);
+  });
+  for (const detail of ['Final/OT', 'Final/2OT', ' final ']) check('supported final marker ' + detail, () => {
+    const status = state(game('post', 24, 20, detail), pick('ml', 'QAA', null));
+    assert.equal(status.res, 'hit'); assert.equal(status.final, true);
+  });
+  for (const detail of ['', null, {}, 'Postponed', 'Canceled', 'Suspended']) check('unconfirmed final marker', () => {
+    const status = state(game('post', 24, 20, detail), pick());
+    assert.equal(status.res, 'unresolved'); assert.equal(status.final, false);
+    assert.doesNotThrow(() => context.renderMine());
+  });
+  for (const value of [undefined, null, NaN, Infinity, -Infinity, '0', -1, .5, Number.MAX_SAFE_INTEGER + 1]) {
+    for (const side of ['home', 'away']) check('invalid ' + side + ' score ' + String(value), () => {
+      const g = game('post', 0, 0, 'Final'); g[side + '_score'] = value;
+      const status = state(g, pick()); assert.equal(status.res, 'unresolved'); assert.equal(status.final, false);
+      assert.doesNotThrow(() => context.renderMine()); assert.match(main.innerHTML, /Score unavailable/);
+    });
+  }
+  for (const m of [pick('total', 'QAA'), pick('spread', 'OTHER', 3.5), pick('ml', 'over', null),
+    pick('unknown'), pick(null), pick({}), pick('total', null), pick('ml', {}, null),
+    pick('total', 'over', null), pick('spread', 'QAA', Infinity), pick('total', 'over', '50'),
+    pick('total', 'over', {}), pick('total', '\"><img src=x onerror=fixtureAttack>', 50),
+    pick('total', 'over', '\"><img src=x onerror=fixtureAttack>')]) check('malformed stored game field', () => {
+    const status = state(game('post', 24, 20, 'Final'), m);
+    const original = '  ' + JSON.stringify([m]) + '  '; saved.set('nflprops.mine', original);
+    assert.equal(status.res, 'unresolved'); assert.equal(status.final, false);
+    assert.doesNotThrow(() => context.renderMine());
+    assert.match(main.innerHTML, /UNRESOLVED/); assert.doesNotMatch(main.innerHTML, /onerror=fixtureAttack/);
+    assert.equal(saved.get('nflprops.mine'), original);
+  });
+  check('malformed displayed moneyline odds cannot throw or change a stored selection', () => {
+    const m = pick('ml', 'QAA', null); m.odds = { unsupported: true };
+    state(game('post', 24, 20, 'Final'), m);
+    const original = JSON.stringify([m]); saved.set('nflprops.mine', original);
+    assert.doesNotThrow(() => context.renderMine()); assert.equal(saved.get('nflprops.mine'), original);
+    assert.match(main.innerHTML, /QAA to win/); assert.doesNotMatch(main.innerHTML, /\[object Object\]/);
+  });
+  for (const m of [pick('spread', 'QAA', -3.5), pick('ml', 'QAB', null)]) check('other live markets stay provisional', () => {
+    const status = state(game('in', 24, 20), m); assert.equal(status.final, false); assert.equal(status.res, 'live');
+    assert.doesNotMatch(context.resBadge(status), /HIT|MISS|WIN|LOSS|CLEARED|LOST/);
+  });
+  check('pregame and missing games are not settled', () => {
+    assert.equal(state(game('pre', 24, 20, 'Final'), pick()), null);
+    S.games = {}; assert.equal(context.gameBetStatus(pick()), null);
+  });
+  for (const phase of [undefined, null, 'unknown', {}]) check('unsupported game phase is unresolved', () => {
+    const status = state(game(phase, 24, 20, 'Final'), pick());
+    // Explicit assignment also covers undefined rather than the fixture default.
+    S.games['fixture-game'].state = phase;
+    const actual = context.gameBetStatus(S.mine[0]);
+    assert.equal(actual.res, 'unresolved'); assert.equal(actual.final, false);
+    assert.doesNotThrow(() => context.renderMine()); assert.match(main.innerHTML, /UNRESOLVED/);
+  });
+  check('saved game identity matches explicit string/number IDs only', () => {
+    for (const [stored, actual] of [['123', 123], [123, '123'], [0, '0']]) {
+      const m = pick('ml', 'QAA', null); m.gid = stored;
+      const g = game('post', 24, 20, 'Final'); g.id = actual;
+      S.games = { [String(stored)]: g }; S.mine = [m];
+      const status = context.gameBetStatus(m); assert.equal(status.res, 'hit'); assert.equal(status.final, true);
+    }
+    const m = pick(); const g = game('post', 24, 20, 'Final'); g.id = 'wrong-game';
+    const status = state(g, m); assert.equal(status.res, 'unresolved'); assert.equal(status.final, false);
+    context.renderMine(); assert.match(main.innerHTML, /Saved game identity unavailable/);
+    assert.doesNotMatch(main.innerHTML, /data-rm-game=/);
+  });
+  for (const id of [null, {}, [], '', '   ', Infinity, .5, -1]) check('unusable saved game id is unresolved and retained', () => {
+    const m = pick(); m.gid = id; S.games = {}; S.mine = [m];
+    const original = JSON.stringify([m]); saved.set('nflprops.mine', original);
+    const status = context.gameBetStatus(m); assert.equal(status.res, 'unresolved'); assert.equal(status.final, false);
+    assert.doesNotThrow(() => context.renderMine()); assert.equal(saved.get('nflprops.mine'), original);
+  });
+  check('object identity fields are not coerced into another saved selection', () => {
+    const id = { toString: 'unsupported' };
+    S.games = {}; S.byId = {}; S.mine = [{ ...pick(), gid: id }, { pid: id, season: 2026, week: 7 }];
+    const original = JSON.stringify(S.mine); saved.set('nflprops.mine', original);
+    assert.doesNotThrow(() => context.renderMine()); assert.equal(saved.get('nflprops.mine'), original);
+  });
+  for (const value of [null, 1, 'unsupported', []]) check('unsupported direct saved selection', () => {
+    const status = context.gameBetStatus(value); assert.equal(status.res, 'unresolved'); assert.equal(status.final, false);
+  });
+  for (const mine of [{}, [null], [1], ['unsupported'], [[]]]) check('malformed stored collection is retained', () => {
+    S.mine = mine; const original = JSON.stringify(mine); saved.set('nflprops.mine', original);
+    assert.doesNotThrow(() => context.renderMine()); assert.match(main.innerHTML, /unsupported record/);
+    assert.equal(saved.get('nflprops.mine'), original);
+  });
+  for (const [result, text, final] of [['unresolved', 'UNRESOLVED', false], ['pending', 'PENDING', false],
+    ['dnp', 'DNP', true], ['push', 'PUSH', true]]) check('presentation-only ' + result + ' badge', () => {
+    assert.ok(context.resBadge({ res: result, final, reason: 'Fictional view-model status' }).includes(text));
+  });
+  check('only final individual result flags enter summary counters', () => {
+    const text = extract('renderMine');
+    const names = ['hit', 'miss', 'push', 'dnp', 'unresolved', 'final', 'live'];
+    const declarations = names.map(name => {
+      const value = text.match(new RegExp('^  const ' + name + ' = .+;$', 'm'))?.[0]; assert.ok(value); return value;
+    });
+    const projection = vm.runInContext('(rows)=>{' + declarations.join('\n') + ';return {hit,miss,push,dnp,unresolved,final,live};}', context);
+    // Minimal renderer-status doubles, not source-qualified outcome records.
+    const rows = [['hit', true, 'post'], ['miss', true, 'post'], ['push', true, 'post'], ['dnp', true, 'post'],
+      ['unresolved', false, 'post'], ['hit', false, 'in'], ['miss', false, 'in'], ['push', false, 'in']]
+      .map(([res, final, state]) => ({ st: { res, final }, g: { state } }));
+    assert.equal(JSON.stringify(projection(rows)), JSON.stringify({ hit: 1, miss: 1, push: 1, dnp: 1, unresolved: 1, final: 4, live: 3 }));
+  });
+  check('personal line and legacy bytes survive rendering and score corrections', () => {
+    const m = pick('total', 'over', 50), old = { pid: 'old-fixture-player', key: 'rec', dir: 'under',
+      line: 5.5, season: 2025, week: 1, at: 0 };
+    state(game('post', 20, 20, 'Final'), m); S.mine.push(old);
+    const original = '  ' + JSON.stringify(S.mine) + '  '; saved.set('nflprops.mine', original);
+    assert.equal(context.gameBetStatus(m).res, 'miss'); context.renderMine(); assert.match(main.innerHTML, /value="50"/);
+    S.games['fixture-game'].home_score = 40;
+    assert.equal(context.gameBetStatus(m).res, 'hit'); context.renderMine();
+    assert.equal(m.line, 50); assert.equal(saved.get('nflprops.mine'), original);
+    assert.equal(context.store('mine')[0].line, 50); assert.equal(context.store('mine')[1].line, 5.5);
+    assert.match(main.innerHTML, /Only confirmed final statistical outcomes/);
+  });
+  check('saved zero and half lines remain distinct from current offers', () => {
+    for (const line of [0, 37.5]) {
+      const m = pick('total', 'under', line); state(game('post', 24, 20, 'Final'), m);
+      const original = JSON.stringify([m]); saved.set('nflprops.mine', original); context.renderMine();
+      assert.ok(main.innerHTML.includes('value="' + line + '"'));
+      assert.equal(saved.get('nflprops.mine'), original); assert.notEqual(m.line, S.games['fixture-game'].offered_total);
+    }
+  });
+  check('game finality needs no prop settlement loader or evidence Map', () => {
+    assert.equal(Object.hasOwn(S, 'finalOutcomes'), false);
+    assert.equal('propStatus' in context, false); assert.equal('loadGrading' in context, false);
+  });
+  console.log('Game-market finality: ' + checks + ' scoped source/render/storage checks passed; prop-evidence settlement remains separate.');
+}
+
+// Actual producer projection and actual strict browser reader agree on the
+// four distinct saved-model families. All observations below are fictional;
+// no historical receipt is relabeled or promoted into a different experiment.
+{
+  const python = `import sys,json,runpy
+sys.path.insert(0,'tools')
+import data_integrity_v2 as corrected
+import classic_model_v1 as legacy_classic
+from accuracy_publication import project_accuracy
+t=runpy.run_path('tests/test_accuracy_publication.py')
+reports=[]
+for index,model in enumerate(['original_sleeper_matchup_baseline',corrected.MODEL,legacy_classic.MODEL,corrected.CLASSIC_MODEL]):
+ row=t['observation']('fictional-ui-accuracy-'+str(index),model=model)
+ report=t['evaluation']([row],model=model)
+ reports.append(report)
+print(json.dumps(project_accuracy(reports)))`;
+  const value = JSON.parse(require('node:child_process').execFileSync(process.env.PYTHON || 'python3', ['-B', '-c', python], {cwd:path.resolve(__dirname,'..'),timeout:10000}));
+  const context = {HASH64:/^[a-f0-9]{64}$/}; vm.createContext(context);
+  const categories = source.match(/^const PAPER_CATEGORIES = .+;$/m)?.[0]; assert.ok(categories);
+  const reader = source.match(/function validateForecastAccuracy\([^]*?\n\}/)?.[0]; assert.ok(reader);
+  vm.runInContext(categories+'\n'+reader+'\nthis.validate=validateForecastAccuracy;',context);
+  assert.equal(context.validate(value),value);
+  assert.equal(value.capture_coverage.length,4);
+  const model='sleeper-matchup-classic-data-integrity-v2';
+  const cohort=value.cohorts.find(item=>item.model_version===model); assert.ok(cohort);
+  assert.equal(cohort.engine_sha256,'16d0ea1eb1ed7378427f3279bb4e1b7907d2370928b3ad30a2ca7dbe0bf6265b');
+  assert.equal(cohort.statistic_contract_sha256,'9a08bd9a3f7d2affbe8bee1ba4638fa53a9148d2f04f951f5bfa5fa296081f4e');
+  for (const change of [item=>item.engine_sha256='0'.repeat(64),item=>item.statistic_contract_sha256='0'.repeat(64),item=>item.model_version=model+'-unknown',item=>item.statistic_contract_sha256='53f6016d59fe93f9ce09bc23c472f7e77471e7a80a8b1f75e78b2ab3ed4a258d',item=>item.statistic_contract_sha256='f35596bd8cae04f1ff1a6ee85b8e3e7963e05450c8c040a2bbb6e484db6b068f']) {
+    const broken=structuredClone(value);change(broken.cohorts.find(item=>item.model_version===model));
+    assert.throws(()=>context.validate(broken));
+  }
+  const legacy=value.cohorts.find(item=>item.model_version==='sleeper-matchup-classic-fg-identity-v1'); assert.ok(legacy);
+  assert.equal(legacy.engine_sha256,'9f605590fdd4a23bee01c977e606d964e280c8b567ee4de6e1b5bc9eadd46538');
+  assert.equal(legacy.statistic_contract_sha256,'f35596bd8cae04f1ff1a6ee85b8e3e7963e05450c8c040a2bbb6e484db6b068f');
+  for (const category of ['fpts','anytime_td']) {
+    assert.equal(legacy.categories[category].coverage.opportunities,0);
+    assert.equal(legacy.categories[category].paired.raw.n,0);
+    assert.equal(legacy.categories[category].paired.raw.mae,null);
+  }
+  for (const hash of ['53f6016d59fe93f9ce09bc23c472f7e77471e7a80a8b1f75e78b2ab3ed4a258d','fd024229abd98a661f0ffa53866bf55bf13142e891b2e64ecee94012dcbe1948','9a08bd9a3f7d2affbe8bee1ba4638fa53a9148d2f04f951f5bfa5fa296081f4e']) {
+    const broken=structuredClone(value);broken.cohorts.find(item=>item.model_version===legacy.model_version).statistic_contract_sha256=hash;
+    assert.throws(()=>context.validate(broken),'legacy native evidence cannot borrow a presence-aware statistic contract');
+  }
+  assert.doesNotMatch(JSON.stringify(value),/PRIVATE_CANARY|unapproved\/private/);
+  console.log('Four-model accuracy: producer/reader, exact legacy/presence identities, absent PPR/TD and crossed-contract rejection passed.');
+}
+
+// Actual About interpolation and current-only lineage text. Only the output
+// element and formatting are presentation doubles; no evidence/storage mock
+// establishes qualification or a new original-model observation.
+{
+  const names=['renderAbout','effectivePropForecast'];
+  const functions=names.map(name=>{const match=source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));assert.ok(match);return match[0];}).join('\n');
+  const main={innerHTML:''},bytes=new Map([['nflprops.mine','UNCHANGED_SAVED_LINE_BYTES'],['nflprops.paper-ticket.v1.fixture','UNCHANGED_TICKET_BYTES']]);
+  const S={data:{scoring:{},categories:{},execution_model:{}},forecastScorecard:null};
+  const context={S,$:()=>main,esc:value=>String(value),fmt:value=>String(value),selectedPropForecast:()=>null,
+    localStorage:{getItem:key=>bytes.get(key),setItem:()=>{throw Error('About/fallback must not write device state');}}};
+  vm.createContext(context);vm.runInContext(functions,context);
+  const modern='sleeper-matchup-classic-data-integrity-v2',legacy='sleeper-matchup-classic-fg-identity-v1';
+  for(const model of [modern,legacy]){
+    S.data.execution_model.model=model;context.renderAbout();
+    assert.ok(main.innerHTML.includes('Current baseline model: '+model+'.'));
+    assert.doesNotMatch(main.innerHTML,/\$\{esc\(S\.data\.execution_model/,'template source must not leak into displayed copy');
+    if(model===modern){
+      assert.match(main.innerHTML,/current-only update produces no new original-model observation and does not activate the registered experiment/);
+      assert.doesNotMatch(main.innerHTML,/The original R0 shadow is captured separately under original code/);
+    }else assert.match(main.innerHTML,/The original R0 shadow is captured separately under original code/);
+  }
+  for(const [model,expected] of [[undefined,'R0_FALLBACK'],[null,'R0_FALLBACK'],['original_sleeper_matchup_baseline','R0_FALLBACK'],[legacy,'CURRENT_BASELINE'],[modern,'CURRENT_BASELINE']])
+    assert.equal(context.effectivePropForecast({reference_model:model},{key:'rec',adj:2}).source,expected);
+  for(const model of ['sleeper-matchup-data-integrity-v2',modern+'-unknown','unsupported'])
+    assert.equal(context.effectivePropForecast({reference_model:model},{key:'rec',adj:2}),null,'unsupported weekly fallback cannot become R0');
+  assert.equal(bytes.get('nflprops.mine'),'UNCHANGED_SAVED_LINE_BYTES');assert.equal(bytes.get('nflprops.paper-ticket.v1.fixture'),'UNCHANGED_TICKET_BYTES');
+  console.log('About/current-reference: actual interpolation, route lineage and closed model fallback checks passed.');
+}
+
+// Actual ranking semantic reader, with a wholly fictional document. Descriptor
+// hashes are test inputs; transport/hash-graph validation is not claimed here.
+(async()=>{
+  const names=['selectedRankingPolicy','rankingCanonical','compareSelectedRankingItems','validateSelectedRankings'];
+  const functions=names.map(name=>{const match=source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`));assert.ok(match);return match[0];}).join('\n');
+  const hash='a'.repeat(64),kickoff='2026-11-01T17:00:00Z';
+  const player={id:'fictional-ranking-player',game_id:'fictional-ranking-game',props:[{key:'rec',line:5.5,adj:8,line_from:'dk'}]};
+  const board={season:2026,week:8,players:[player],games:[{id:player.game_id,kickoff}],execution_model:{}};
+  const context={S:{data:board}};vm.createContext(context);vm.runInContext(functions,context);
+  const item={player_id:player.id,game_id:player.game_id,key:'rec',direction:'over',line:5.5,line_from:'dk',adj:8,score:(8-5.5)/1.2,over:1,n:1,
+    forecast_source:'R0_FALLBACK',product:'reference_point',model_version:null,selected_row_sha256:null,selected_row_canonical:null,
+    selected_at:'2026-11-01T10:00:00Z',kickoff_utc:kickoff};
+  const doc={schema_version:'weekly-selected-rankings-v1',policy:null,policy_sha256:null,season:2026,week:8,display_board_sha256:hash,overlay_sha256:hash,
+    prepared_at:'2026-11-01T10:00:00Z',website_source_sha:'b'.repeat(40),picks:{over:[item],under:[]},frozen_proofs:[],
+    fallback_counts:{started_without_selected_record:0,unavailable_forecast:0,expired_before_kickoff:0}};
+  const pointer={schema_version:'weekly-selected-rankings-pointer-v1',path:'weekly-selected-rankings/'+hash+'.json',sha256:hash,bytes:1,
+    display_board_sha256:hash,overlay_sha256:hash,published_at:'2026-11-01T10:01:00Z'};
+  const overlay={boardHash:hash,assetHash:hash,rows:new Map()};
+  const prepare=model=>{
+    player.reference_model=model;board.execution_model.model=model;doc.policy=context.selectedRankingPolicy(board);
+    const classic=['sleeper-matchup-classic-fg-identity-v1','sleeper-matchup-classic-data-integrity-v2'].includes(model);
+    doc.policy_sha256=classic?'d56088350b8adf123816e4162e868aaecfd9e5181cd2f0780bb1053bd135e72f':'e8cebeadaa5debd04c06cad9c19e72485618c0f43f29a9b4553122cfeeed0696';
+    item.forecast_source=classic?'CURRENT_BASELINE':'R0_FALLBACK';item.model_version=classic?model:null;
+  };
+  for(const model of [undefined,'original_sleeper_matchup_baseline','sleeper-matchup-classic-fg-identity-v1','sleeper-matchup-classic-data-integrity-v2']){
+    prepare(model);assert.equal(await context.validateSelectedRankings(doc,pointer,board,overlay),doc);
+  }
+  for(const model of ['sleeper-matchup-data-integrity-v2','sleeper-matchup-classic-data-integrity-v2-unknown']){
+    prepare(undefined);player.reference_model=model;
+    await assert.rejects(context.validateSelectedRankings(doc,pointer,board,overlay),/Ranking source\/clock/,'unsupported weekly reference cannot inherit legacy R0 trust');
+  }
+  console.log('Closed weekly reference: actual reader accepts legacy/Classic identities and rejects Root-presence/unknown aliases.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+// The standalone About consumer needs no global escape helper for closed model
+// names. Unknown values must never become HTML through the model caption.
+{
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8');
+  const about = source.match(/function renderAbout\(\) \{[\s\S]*?\n\}/)?.[0];
+  const assert = require('node:assert/strict');
+  for (const model of ['sleeper-matchup-classic-fg-identity-v1', 'sleeper-matchup-classic-data-integrity-v2', '<img src=x onerror=alert(1)>']) {
+    const main = {innerHTML: ''};
+    vm.runInNewContext(about+'\nrenderAbout();', {
+      S: {data:{execution_model:{model},scoring:{},categories:{}},forecastScorecard:null},
+      $:()=>main,fmt:(value,digits)=>Number(value).toFixed(digits),
+    });
+    if (model.startsWith('sleeper-')) assert.ok(main.innerHTML.includes('Current baseline model: '+model));
+    else assert.ok(!main.innerHTML.includes(model));
+  }
+  console.log('3 closed-model standalone About controls passed.');
 }

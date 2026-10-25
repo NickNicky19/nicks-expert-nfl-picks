@@ -23,6 +23,7 @@ from evidence import read, write
 from reliability import _pairs, ENGINE_PATHS, IntegrityError, canonical, digest, engine_hashes, load_json, stamp, utc
 from scorecard import identity
 import data_integrity_v2 as corrected
+import classic_model_v1 as classic
 import accuracy_publication
 import selection_strategies
 from selection_report import (PATTERNS, RESULTS, _create_file, _tally, build_decisions, run_report, summarize, weekday)
@@ -162,7 +163,7 @@ def _publication_helpers():
         parts.append(("strategy-row-context", _strategy_row_context()))
     except (OSError, ValueError, subprocess.CalledProcessError):
         return None  # Unsupported memo closure; complete validation still runs.
-    for name in (__name__, "selection_report", "selection_strategies", "accuracy_publication", "scorecard", "reliability", "evidence", "data_integrity_v2", "grade", "scoring"):
+    for name in (__name__, "selection_report", "selection_strategies", "accuracy_publication", "scorecard", "reliability", "evidence", "data_integrity_v2", "classic_model_v1", "grade", "scoring"):
         module = sys.modules.get(name)
         try:
             path = Path(module.__file__).resolve()
@@ -256,9 +257,10 @@ def _record_fields(record):
             if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
                 raise IntegrityError("Malformed public reason/clock list")
         elif key == "engine_files":
-            corrected_engine = (record.get("model_version") == corrected.MODEL
-                                and value == corrected.V2_SOURCE_SHA256)
-            if not isinstance(value, dict) or set(value) - set(ENGINE_PATHS) and not corrected_engine:
+            corrected_engine = (record.get("model_version") in corrected.PRESENCE_MODELS
+                                and value == corrected.source_hashes(record["model_version"]))
+            classic_engine = record.get("model_version") == classic.MODEL and value == classic.ENGINE
+            if not isinstance(value, dict) or set(value) - set(ENGINE_PATHS) and not (corrected_engine or classic_engine):
                 raise IntegrityError("Unrecognized engine hash mapping")
             for reference in value.values():
                 _hash(reference)
@@ -270,8 +272,9 @@ def _record_fields(record):
 
 def _strategy_row_context():
     """Private immutable values, freshly derived once per bounded row batch."""
-    return (digest(corrected.legacy_engine_hashes()), digest(corrected.V2_SOURCE_SHA256),
-            digest(selection_strategies.policy()))
+    engines = {"original_sleeper_matchup_baseline": digest(corrected.legacy_engine_hashes())}
+    engines.update({model: digest(corrected.source_hashes(model)) for model in corrected.PRESENCE_MODELS})
+    return engines, digest(selection_strategies.policy())
 
 
 def _row(row, *, extended=False, _strategy_context=None):
@@ -284,9 +287,8 @@ def _row(row, *, extended=False, _strategy_context=None):
         raise IntegrityError("Strategy row outside its explicit enclosing contract")
     result = _project(row, ROW_FIELDS | STRATEGY_FIELDS if modern else ROW_FIELDS)
     if modern:
-        legacy_engine, corrected_engine, strategy_policy = (_strategy_row_context()
+        engines, strategy_policy = (_strategy_row_context()
             if _strategy_context is None else _strategy_context)
-        engines = {"original_sleeper_matchup_baseline": legacy_engine, corrected.MODEL: corrected_engine}
         if (result.get("strategy_version") != "ranked-selection-policy-v1" or result.get("strategy_policy_sha256") != strategy_policy
                 or result.get("cohort") not in selection_strategies.STRATEGIES
                 or result.get("model_version") not in engines or result.get("engine_sha256") != engines[result["model_version"]]
@@ -1143,7 +1145,9 @@ def _ledger(payload, policy, hashes, observed_at):
     rules = {rule["id"]: rule for rule in policy["checkpoints"]}
     for row in payload["rows"]:
         expected_engine = (hashes if row.get("model_version") == policy["model"] else
-                           corrected.V2_SOURCE_SHA256 if row.get("model_version") == corrected.MODEL else None)
+                           corrected.source_hashes(row["model_version"])
+                           if row.get("model_version") in corrected.PRESENCE_MODELS else
+                           classic.ENGINE if row.get("model_version") == classic.MODEL else None)
         if set(row) - DECISION_FIELDS:
             raise IntegrityError("Nonpublic field in persistent decision ledger")
         _safe_value(row)

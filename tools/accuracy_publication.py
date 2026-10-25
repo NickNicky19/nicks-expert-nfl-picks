@@ -12,9 +12,10 @@ from reliability import IntegrityError, canonical, digest
 from scorecard import (PICKABLE_STATS, _paired_metrics, _point_metrics, _sample_context, _td_metrics,
                        probability_scores, descriptive_contract, identity)
 import data_integrity_v2 as corrected
+import classic_model_v1 as classic
 
 VERSION = "forecast-accuracy-public-v1"
-MODELS = frozenset(("original_sleeper_matchup_baseline", "sleeper-matchup-data-integrity-v2"))
+MODELS = frozenset(("original_sleeper_matchup_baseline", classic.MODEL, *corrected.PRESENCE_MODELS))
 CATEGORIES = PICKABLE_STATS | {"fpts", "anytime_td"}
 PROVENANCE = frozenset(("missing", "unknown_unverified", "identity_quarantined",
                         "conflicting_outcome_evidence", "saved_cache_descriptive_regrade",
@@ -220,7 +221,7 @@ def project_accuracy(reports):
                         metrics = _td_metrics(group_td)
                         value["probability"][basis] = {k: metrics[k] for k in TD_FIELDS}
                 categories[category] = value
-            cohorts.append({"model_version": model, "engine_sha256": next(iter(engines), digest(corrected.V2_SOURCE_SHA256 if model == corrected.MODEL else corrected.legacy_engine_hashes())),
+            cohorts.append({"model_version": model, "engine_sha256": next(iter(engines), digest(corrected.source_hashes(model) if model in corrected.PRESENCE_MODELS else classic.ENGINE if model == classic.MODEL else corrected.legacy_engine_hashes())),
                             "period": "cumulative", "forecast_provenance": "original_recorded_pregame_observation",
                             "outcome_provenance": provenance, "statistic_contract_sha256": digest(report["statistic_contract"]),
                             "source_report_sha256": digest(report), "coverage": _sample_context(members),
@@ -241,8 +242,8 @@ def validate_accuracy(value):
         raise IntegrityError("Unsupported public accuracy cohort population")
     seen = set()
     import re
-    engines = {"original_sleeper_matchup_baseline": digest(corrected.legacy_engine_hashes()),
-               corrected.MODEL: digest(corrected.V2_SOURCE_SHA256)}
+    engines = {"original_sleeper_matchup_baseline": digest(corrected.legacy_engine_hashes()), classic.MODEL: digest(classic.ENGINE),
+               **{model: digest(corrected.source_hashes(model)) for model in corrected.PRESENCE_MODELS}}
     captures = value["capture_coverage"]
     if not isinstance(captures, list) or len(captures) > len(MODELS):
         raise IntegrityError("Invalid capture coverage models")
@@ -279,7 +280,7 @@ def validate_accuracy(value):
         _sample(cohort["coverage"])
         if cohort["engine_sha256"] != engines[cohort["model_version"]]:
             raise IntegrityError("Public accuracy engine is not a supported closed source")
-        if cohort["model_version"] not in capture_models or cohort["statistic_contract_sha256"] != digest(descriptive_contract(presence_aware=cohort["model_version"] == corrected.MODEL)):
+        if cohort["model_version"] not in capture_models or cohort["statistic_contract_sha256"] != digest(descriptive_contract(presence_aware=cohort["model_version"] in corrected.PRESENCE_MODELS, model=cohort["model_version"] if cohort["model_version"] in (*corrected.PRESENCE_MODELS, classic.MODEL) else None)):
             raise IntegrityError("Public accuracy statistic/source contract differs")
         if not isinstance(cohort["categories"], dict) or set(cohort["categories"]) != CATEGORIES:
             raise IntegrityError("Public accuracy categories differ")

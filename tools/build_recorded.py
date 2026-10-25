@@ -27,7 +27,7 @@ def record_build(root=ROOT, run=None, *, mode="live", model="original_sleeper_ma
     root = Path(root)
     started = datetime.now(timezone.utc)
     hashes = engine_hashes(root, version=model)
-    modern = model == corrected.MODEL
+    modern = model in corrected.PRESENCE_MODELS
     previous_path = root / "output/data/week.json"
     previous = load_json(previous_path) if previous_path.exists() else {}
     pointer_path = root / "output/data/matchup-proof.json"
@@ -123,9 +123,9 @@ def record_build(root=ROOT, run=None, *, mode="live", model="original_sleeper_ma
                "offer_observation": observation, "projection_metadata": projection_metadata,
                "game_status": game_status, "source_requests": source_requests}
     if modern:
-        payload.update(schema_version=corrected.INPUTS, model=corrected.MODEL,
+        payload.update(schema_version=corrected.INPUTS, model=model,
                        presence_contract=corrected.PRESENCE,
-                       code_commit=corrected.recording_source(),
+                       code_commit=corrected.recording_source(model=model),
                        projection_input_components=projection_input_components)
     path = write(root, "verification", payload)
     name = path.relative_to(root).as_posix()
@@ -146,7 +146,7 @@ def record_build(root=ROOT, run=None, *, mode="live", model="original_sleeper_ma
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--refresh-all", action="store_true")
-    parser.add_argument("--model", choices=("original_sleeper_matchup_baseline", corrected.MODEL),
+    parser.add_argument("--model", choices=("original_sleeper_matchup_baseline", *corrected.PRESENCE_MODELS),
                         default="original_sleeper_matchup_baseline")
     args = parser.parse_args()
     record_build(run=lambda: build.run(refresh_all=args.refresh_all), model=args.model)

@@ -35,6 +35,23 @@ def setup(*, population=False):
     return data, payload, policy
 
 
+def classic_saved_fixture():
+    """Wholly fictional saved-format controls, never a qualified live capture."""
+    import classic_model_v1 as classic
+    data, payload, policy = setup()
+    at = NOW + timedelta(days=30)
+    kickoff = stamp(at + timedelta(hours=2))
+    data["generated_at"] = stamp(at-timedelta(minutes=1))
+    data["games"][0]["kickoff"] = kickoff
+    payload.update(schema_version=classic.CAPTURE, model=classic.MODEL, captured_at=stamp(at),
+                   forecast_generated_at=data["generated_at"], input_sha256=digest(data),
+                   engine_files=dict(classic.ENGINE), engine_sha256=digest(classic.ENGINE),
+                   execution_contract=classic.execution_contract(),
+                   execution_contract_sha256=digest(classic.execution_contract()), code_commit=classic.SCORING_SOURCE)
+    for row in payload["rows"]: row["kickoff"] = kickoff
+    return data, payload, policy, at
+
+
 def fictional_week_population(week=5):
     """A source-valid full fictional slate; never a bare self-certified document."""
     import test_week_population as population_fixtures
@@ -1377,6 +1394,195 @@ class DescriptiveForecastAndProbabilityTests(unittest.TestCase):
         self.assertEqual(sum(b["n"] for b in report["calibration"]), 4)
         self.assertEqual(report["calibration"][-1]["n"], 2)
         self.assertEqual(json.loads(canonical(report))["infinite_log_loss_count"], 2)
+
+
+class ClosedPresenceConsumerTests(unittest.TestCase):
+    def test_saved_old_presence_outcomes_are_read_under_their_own_source(self):
+        import build
+        from reliability import IntegrityError
+        data, native, policy = setup(population=True)
+        data["games"][0].update(state="post", detail="Final")
+        pairs, _ = paired_forecasts([native], policy, {"test": "fixture"})
+        raw = [{"player_id": "fictional-1", "team": "AAA", "opponent": "BBB",
+                "stats": {"gp": 1, "rec": 0}}]
+        entries = build.trim_stats(raw, source_context={"adapter": "sleeper-week-stats-v1", "season": 2026, "week": 5})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / "output/data").mkdir(parents=True)
+            (root / "output/data/week.json").write_text(json.dumps(data))
+            path = root / "data/cache/stats_2026_05.json"; path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(entries)); original = path.read_bytes()
+            snapshot = read(snapshot_outcomes(root, pairs, NOW + timedelta(hours=5))[0])
+            self.assertEqual(corrected.statistic_model(snapshot["statistic_contract"]), corrected.MODEL)
+            before = copy.deepcopy(snapshot)
+            result = next(iter(latest_outcomes([copy.deepcopy(snapshot)]).values()))
+            self.assertEqual((result["status"], result["actual"]), ("resolved", 0))
+            self.assertEqual(snapshot, before); self.assertEqual(path.read_bytes(), original)
+            bad = copy.deepcopy(snapshot); bad["statistic_contract"]["extra"] = "unsupported"
+            with self.assertRaises(IntegrityError):
+                latest_outcomes([bad])
+
+    def test_exact_old_new_contracts_are_not_active_default_or_prefix_matches(self):
+        from reliability import IntegrityError
+        for model in corrected.PRESENCE_MODELS:
+            for descriptive in (False, True):
+                contract = corrected.statistic_contract(model=model, descriptive=descriptive)
+                self.assertEqual(corrected.statistic_model(contract, descriptive=descriptive), model)
+                bad = copy.deepcopy(contract); bad["extra"] = "unapproved"
+                with self.assertRaises(IntegrityError):
+                    corrected.statistic_model(bad, descriptive=descriptive)
+                bad = copy.deepcopy(contract); bad["source_files"]["pull/build.py"] = "0"*64
+                with self.assertRaises(IntegrityError):
+                    corrected.statistic_model(bad, descriptive=descriptive)
+                if descriptive:
+                    bad = copy.deepcopy(contract); bad["ppr_weights"]["rec"] = True
+                    with self.assertRaises(IntegrityError):
+                        corrected.statistic_model(bad, descriptive=True)
+
+    def test_descriptive_forecasts_accept_each_exact_source_without_relabelling(self):
+        from scorecard import descriptive_forecasts
+        data, original, _ = setup()
+        for model in corrected.PRESENCE_MODELS:
+            hashes = corrected.source_hashes(model)
+            payload = copy.deepcopy(original)
+            payload.update(schema_version=corrected.NATIVE, model=model, presence_contract=corrected.PRESENCE,
+                           engine_files=hashes, engine_sha256=digest(hashes))
+            before = copy.deepcopy(payload)
+            first, pairs, _ = descriptive_forecasts([payload], hashes, NOW, model_version=model)
+            self.assertTrue(first); self.assertTrue(pairs); self.assertEqual(payload, before)
+            self.assertEqual({r["model_version"] for r in first.values()}, {model})
+            registered, coverage = paired_forecasts([payload], {"baseline":"original_sleeper_matchup_baseline"},
+                                                    {"test":"fixture"})
+            self.assertFalse(registered)
+            self.assertEqual(coverage["excluded"]["corrected_model_outside_registered_experiment"], len(payload["rows"]))
+
+    def test_real_cache_precedence_and_source_labels_keep_old_files(self):
+        import build
+        from scorecard import identity
+        data, native, policy = setup(population=True)
+        data["games"][0].update(state="post", detail="Final")
+        pairs, _ = paired_forecasts([native], policy, {"test":"fixture"})
+        raw = [{"player_id":"fictional-1", "team":"AAA", "opponent":"BBB", "stats":{"gp":1,"rec":0}}]
+        presence = build.trim_stats(raw, source_context={"adapter":"sleeper-week-stats-v1","season":2026,"week":5})
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); (root/"output/data").mkdir(parents=True)
+            (root/"output/data/week.json").write_text(json.dumps(data))
+            paths = [root/"data/cache/stat-keys-presence-fgm-v2/stats_2026_05.json",
+                     root/"data/cache/stat-keys-fgm-v1/stats_2026_05.json", root/"data/cache/stats_2026_05.json"]
+            old = {}
+            for path, value in zip(paths, [presence, {"fictional-1":{"team":"AAA","stats":{"gp":1,"rec":9}}},
+                                                   {"fictional-1":{"team":"AAA","stats":{"gp":1,"rec":7}}}]):
+                path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(value)); old[path]=path.read_bytes()
+            saved=[]
+            for i, expected in enumerate((0,9,7)):
+                snapshot=read(snapshot_outcomes(root,pairs,NOW+timedelta(hours=5))[0]); saved.append(snapshot)
+                self.assertEqual(snapshot["cache_path"], paths[i].relative_to(root).as_posix())
+                self.assertEqual(next(iter(latest_outcomes([snapshot]).values()))["actual"],expected)
+                if i==0:
+                    self.assertEqual(corrected.statistic_model(snapshot["statistic_contract"]),corrected.CLASSIC_MODEL)
+                else:
+                    self.assertEqual(snapshot["schema_version"],"forecast-outcomes-v1")
+                    self.assertNotIn("statistic_contract",snapshot)
+                for remaining in paths[i:]: self.assertEqual(remaining.read_bytes(),old[remaining])
+                if i<2: paths[i].unlink()  # Disposable missing-cache control; prior receipts remain.
+            self.assertEqual(len(saved),3)
+
+    def test_new_namespace_does_not_authenticate_a_bare_legacy_stats_row(self):
+        data, native, policy = setup(population=True)
+        data["games"][0].update(state="post",detail="Final")
+        pairs,_=paired_forecasts([native],policy,{"test":"fixture"})
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); (root/"output/data").mkdir(parents=True)
+            (root/"output/data/week.json").write_text(json.dumps(data))
+            path=root/"data/cache/stat-keys-presence-fgm-v2/stats_2026_05.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"fictional-1":{"team":"AAA","stats":{"gp":1}}}))
+            before=path.read_bytes(); snapshot=read(snapshot_outcomes(root,pairs,NOW+timedelta(hours=5))[0])
+            outcome=next(iter(latest_outcomes([snapshot]).values()))
+            self.assertEqual(path.read_bytes(),before)
+            self.assertEqual(outcome["status"],"unresolved");self.assertIsNone(outcome["actual"])
+
+
+class SavedClassicNativeTests(unittest.TestCase):
+    def test_saved_ppr_and_td_count_keep_values_without_inventing_components(self):
+        import classic_model_v1 as classic
+        from reliability import make_payload
+        from scorecard import descriptive_forecasts, evaluate_descriptive, identity
+        data, native, _, at = classic_saved_fixture()
+        data["players"][0]["props"] = [
+            {"key":"fpts","proj":0,"adj":0,"line":.5,"line_from":"ours","lean":"under"},
+            {"key":"anytime_td","proj":.4,"adj":None,"line":.5,"line_from":"ours","lean":None}]
+        data["picks"] = {"over":[],"under":[]}
+        native["input_sha256"] = digest(data)
+        native["rows"] = make_payload(data,at,classic.ENGINE,"live")["rows"]
+        original = copy.deepcopy(native)
+        self.assertEqual(classic.native_contract(native),classic.ENGINE)
+        first,pairs,_=descriptive_forecasts([native],classic.ENGINE,at,model_version=classic.MODEL)
+        outcomes={key:{**{name:row[name]for name in ("season","week","game_id","player_id","category","team","kickoff")},
+                       "status":"resolved","actual":2 if row["category"]=="fpts" else 1}
+                  for key,row in first.items()}
+        report=evaluate_descriptive(first,pairs,{},outcomes,model_version=classic.MODEL)
+        self.assertEqual(native,original)
+        ppr=next(row for row in report["rows"]if row["category"]=="fpts")
+        self.assertEqual((ppr["raw_projection"],ppr["adjusted_projection"]),(0,0))
+        self.assertEqual(ppr["original_board"]["status"],"missing_exact_original_board")
+        self.assertIsNone(ppr["provider_ppr"])
+        self.assertEqual(report["categories"]["fpts"]["paired"]["raw"]["n"],1)
+        self.assertEqual(report["categories"]["fpts"]["direct_provider_forecast_coverage"],0)
+        td=report["td_rows"][0]
+        self.assertEqual(td["raw_projection"],.4)
+        self.assertEqual(td["probability"],round(classic.scoring().td_probability(.4),3))
+        self.assertEqual(td["probability_provenance"],"rederived_from_original_count_retained_formula")
+        self.assertEqual(td["original_board"]["status"],"missing_exact_original_board")
+        self.assertIsNone(next(row for row in native["rows"]if row["category"]=="anytime_td")["probability"])
+
+    def test_closed_native_preserves_exact_zero_membership_and_original_clocks(self):
+        import classic_model_v1 as classic
+        _, native, _, at = classic_saved_fixture()
+        native["rows"][0]["raw_projection"] = 0
+        before = copy.deepcopy(native)
+        self.assertEqual(classic.native_contract(native), classic.ENGINE)
+        self.assertEqual(native, before)
+        self.assertEqual(native["rows"][0]["raw_projection"], 0)
+        self.assertEqual(native["captured_at"], stamp(at))
+        descriptor = classic.execution_contract(); descriptor["engine_sha256"]["pull/build.py"] = "0"*64
+        self.assertNotEqual(descriptor, classic.execution_contract())
+
+    def test_crossed_unknown_and_self_consistently_rehashed_execution_reject(self):
+        import classic_model_v1 as classic
+        _, native, _, _ = classic_saved_fixture()
+        cases = [dict(native, model=corrected.CLASSIC_MODEL),dict(native,schema_version=corrected.NATIVE),
+                 dict(native,code_commit=None),dict(native,engine_files=corrected.source_hashes(corrected.CLASSIC_MODEL)),
+                 dict(native,execution_contract_sha256="0"*64),dict(native,unapproved="extra")]
+        crossed=copy.deepcopy(native);crossed["execution_contract"]["model"]=corrected.CLASSIC_MODEL
+        crossed["execution_contract_sha256"]=digest(crossed["execution_contract"]);cases.append(crossed)
+        for invalid in cases:
+            with self.subTest(invalid=list(invalid)), self.assertRaises(ValueError):classic.native_contract(invalid)
+
+    def test_row_types_duplicates_and_cutoff_reject_without_fallback(self):
+        import classic_model_v1 as classic
+        _, native, _, _ = classic_saved_fixture()
+        for field,value in [("raw_projection",False),("line",float("nan")),("top_over",1),
+                            ("probability",.5),("source_timestamps_verified",True),("category","unknown"),
+                            ("kickoff",native["captured_at"])]:
+            invalid=copy.deepcopy(native);invalid["rows"][0][field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError):classic.native_contract(invalid)
+        invalid=copy.deepcopy(native);invalid["rows"].append(copy.deepcopy(native["rows"][0]))
+        with self.assertRaises(ValueError):classic.native_contract(invalid)
+        invalid=copy.deepcopy(native);invalid["rows"][0].update(raw_projection=None,adjusted_projection=None)
+        with self.assertRaises(ValueError):classic.native_contract(invalid)
+
+    def test_saved_classic_is_descriptive_and_never_a_registered_primary(self):
+        import classic_model_v1 as classic
+        from scorecard import descriptive_forecasts
+        _,native,policy,at=classic_saved_fixture();before=copy.deepcopy(native)
+        first,pairs,_=descriptive_forecasts([native],classic.ENGINE,at,model_version=classic.MODEL)
+        self.assertTrue(first);self.assertTrue(pairs);self.assertEqual(native,before)
+        self.assertEqual({row["model_version"]for row in first.values()},{classic.MODEL})
+        primary,coverage=paired_forecasts([native],policy,{"test":"fixture"})
+        self.assertFalse(primary)
+        self.assertEqual(coverage["excluded"]["corrected_model_outside_registered_experiment"],len(native["rows"]))
+        with self.assertRaises(ValueError):corrected.native_contract(native)
+        self.assertNotIn(classic.MODEL,corrected.PRESENCE_MODELS)
 
 
 if __name__ == "__main__":

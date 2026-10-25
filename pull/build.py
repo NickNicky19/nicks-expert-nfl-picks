@@ -25,6 +25,8 @@ import sources
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / "data" / "cache"
+# Neither the historical flat cache nor Classic V1 authenticates presence/FGM.
+STATS_CACHE_VERSION = "stat-keys-presence-fgm-v2"
 OUT = ROOT / "output" / "data"
 ARCHIVE = OUT / "archive"
 WEEKS = OUT / "weeks"
@@ -48,6 +50,8 @@ def iso(dt):
 
 
 def dump(path, data):
+    if path.name == "track_record.json":
+        grade.preserve_issued_record(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, separators=(",", ":"), ensure_ascii=False))
 
@@ -76,7 +80,7 @@ def trim_stats(rows, *, source_context=None):
 
 def week_stats(season, week, refresh):
     """Weekly stats, cached on disk. Recent weeks are refetched each run to pick up stat corrections."""
-    path = CACHE / f"stats_{season}_{week:02d}.json"
+    path = CACHE / STATS_CACHE_VERSION / f"stats_{season}_{week:02d}.json"
     if path.exists() and not refresh:
         return json.loads(path.read_text())
     data = trim_stats(sources.week_stats(season, week), source_context={
@@ -122,6 +126,18 @@ def load_players():
     return keep, kdef
 
 
+def confirmed_final(game):
+    """A post flag alone also covers cancellations; require a completed past game."""
+    if game.get("state") != "post" or game.get("completed") is not True:
+        return False
+    try:
+        kickoff = datetime.fromisoformat(game["kickoff"].replace("Z", "+00:00"))
+        return kickoff.tzinfo is not None and kickoff < now_utc()
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
+
 def load_games(season, week):
     games = []
     for e in sources.scoreboard(season, week).get("events", []):
@@ -133,6 +149,7 @@ def load_games(season, week):
             "id": e["id"],
             "kickoff": e["date"],
             "state": status["state"],  # pre, in, post
+            "completed": status.get("completed"),
             "detail": status.get("shortDetail"),
             "home": sources.team_code(sides["home"]["team"]["abbreviation"]),
             "away": sources.team_code(sides["away"]["team"]["abbreviation"]),
@@ -554,7 +571,7 @@ def past_week(season, week, stats):
                      "game_id": gid, "st": {k: v for k, v in e["stats"].items() if k in keep or k == "_presence"}}
         if who.get("espn_id"):
             rows[pid]["espn_id"] = str(who["espn_id"])
-    finished = [g["id"] for g in games if g["state"] == "post"]
+    finished = [g["id"] for g in games if confirmed_final(g)]
     try:
         lines = books.week_lines(season, week, finished, {pid: {"name": r["name"], "team": r["team"], "espn_id": r.get("espn_id")} for pid, r in rows.items()})
     except Exception as err:
@@ -774,9 +791,9 @@ def run(refresh_all=False):
     def scores_for(s_, w):
         if (s_, w) not in finals:
             board = games if (s_, w) == (season, week) else load_games(s_, w)
-            finals[(s_, w)] = {g["id"]: (g["home_score"], g["away_score"]) for g in board if g["state"] == "post"}
+            finals[(s_, w)] = {g["id"]: (g["home_score"], g["away_score"]) for g in board if confirmed_final(g)}
         return finals[(s_, w)]
-    record = grade.grade_all(ARCHIVE, stats_for, current=(season, week), final_games={g["id"] for g in games if g["state"] == "post"},
+    record = grade.grade_all(ARCHIVE, stats_for, current=(season, week), final_games={g["id"] for g in games if confirmed_final(g)},
                              scores_for=scores_for)
     dump(OUT / "track_record.json", record)
     print(f"{len(entries)} players, {len(games)} games, {len(picks['over'])} top overs, {len(picks['under'])} top unders")

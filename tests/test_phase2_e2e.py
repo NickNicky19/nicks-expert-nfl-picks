@@ -2507,6 +2507,24 @@ class PreparedPublicationTests(unittest.TestCase):
         for options in ({"partitioned": False}, {}, {"encoding": "gzip"}, {"encoding": "gzip", "shared": True}):
             yield selection_publication.prepare_publication(base, *values[:4], self.AT, **options)
 
+    def test_classic_source_helper_mutation_cannot_inherit_prepared_trust(self):
+        import classic_model_v1 as classic
+        with tempfile.TemporaryDirectory() as directory:
+            root, values = self.projection(directory); base = root / "classic-helper-dependency"
+            pointer = selection_publication.prepare_publication(base, *values[:4], self.AT, encoding="gzip", shared=True)
+            checked = {}; original = selection_publication._validate_legacy_publication
+            with patch.object(selection_publication, "_validate_legacy_publication", wraps=original) as complete:
+                expected = validate_publication(base, pointer, _checked=checked)
+                self.assertEqual(validate_publication(base, pointer, _checked=checked), expected)
+                self.assertEqual(complete.call_count, 1)
+                with patch.dict(classic.ENGINE, {"pull/scoring.py": "0" * 64}):
+                    # This Original-model report remains semantically valid;
+                    # changed helper dependencies must still force fresh work.
+                    self.assertEqual(validate_publication(base, pointer, _checked=checked), expected)
+                    self.assertEqual(complete.call_count, 2)
+                self.assertEqual(validate_publication(base, pointer, _checked=checked), expected)
+                self.assertGreaterEqual(complete.call_count, 2)
+
     def test_legacy_reader_stays_uncached_without_ranked_dependency_closure(self):
         with tempfile.TemporaryDirectory() as directory:
             root, values = self.projection(directory); base = root / "legacy-no-ranked-git"
@@ -3390,9 +3408,12 @@ class CorrectedCheckpointPersistenceTests(unittest.TestCase):
             at = DI_NOW + timedelta(minutes=31)  # Genuine fictional 90m checkpoint, no rewritten capture.
             pointer = publish_selection_report(root, at)
             _, rows, _ = selection_publication.publication_contents(root / "output/data/selection-grading", pointer)
-            due = [r for r in rows if r["model_version"] == corrected.MODEL and r["checkpoint"] == "90m"]
+            actual_model = corrected.active_model(root)
+            self.assertEqual(read(native)["model"], actual_model)
+            self.assertEqual(read(native)["engine_files"], corrected.source_hashes(actual_model))
+            due = [r for r in rows if r["model_version"] == actual_model and r["checkpoint"] == "90m"]
             self.assertTrue(due)
-            self.assertTrue(all(r["engine_sha256"] == digest(corrected.V2_SOURCE_SHA256) for r in due))
+            self.assertTrue(all(r["engine_sha256"] == digest(corrected.source_hashes(actual_model)) for r in due))
             ledgers = list((root / "data/verification/selection-grading/decisions").rglob("*.json.gz"))
             self.assertTrue(ledgers)
             for p in ledgers:
@@ -3646,6 +3667,97 @@ class WeeklyRankedPagesGraphTests(unittest.TestCase):
                 with patch.object(phase2_capture, "_copy_weekly_asset", side_effect=race), self.assertRaises(IntegrityError):
                     phase2_capture.stage_pages(root, Path(directory) / "raced")
                 self.assertEqual(changes, [True]); self.assertEqual((output / "data/weekly-selected-rankings.json").read_bytes(), alias)
+
+
+class CurrentProductionCompositionBoundaryTests(unittest.TestCase):
+    """Fictional integration controls; not a source-qualified capture or timing run."""
+
+    def test_current_reference_annotation_preserves_frozen_values_and_origins(self):
+        import partial_week
+        for origin in (point_challenger.BASELINE_MODEL, "sleeper-matchup-classic-fg-identity-v1", corrected.MODEL):
+            with self.subTest(origin=origin), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for name in corrected.V2_PATHS:
+                    path = root / name; path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes((ROOT / name).read_bytes())
+                games = [{"id":"frozen","state":"in","kickoff":"2026-11-06T11:00:00Z",
+                          "ours":{"total":40},"reference_model":origin},
+                         {"id":"future","state":"pre","kickoff":"2026-11-06T15:00:00Z"}]
+                players = [{"id":"saved","game_id":"frozen","reference_model":origin,"team":"AAA","opp":"BBB","pos":"WR",
+                            "props":[{"key":"rec","proj":None,"adj":4,"line":5.5,"lean":"under"}]},
+                           {"id":"new","game_id":"future","team":"AAA","opp":"BBB","pos":"WR","props":[{"key":"rec","proj":0,"adj":0}]}]
+                board = {"season":2026,"week":9,"generated_at":"2026-11-06T12:00:00Z",
+                         "games":games,"players":players,"picks":{"over":[],"under":[{"player_id":"saved","game_id":"frozen","key":"rec","line":5.5}]}}
+                previous = copy.deepcopy(board)
+                previous["execution_model"] = {"model":origin}
+                frozen = copy.deepcopy(players[0]); picks = copy.deepcopy(board["picks"])
+                frozen_contract = partial_week.game_contract(previous, "frozen")
+                atomic_json(root / "output/data/week.json", board)
+                atomic_json(root / "output/data/meta.json", {"season":2026,"week":9,"generated_at":board["generated_at"]})
+                phase2_capture._bind_current_website_reference(root, previous, {"production_model":corrected.CLASSIC_MODEL})
+                actual = load_json(root / "output/data/week.json")
+                self.assertEqual(actual["players"][0], frozen)
+                self.assertEqual(actual["players"][1]["props"], players[1]["props"])
+                self.assertEqual(actual["players"][1]["reference_model"], corrected.CLASSIC_MODEL)
+                self.assertEqual(actual["games"][0], games[0])
+                self.assertEqual(actual["execution_model"]["model"], corrected.CLASSIC_MODEL)
+                self.assertEqual(actual["execution_model"]["engine_sha256"], corrected.source_hashes(corrected.CLASSIC_MODEL))
+                self.assertEqual(actual["picks"]["under"][0], picks["under"][0])
+                self.assertEqual(partial_week.game_contract(actual, "frozen"), frozen_contract)
+                # An already present source label is frozen as well.
+                for value in (previous, actual):
+                    value["picks"]["under"][0]["reference_model"] = origin
+                atomic_json(root / "output/data/week.json", actual)
+                phase2_capture._bind_current_website_reference(root, previous, {"production_model":corrected.CLASSIC_MODEL})
+                self.assertEqual(partial_week.game_contract(load_json(root / "output/data/week.json"), "frozen"),
+                                 partial_week.game_contract(previous, "frozen"))
+
+    def test_grading_history_is_hash_bound_public_typed_and_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); output = root / "output"
+            archive = root / "archive"; archive.mkdir()
+            record = build.grade.grade_all(archive, lambda *_:{}, (2026,9), set())
+            raw = json.dumps(record, separators=(",",":"), allow_nan=False).encode()
+            name = hashlib.sha256(raw).hexdigest()
+            path = output / "data/grading-history" / (name+".json")
+            path.parent.mkdir(parents=True); path.write_bytes(raw)
+            self.assertEqual(phase2_capture._grading_history_assets(output),
+                             {"data/grading-history/"+name+".json":(len(raw),name)})
+            before = path.read_bytes()
+            stage = root / "pages"
+            phase2_capture.stage_pages(root, stage)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual((stage / path.relative_to(output)).read_bytes(), before)
+            for field in ("api_key", "unregistered_private_note"):
+                changed = copy.deepcopy(record); changed["cumulative"][field] = "FICTIONAL-CONTROL"
+                body = json.dumps(changed, separators=(",",":"), allow_nan=False).encode()
+                bad = path.parent / (hashlib.sha256(body).hexdigest()+".json"); bad.write_bytes(body)
+                with self.subTest(field=field), self.assertRaises(IntegrityError):
+                    phase2_capture._grading_history_assets(output)
+                bad.unlink()  # Dispose only this intentionally defective temporary control.
+            stat_before = path.stat(); path.write_bytes(b"X"+raw[1:])
+            os.utime(path, ns=(stat_before.st_atime_ns,stat_before.st_mtime_ns))
+            with self.assertRaises(IntegrityError):
+                phase2_capture._grading_history_assets(output)
+
+    def test_weekly_stage_executes_its_verified_copy_not_a_mutated_source_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); stage = root / "stage"; source = root / "source"
+            stage.mkdir(); source.mkdir()
+            config = {"weekly_publication":{"path":"config/weekly-derived-selected-policy-v5.json","sha256":"1"*64}}
+            # This is orchestration-only. Actual code/policy/Git qualification is
+            # deliberately not replaced by these call-boundary doubles.
+            with patch.object(phase2_capture,"_weekly_policy",return_value={}) as policy, \
+                    patch.object(phase2_capture.subprocess,"check_output",return_value=str(root/"public-objects")+"\n"), \
+                    patch.object(phase2_capture.subprocess,"run") as run:
+                phase2_capture._prepare_weekly_website(stage,source,config,"2"*40)
+            self.assertEqual(policy.call_args.args,(stage,config))
+            command = run.call_args.args[0]
+            self.assertEqual(Path(command[2]),stage/"tools/weekly_adaptive_overlay.py")
+            self.assertNotIn(str(source/"tools/weekly_adaptive_overlay.py"),command)
+            self.assertEqual(command[command.index("--website-source-sha")+1],"2"*40)
+            self.assertEqual((stage/".git").read_text(),"gitdir: "+str(root/"public-objects")+"\n")
+            self.assertTrue(run.call_args.kwargs["check"])
 
 
 if __name__ == "__main__":

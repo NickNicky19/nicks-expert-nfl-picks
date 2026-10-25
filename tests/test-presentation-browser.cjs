@@ -234,6 +234,20 @@ async function controlChecks(browser, origin, lane, width) {
     equal(await page.evaluate(() => [S.f.sort, S.f.q, S.f.cat, S.open.size]), ['proj', '', '', 0], 'full reload preserves existing filter/open reset');
     equal(await page.evaluate(() => S.mine), mine, 'full reload retains device saved selections');
     equal(await page.evaluate(() => S.lines['fictional-0|rec_yd']), undefined, 'full reload preserves existing temporary-line reset');
+    const finality = await page.evaluate(() => {
+      const id = 'presentation-finality', previous = S.games[id], mine = S.mine, bytes = localStorage.getItem('nflprops.mine');
+      const pick = {kind:'game',gid:id,market:'total',side:'under',line:0,season:S.data.season,week:S.data.week,at:1};
+      const game = {id,home:'AAA',away:'BBB',kickoff:'2026-10-20T17:00:00Z',state:'post',detail:'Final',home_score:0,away_score:0};
+      try {
+        S.games[id] = game; S.mine = [pick]; const push = gameBetStatus(pick); renderMine(); const ownLine = document.querySelector('[data-mline]')?.value;
+        game.away_score = null; const missing = gameBetStatus(pick).res;
+        game.away_score = 0; game.state = 'in'; const live = gameBetStatus(pick); renderMine(); const text = document.querySelector('#main').innerText;
+        game.id = 'other-game'; const wrongGame = gameBetStatus(pick).res;
+        return {push:[push.res,push.final],missing,live:[live.res,live.final],wrongGame,ownLine,
+          noFinalWin:/Final wins\s+0/.test(text),noCombined:!(/All \d+ together|CLEARED|LOST/.test(text)),bytes:localStorage.getItem('nflprops.mine')===bytes};
+      } finally { S.mine = mine; if (previous) S.games[id] = previous; else delete S.games[id]; render(); }
+    });
+    equal(finality, {push:['push',true],missing:'unresolved',live:['equal',false],wrongGame:'unresolved',ownLine:'0',noFinalWin:true,noCombined:true,bytes:true}, 'Main game finality composes with qualified props without changing saved selections');
     equal(errors, [], 'control browser has no page errors');
     return { lane, width, leading_prop: 'rec_yd', score: .4, tie_follows: 'rush_rec_yd', grades };
   } finally { await context.close(); }

@@ -1,144 +1,196 @@
 {
   "capture_enabled": true,
-  "production_model": "sleeper-matchup-data-integrity-v2",
   "challenger_production_enabled": false,
   "experimental_recording_enabled": false,
-  "verification_mode": "partial-week-data-integrity-v2",
   "partial_week": {
+    "owner_authorization": "NFL-WEB-PRODUCTION-REPORT-INTEGRATION-20261025-122500Z-EXISTING-WEBSITE-GOAL-CONTROLLED-TRANSITION",
     "plan": {
-      "schema_version": "partial-week-data-integrity-plan-v2",
-      "plan_id": "NFL-WEB-W07-CORRECTED-CUTOVER-20261023-001617Z",
-      "model": "sleeper-matchup-data-integrity-v2",
-      "validator_contract": "partial-week-data-integrity-v2",
-      "season": 2026,
-      "week": 7,
-      "plan_prepared_at": "2026-10-23T00:16:17.802980Z",
-      "effective_not_before": "2026-10-23T00:16:17.802980Z",
-      "expires_at": "2026-10-28T00:00:00Z",
-      "authorization_status": "OWNER_APPROVED_CONTROLLED_TRANSITION_NOT_COMPLETE_WEEK_QUALIFICATION",
-      "source_start": "f4715c44a467eb21b790f0d058e8375621c0a6d2",
-      "initial_data_pin": "a57b529862a6ea84b57eae77758cf3a95714a3b9",
-      "initial_complete_board_sha256": "492992bd8670e23db267f0c5284540177a6f461bc6976fa32c195a5603dcf822",
+      "authorization_status": "OWNER_AUTHORIZED_WEBSITE_GOAL_TRANSITION_PENDING_ACTUAL_RELEASE_ACCEPTANCE",
+      "complete_week_qualified": false,
+      "completion_status_max_age_seconds": 60,
+      "effective_not_before": "2026-10-25T17:00:01+00:00",
+      "eligibility_rule": "explicit_pre_not_completed_and_all_generation_inputseal_native_scope_completion_clocks_strictly_before_kickoff",
       "engine_files": {
-        "pull/build.py": "d8a1094af872c84e0fe092662a1241afc0eceaca8c27f7bea687e6a1be2f576c",
-        "pull/matchup.py": "eaf627730041060ad16dd9930accfe54a54cf5fb49bb42d18680b5c572ddd7a5",
-        "pull/scoring.py": "473e8fa2601d75eab8a223edda53555c51ce145c6426e570df9ae918c3f9eee0",
         "pull/books.py": "0b89744960136a4f2e594b61e6df754d357706d8c66a8ae359d8eb02bbfa53f8",
+        "pull/build.py": "726378a2ae5f7a1cedb1bd1538d49e77a5a6bbf9805c07eb89fc9fd4bdd92cbf",
         "pull/gamemodel.py": "2a2519a12ad4993da02ae6bdcdb6c86f2b5a6554ce93a702b550ecde17fb7d1f",
-        "pull/sources.py": "36555cdbc55d73ba632d5adae1130288f4f532073857c642ac3ebc7e626b0061",
+        "pull/grade.py": "b260a2a7905eea7caf4b14115e94fd6898c0e0fc6cdd19e28de96ccc38da394a",
+        "pull/matchup.py": "eaf627730041060ad16dd9930accfe54a54cf5fb49bb42d18680b5c572ddd7a5",
         "pull/news.py": "17ce1b3b6b72694e6b543bd767e287c26a9d1f6dd5dba2de6c873543036842e9",
-        "pull/grade.py": "cf4bccf4fd960d5cc896d5e8bbef216a7d84cd20ca938ce1c60ca7942c307d2f"
+        "pull/scoring.py": "712be92bb30d6486fd4d04d3cc43a2d1482b9ade42cb6c50194fe745c0ef5ae9",
+        "pull/sources.py": "36555cdbc55d73ba632d5adae1130288f4f532073857c642ac3ebc7e626b0061"
       },
+      "experimental_recording_enabled": false,
+      "expires_at": "2026-10-28T00:00:00Z",
+      "full_board_verified": false,
       "games": [
         {
-          "id": "401873010",
-          "home": "CHI",
           "away": "NE",
+          "home": "CHI",
+          "id": "401873010",
           "kickoff": "2026-10-23T00:15Z"
         },
         {
-          "id": "401873011",
-          "home": "NO",
           "away": "PIT",
+          "home": "NO",
+          "id": "401873011",
           "kickoff": "2026-10-25T13:30Z"
         },
         {
-          "id": "401873012",
-          "home": "BAL",
           "away": "CIN",
+          "home": "BAL",
+          "id": "401873012",
           "kickoff": "2026-10-25T17:00Z"
         },
         {
-          "id": "401873013",
-          "home": "TEN",
           "away": "CLE",
+          "home": "TEN",
+          "id": "401873013",
           "kickoff": "2026-10-25T17:00Z"
         },
         {
-          "id": "401873014",
-          "home": "MIN",
           "away": "IND",
+          "home": "MIN",
+          "id": "401873014",
           "kickoff": "2026-10-25T17:00Z"
         },
         {
-          "id": "401873015",
-          "home": "NYJ",
           "away": "MIA",
+          "home": "NYJ",
+          "id": "401873015",
           "kickoff": "2026-10-25T17:00Z"
         },
         {
-          "id": "401873016",
-          "home": "HOU",
           "away": "NYG",
+          "home": "HOU",
+          "id": "401873016",
           "kickoff": "2026-10-25T17:00Z"
         },
         {
-          "id": "401873017",
-          "home": "ATL",
           "away": "SF",
+          "home": "ATL",
+          "id": "401873017",
           "kickoff": "2026-10-25T17:00Z"
         },
         {
-          "id": "401873018",
-          "home": "CAR",
           "away": "TB",
+          "home": "CAR",
+          "id": "401873018",
           "kickoff": "2026-10-25T17:00Z"
         },
         {
-          "id": "401873019",
-          "home": "ARI",
           "away": "DEN",
+          "home": "ARI",
+          "id": "401873019",
           "kickoff": "2026-10-25T20:05Z"
         },
         {
-          "id": "401873020",
-          "home": "DET",
           "away": "GB",
+          "home": "DET",
+          "id": "401873020",
           "kickoff": "2026-10-25T20:25Z"
         },
         {
-          "id": "401873021",
-          "home": "LV",
           "away": "LAR",
+          "home": "LV",
+          "id": "401873021",
           "kickoff": "2026-10-25T20:25Z"
         },
         {
-          "id": "401873022",
-          "home": "SEA",
           "away": "KC",
+          "home": "SEA",
+          "id": "401873022",
           "kickoff": "2026-10-26T00:20Z"
         },
         {
-          "id": "401873009",
-          "home": "PHI",
           "away": "DAL",
+          "home": "PHI",
+          "id": "401873009",
           "kickoff": "2026-10-27T00:15Z"
         }
       ],
+      "initial_complete_board_sha256": "06da8f79ef2e0188bcbba5c137be5aeb6e01dda6ddacbc1d38a17c3afed3d80a",
+      "initial_data_pin": "453e7e6e843b0cb1ae611b0925063e0f96c70196",
       "legacy_exemptions": [
         {
+          "exemption": "retain_exact_production_contract_unverified_never_retroactively_pregame_or_complete_week_qualified",
+          "forecast_contract_sha256": "100ddef8f6f4fecfd726b49c7bde53846649e1658af07511806a53ea172d058c",
           "game_id": "401873010",
-          "forecast_contract_sha256": "e15373a8cc92b394614742d3913466ff83e9beb1c4aadeb63bd8fcbe21a51f09",
-          "reason": "started_at_actual_fixed_cutover;production_has_no_matching_retained_original_input_proof_or_completed_bundle",
-          "exemption": "retain_exact_production_contract_unverified_never_retroactively_pregame_or_complete_week_qualified"
+          "reason": "kickoff_strictly_before_fixed_cutover;retain_exact_production_contract_without_matching_retained_original_input_completion"
+        },
+        {
+          "exemption": "retain_exact_production_contract_unverified_never_retroactively_pregame_or_complete_week_qualified",
+          "forecast_contract_sha256": "a7a1ca605304008b4105bb07e7b4145c99c420b81e3b2ec433acb84aba807662",
+          "game_id": "401873011",
+          "reason": "kickoff_strictly_before_fixed_cutover;retain_exact_production_contract_without_matching_retained_original_input_completion"
+        },
+        {
+          "exemption": "retain_exact_production_contract_unverified_never_retroactively_pregame_or_complete_week_qualified",
+          "forecast_contract_sha256": "9eab0fee75b013b4582776819739d0f03a12383f4b34e34ab6c1da750404ebaf",
+          "game_id": "401873012",
+          "reason": "kickoff_strictly_before_fixed_cutover;retain_exact_production_contract_without_matching_retained_original_input_completion"
+        },
+        {
+          "exemption": "retain_exact_production_contract_unverified_never_retroactively_pregame_or_complete_week_qualified",
+          "forecast_contract_sha256": "63baddbabcce69c7fb7affee66d405a3903c22ab379f75a39ddbabf026af36c2",
+          "game_id": "401873013",
+          "reason": "kickoff_strictly_before_fixed_cutover;retain_exact_production_contract_without_matching_retained_original_input_completion"
+        },
+        {
+          "exemption": "retain_exact_production_contract_unverified_never_retroactively_pregame_or_complete_week_qualified",
+          "forecast_contract_sha256": "34f3580354826ae775ee04f46c1e1cdd75fcd67841c49fd366ec7633bd051a43",
+          "game_id": "401873014",
+          "reason": "kickoff_strictly_before_fixed_cutover;retain_exact_production_contract_without_matching_retained_original_input_completion"
+        },
+        {
+          "exemption": "retain_exact_production_contract_unverified_never_retroactively_pregame_or_complete_week_qualified",
+          "forecast_contract_sha256": "cfdbb52a3f3e2bc8e5b365061c0b1c8be51902ddaa43af6161d55bd5a741246b",
+          "game_id": "401873015",
+          "reason": "kickoff_strictly_before_fixed_cutover;retain_exact_production_contract_without_matching_retained_original_input_completion"
+        },
+        {
+          "exemption": "retain_exact_production_contract_unverified_never_retroactively_pregame_or_complete_week_qualified",
+          "forecast_contract_sha256": "31c85a69452b3f3e6a3d93610678b2fa3e8f52e7012e30853c5eaba40ffc4fc2",
+          "game_id": "401873016",
+          "reason": "kickoff_strictly_before_fixed_cutover;retain_exact_production_contract_without_matching_retained_original_input_completion"
+        },
+        {
+          "exemption": "retain_exact_production_contract_unverified_never_retroactively_pregame_or_complete_week_qualified",
+          "forecast_contract_sha256": "9df0acfaf50c19603640b9ffdbfcaaf645e112d35695229e9c2176b604f224fb",
+          "game_id": "401873017",
+          "reason": "kickoff_strictly_before_fixed_cutover;retain_exact_production_contract_without_matching_retained_original_input_completion"
+        },
+        {
+          "exemption": "retain_exact_production_contract_unverified_never_retroactively_pregame_or_complete_week_qualified",
+          "forecast_contract_sha256": "b32826ae295c35057afb29f052ec04b6c90f8a783acbd32dfb4f052d8b26bfca",
+          "game_id": "401873018",
+          "reason": "kickoff_strictly_before_fixed_cutover;retain_exact_production_contract_without_matching_retained_original_input_completion"
         }
       ],
-      "schedule_status_payload_sha256": "d77b6a59f35fb087ffc819b19b77dc6082b8ca3e69f849e0ddd1dbcda8043f4b",
-      "schedule_status_observed_at": "2026-10-23T00:16:17.787545Z",
-      "completion_status_max_age_seconds": 60,
+      "model": "sleeper-matchup-classic-data-integrity-v2",
       "nonexempt_rule": "matching_original_inputs_and_completed_origin_for_frozen_contracts;new_eligible_inputs_and_completion_strictly_pregame_or_fail",
-      "eligibility_rule": "explicit_pre_not_completed_and_all_generation_inputseal_native_scope_completion_clocks_strictly_before_kickoff",
-      "schedule_changes": "fail_requires_explicit_fixed_plan_transition_no_dynamic_exemptions",
+      "plan_id": "NFL-WEB-W07-CLASSIC-PRESENCE-CUTOVER-20261025-165605Z",
+      "plan_prepared_at": "2026-10-25T16:56:05.729253+00:00",
+      "previous_plan_preservation": "original_configuration_git_history_and_original_evidence_remain_unchanged",
+      "previous_plan_sha256": "434ec66659f80ad3bd924c64f250169becb2f436dc77ab4e5d663f345951b966",
       "retry_rule": "retain_first_valid_original_recording_and_exact_pinned_completion;never_backdate_or_substitute_evidence",
+      "schedule_changes": "fail_requires_explicit_fixed_plan_transition_no_dynamic_exemptions",
+      "schedule_status_observed_at": "2026-10-23T00:16:17.787545Z",
+      "schedule_status_payload_sha256": "d77b6a59f35fb087ffc819b19b77dc6082b8ca3e69f849e0ddd1dbcda8043f4b",
+      "schema_version": "partial-week-data-integrity-plan-v2",
+      "season": 2026,
+      "source_start": "67c1c4a202d22b316e719446010ba1b39e66f9e4",
       "transition": "another_season_or_week_requires_its_own_explicit_source_plan_transition;expiry_fails_closed",
-      "full_board_verified": false,
-      "complete_week_qualified": false,
-      "experimental_recording_enabled": false,
-      "previous_plan_sha256": "fbd74ed0809e178481492517f0fbf3d15f2ef0b2a679ca9f519d011873cefbfe",
-      "previous_plan_preservation": "original_configuration_git_history_and_original_evidence_remain_unchanged"
+      "validator_contract": "partial-week-data-integrity-v2",
+      "week": 7
     },
-    "plan_sha256": "434ec66659f80ad3bd924c64f250169becb2f436dc77ab4e5d663f345951b966",
-    "validator_sha256": "f60798eca7071525727bd883e6bd230fdb5422297efb6a7748a3457a212ab3e7",
-    "owner_authorization": "NFL-WEB-RECORDER-RESPONSE-HASH-20261023-004402Z-CONFIG"
+    "plan_sha256": "8b07debb71ab9a8abf1aa371f98484f2ccc54f5bfe0e951d2e3ec6957c09a4c6",
+    "validator_sha256": "06e39ddb2f1a0ae7033d98915e340ca158dbb53f8bdd28beabe72c00c7f82f43"
+  },
+  "production_model": "sleeper-matchup-classic-data-integrity-v2",
+  "verification_mode": "partial-week-data-integrity-v2",
+  "weekly_publication": {
+    "path": "config/weekly-derived-selected-policy-v3.json",
+    "sha256": "06d512469ab85dd33a6b37aa5fa4ae586e7709556aac209e24cfeb02c2c6aea4"
   }
 }

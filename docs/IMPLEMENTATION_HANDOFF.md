@@ -1888,3 +1888,77 @@ review classifies this as the same coexistence finding, already at its installed
 two-attempt limit. A specific owner exception is required before that one test
 path can be repaired. Neither a renamed finding, old authorization, counter reset
 nor this carried-head scope is used to circumvent the limit.
+
+## 2026-10-25 production reporting integration checkpoint
+
+This checkpoint composes development `67c1c4a` with actual production `453e7e6`.
+It does not restart the accepted publisher, presence, frozen-completion or original
+archive reviews. The completed original-archive review remains scoped to archive
+`29166f18`; later source and artifact changes require delta verification.
+
+IMPLEMENTED IN DEVELOPMENT: weekly/cumulative saved Top Over/Under and qualifying
+lean reports; exact category/side/source/policy/cohort/timing context comparisons;
+separate recorded ranking strategies; all-ten-statistic accuracy plus offensive
+PPR and separately labelled TD evaluation; typed pending, unknown, DNP, push,
+conflict and correction handling; and the private two-to-six-leg paper builder.
+Display sorting does not create historical strategy selections. Separate marginal
+percentages do not establish joint comparisons. Observed weekday leaders are
+descriptive; later confirmation and predictive improvement are not established.
+
+The closed current composition is `sleeper-matchup-classic-data-integrity-v2`
+(engine digest `16d0ea1eb1ed7378427f3279bb4e1b7907d2370928b3ad30a2ca7dbe0bf6265b`).
+Original, earlier corrected and saved Classic1 source identities remain distinct.
+Old corrected evidence executes retained original helper bytes in an independently
+validated evidence copy. Classic1 pure scoring carries freshly verified fixed
+commit, tree, pull-tree and scoring objects; it never substitutes current scoring.
+Saved Classic1 observations remain descriptive and outside the original primary
+and qualified ranked experiments. The original rec-half registration, formula and
+Weeks 7–14 remain unchanged. Both experimental recorders remain inactive; this
+current-only producer creates no new original-model observation or shadow.
+
+TESTED LOCALLY: 115 scorecard, 50 selection-report and 11 accuracy tests;
+21 connected checkpoint/source/staging/publication-fence controls; four fixed
+scoring-object closure controls; six issued-history type/staging cases; 37 failure
+preservation controls; four selector/configuration controls; and retained Node UI
+and About checks. These include actual old-source arithmetic and local Git,
+fictional observations/clocks and explicitly identified process/presentation
+doubles. They are not final-source hosted CI or aggregate-memory measurements.
+Both actual saved public Classic1 receipts preserve all 2,111 rows each, including
+403 PPR and 289 TD rows, without inventing missing components or original proof.
+
+Independent scoped review caught frozen pick-label insertion and nested values
+in issued scalar fields before publication. The corrected annotation preserves
+the complete frozen pick dictionaries and contract fingerprints, including absent
+labels. Issued-history leaves reject nested/private-shaped values, invalid enums,
+boolean numbers and nonfinite metrics while preserving nullable, zero and signed
+values. Review limitations and the initial failures remain retained.
+
+The source-CI seal covers executed code, tests, workflows, configuration and
+dependencies. Every updater still validates current input/native/scope/completion,
+reports, archives, destination and final advancement. Retry rechecks the same
+source-CI run. A private run-local fence freshly hashes the actual Pages copy at
+upload, deploy, retry and post-deployment boundaries. Daily Chicago cadence,
+retired Ticker, concurrency and the 1,200-second updater timeout are preserved.
+The historical 960.625703-second planning miss remains a miss; the 960-second
+target is unchanged. This source does not inherit earlier operating results.
+
+The development-only fixed transition preserves the full production population
+and exact frozen contracts. Its historical schedule observation is labelled with
+its original clock; it is not fresh current status. Actual fresh completion and
+pregame inputs remain mandatory for eligible observations. The fixed legacy list
+does not expand automatically, the expiry is not extended, and partial verification
+does not qualify a whole week. A later week requires an explicit plan transition.
+
+DEPLOYED/PUBLICLY VERIFIED: the earlier scoped My Picks game-finality fix,
+source `0f03af2` and generated production data `453e7e6`, through run `40183962653`.
+That push-triggered update is not evidence of a scheduled run or this larger
+release. The larger grading/accuracy/paper package is not yet publicly verified.
+
+Remaining completion checklist: exact combined-source/current-base CI; whole
+updater time and attributable aggregate-memory qualification for a stated finite
+envelope; production-rooted generated-content/frozen-contract acceptance; controlled
+release and actual public desktop/phone/cache/My Picks/ticket checks; compatible
+forward recovery and observed scheduled operation. The recovery source floor must
+understand all retained models and shared/gzip reports. Blind restoration of older
+readers or the old monolithic publisher does not restore complete reporting.
+Odds acquisition and forecasting research remain separate from these release gates.

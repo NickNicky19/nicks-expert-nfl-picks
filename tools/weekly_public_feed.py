@@ -46,6 +46,13 @@ META_FIELDS={"schema_version","state","season","week","created_at","expires_at",
 ENGINE_FILES={"pull/build.py","pull/matchup.py","pull/scoring.py","pull/books.py","pull/gamemodel.py","pull/sources.py","pull/news.py"}
 LEGACY_CODE_FILES=ENGINE_FILES|{"config/release-mode.json","tools/reliability.py","tools/weekly_adaptive_overlay.py","tools/weekly_public_feed.py","output/app.js","output/weekly-adaptive-overlay.js"}
 CODE_FILES=LEGACY_CODE_FILES|{"tools/weekly_selected_rankings.py"}
+CURRENT_CODE_FILES=CODE_FILES|{"output/index.html","pull/grade.py","tools/classic_model_v1.py",
+    "tools/classic_source_replay_v1.py","tools/classic_build_pair_v1.py","tools/publication_guard_v1.py",
+    "tools/classic_failure_v1.py"}
+PIPELINE_CODE_FILES=CURRENT_CODE_FILES|{"tools/data_integrity_v2.py","tools/build_recorded.py",
+    "tools/phase2_capture.py","tools/scorecard.py","tools/source_ci.py","tools/selection_report.py",
+    "tools/selection_publication.py","tools/selection_strategies.py","tools/accuracy_publication.py",
+    "tools/release_mode.py"}
 
 
 class FeedError(ValueError):pass
@@ -413,24 +420,45 @@ def registration_objects(root):
     return objects
 
 
-def current_execution_contract(root=None):
+def current_execution_contract(root=None, *, model=None):
     """Recognized corrected source bytes; this is not artifact qualification."""
     from reliability import engine_hashes
+    import data_integrity_v2 as corrected
+    import classic_model_v1 as classic
     root=Path(root) if root is not None else Path(__file__).resolve().parents[1]
-    engines=engine_hashes(root,version=CURRENT_MODEL)
+    if model is None:
+        path=root/"pull/build.py"
+        require(not path.is_symlink() and path.is_file() and path.stat().st_size<=2<<20,"CURRENT_ENGINE_SCOPE")
+        if sha(path.read_bytes())==classic.ENGINE["pull/build.py"]:
+            model=classic.MODEL
+        else:
+            model=corrected.active_model(root)
+    if model==classic.MODEL:
+        return classic.contract(root,model=model)
+    require(model in corrected.PRESENCE_MODELS,"CLOSED_CORRECTED_MODEL_REQUIRED")
+    engines=engine_hashes(root,version=model)
     require(set(engines)==ENGINE_FILES|{"pull/grade.py"} and all(h(v) for v in engines.values()),
         "CLOSED_CORRECTED_ENGINE_REQUIRED")
-    return dict(schema_version=CURRENT_EXECUTION,model=CURRENT_MODEL,
+    return dict(schema_version=CURRENT_EXECUTION,model=model,
         inputs_schema="matchup-inputs-v3",native_schema="baseline-capture-v2",
         verification_contract="partial-week-data-integrity-v2",engine_sha256=engines)
 
 
 def policy_check_v3(policy,*,root=None):
-    """Closed old13/current14 website dispatch; scientific R0 bytes stay original."""
+    """Closed historical/production source inventories; scientific R0 stays original."""
     require(policy.get("schema_version")==POLICY_V3,"V3_POLICY_CONTRACT")
-    historical=historical_policy_v2(root);execution=current_execution_contract(root)
+    execution=current_execution_contract(root)
     code=policy.get("website_code_sha256",{})
-    require(type(code) is dict and set(code) in (LEGACY_CODE_FILES,CODE_FILES) and all(h(v) for v in code.values()),"CLOSED_CURRENT_CODE_INVENTORY")
+    historical_sha=policy.get("historical_policy_sha256")
+    if historical_sha==HISTORICAL_POLICY_SHA256:
+        historical=historical_policy_v2(root)
+        allowed=(LEGACY_CODE_FILES,CODE_FILES)
+    elif historical_sha==ACTIVE_POLICY_SHA256:
+        historical=active_policy_v2(root)
+        allowed=(CURRENT_CODE_FILES,PIPELINE_CODE_FILES)
+    else:
+        raise FeedError("UNRECOGNIZED_HISTORICAL_POLICY")
+    require(type(code) is dict and set(code) in allowed and all(h(v) for v in code.values()),"CLOSED_CURRENT_CODE_INVENTORY")
     require(all(code[name]==execution["engine_sha256"][name] for name in ENGINE_FILES),"CURRENT_ENGINE_CODE_MISMATCH")
     expected=copy.deepcopy(historical)
     extras={"historical_policy_sha256","current_execution"}
@@ -441,7 +469,7 @@ def policy_check_v3(policy,*,root=None):
         expected=copy.deepcopy(active);extras.add("active_policy_sha256")
         expected["active_policy_sha256"]=ACTIVE_POLICY_SHA256
     require(set(policy)==set(historical)|extras,"CLOSED_V3_POLICY_FIELDS")
-    expected.update(schema_version=POLICY_V3,historical_policy_sha256=HISTORICAL_POLICY_SHA256,
+    expected.update(schema_version=POLICY_V3,historical_policy_sha256=historical_sha,
         current_execution=execution,website_code_sha256=code)
     require(canonical(policy)==canonical(expected),"HISTORICAL_OR_CURRENT_EXECUTION_CHANGED")
     return historical
@@ -588,12 +616,12 @@ def writer_input_v3(root,policy,board,*,website_source_sha,now,feed,fetch):
             selected,proof=validate_feed_v2(feed,historical,board,now=now,fetch=fetch)
         review=dict(schema_version=overlay().REVIEW,approved=True,selected_input_sha256=digest(selected),website_source_sha=website_source_sha,
             authority_kind="AUTOMATED_REGISTERED_POLICY",human_approval=False,authority_policy_sha256=digest(policy),code_inventory_sha256=inventory,
-            historical_policy_sha256=HISTORICAL_POLICY_SHA256,current_reference_model=CURRENT_MODEL,
+            historical_policy_sha256=policy["historical_policy_sha256"],current_reference_model=policy["current_execution"]["model"],
             feed_sha256=digest(feed),reviewed_at=now,board_membership_sha256=feed["identity_scope_sha256"],publication_execution=proof)
         if "active_policy_sha256" in policy:review["active_policy_sha256"]=policy["active_policy_sha256"]
         receipt=dict(state="AUTOMATED_POLICY_ACCEPTED",rows=len(selected["rows"]),website_source_sha=website_source_sha,
-            policy_sha256=digest(policy),review_sha256=digest(review),historical_policy_sha256=HISTORICAL_POLICY_SHA256,
-            current_reference_model=CURRENT_MODEL,publication_execution=proof)
+            policy_sha256=digest(policy),review_sha256=digest(review),historical_policy_sha256=policy["historical_policy_sha256"],
+            current_reference_model=policy["current_execution"]["model"],publication_execution=proof)
         if "active_policy_sha256" in policy:receipt["active_policy_sha256"]=policy["active_policy_sha256"]
         return selected,review,receipt
     except Exception as error:

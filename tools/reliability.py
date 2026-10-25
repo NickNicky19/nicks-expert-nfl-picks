@@ -77,15 +77,15 @@ def finite(value, label, optional=True):
         raise IntegrityError(f"{label} is not a finite number")
 
 
-V2_HELPER_SHA256 = 'f60798eca7071525727bd883e6bd230fdb5422297efb6a7748a3457a212ab3e7'
+V2_HELPER_SHA256 = '06e39ddb2f1a0ae7033d98915e340ca158dbb53f8bdd28beabe72c00c7f82f43'
 
 
 def engine_hashes(root: Path, *, version="original_sleeper_matchup_baseline") -> dict[str, str]:
-    if version == "sleeper-matchup-data-integrity-v2":
+    if version in ("sleeper-matchup-data-integrity-v2", "sleeper-matchup-classic-data-integrity-v2"):
         import data_integrity_v2
         if hashlib.sha256(Path(data_integrity_v2.__file__).read_bytes()).hexdigest() != V2_HELPER_SHA256:
             raise IntegrityError("Corrected source dispatcher changed")
-        return data_integrity_v2.engine_files(root)
+        return data_integrity_v2.engine_files(root, model=version)
     if version != "original_sleeper_matchup_baseline":
         raise IntegrityError("Unknown explicit engine contract")
     # Missing source files are a hard error in real runs. Tests may pass explicit hashes.
@@ -232,10 +232,10 @@ def make_payload(data: dict, observed_at: datetime, hashes: dict, mode: str, *, 
             "excluded_started_or_late_games": sorted(skipped)}
     if model != "original_sleeper_matchup_baseline":
         import data_integrity_v2 as corrected
-        if model != corrected.MODEL or hashes != corrected.V2_SOURCE_SHA256 or not hashes:
+        if model not in corrected.PRESENCE_MODELS or hashes != corrected.source_hashes(model) or not hashes:
             raise IntegrityError("Unsupported corrected capture source")
         result.update(schema_version=corrected.NATIVE, model=model, presence_contract=corrected.PRESENCE,
-                      code_commit=corrected.recording_source())
+                      code_commit=corrected.recording_source(model=model))
     return result
 
 
@@ -299,6 +299,49 @@ def atomic_json(path: Path, value):
         os.replace(temp, path)
     finally:
         Path(temp).unlink(missing_ok=True)
+
+
+def capture_profile(data, meta, root, observed_at, *, model, mode="replay"):
+    """Explicit production dispatcher; unknown/crossed profiles never fall back."""
+    import data_integrity_v2 as corrected
+    if model in corrected.PRESENCE_MODELS:
+        return capture(data, meta, root, observed_at, engine_hashes(root, version=model), mode=mode, model=model)
+    from classic_model_v1 import MODEL, ORIGINAL_MODEL, CAPTURE, contract
+    if model == ORIGINAL_MODEL:
+        return capture(data, meta, root, observed_at, engine_hashes(root), mode=mode)
+    if model != MODEL:
+        raise IntegrityError("UNKNOWN_CAPTURE_PROFILE")
+    current = contract(root)
+    if data.get("execution_model") != current or meta.get("execution_model") != current:
+        raise IntegrityError("CURRENT_BOARD_EXECUTION_BINDING")
+    games={g['id']:g for g in data['games']}
+    for player in data['players']:
+        game=games[player['game_id']]
+        if game['state']=='pre'and utc(game['kickoff'])>utc(observed_at)and player.get('reference_model')!=MODEL:
+            raise IntegrityError('CURRENT_PLAYER_MODEL_BINDING')
+    observed_at = utc(observed_at)
+    health = validate(data, meta, observed_at)
+    payload = make_payload(data, observed_at, current["engine_sha256"], mode)
+    payload.update(schema_version=CAPTURE, model=MODEL, execution_contract=current,
+                   execution_contract_sha256=digest(current))
+    identity = digest(dict(data=digest(data), execution=digest(current), mode=mode))
+    lane = "current-classic" if mode == "live" else "current-classic-replay"
+    path = Path(root) / "data" / lane / str(data["season"]) / f"w{data['week']:02d}" / (identity + ".json.gz")
+    created = immutable_write(path, payload)
+    stored = json.loads(gzip.decompress(path.read_bytes()))["payload"]
+    first = utc(stored["captured_at"])
+    if first > observed_at:
+        raise IntegrityError("CURRENT_NATIVE_FUTURE_CLOCK")
+    expected = make_payload(data, first, current["engine_sha256"], mode)
+    expected.update(schema_version=CAPTURE, model=MODEL, execution_contract=current,
+                    execution_contract_sha256=digest(current))
+    expected["code_commit"] = stored.get("code_commit")
+    if expected != stored:
+        raise IntegrityError("CURRENT_NATIVE_CONTENT")
+    health.update(capture_model=MODEL, capture_schema=CAPTURE, capture_mode=mode,
+                  capture_created=created, receipt=str(path.relative_to(root)),
+                  first_captured_at=stored["captured_at"], capture_rows=len(stored["rows"]))
+    return path, health
 
 
 def main():

@@ -357,7 +357,7 @@ async function weeklyDisplayChecks(browser,origin) {
           });
           if(state==='weekly-valid'){
             assert.equal(actual.selected.value,5.25);assert.match(actual.primary,/Frozen provisional mean forecast\s*5\.25/);
-            assert.match(actual.component_text,/Current reference forecast/);assert.match(actual.component_text,/Leans use the selected forecast/);
+            assert.ok(actual.component_text.includes((["sleeper-matchup-classic-fg-identity-v1","sleeper-matchup-classic-data-integrity-v2"].includes(week.players.find(p=>p.id==='fixture-0')?.reference_model||week.execution_model?.model)?'Current baseline':(week.players.find(p=>p.id==='fixture-0')?.reference_model||week.execution_model?.model)==='original_sleeper_matchup_baseline'?'R0':'Current')+' reference forecast'));assert.match(actual.component_text,/Leans use the selected forecast/);
             assert.ok(actual.visible>0,'Actual Props includes selected primary chip');
             originalBoard=actual.board;originalPicks=actual.picks;originalGrade=actual.grade;
           }else{
@@ -1298,6 +1298,18 @@ async function paperHistoricalAsyncChecks(browser, origin) {
         assert.match(mine, /Push \/ DNP\s+1 \/ 1/); assert.match(mine, /Unresolved\s+3/);
         assert.doesNotMatch(mine, /All 8 together|CLEARED|LOST/);
         assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('nflprops.mine'))), saved);
+        const unavailable = await page.evaluate(() => {
+          const before = localStorage.getItem('nflprops.mine'), evidence = S.finalOutcomes;
+          const tickets = Object.fromEntries(Object.keys(localStorage).filter(key => key.startsWith(PAPER_PREFIX)).map(key => [key, localStorage.getItem(key)]));
+          try {
+            S.finalOutcomes = new Map(); renderMine();
+            return { statuses: S.data.players.filter(p => S.games[p.game_id]?.state === 'post').map(p => propStatus(p, 'rec', 5.5, 'over').res),
+              wins: document.querySelector('.mine-sum').innerText.match(/Final wins\s+(\d+)/)?.[1], bytes: localStorage.getItem('nflprops.mine') === before,
+              tickets: JSON.stringify(Object.fromEntries(Object.keys(localStorage).filter(key => key.startsWith(PAPER_PREFIX)).map(key => [key, localStorage.getItem(key)]))) === JSON.stringify(tickets) };
+          } finally { S.finalOutcomes = evidence; renderMine(); }
+        });
+        assert.ok(unavailable.statuses.length > 0 && unavailable.statuses.every(status => status === 'unresolved'));
+        assert.deepEqual([unavailable.wins, unavailable.bytes, unavailable.tickets], ['0', true, true], 'missing report never borrows live zero/DNP and preserves device bytes');
         await page.evaluate(() => { const p = S.byId['fixture-5']; S.games[p.game_id].state = 'in'; S.slp[p.id] = { gp: 1, rec: 7 }; S.tab = 'mine'; render(); });
         assert.match(await page.locator('#main').innerText(), /CURRENTLY ABOVE/);
         assert.doesNotMatch(await page.locator('.mine-sum').innerText(), /Final wins\s+[1-9]/);

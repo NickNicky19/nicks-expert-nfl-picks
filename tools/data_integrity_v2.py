@@ -21,6 +21,8 @@ from reliability import BASELINE_BLOBS, ENGINE_PATHS, IntegrityError, digest, lo
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = "sleeper-matchup-data-integrity-v2"
+CLASSIC_MODEL = "sleeper-matchup-classic-data-integrity-v2"
+PRESENCE_MODELS = (MODEL, CLASSIC_MODEL)
 PRESENCE = "nfl-data-presence-v2"
 INPUTS = "matchup-inputs-v3"
 PROOF = "matchup-proof-v2"
@@ -42,6 +44,94 @@ RETAINED_CORRECTED_HELPERS = {
 V2_PATHS = ENGINE_PATHS + ("pull/grade.py",)
 # Filled from the actual completed implementation, never from a caller/receipt.
 V2_SOURCE_SHA256 = {'pull/build.py': 'd8a1094af872c84e0fe092662a1241afc0eceaca8c27f7bea687e6a1be2f576c', 'pull/matchup.py': 'eaf627730041060ad16dd9930accfe54a54cf5fb49bb42d18680b5c572ddd7a5', 'pull/scoring.py': '473e8fa2601d75eab8a223edda53555c51ce145c6426e570df9ae918c3f9eee0', 'pull/books.py': '0b89744960136a4f2e594b61e6df754d357706d8c66a8ae359d8eb02bbfa53f8', 'pull/gamemodel.py': '2a2519a12ad4993da02ae6bdcdb6c86f2b5a6554ce93a702b550ecde17fb7d1f', 'pull/sources.py': '36555cdbc55d73ba632d5adae1130288f4f532073857c642ac3ebc7e626b0061', 'pull/news.py': '17ce1b3b6b72694e6b543bd767e287c26a9d1f6dd5dba2de6c873543036842e9', 'pull/grade.py': 'cf4bccf4fd960d5cc896d5e8bbef216a7d84cd20ca938ce1c60ca7942c307d2f'}
+CLASSIC_SOURCE_SHA256 = {
+    "pull/books.py": "0b89744960136a4f2e594b61e6df754d357706d8c66a8ae359d8eb02bbfa53f8",
+    "pull/build.py": "726378a2ae5f7a1cedb1bd1538d49e77a5a6bbf9805c07eb89fc9fd4bdd92cbf",
+    "pull/gamemodel.py": "2a2519a12ad4993da02ae6bdcdb6c86f2b5a6554ce93a702b550ecde17fb7d1f",
+    "pull/grade.py": "b260a2a7905eea7caf4b14115e94fd6898c0e0fc6cdd19e28de96ccc38da394a",
+    "pull/matchup.py": "eaf627730041060ad16dd9930accfe54a54cf5fb49bb42d18680b5c572ddd7a5",
+    "pull/news.py": "17ce1b3b6b72694e6b543bd767e287c26a9d1f6dd5dba2de6c873543036842e9",
+    "pull/scoring.py": "712be92bb30d6486fd4d04d3cc43a2d1482b9ade42cb6c50194fe745c0ef5ae9",
+    "pull/sources.py": "36555cdbc55d73ba632d5adae1130288f4f532073857c642ac3ebc7e626b0061",
+}
+RETAINED_ROOT_SOURCE = "67c1c4a202d22b316e719446010ba1b39e66f9e4"
+RETAINED_ROOT_TREE = "994ed7a0de513b7fed9d513db411eda0016342a9"
+RETAINED_ROOT_HELPERS = {
+    "tools/data_integrity_v2.py": "f60798eca7071525727bd883e6bd230fdb5422297efb6a7748a3457a212ab3e7",
+    "tools/build_recorded.py": "101e2a7cff6cc1cc5dba32de1930a241642eb0a0ec80dda7f9feb5e79076a03e",
+    "tools/reliability.py": "6462ed6cd708c98b88f7e13fcd82330d6f32c6fc6fb39d7554f1ec8ad7fbe2cd",
+}
+
+
+def source_hashes(model):
+    """Return only a copy of an installed closed presence-source contract."""
+    if model == MODEL:
+        return dict(V2_SOURCE_SHA256)
+    if model == CLASSIC_MODEL:
+        return dict(CLASSIC_SOURCE_SHA256)
+    raise IntegrityError("Unsupported presence model")
+
+
+def _source_bytes(root):
+    root = Path(root).resolve()
+    result = {}
+    for name in V2_PATHS:
+        path = root / name
+        if (path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root)
+                or path.stat().st_size > 2 * 1024 * 1024):
+            raise IntegrityError("Corrected source path is not a bounded plain file")
+        result[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
+
+
+def active_model(root=ROOT):
+    """Recognize freshly hashed source; recognition has no activation effects."""
+    actual = _source_bytes(root)
+    for model in PRESENCE_MODELS:
+        if actual == source_hashes(model):
+            return model
+    raise IntegrityError("Unrecognized installed presence source")
+
+
+def _retained_families():
+    return {
+        "b3": (RETAINED_CORRECTED_SOURCE, RETAINED_CORRECTED_TREE, RETAINED_CORRECTED_HELPERS),
+        "root67": (RETAINED_ROOT_SOURCE, RETAINED_ROOT_TREE, RETAINED_ROOT_HELPERS),
+    }
+
+
+def _source_file(repository, commit, name):
+    """Bound and authenticate the actual Git blob, never a working-tree alias."""
+    size = int(_git(repository, "cat-file", "-s", commit + ":" + name))
+    if not 0 <= size <= 2 * 1024 * 1024:
+        raise IntegrityError("Source blob exceeds bound")
+    raw = _git(repository, "cat-file", "blob", commit + ":" + name)
+    oid = _git(repository, "rev-parse", commit + ":" + name).decode().strip()
+    if len(raw) != size or hashlib.sha1(b"blob " + str(size).encode() + b"\0" + raw).hexdigest() != oid:
+        raise IntegrityError("Source blob identity mismatch")
+    return raw
+
+
+def _source_commit(repository, commit):
+    size = int(_git(repository, "cat-file", "-s", commit))
+    if not 0 <= size <= 1024 * 1024:
+        raise IntegrityError("Source commit exceeds bound")
+    raw = _git(repository, "cat-file", "commit", commit)
+    if (len(raw) != size or hashlib.sha1(b"commit " + str(size).encode() + b"\0" + raw).hexdigest() != commit
+            or raw.splitlines()[0] != b"tree " + _git(repository, "rev-parse", commit + "^{tree}").strip()):
+        raise IntegrityError("Source commit/tree identity mismatch")
+
+
+def _retained_profile(commit, *, repository=ROOT):
+    if not isinstance(commit, str) or len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
+        raise IntegrityError("Invalid corrected source commit")
+    _source_commit(repository, commit)
+    for family, (_, _, helpers) in _retained_families().items():
+        expected = {**V2_SOURCE_SHA256, **helpers}
+        if all(hashlib.sha256(_source_file(repository, commit, name)).hexdigest() == value
+               for name, value in expected.items()):
+            return family
+    return None
 
 
 def model_input_hash(value):
@@ -138,12 +228,19 @@ def _legacy_graph(repository=ROOT, *, source=LEGACY_SOURCE, tree=LEGACY_TREE, ob
 
 def legacy_dependency_inventory(repository=ROOT, *, evidence_root=None, _objects=None):
     _, inventory = _legacy_graph(repository)
-    entries, retained = _legacy_graph(repository, source=RETAINED_CORRECTED_SOURCE,
-                                    tree=RETAINED_CORRECTED_TREE, objects_out=_objects)
-    values = {name: hashlib.sha256(raw).hexdigest() for name, _, raw in entries}
-    if any(values.get(name) != expected for name, expected in
-           {**V2_SOURCE_SHA256, **RETAINED_CORRECTED_HELPERS}.items()):
-        raise IntegrityError("Retained corrected source/helper identity mismatch")
+    import classic_model_v1 as classic
+    classic_objects = classic.scoring_objects(repository)
+    if _objects is not None:
+        _objects.update(classic_objects)
+    classic_inventory = [(oid, kind, hashlib.sha256(raw).hexdigest())
+                         for oid, (kind, raw) in sorted(classic_objects.items())]
+    families = {}
+    for family, (source, tree, helpers) in _retained_families().items():
+        entries, retained = _legacy_graph(repository, source=source, tree=tree, objects_out=_objects)
+        values = {name: hashlib.sha256(raw).hexdigest() for name, _, raw in entries}
+        if any(values.get(name) != expected for name, expected in {**V2_SOURCE_SHA256, **helpers}.items()):
+            raise IntegrityError("Retained corrected source/helper identity mismatch")
+        families[family] = {"commit": source, "tree": tree, "objects": retained}
     if _objects is not None:
         _legacy_graph(repository, objects_out=_objects)
     sources = {}
@@ -167,25 +264,22 @@ def legacy_dependency_inventory(repository=ROOT, *, evidence_root=None, _objects
                 _, source_inventory = _legacy_graph(repository, source=commit, tree=None, objects_out=_objects)
                 sources[commit] = source_inventory
     return {"commit": LEGACY_SOURCE, "tree": LEGACY_TREE, "objects": inventory,
-            "retained_corrected": {"commit": RETAINED_CORRECTED_SOURCE,
-                "tree": RETAINED_CORRECTED_TREE, "objects": retained}, "receipt_sources": sources}
+            "retained_corrected": families["b3"], "retained_root67": families["root67"],
+            "retained_classic_scoring": {"commit": classic.SCORING_SOURCE, "tree": classic.SCORING_TREE,
+                "pull_tree": classic.SCORING_PULL_TREE, "blob": classic.SCORING_BLOB,
+                "objects": classic_inventory},
+            "receipt_sources": sources}
 
 
 def _retained_corrected_commit(commit):
     """Closed old helper family; new writes still use strict recording_source."""
-    if not isinstance(commit, str) or len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
-        raise IntegrityError("Invalid corrected source commit")
-    old = True
-    for name, expected in {**V2_SOURCE_SHA256, **RETAINED_CORRECTED_HELPERS}.items():
-        raw = _git(ROOT, "cat-file", "blob", commit + ":" + name)
-        if hashlib.sha256(raw).hexdigest() != expected:
-            old = False
-    if not old:
+    old = _retained_profile(commit)
+    if old is None:
         recording_source(commit)
-    return old
+    return old is not None
 
 
-def _retained_corrected_read(root, operation, request):
+def _retained_corrected_read(root, operation, request, *, family="b3"):
     """Read saved evidence with actual B3 code and a minimal verified Git store.
 
     No remote, alternates, old-source recording or durable trust. Source objects,
@@ -194,6 +288,9 @@ def _retained_corrected_read(root, operation, request):
     """
     import sys
     root = Path(root).resolve()
+    if family not in _retained_families():
+        raise IntegrityError("Unsupported retained corrected family")
+    retained_source, retained_tree, _ = _retained_families()[family]
     def evidence_inventory(base):
         result = {}
         for lane in ("data", "output/data"):
@@ -213,7 +310,7 @@ def _retained_corrected_read(root, operation, request):
     objects = {}
     source_before = legacy_dependency_inventory(evidence_root=root, _objects=objects)
     before = evidence_inventory(root)
-    entries, _ = _legacy_graph(source=RETAINED_CORRECTED_SOURCE, tree=RETAINED_CORRECTED_TREE)
+    entries, _ = _legacy_graph(source=retained_source, tree=retained_tree)
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_") and key != "GITHUB_SHA"}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_LAZY_FETCH="1", PYTHONDONTWRITEBYTECODE="1")
     with tempfile.TemporaryDirectory(prefix="nfl-retained-corrected-") as directory:
@@ -227,7 +324,7 @@ def _retained_corrected_read(root, operation, request):
             saved = subprocess.check_output(["git", "-C", str(source), "hash-object", "-t", kind, "-w", "--stdin"], input=raw, env=env).decode().strip()
             if saved != oid:
                 raise IntegrityError("Copied retained Git object identity changed")
-        (source / ".git/HEAD").write_text(RETAINED_CORRECTED_SOURCE + "\n")
+        (source / ".git/HEAD").write_text(retained_source + "\n")
         for lane in ("data", "output/data"):
             if (root / lane).exists():
                 shutil.copytree(root / lane, source / lane)
@@ -243,6 +340,8 @@ if r['operation']=='inputs':
  result=d.recorded_inputs(Path.cwd(),**r['request'])
 elif r['operation']=='bundle':
  result=d.read_bundle(Path.cwd(),**r['request'])
+elif r['operation']=='reproduce':
+ result=d._reproduce_game(Path.cwd(),**r['request'])
 else: raise RuntimeError('Unsupported retained operation')
 print(json.dumps(result,allow_nan=False))
 """
@@ -289,35 +388,35 @@ def legacy_source(repository=ROOT):
         yield root
 
 
-def recording_source(commit=None, *, repository=ROOT):
+def recording_source(commit=None, *, repository=ROOT, model=None):
     """Bind actual corrected source, never a dirty tree wearing an old SHA."""
     commit = commit or os.environ.get("GITHUB_SHA") or _git(repository, "rev-parse", "HEAD").decode().strip()
     if not isinstance(commit, str) or len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
         raise IntegrityError("Corrected recording source commit is invalid")
-    for name, expected in V2_SOURCE_SHA256.items():
-        raw = _git(repository, "cat-file", "blob", commit + ":" + name)
+    _source_commit(repository, commit)
+    expected_files = engine_files(repository, model=model)
+    for name, expected in expected_files.items():
+        raw = _source_file(repository, commit, name)
         if hashlib.sha256(raw).hexdigest() != expected:
             raise IntegrityError("Corrected recording source differs from closed engine")
     for name in ("tools/data_integrity_v2.py", "tools/build_recorded.py", "tools/reliability.py"):
-        raw = _git(repository, "cat-file", "blob", commit + ":" + name)
+        raw = _source_file(repository, commit, name)
         if raw != (Path(repository) / name).read_bytes():
             raise IntegrityError("Corrected recording helper is not the identified committed source")
     return commit
 
 
-def engine_files(root):
-    if set(V2_SOURCE_SHA256) != set(V2_PATHS):
+def engine_files(root, model=None):
+    actual = _source_bytes(root)
+    selected = model if model is not None else next((name for name in PRESENCE_MODELS if actual == source_hashes(name)), None)
+    if selected is None:
+        raise IntegrityError("Unrecognized installed presence source")
+    expected = source_hashes(selected)
+    if set(expected) != set(V2_PATHS):
         raise IntegrityError("Corrected source manifest is not finalized")
-    result = {}
-    for name in V2_PATHS:
-        path = Path(root) / name
-        if path.is_symlink() or not path.is_file():
-            raise IntegrityError("Corrected source path is not a plain file")
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
-        if actual != V2_SOURCE_SHA256[name]:
-            raise IntegrityError("Unrecognized corrected source bytes: " + name)
-        result[name] = actual
-    return result
+    if actual != expected:
+        raise IntegrityError("Installed source differs from explicit presence model")
+    return dict(actual)
 
 
 def native_contract(payload, *, repository=ROOT):
@@ -325,8 +424,8 @@ def native_contract(payload, *, repository=ROOT):
     version = payload.get("schema_version"), payload.get("model")
     if version == ("baseline-capture-v1", "original_sleeper_matchup_baseline"):
         expected = legacy_engine_hashes(repository)
-    elif version == (NATIVE, MODEL):
-        expected = dict(V2_SOURCE_SHA256)
+    elif version[0] == NATIVE and version[1] in PRESENCE_MODELS:
+        expected = source_hashes(version[1])
         if not expected or payload.get("presence_contract") != PRESENCE:
             raise IntegrityError("Unsupported corrected native presence contract")
     else:
@@ -336,24 +435,65 @@ def native_contract(payload, *, repository=ROOT):
     return expected
 
 
-def statistic_contract(*, descriptive=False):
-    import scoring
-    if not V2_SOURCE_SHA256:
+def presence_scoring(model=None, *, repository=ROOT):
+    """Fresh exact source for pure presence arithmetic, including old reports."""
+    model = active_model(repository) if model is None else model
+    expected = source_hashes(model)["pull/scoring.py"]
+    base = Path(repository).resolve()
+    path = base / "pull/scoring.py"
+    if (path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(base)
+            or path.stat().st_size > 2 * 1024 * 1024):
+        raise IntegrityError("Unsupported statistic source path")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected:
+        if model != MODEL:
+            raise IntegrityError("Current statistic source unavailable")
+        dispatcher_identity()
+        # B3 and Root67 share this exact old scoring blob; their helper
+        # qualification remains separately pinned in the retained readers.
+        _source_commit(repository, RETAINED_CORRECTED_SOURCE)
+        if _git(repository, "rev-parse", RETAINED_CORRECTED_SOURCE + "^{tree}").decode().strip() != RETAINED_CORRECTED_TREE:
+            raise IntegrityError("Retained statistic source tree mismatch")
+        raw = _source_file(repository, RETAINED_CORRECTED_SOURCE, "pull/scoring.py")
+        if hashlib.sha256(raw).hexdigest() != expected:
+            raise IntegrityError("Retained statistic source identity mismatch")
+    module = types.ModuleType("closed_presence_scoring")
+    exec(compile(raw, "closed-presence-scoring", "exec"), module.__dict__)
+    return module
+
+
+def statistic_contract(*, descriptive=False, model=None, repository=ROOT):
+    model = active_model(repository) if model is None else model
+    scoring = presence_scoring(model, repository=repository)
+    hashes = source_hashes(model)
+    if not hashes:
         raise IntegrityError("Corrected statistic source manifest unavailable")
     return {"version": "offensive-ppr-rush-rec-td-presence-v2" if descriptive else "ten-pickable-presence-v2",
-            "presence_contract": PRESENCE, "source_files": dict(V2_SOURCE_SHA256),
+            "presence_contract": PRESENCE, "source_files": hashes,
             "sparse_zero": "EXPLICIT_LEGACY_ADAPTER_ASSUMPTION_NOT_PROVIDER_AUTHENTICATION",
             **({"ppr_weights": dict(scoring.PPR), "ppr_defensive_fumble_exclusion": "idp_fum_rec",
                 "td_event": "rush_td+rec_td>=1", "td_probability": "round(1-exp(-max(count,0)),3)"}
                if descriptive else {})}
 
 
-def statistic_presence(category, stats):
-    import scoring
+def statistic_presence(category, stats, *, model=None, repository=ROOT):
+    scoring = presence_scoring(model, repository=repository)
     keys = (set(scoring.PPR) | {"idp_fum_rec"} if category == "fpts" else
             {"rush_td", "rec_td"} if category == "anytime_td" else
             {"rush_yd", "rec_yd"} if category == "rush_rec_yd" else {category})
     return {key: scoring.component(stats, key) for key in sorted(keys)}
+
+
+def statistic_model(contract, *, descriptive=False, repository=ROOT):
+    """Select only an exact complete closed statistic contract, never a prefix."""
+    if not isinstance(contract, dict):
+        raise IntegrityError("Unsupported statistic contract")
+    for model in PRESENCE_MODELS:
+        if contract.get("source_files") == source_hashes(model):
+            if digest(contract) != digest(statistic_contract(descriptive=descriptive, model=model, repository=repository)):
+                break
+            return model
+    raise IntegrityError("Unsupported statistic source contract")
 
 
 def recorded_inputs(root, name, season, week, *, mode=None, observed_at=None):
@@ -363,16 +503,20 @@ def recorded_inputs(root, name, season, week, *, mode=None, observed_at=None):
     import verify
     inputs = referenced(root, name, "verification")
     expected = f"data/verification/{season}/w{week:02d}/{digest(inputs)}.json.gz"
-    if name != expected or inputs.get("schema_version") != INPUTS or inputs.get("model") != MODEL:
+    model = inputs.get("model")
+    if name != expected or inputs.get("schema_version") != INPUTS or model not in PRESENCE_MODELS:
         raise IntegrityError("Unsupported corrected input identity/schema/model")
-    hashes = engine_files(root)
-    if _retained_corrected_commit(inputs.get("code_commit")):
+    family = _retained_profile(inputs.get("code_commit"))
+    if family is not None:
+        if model != MODEL:
+            raise IntegrityError("Retained source cannot qualify a different model")
         result = _retained_corrected_read(root, "inputs", {"name": name, "season": season, "week": week,
-            "mode": mode, "observed_at": utc(observed_at).isoformat() if observed_at is not None else None})
+            "mode": mode, "observed_at": utc(observed_at).isoformat() if observed_at is not None else None}, family=family)
         if result != inputs:
             raise IntegrityError("Retained corrected input return changed")
         return result
-    recording_source(inputs.get("code_commit"))
+    hashes = engine_files(root, model=model)
+    recording_source(inputs.get("code_commit"), model=model)
     if inputs.get("presence_contract") != PRESENCE or inputs.get("engine_files") != hashes:
         raise IntegrityError("Corrected input source/presence mismatch")
     if inputs.get("mode") not in ("live", "replay") or mode is not None and inputs["mode"] != mode:
@@ -543,15 +687,17 @@ def dispatcher_identity():
     return code_sha256()
 
 
-def validate_plan(spec, data, at):
+def validate_plan(spec, data, at, *, root=ROOT):
     import partial_week as original
     import verify
     at = utc(at)
     plan = spec.get("plan", {})
+    model = plan.get("model")
+    hashes = source_hashes(model)
     if (digest(plan) != spec.get("plan_sha256") or spec.get("validator_sha256") != code_sha256()
             or plan.get("schema_version") != PLAN or plan.get("validator_contract") != VALIDATOR
-            or plan.get("model") != MODEL or plan.get("engine_files") != V2_SOURCE_SHA256
-            or not V2_SOURCE_SHA256 or plan.get("full_board_verified") is not False
+            or plan.get("engine_files") != hashes or engine_files(root, model=model) != hashes
+            or not hashes or plan.get("full_board_verified") is not False
             or plan.get("complete_week_qualified") is not False
             or plan.get("experimental_recording_enabled") is not False
             or plan.get("completion_status_max_age_seconds") != 60
@@ -579,8 +725,8 @@ def validate_plan(spec, data, at):
 def register_plan(root, spec, at, *, source_sha, initial_board):
     from evidence import write
     import partial_week as original
-    plan = validate_plan(spec, initial_board, at)
-    if engine_files(root) != plan["engine_files"] or digest(initial_board) != plan["initial_complete_board_sha256"]:
+    plan = validate_plan(spec, initial_board, at, root=root)
+    if engine_files(root, model=plan["model"]) != plan["engine_files"] or digest(initial_board) != plan["initial_complete_board_sha256"]:
         raise IntegrityError("Corrected initial board/source mismatch")
     if not isinstance(source_sha, str) or len(source_sha) != 40 or any(c not in "0123456789abcdef" for c in source_sha):
         raise IntegrityError("Corrected registration source commit unavailable")
@@ -612,7 +758,7 @@ def register_plan(root, spec, at, *, source_sha, initial_board):
 def registration(root, name, spec, at):
     import partial_week as original
     saved = original._saved(root, name, "verification/partial-registrations")
-    plan = validate_plan(spec, saved["initial_board"], at)
+    plan = validate_plan(spec, saved["initial_board"], at, root=root)
     if (saved.get("schema_version") != "partial-registration-data-integrity-v2" or saved["plan"] != plan
             or saved["validator_sha256"] != code_sha256() or saved["plan_sha256"] != digest(plan)
             or saved["owner_authorization"] != spec["owner_authorization"]
@@ -620,7 +766,7 @@ def registration(root, name, spec, at):
             or not utc(plan["effective_not_before"]) <= utc(saved["registered_at"]) <= utc(at)):
         raise IntegrityError("Corrected saved registration mismatch")
     original._plan_status(root, plan, saved["schedule_status_receipt"])
-    recording_source(saved["source_sha"])
+    recording_source(saved["source_sha"], model=plan["model"])
     return saved
 
 
@@ -680,6 +826,11 @@ def _frozen(root, gid, origin, contract, now, seen, *, receipt=None):
 
 
 def _reproduce_game(root, data, game, inputs):
+    family = _retained_profile(inputs.get("code_commit"))
+    if family is not None:
+        if inputs.get("model") != MODEL:
+            raise IntegrityError("Retained reproduction model mismatch")
+        return _retained_corrected_read(root, "reproduce", {"data": data, "game": game, "inputs": inputs}, family=family)
     import partial_week as original
     import verify
     import matchup
@@ -747,9 +898,10 @@ def verify_scope(root, data, proof, closing_status, spec, registration_name, at,
     import verify
     from source_evidence import verified_status
     at = utc(at)
-    plan = validate_plan(spec, data, at)
+    plan = validate_plan(spec, data, at, root=root)
+    model = plan["model"]
     registration(root, registration_name, spec, at)
-    hashes = engine_files(root)
+    hashes = engine_files(root, model=model)
     games = verify._indexed(data["games"], "id", "corrected complete board")
     if (proof.get("schema_version") != PROOF or proof.get("output_sha256") != digest(data)
             or set(proof.get("game_origins", {})) != set(games)):
@@ -758,6 +910,8 @@ def verify_scope(root, data, proof, closing_status, spec, registration_name, at,
     if set(sourced) != set(games) or not 0 <= (at - utc(closing_status["collected_at"])).total_seconds() <= 60:
         raise IntegrityError("Corrected completion source population/age mismatch")
     latest = recorded_inputs(root, proof["latest_inputs"], data["season"], data["week"], mode="live", observed_at=at)
+    if latest.get("model") != model:
+        raise IntegrityError("Corrected latest input model differs from plan")
     if utc(closing_status["collected_at"]) < utc(latest["recorded_at"]):
         raise IntegrityError("Corrected closing status precedes original-input completion")
     if latest["output_sha256"] != digest(data):
@@ -832,7 +986,7 @@ def verify_scope(root, data, proof, closing_status, spec, registration_name, at,
     if errors:
         raise IntegrityError("Corrected board structure/selection check failed: " + "; ".join(errors))
     return {"schema_version": "partial-scope-data-integrity-v2", "season": data["season"], "week": data["week"],
-            "validator_contract": VALIDATOR, "validator_sha256": code_sha256(), "model": MODEL,
+            "validator_contract": VALIDATOR, "validator_sha256": code_sha256(), "model": model,
             "engine_files": hashes, "output_sha256": digest(data), "proof": copy.deepcopy(proof),
             "plan_sha256": digest(plan), "registration_receipt": registration_name,
             "latest_inputs_sha256": digest(latest), "completion_status": copy.deepcopy(closing_status),
@@ -850,12 +1004,13 @@ def read_bundle(root, name, spec, *, now, _seen=None):
         raise IntegrityError("Cyclic corrected frozen evidence")
     seen.add(name)
     completion = original._saved(root, name, "verification/partial-completions")
-    if completion.get("validator_sha256") == RETAINED_CORRECTED_HELPERS["tools/data_integrity_v2.py"]:
+    family = next((name for name, (_, _, helpers) in _retained_families().items()
+                   if completion.get("validator_sha256") == helpers["tools/data_integrity_v2.py"]), None)
+    if family is not None:
         if completion.get("schema_version") != "partial-completion-data-integrity-v2":
             raise IntegrityError("Unsupported retained corrected completion version")
-        engine_files(root)
         return tuple(_retained_corrected_read(root, "bundle", {"name": name, "spec": spec,
-            "now": utc(now).isoformat(), "_seen": list(_seen or ())}))
+            "now": utc(now).isoformat(), "_seen": list(_seen or ())}, family=family))
     for path in (Path(root) / "data/verification/partial-failures").rglob("*.json.gz"):
         failure = original._saved(root, path.relative_to(root).as_posix(), "verification/partial-failures")
         if failure.get("completion_sha256") == digest(completion):
@@ -873,6 +1028,9 @@ def read_bundle(root, name, spec, *, now, _seen=None):
     if not utc(scope["verified_at"]) <= at <= utc(now):
         raise IntegrityError("Invalid corrected evidence completion clock")
     inputs = recorded_inputs(root, scope["proof"]["latest_inputs"], scope["season"], scope["week"], mode="live", observed_at=at)
+    model = spec["plan"].get("model")
+    if inputs.get("model") != model:
+        raise IntegrityError("Corrected saved input/plan model mismatch")
     data = inputs["week_data"]
     import verify
     population = verify._indexed(scope["game_population"], "game_id", "corrected saved scope")
@@ -887,7 +1045,8 @@ def read_bundle(root, name, spec, *, now, _seen=None):
             or completion["output_sha256"] != digest(data) or native["input_sha256"] != digest(data)
             or native.get("code_commit") != inputs.get("code_commit")
             or not utc(inputs["recorded_at"]) <= captured <= utc(scope["verified_at"]) <= at
-            or native["rows"] != make_payload(data, captured, engine_files(root), "live", model=MODEL)["rows"]):
+            or native.get("model") != model
+            or native["rows"] != make_payload(data, captured, engine_files(root, model=model), "live", model=model)["rows"]):
         raise IntegrityError("Corrected native/input/scope/clock mismatch")
     _cutoff(data, scope, at)
     included = {row["game_id"] for row in scope["game_population"] if row["classification"] == "new_pregame_original_inputs_verified"}
@@ -909,7 +1068,8 @@ def record_bundle(root, data, proof, closing_status, spec, registration_name, *,
     from reliability import capture, load_json, digest
     import partial_week as original
     root = Path(root)
-    hashes = engine_files(root)
+    model = spec.get("plan", {}).get("model")
+    hashes = engine_files(root, model=model)
     identity = digest({"data": digest(data), "engine": digest(hashes), "mode": "live"})
     target = root / "data/forward" / str(data["season"]) / f"w{data['week']:02d}" / (identity + ".json.gz")
     if target.exists():
@@ -925,7 +1085,7 @@ def record_bundle(root, data, proof, closing_status, spec, registration_name, *,
         if scope["proof"] != proof or scope["output_sha256"] != digest(data):
             raise IntegrityError("Corrected retry changed the original board/proof")
         current = utc(clock())
-        validate_plan(spec, data, current)
+        validate_plan(spec, data, current, root=root)
         from source_evidence import verified_status
         statuses = verified_status(closing_status, data["season"], data["week"], "live", current)
         if (set(statuses) != {game["id"] for game in data["games"]}
@@ -942,7 +1102,7 @@ def record_bundle(root, data, proof, closing_status, spec, registration_name, *,
     at = utc(clock())
     verify_scope(root, data, proof, closing_status, spec, registration_name, at)
     path, health = capture(data, load_json(root / "output/data/meta.json"), root, utc(clock()), hashes,
-                           mode="live", model=MODEL)
+                           mode="live", model=model)
     import phase2_capture
     native = phase2_capture.read_native_baseline(path, root, now=clock())
     scope = verify_scope(root, data, proof, closing_status, spec, registration_name, utc(clock()))

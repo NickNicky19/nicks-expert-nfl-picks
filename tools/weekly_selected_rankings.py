@@ -43,6 +43,19 @@ POLICY = {
     "tie_order": ["absolute_score_desc", "game_id", "player_id", "category"],
 }
 POLICY_SHA = overlay.digest(POLICY)
+CURRENT_MODELS = frozenset(("sleeper-matchup-classic-fg-identity-v1",
+                            "sleeper-matchup-classic-data-integrity-v2"))
+CURRENT_POLICY = dict(POLICY, version="selected-projection-gap-classic-v1",
+    fallback="same-opportunity reference identified by forecast_source and model_version; unavailable is never zero")
+
+
+def policy_for(board):
+    return CURRENT_POLICY if board.get("execution_model", {}).get("model") in CURRENT_MODELS else POLICY
+
+
+def _known_policy(value):
+    return value in (POLICY, CURRENT_POLICY)
+
 ITEM_FIELDS = {"player_id", "game_id", "key", "direction", "line", "line_from", "adj", "score", "over", "n",
                "forecast_source", "product", "model_version", "selected_row_sha256", "selected_row_canonical", "selected_at", "kickoff_utc"}
 POINTER_FIELDS = {"schema_version", "path", "sha256", "bytes", "display_board_sha256", "overlay_sha256", "published_at"}
@@ -119,7 +132,7 @@ def validate_public_asset(name, raw):
         return value
     if (not isinstance(value, dict) or set(value) != DOCUMENT_FIELDS or value["schema_version"] != VERSION
             or name != "data/weekly-selected-rankings/" + overlay.sha(raw) + ".json" or raw != overlay.canonical(value)
-            or overlay.canonical(value["policy"]) != overlay.canonical(POLICY) or value["policy_sha256"] != POLICY_SHA
+            or not _known_policy(value["policy"]) or value["policy_sha256"] != overlay.digest(value["policy"])
             or type(value["season"]) is not int or not 2000 <= value["season"] <= 2200
             or type(value["week"]) is not int or not 1 <= value["week"] <= 22
             or not all(overlay.hash64(value[k]) for k in ("display_board_sha256", "overlay_sha256"))
@@ -150,8 +163,14 @@ def validate_public_asset(name, raw):
                         or item["selected_row_canonical"] != overlay.canonical(selected_row).decode()
                         or overlay.sha(item["selected_row_canonical"].encode()) != item["selected_row_sha256"]):
                     raise ValueError("ranking public selected bytes")
-            elif item["forecast_source"] != "R0_FALLBACK" or item["product"] != "reference_point" or any(item[k] is not None for k in ("model_version", "selected_row_sha256", "selected_row_canonical")):
-                raise ValueError("ranking public fallback fields")
+            elif item["forecast_source"] in {"R0_FALLBACK", "CURRENT_BASELINE"}:
+                current = item["forecast_source"] == "CURRENT_BASELINE"
+                if (item["product"] != "reference_point"
+                        or (item["model_version"] not in CURRENT_MODELS if current else item["model_version"] is not None)
+                        or any(item[k] is not None for k in ("selected_row_sha256", "selected_row_canonical"))):
+                    raise ValueError("ranking public fallback fields")
+            else:
+                raise ValueError("ranking public forecast source")
     for proof in value["frozen_proofs"]:
         if (not isinstance(proof, dict) or set(proof) != {"key", "receipt_sha256", "persisted_at"}
                 or not isinstance(proof["key"], list) or len(proof["key"]) != 4
@@ -194,12 +213,16 @@ def order(item):
 
 def effective(player, prop, doc, now):
     """Keep the forecast's actual functional; never treat a point as a CDF."""
+    if player.get("reference_model") not in {None, "original_sleeper_matchup_baseline", *CURRENT_MODELS}:
+        raise ValueError("unsupported weekly reference model; do not relabel as R0")
     key = (player["game_id"], player["id"], prop["key"])
     row = next((r for r in doc["rows"] if overlay.key(r) == key), None)
     if row is not None and overlay.utc(row["valid_until_utc"]) > overlay.utc(now):
         return row["forecast_value"], "SELECTED", row["product"], row["model_version"], overlay.digest(row), overlay.canonical(row).decode()
     value = prop.get("adj")
     if number(value):
+        if player.get("reference_model") in CURRENT_MODELS:
+            return value, "CURRENT_BASELINE", "reference_point", player["reference_model"], None, None
         return value, "R0_FALLBACK", "reference_point", None, None, None
     return None
 
@@ -217,6 +240,8 @@ def validate_item(item, offers, selected, *, frozen=False):
     k = item["game_id"], item["player_id"], item["key"]
     if k not in offers or item["key"] not in POLICY["categories"]: raise ValueError("ranking opportunity")
     player, game, prop = offers[k]
+    if player.get("reference_model") not in {None, "original_sleeper_matchup_baseline", *CURRENT_MODELS}:
+        raise ValueError("unsupported weekly reference model; do not relabel as R0")
     cat = POLICY["categories"][item["key"]]
     if (item["direction"] not in {"over", "under"} or item["line_from"] not in {"dk", "sleeper"}
             or not all(number(item[k]) for k in ("line", "adj", "score", "over", "n"))
@@ -236,9 +261,13 @@ def validate_item(item, offers, selected, *, frozen=False):
                 or item["selected_row_canonical"] != overlay.canonical(row).decode()
                 or overlay.utc(item["selected_at"]) >= overlay.utc(row["valid_until_utc"])):
             raise ValueError("ranking selected identity")
-    elif item["forecast_source"] == "R0_FALLBACK":
+    elif item["forecast_source"] in {"R0_FALLBACK", "CURRENT_BASELINE"}:
+        current = player.get("reference_model") in CURRENT_MODELS
+        if item["forecast_source"] != ("CURRENT_BASELINE" if current else "R0_FALLBACK"):
+            raise ValueError("ranking reference model")
         if (item["adj"] != prop.get("adj") or item["product"] != "reference_point"
-                or item["model_version"] is not None or item["selected_row_sha256"] is not None or item["selected_row_canonical"] is not None):
+                or item["model_version"] != (player["reference_model"] if current else None)
+                or item["selected_row_sha256"] is not None or item["selected_row_canonical"] is not None):
             raise ValueError("ranking R0 identity")
     else: raise ValueError("ranking forecast source")
     return item
@@ -253,7 +282,8 @@ def prepare(board, board_hash, doc, overlay_hash, *, now, website_source_sha, pr
     started = {g["id"] for g in board["games"] if g.get("state") != "pre" or overlay.utc(g["kickoff"]) <= overlay.utc(now)}
     picks = {"over": [], "under": []}; proofs = []; fallback = {"started_without_selected_record": 0, "unavailable_forecast": 0, "expired_before_kickoff": 0}
     if previous is not None:
-        if (previous["schema_version"] != VERSION or previous["policy"] != POLICY or previous["policy_sha256"] != POLICY_SHA
+        if (previous["schema_version"] != VERSION or not _known_policy(previous["policy"])
+                or previous["policy_sha256"] != overlay.digest(previous["policy"])
                 or (previous["season"], previous["week"]) != (board["season"], board["week"])):
             previous = None
     if previous is not None:
@@ -309,7 +339,8 @@ def prepare(board, board_hash, doc, overlay_hash, *, now, website_source_sha, pr
         fresh[side].sort(key=order)
         picks[side] += fresh[side][:max(0, POLICY["top_n"] - len(picks[side]))]
         picks[side].sort(key=order)
-    result = dict(schema_version=VERSION, policy=copy.deepcopy(POLICY), policy_sha256=POLICY_SHA,
+    selected_policy = policy_for(board)
+    result = dict(schema_version=VERSION, policy=copy.deepcopy(selected_policy), policy_sha256=overlay.digest(selected_policy),
                   season=board["season"], week=board["week"], display_board_sha256=board_hash,
                   overlay_sha256=overlay_hash, prepared_at=now, website_source_sha=website_source_sha,
                   picks=picks, frozen_proofs=proofs, fallback_counts=fallback)
@@ -330,8 +361,8 @@ def read_public(root):
 def _validate_document(doc, pointer, board, board_hash, selected_doc, *, reader=None):
     fields = {"schema_version", "policy", "policy_sha256", "season", "week", "display_board_sha256", "overlay_sha256",
               "prepared_at", "website_source_sha", "picks", "frozen_proofs", "fallback_counts"}
-    if (set(doc) != fields or doc["schema_version"] != VERSION or overlay.canonical(doc["policy"]) != overlay.canonical(POLICY)
-            or doc["policy_sha256"] != POLICY_SHA or (doc["season"], doc["week"]) != (board["season"], board["week"])
+    if (set(doc) != fields or doc["schema_version"] != VERSION or overlay.canonical(doc["policy"]) != overlay.canonical(policy_for(board))
+            or doc["policy_sha256"] != overlay.digest(policy_for(board)) or (doc["season"], doc["week"]) != (board["season"], board["week"])
             or doc["display_board_sha256"] != board_hash or doc["overlay_sha256"] != overlay.digest(selected_doc)
             or doc["website_source_sha"] != selected_doc["website_source_sha"]
             or set(doc["picks"]) != {"over", "under"} or not isinstance(doc["frozen_proofs"], list)
@@ -387,7 +418,8 @@ def _validate_document(doc, pointer, board, board_hash, selected_doc, *, reader=
                 raise ValueError("ranking original body binding")
             old = [i for side in original["picks"].values() for i in side if identity(i) == k]
             current = next(i for side in doc["picks"].values() for i in side if identity(i) == k)
-            if len(old) != 1 or old[0] != current or original["policy_sha256"] != POLICY_SHA:
+            if (len(old) != 1 or old[0] != current or not _known_policy(original["policy"])
+                    or original["policy_sha256"] != overlay.digest(original["policy"])):
                 raise ValueError("ranking original membership changed")
             paths.update({receipt_path, receipt["path"]})
     return paths

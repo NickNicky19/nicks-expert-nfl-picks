@@ -24,7 +24,12 @@ def read_phase2(root):
             raise ValueError("Original model cannot use the corrected verification contract")
         # Preserve the existing original-model interface without loading new code.
         return value["capture_enabled"]
-    if (model != "sleeper-matchup-data-integrity-v2"
+    if model == "sleeper-matchup-classic-fg-identity-v1":
+        if (value["capture_enabled"] is not False or value.get("experimental_recording_enabled") is not False
+                or value.get("verification_mode") is not None):
+            raise ValueError("Legacy Classic has no qualified Phase 2 verification route")
+        return False
+    if (model not in ("sleeper-matchup-data-integrity-v2", "sleeper-matchup-classic-data-integrity-v2")
             or value.get("verification_mode") != "partial-week-data-integrity-v2"
             or value.get("experimental_recording_enabled") is not False):
         raise ValueError("Invalid Phase 2 mode or attempted production-model switch")

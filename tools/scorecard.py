@@ -17,6 +17,7 @@ import grade
 import scoring
 import week_population
 import data_integrity_v2 as corrected
+import classic_model_v1 as classic
 from evidence import read, write
 from reliability import IntegrityError, atomic_json, digest, engine_hashes, finite, load_json, stamp, utc
 from source_evidence import verified_status
@@ -30,21 +31,23 @@ SCORING_V1_SHA256 = "31672c10d526d591db8951157b0ecd669b4d02b412a75deec337618bff1
 EXTRA_CATEGORIES = frozenset(("fpts", "anytime_td"))
 
 
-def descriptive_contract(*, presence_aware=False):
+def descriptive_contract(*, presence_aware=False, model=None):
     """Retained scoring, not a new forecast or a permissive generic-stat reader."""
     if presence_aware:
-        return corrected.statistic_contract(descriptive=True)
-    retained = corrected.legacy_scoring()
-    return {"version": "offensive-ppr-rush-rec-td-v1", "scoring_sha256": SCORING_V1_SHA256,
+        return corrected.statistic_contract(descriptive=True, model=model)
+    if model not in (None, "original_sleeper_matchup_baseline", classic.MODEL):
+        raise IntegrityError("Unsupported legacy descriptive model")
+    retained = classic.scoring() if model == classic.MODEL else corrected.legacy_scoring()
+    return {"version": "offensive-ppr-rush-rec-td-v1", "scoring_sha256": classic.ENGINE["pull/scoring.py"] if model == classic.MODEL else SCORING_V1_SHA256,
             "ppr_weights": dict(retained.PPR), "ppr_defensive_fumble_exclusion": "idp_fum_rec",
             "td_event": "rush_td+rec_td>=1", "td_probability": "round(1-exp(-max(count,0)),3)"}
 
 
-def descriptive_statistic(category, stats, *, presence_aware=False):
+def descriptive_statistic(category, stats, *, presence_aware=False, model=None):
     if category not in EXTRA_CATEGORIES or not isinstance(stats, dict):
         raise IntegrityError("Unsupported descriptive source statistic")
     if presence_aware:
-        return scoring.stat_value(category, stats)
+        return corrected.presence_scoring(model).stat_value(category, stats)
     keys = set(scoring.PPR) | {"idp_fum_rec"} if category == "fpts" else {"rush_td", "rec_td"}
     missing = False
     for key in keys:
@@ -59,14 +62,33 @@ def descriptive_statistic(category, stats, *, presence_aware=False):
             raise IntegrityError("Invalid descriptive statistic component")
     if missing:
         return None
-    return corrected.legacy_scoring().ppr_points(stats) if category == "fpts" else stats.get("rush_td", 0) + stats.get("rec_td", 0)
+    retained = classic.scoring() if model == classic.MODEL else corrected.legacy_scoring()
+    return retained.ppr_points(stats) if category == "fpts" else stats.get("rush_td", 0) + stats.get("rec_td", 0)
+
+
+def _legacy_descriptive_model(contract):
+    if not isinstance(contract, dict):
+        raise IntegrityError("Unsupported legacy descriptive source contract")
+    source = contract.get("scoring_sha256")
+    if source == SCORING_V1_SHA256:
+        model = None
+    elif source == classic.ENGINE["pull/scoring.py"]:
+        model = classic.MODEL
+    else:
+        raise IntegrityError("Unsupported legacy descriptive source contract")
+    if digest(contract) != digest(descriptive_contract(model=model)):
+        raise IntegrityError("Unsupported legacy descriptive source contract")
+    return model
 
 
 def _validate_descriptive_outcome(payload, row=None):
     modern = payload.get("schema_version") == corrected.DESCRIPTIVE_OUTCOMES
-    if (payload.get("schema_version") not in (DERIVED_STAT_SCHEMA, corrected.DESCRIPTIVE_OUTCOMES)
-            or payload.get("statistic_contract") != descriptive_contract(presence_aware=modern)):
+    if payload.get("schema_version") not in (DERIVED_STAT_SCHEMA, corrected.DESCRIPTIVE_OUTCOMES):
         raise IntegrityError("Unsupported descriptive outcome contract")
+    if modern:
+        corrected.statistic_model(payload.get("statistic_contract"), descriptive=True)
+    else:
+        _legacy_descriptive_model(payload.get("statistic_contract"))
     if (not isinstance(payload.get("source"), str) or not payload["source"].strip()
             or not payload.get("cache_path") and "rows" in payload
             or payload.get("source") == "git_pinned_saved_cache_statistical_regrade"
@@ -192,8 +214,9 @@ def paired_forecasts(receipts, policy, expected_hashes, allow_replay=False, *, r
     exclusions = Counter()
     observations = 0
     for payload in sorted(receipts, key=lambda p: (utc(p["captured_at"]), digest(p))):
-        if payload.get("schema_version") == corrected.NATIVE:
-            corrected.native_contract(payload)
+        if payload.get("schema_version") in (corrected.NATIVE, classic.CAPTURE):
+            (classic.native_contract(payload) if payload["schema_version"] == classic.CAPTURE
+             else corrected.native_contract(payload))
             exclusions["corrected_model_outside_registered_experiment"] += len(payload["rows"])
             continue
         if payload.get("schema_version") != "baseline-capture-v1" or payload.get("model") != policy["baseline"]:
@@ -318,7 +341,7 @@ COUNT_STATS = frozenset(("pass_td", "pass_cmp", "pass_att", "pass_int", "rush_at
 PICKABLE_STATS = COUNT_STATS | frozenset(("pass_yd", "rush_yd", "rec_yd", "rush_rec_yd"))
 
 
-def source_statistic(category, stats, *, presence_aware=False):
+def source_statistic(category, stats, *, presence_aware=False, model=None):
     """Called only after participation is confirmed; absent sparse values are zero.
 
     The provider's combined yards contract uses components, never an aggregate
@@ -326,7 +349,10 @@ def source_statistic(category, stats, *, presence_aware=False):
     """
     keys = ("rush_yd", "rec_yd") if category == "rush_rec_yd" else (category,)
     modern = presence_aware or "_presence" in stats
-    values = [scoring.component(stats, key)["value"] if modern else stats.get(key, 0) for key in keys]
+    if modern and model == classic.MODEL:
+        return None  # Old Classic never emitted the corrected presence contract.
+    reader = corrected.presence_scoring(corrected.MODEL if model is None else model) if modern else None
+    values = [reader.component(stats, key)["value"] if modern else stats.get(key, 0) for key in keys]
     for key, value in zip(keys, values):
         if value is None:
             continue
@@ -421,9 +447,13 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
     if derived_context is not None and (not isinstance(derived_context, dict) or not derived_context):
         raise IntegrityError("Missing derived input identity")
     extended = statistic_contract is not None
-    if extended and (statistic_contract not in (descriptive_contract(), descriptive_contract(presence_aware=True))
-                     or output_root is None or include_populations):
-        raise IntegrityError("Extended statistics require the versioned isolated local contract")
+    if extended:
+        if isinstance(statistic_contract, dict) and statistic_contract.get("version") == "offensive-ppr-rush-rec-td-presence-v2":
+            corrected.statistic_model(statistic_contract, descriptive=True)
+        else:
+            _legacy_descriptive_model(statistic_contract)
+        if output_root is None or include_populations:
+            raise IntegrityError("Extended statistics require the versioned isolated local contract")
     if output_root is not None:
         sink, source = Path(output_root).resolve(), root.resolve()
         if sink.is_relative_to(source) or source.is_relative_to(sink) or sink.is_relative_to(ROOT):
@@ -438,18 +468,22 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
     for (season, week), rows in sorted(groups.items()):
         board_path = root / ("output/data/week.json" if (current["season"], current["week"]) == (season, week)
                              else f"output/data/weeks/{season}_w{week:02d}.json")
-        cache_path = root / f"data/cache/stats_{season}_{week:02d}.json"
+        name = f"stats_{season}_{week:02d}.json"
+        candidates = [(root / "data/cache/stat-keys-presence-fgm-v2" / name, corrected.CLASSIC_MODEL),
+                      (root / "data/cache/stat-keys-fgm-v1" / name, classic.MODEL),
+                      (root / "data/cache" / name, None)]
+        cache_path, statistic_model = next(((path, model) for path, model in candidates if path.exists()), candidates[-1])
         board = load_json(board_path) if board_path.exists() else {"games": []}
         cache = load_json(cache_path) if cache_path.exists() else {}
-        presence_aware = (extended and statistic_contract.get("version") == "offensive-ppr-rush-rec-td-presence-v2"
-                          or any(isinstance(entry, dict) and isinstance(entry.get("stats"), dict)
-                              and "_presence" in entry["stats"]
-                              for entry in cache.values())
-                          or any(row.get("model_version") == corrected.MODEL for row in rows))
+        if statistic_model is None and cache_path.parent.name == "cache" and any(
+                isinstance(entry, dict) and isinstance(entry.get("stats"), dict)
+                and "_presence" in entry["stats"] for entry in cache.values()):
+            statistic_model = corrected.MODEL
+        presence_aware = statistic_model in corrected.PRESENCE_MODELS
         outcome_schema = corrected.DESCRIPTIVE_OUTCOMES if extended and presence_aware else (
             DERIVED_STAT_SCHEMA if extended else corrected.OUTCOMES if presence_aware else "forecast-outcomes-v1")
-        local_contract = descriptive_contract(presence_aware=presence_aware) if extended else (
-            corrected.statistic_contract() if presence_aware else None)
+        local_contract = descriptive_contract(presence_aware=presence_aware, model=statistic_model) if extended else (
+            corrected.statistic_contract(model=statistic_model) if presence_aware else None)
         games = {g["id"]: g for g in board["games"]}
         source_status = observed_status.get(f"{season}_{week:02d}")
         def confirmed_final(game):
@@ -492,7 +526,11 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
                 elif status == "played":
                     status, reason = "resolved", "played_sparse_stats"
                     reader = descriptive_statistic if extended else source_statistic
-                    value = reader(row["category"], entry.get("stats", {}), presence_aware=presence_aware)
+                    value = reader(row["category"], entry.get("stats", {}), presence_aware=presence_aware, model=statistic_model)
+                    metadata = entry.get("stats", {}).get("_presence")
+                    if statistic_model == corrected.CLASSIC_MODEL and (not isinstance(metadata, dict)
+                            or metadata.get("version") != corrected.PRESENCE or metadata.get("kind") != "actual"):
+                        value = None
                     if binding["outcome_identity_status"] == "quarantined":
                         status, reason = "unresolved", "saved_player_game_identity_mismatch"
                     elif value is None:
@@ -512,7 +550,7 @@ def snapshot_outcomes(root, pairs, observed_at, mode="live", *, output_root=None
             if extended:
                 outcomes[-1].update(position=row["position"], forecast_kickoff=row["kickoff"])
             if presence_aware and isinstance(entry, dict) and isinstance(entry.get("stats"), dict):
-                outcomes[-1]["statistic_presence"] = corrected.statistic_presence(row["category"], entry["stats"])
+                outcomes[-1]["statistic_presence"] = corrected.statistic_presence(row["category"], entry["stats"], model=statistic_model)
                 if actual is None and status == "unresolved" and reason == "explicit_null_stat":
                     states = sorted({value["state"] for value in outcomes[-1]["statistic_presence"].values()
                                      if value["value"] is None})
@@ -563,8 +601,8 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
     collected = utc(payload["collected_at"])
     extended = payload.get("schema_version") in (DERIVED_STAT_SCHEMA, corrected.DESCRIPTIVE_OUTCOMES)
     modern = payload.get("schema_version") in (corrected.OUTCOMES, corrected.DESCRIPTIVE_OUTCOMES)
-    if modern and payload.get("statistic_contract") != corrected.statistic_contract(descriptive=extended):
-        raise IntegrityError("Unsupported corrected outcome source contract")
+    statistic_model = corrected.statistic_model(payload.get("statistic_contract"), descriptive=extended) if modern else (
+        _legacy_descriptive_model(payload.get("statistic_contract")) if extended else None)
     if extended:
         _validate_descriptive_outcome(payload, row)
     source = payload.get("source")
@@ -617,7 +655,13 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
                                                           ["missing_original_source_statistics"]))}
         status = "unresolved"
     if modern and isinstance(entry, dict) and isinstance(entry.get("stats"), dict):
-        expected_presence = corrected.statistic_presence(row["category"], entry["stats"])
+        metadata = entry["stats"].get("_presence")
+        if statistic_model == corrected.CLASSIC_MODEL and (not isinstance(metadata, dict)
+                or metadata.get("version") != corrected.PRESENCE or metadata.get("kind") != "actual"):
+            binding = {"outcome_identity_status": "quarantined",
+                       "outcome_identity_reasons": sorted(set(binding["outcome_identity_reasons"] +
+                                                              ["missing_corrected_source_presence"]))}
+        expected_presence = corrected.statistic_presence(row["category"], entry["stats"], model=statistic_model)
         if row.get("statistic_presence") != expected_presence:
             binding = {"outcome_identity_status": "quarantined",
                        "outcome_identity_reasons": sorted(set(binding["outcome_identity_reasons"] +
@@ -625,7 +669,7 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
         if status == "resolved":
             reader = descriptive_statistic if extended else source_statistic
             try:
-                observed = reader(row["category"], entry["stats"], presence_aware=True)
+                observed = reader(row["category"], entry["stats"], presence_aware=True, model=statistic_model)
                 consistent = observed is not None and grade.participation(entry) == "played" and observed == row.get("actual")
             except (TypeError, ValueError):
                 consistent = False
@@ -649,7 +693,7 @@ def _outcome_record(payload, row, payload_sha, week_complete=False):
             if grade.participation(entry) != "played":
                 raise IntegrityError("Resolved outcome has contradictory participation")
             reader = descriptive_statistic if extended else source_statistic
-            observed = reader(row["category"], entry.get("stats", {}), presence_aware=modern)
+            observed = reader(row["category"], entry.get("stats", {}), presence_aware=modern, model=statistic_model)
             finite(observed, "saved source statistic", optional=False)
             if observed != actual:
                 raise IntegrityError("Resolved outcome differs from its saved source statistic")
@@ -848,13 +892,16 @@ def descriptive_forecasts(receipts, expected_hashes, observed_at, *, model_versi
     valid = []
     categories = PICKABLE_STATS | EXTRA_CATEGORIES
     supported = []
-    modern = model_version == corrected.MODEL
-    if model_version not in ("original_sleeper_matchup_baseline", corrected.MODEL):
+    modern = model_version in corrected.PRESENCE_MODELS
+    classic_saved = model_version == classic.MODEL
+    if model_version not in ("original_sleeper_matchup_baseline", classic.MODEL, *corrected.PRESENCE_MODELS):
         raise IntegrityError("Unsupported descriptive model selector")
-    if modern and expected_hashes != corrected.V2_SOURCE_SHA256:
+    if classic_saved and expected_hashes != classic.ENGINE:
+        raise IntegrityError("Classic descriptive source must match the closed manifest")
+    if modern and expected_hashes != corrected.source_hashes(model_version):
         raise IntegrityError("Corrected descriptive source must match the closed manifest")
     for sha, payload in unique.items():
-        if (payload.get("schema_version") != (corrected.NATIVE if modern else "baseline-capture-v1")
+        if (payload.get("schema_version") != (corrected.NATIVE if modern else classic.CAPTURE if classic_saved else "baseline-capture-v1")
                 or payload.get("model") != model_version
                 or payload.get("engine_files") != expected_hashes
                 or payload.get("engine_sha256") != digest(expected_hashes)):
@@ -862,6 +909,8 @@ def descriptive_forecasts(receipts, expected_hashes, observed_at, *, model_versi
             continue
         if modern:
             corrected.native_contract(payload)
+        elif classic_saved:
+            classic.native_contract(payload)
         supported.append((sha, payload))
     for sha, payload in sorted(supported, key=lambda item: (utc(item[1]["captured_at"]), item[0])):
         if payload.get("mode") != "live":
@@ -873,7 +922,7 @@ def descriptive_forecasts(receipts, expected_hashes, observed_at, *, model_versi
         if captured > utc(observed_at):
             excluded["future_receipt"] += 1
             continue
-        if not modern and expected_hashes.get("pull/scoring.py") != SCORING_V1_SHA256:
+        if not modern and not classic_saved and expected_hashes.get("pull/scoring.py") != SCORING_V1_SHA256:
             raise IntegrityError("Unrecognized original descriptive scoring engine")
         valid.append(payload)
         references[sha] = payload
@@ -916,8 +965,8 @@ def descriptive_forecasts(receipts, expected_hashes, observed_at, *, model_versi
                 "baseline_input_sha256": payload["input_sha256"], "engine_sha256": payload["engine_sha256"],
                 "model_version": payload["model"],
                 "observation_row_sha256": digest(row)})
-    if modern:
-        # The registered primary selector intentionally rejects this model.
+    if modern or classic_saved:
+        # The registered primary selector intentionally rejects these models.
         # Preserve the same earliest eligible paired-observation rule locally.
         pairs = {}
         for payload in valid:
@@ -979,6 +1028,13 @@ def bind_original_board(row, boards):
     board, player = record["document"], record["players"].get(row["player_id"])
     game = record["games"].get(row["game_id"])
     try:
+        model = row.get("model_version", "original_sleeper_matchup_baseline")
+        if model in corrected.PRESENCE_MODELS:
+            source_scoring = corrected.presence_scoring(model)
+        elif model in ("original_sleeper_matchup_baseline", classic.MODEL):
+            source_scoring = classic.scoring() if model == classic.MODEL else corrected.legacy_scoring()
+        else:
+            raise IntegrityError("Unsupported original-board model")
         if ((board["season"], board["week"]) != (row["season"], row["week"])
                 or utc(board["generated_at"]) != utc(row["forecast_generated_at"])
                 or utc(board["generated_at"]) > utc(row["captured_at"])
@@ -1015,8 +1071,8 @@ def bind_original_board(row, boards):
             for key in set(scoring.PPR) | {"idp_fum_rec"}:
                 if key in projection:
                     finite(projection[key], "original PPR projection component", optional=False)
-            value = (scoring.ppr_points(projection, projection=True) if row.get("model_version") == corrected.MODEL
-                     else corrected.legacy_scoring().ppr_points(projection))
+            value = (source_scoring.ppr_points(projection, projection=True) if model in corrected.PRESENCE_MODELS
+                     else source_scoring.ppr_points(projection))
             if value != row["raw_projection"]:
                 raise IntegrityError("Original component PPR differs from receipt")
         if row["category"] == "anytime_td":
@@ -1025,8 +1081,8 @@ def bind_original_board(row, boards):
                 raise IntegrityError("Original TD projection components missing")
             for key in ("rush_td", "rec_td"):
                 finite(projection.get(key, 0), "original TD projection component", optional=False)
-            value = (scoring.stat_value("anytime_td", projection, projection=True) if row.get("model_version") == corrected.MODEL
-                     else corrected.legacy_scoring().stat_value("anytime_td", projection))
+            value = (source_scoring.stat_value("anytime_td", projection, projection=True) if model in corrected.PRESENCE_MODELS
+                     else source_scoring.stat_value("anytime_td", projection))
             if round(value, 2) != row["raw_projection"]:
                 raise IntegrityError("Original TD expectation differs from receipt")
         provider = player.get("proj_ppr") if row["category"] == "fpts" else None
@@ -1034,7 +1090,7 @@ def bind_original_board(row, boards):
         finite(provider, "saved provider fantasy total")
         finite(probability, "saved TD probability")
         if probability is not None and (not 0 <= probability <= 1 or
-                probability != round(scoring.td_probability(row["raw_projection"]), 3)):
+                probability != round(source_scoring.td_probability(row["raw_projection"]), 3)):
             raise IntegrityError("Saved TD probability differs from retained formula")
     except (KeyError, TypeError, ValueError) as err:
         return {"status": "invalid_exact_original_board", "reason": str(err),
@@ -1104,7 +1160,7 @@ def _td_metrics(rows):
 def evaluate_descriptive(first, pairs, numeric_outcomes, extra_outcomes, *, original_boards=(),
                          model_version="original_sleeper_matchup_baseline"):
     """Local additive metrics. Never promotes, pools units or edits an observation."""
-    if model_version not in ("original_sleeper_matchup_baseline", corrected.MODEL):
+    if model_version not in ("original_sleeper_matchup_baseline", classic.MODEL, *corrected.PRESENCE_MODELS):
         raise IntegrityError("Unsupported descriptive report model")
     rows = list(first.values()) + list(pairs.values())
     original_engine = (digest(corrected.legacy_engine_hashes())
@@ -1113,8 +1169,10 @@ def evaluate_descriptive(first, pairs, numeric_outcomes, extra_outcomes, *, orig
     for row in rows:
         if row.get("model_version", model_version) != model_version:
             raise IntegrityError("Descriptive report cannot mix or relabel model cohorts")
-        if model_version == corrected.MODEL and row.get("engine_sha256") != digest(corrected.V2_SOURCE_SHA256):
+        if model_version in corrected.PRESENCE_MODELS and row.get("engine_sha256") != digest(corrected.source_hashes(model_version)):
             raise IntegrityError("Corrected descriptive row lacks the closed engine identity")
+        if model_version == classic.MODEL and row.get("engine_sha256") != digest(classic.ENGINE):
+            raise IntegrityError("Classic descriptive row lacks the closed engine identity")
         if (model_version == "original_sleeper_matchup_baseline" and row.get("engine_sha256") is not None
                 and row["engine_sha256"] != original_engine):
             raise IntegrityError("Original descriptive row has an incompatible engine identity")
@@ -1169,7 +1227,8 @@ def evaluate_descriptive(first, pairs, numeric_outcomes, extra_outcomes, *, orig
             probability = binding.get("recorded_probability")
             provenance = "originally_recorded_probability" if probability is not None else "rederived_from_original_count_retained_formula"
             if probability is None:
-                probability = round(scoring.td_probability(row["raw_projection"]), 3)
+                probability = round((corrected.presence_scoring(model_version) if model_version in corrected.PRESENCE_MODELS
+                                     else classic.scoring() if model_version == classic.MODEL else corrected.legacy_scoring()).td_probability(row["raw_projection"]), 3)
         item = dict(row, original_board=binding, probability=probability,
                     probability_provenance=provenance, adjusted_probability=None, actual_event=None)
         if row["evaluation_status"] == "resolved" and probability is not None:
@@ -1201,9 +1260,9 @@ def evaluate_descriptive(first, pairs, numeric_outcomes, extra_outcomes, *, orig
             value["probability"] = _td_metrics(td_rows)
         categories[category] = value
     unpaired_rows = [r for r in population if identity(r) not in pairs and r["category"] != "anytime_td"]
-    if model_version not in ("original_sleeper_matchup_baseline", corrected.MODEL):
+    if model_version not in ("original_sleeper_matchup_baseline", classic.MODEL, *corrected.PRESENCE_MODELS):
         raise IntegrityError("Unsupported descriptive model selector")
-    return {"schema_version": DESCRIPTIVE_VERSION, "statistic_contract": descriptive_contract(presence_aware=model_version == corrected.MODEL),
+    return {"schema_version": DESCRIPTIVE_VERSION, "statistic_contract": descriptive_contract(presence_aware=model_version in corrected.PRESENCE_MODELS, model=model_version if model_version in (*corrected.PRESENCE_MODELS, classic.MODEL) else None),
             "model_version": model_version,
             "scope": "DESCRIPTIVE_EXTENSION_NOT_REGISTERED_PRIMARY_EXPERIMENT",
             "observation_selection": "earliest_eligible_same_receipt_values_by_capture_time_then_payload_digest",
@@ -1334,9 +1393,14 @@ def build_scorecard(root=ROOT, observed_at=None, mode="live", allow_replay=False
     now = observed_at or datetime.now(timezone.utc)
     policy = load_json(root / "config/evaluation-policy.json")
     lane = "forward" if mode == "live" else "replay"
-    receipts = [read(p) for p in sorted((root / "data" / lane).rglob("*.json.gz"))]
-    current_model = all((root / name).is_file() and hashlib.sha256((root / name).read_bytes()).hexdigest() == value
-                        for name, value in corrected.V2_SOURCE_SHA256.items()) and bool(corrected.V2_SOURCE_SHA256)
+    receipt_roots = [root / "data" / lane]
+    if mode == "live":
+        receipt_roots.append(root / "data/current-classic")
+    receipts = [read(p) for directory in receipt_roots for p in sorted(directory.rglob("*.json.gz"))]
+    current_model = any(all((root / name).is_file() and not (root / name).is_symlink()
+                           and hashlib.sha256((root / name).read_bytes()).hexdigest() == value
+                           for name, value in corrected.source_hashes(model).items())
+                        for model in corrected.PRESENCE_MODELS)
     hashes = corrected.legacy_engine_hashes() if current_model else engine_hashes(root)
     pairs, coverage = paired_forecasts(receipts, policy, hashes, allow_replay=allow_replay)
     additional = (_additional_pairs(additional_outcome_pairs, pairs, receipts, now, allow_replay)
