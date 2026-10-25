@@ -55,6 +55,9 @@ def overlay():return importlib.import_module("nfl_lab.weekly_website_overlay" if
 
 
 def policy_check(policy):
+    if policy.get("schema_version")=="weekly-derived-selected-policy-v4":
+        from weekly_public_feed_v4 import policy_check as check_v4
+        return check_v4(policy)
     if policy.get("schema_version")==POLICY_V3:return policy_check_v3(policy)
     if policy.get("schema_version")==POLICY_V2:return policy_check_v2(policy)
     require(policy.get("schema_version")==POLICY and policy.get("registration_id")=="weekly-adaptive-release-v1","POLICY_CONTRACT")
@@ -171,6 +174,9 @@ def export_rows(rows,bundle,policy,board,*,now,durable_acceptance=None,version_c
 
 
 def validate_feed(feed,policy,board,*,now,fetch=None):
+    if policy.get("schema_version")=="weekly-derived-selected-policy-v4":
+        from weekly_public_feed_v4 import validate_feed as validate_v4
+        return validate_v4(feed,policy,board,now=now,fetch=fetch or download)[0]
     if policy.get("schema_version")==POLICY_V2:return validate_feed_v2(feed,policy,board,now=now,fetch=fetch or download)[0]
     policy_check(policy);api=overlay();require(set(feed)==META_FIELDS and feed["schema_version"]==VERSION and feed["state"]=="DERIVED_SELECTED_ONLY","FEED_CONTRACT")
     require((feed["season"],feed["week"])==(board["season"],board["week"]) and feed["producer_policy_sha256"]==policy["producer_policy_sha256"]
@@ -243,6 +249,9 @@ def fetch_feed(policy,board,*,fetch=download):
 
 def writer_input(root,policy,board,*,website_source_sha,now,feed=None,fetch=download):
     """Optional feed failure returns in-memory empty input; never reuses a stale descriptor."""
+    if policy.get("schema_version")=="weekly-derived-selected-policy-v4":
+        from weekly_public_feed_v4 import writer_input as write_v4
+        return write_v4(root,policy,board,website_source_sha=website_source_sha,now=now,feed=feed,fetch=fetch)
     if policy.get("schema_version")==POLICY_V3:
         return writer_input_v3(root,policy,board,website_source_sha=website_source_sha,now=now,feed=feed,fetch=fetch)
     if policy.get("schema_version")==POLICY_V2:

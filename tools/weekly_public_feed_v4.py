@@ -1,0 +1,300 @@
+"""Source-bound correction-epoch consumer; existing feed wire remains V2.
+
+Only an owner-registered publisher/recipe may declare dynamic metadata versions.
+This module never fits, selects, reads outcomes or promotes an unregistered
+template. Historical website policies and their fixed recipes stay unchanged.
+"""
+from __future__ import annotations
+import copy
+from pathlib import Path
+import re
+import zlib
+
+import weekly_public_feed as old
+from classic_model_v1 import contract
+
+POLICY = "weekly-derived-selected-policy-v4"
+AUTHORITY = "audit-weekly-publication-authority-v3"
+RULE = "DECLARED_EPOCH_METADATA_PROJECTION_ONLY_NO_VALUES_OR_RESELECTION"
+ROOT = Path(__file__).resolve().parents[1]
+CURRENT_CODE_FILES = old.CURRENT_CODE_FILES | {"tools/weekly_public_feed_v4.py"}
+STATIC = {"registration_id", "source_policy_sha256", "public_fields", "public_roles",
+          "rights_authorities", "r0_identities", "engine_sha256", "public_ref"}
+KEYS = STATIC | {"schema_version", "state", "authority_kind", "human_approval",
+    "public_raw_or_model_weights", "static_registration_sha256", "registered_at_utc",
+    "lab_public_policy_sha256", "lab_recipe_registered_at_utc", "recipe_registration_sha256", "producer_policy_sha256",
+    "workflow_sha256", "jobs", "publication_authority", "expected_categories",
+    "current_execution", "website_code_sha256"}
+AUTHORITY_KEYS = {"schema_version", "state", "repository", "source_sha", "source_branch",
+    "workflow_path", "event", "export_job", "run_attempt", "public_ref", "catalog_schema",
+    "catalog_freezer_sha256", "catalog_registration_rule", "recipe_registration_sha256"}
+CATALOG_KEYS = {"schema_version", "rows", "current_values_used", "public_policy_registration"}
+CATALOG_ROW_KEYS = {"category", "method_id", "procedure_version", "model_version"}
+RECEIPT_SCHEMA = "audit-weekly-delivery-v1-public-receipt"
+RECEIPT_CAP = 64 << 10
+DISCOVERY_HASH_KEYS = {"archive_index_sha256", "archive_files_sha256", "reader_witness_sha256", "epoch_sha256", "choice_sha256"}
+RECEIPT_KEYS = {"schema_version", "source_sha", "run_id", "root_go_sha256", "policy_sha256", "policy_registered_at_utc",
+    "workflow_sha256", "recipe_registration_sha256", "rights_authority_sha256", "r0_identity_sha256", "origin_choice_sha256",
+    "feed_sha256", "feed_bytes", "rows", "categories", "jobs", "created_at", "verified_at", "fits", "raw_or_models_public"} | DISCOVERY_HASH_KEYS
+
+
+def current(root):
+    try:
+        return contract(root)
+    except (OSError, ValueError):
+        raise old.FeedError("V4_CURRENT_ENGINE_SOURCE") from None
+
+
+def inventory(root):
+    root = Path(root).resolve()
+    actual = {}
+    for name in sorted(CURRENT_CODE_FILES):
+        path = root / name
+        old.require(not path.is_symlink() and path.resolve().is_relative_to(root)
+                    and path.is_file() and path.stat().st_size <= 2 << 20, "V4_CODE_SCOPE")
+        actual[name] = old.sha(path.read_bytes())
+    return actual
+
+
+def template(root=ROOT):
+    """Public static scope only; required new authority inputs remain null."""
+    base = old.historical_policy_v2(root)
+    p = {k:copy.deepcopy(base[k]) for k in STATIC}
+    p.update(schema_version=POLICY, state="PREPARED_UNREGISTERED",
+        authority_kind="AUTOMATED_REGISTERED_POLICY", human_approval=False,
+        public_raw_or_model_weights=False, static_registration_sha256=old.digest(base),
+        registered_at_utc=None, lab_public_policy_sha256=None, lab_recipe_registered_at_utc=None, recipe_registration_sha256=None,
+        producer_policy_sha256=None, workflow_sha256=None,
+        jobs=dict(produce=None, restore=None, consume=None),
+        expected_categories=sorted(old.overlay().PRODUCTS), current_execution=current(root),
+        website_code_sha256=inventory(root),
+        publication_authority=dict(schema_version=AUTHORITY, state="PREPARED_UNREGISTERED",
+            repository=old.REPOSITORY, source_sha=None, source_branch=None,
+            workflow_path=".github/workflows/lab.yml", event="workflow_dispatch", export_job=None,
+            run_attempt=1, public_ref="lab-state", catalog_schema=old.CATALOG_V2,
+            catalog_freezer_sha256=None, catalog_registration_rule=RULE,
+            recipe_registration_sha256=None))
+    return p
+
+
+def policy_check(p, *, root=ROOT, now=None):
+    old.require(type(p) is dict and set(p) == KEYS and p["schema_version"] == POLICY
+        and p["state"] == "ROOT_REGISTERED" and p["authority_kind"] == "AUTOMATED_REGISTERED_POLICY"
+        and p["human_approval"] is p["public_raw_or_model_weights"] is False,
+        "V4_ROOT_REGISTRATION_REQUIRED")
+    old.require(len(old.canonical(p)) <= 1 << 20, "V4_POLICY_BOUND")
+    base = old.historical_policy_v2(root)
+    old.require(p["static_registration_sha256"] == old.digest(base)
+        and all(p[k] == base[k] for k in STATIC), "V4_ORIGINAL_STATIC_SCOPE_CHANGED")
+    old.require(p["expected_categories"] == sorted(old.overlay().PRODUCTS)
+        and len(p["expected_categories"]) == 11 and "fantasy_ppr" not in p["expected_categories"],
+        "V4_COMPLETE_SUPPORTED_SCOPE")
+    old.require(all(old.h(p[k]) for k in ("lab_public_policy_sha256", "recipe_registration_sha256",
+        "producer_policy_sha256", "workflow_sha256"))
+        and p["recipe_registration_sha256"] == p["producer_policy_sha256"], "V4_NEW_RECIPE_BINDING")
+    registered = old.utc(p["registered_at_utc"])
+    old.require(old.utc(p["lab_recipe_registered_at_utc"]) <= registered, "V4_DISTINCT_CAUSAL_REGISTRATION_CLOCKS")
+    if now is not None:
+        old.require(registered <= old.utc(now), "V4_POLICY_REGISTRATION_CLOCK")
+    jobs = p["jobs"]
+    old.require(type(jobs) is dict and set(jobs) == {"produce", "restore", "consume"}
+        and all(type(v) is str and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", v) for v in jobs.values())
+        and len(set(jobs.values())) == 3, "V4_CLOSED_REGISTERED_JOBS")
+    a = p["publication_authority"]
+    old.require(type(a) is dict and set(a) == AUTHORITY_KEYS and a["schema_version"] == AUTHORITY
+        and a["state"] == "ROOT_REGISTERED" and a["repository"] == old.REPOSITORY
+        and type(a["source_sha"]) is str and re.fullmatch(r"[a-f0-9]{40}", a["source_sha"])
+        and type(a["source_branch"]) is str and re.fullmatch(r"[A-Za-z0-9_./-]+", a["source_branch"])
+        and all(x not in {"", ".", ".."} for x in a["source_branch"].split("/"))
+        and a["workflow_path"] == ".github/workflows/lab.yml" and a["event"] == "workflow_dispatch"
+        and a["export_job"] == jobs["consume"] and type(a["run_attempt"]) is int and a["run_attempt"] == 1
+        and a["public_ref"] == p["public_ref"] == "lab-state" and a["catalog_schema"] == old.CATALOG_V2
+        and old.h(a["catalog_freezer_sha256"]) and a["catalog_registration_rule"] == RULE
+        and a["recipe_registration_sha256"] == p["recipe_registration_sha256"], "V4_CLOSED_NEW_AUTHORITY")
+    execution = current(root)
+    old.require(p["current_execution"] == execution and type(p["website_code_sha256"]) is dict
+        and set(p["website_code_sha256"]) == CURRENT_CODE_FILES
+        and all(old.h(x) for x in p["website_code_sha256"].values())
+        and p["website_code_sha256"] == inventory(root)
+        and all(p["website_code_sha256"][k] == v for k,v in execution["engine_sha256"].items()),
+        "V4_CURRENT_EXECUTION_OR_INVENTORY")
+    return base
+
+
+def declared_catalog(catalog, p):
+    """Called after live job verification; no selection or version inference."""
+    old.require(type(catalog) is dict and set(catalog) == CATALOG_KEYS
+        and catalog["schema_version"] == old.CATALOG_V2 and catalog["current_values_used"] is False
+        and catalog["public_policy_registration"] == "REQUIRED_SEPARATELY; not automatic approval"
+        and type(catalog["rows"]) is list and 11 <= len(catalog["rows"]) <= 256,
+        "V4_DECLARED_METADATA_CATALOG")
+    allowed = set()
+    for r in catalog["rows"]:
+        old.require(type(r) is dict and set(r) == CATALOG_ROW_KEYS
+            and r["category"] in p["expected_categories"] and r["method_id"] == "P2_SELECTED"
+            and old.h(r["procedure_version"]) and old.h(r["model_version"]), "V4_CLOSED_CATALOG_ROW")
+        key = (r["category"], r["method_id"], r["procedure_version"], r["model_version"])
+        old.require(key not in allowed, "V4_DUPLICATE_CATALOG_ROW")
+        allowed.add(key)
+    old.require({r[0] for r in allowed} == set(p["expected_categories"]), "V4_ALL_ELEVEN_CATALOG_CATEGORIES")
+    return allowed
+
+
+def verify_public_receipt(feed, p, chain, *, fetch):
+    """Exactly one bounded new receipt; never an old receipt impersonation."""
+    body = old.canonical(feed)
+    feed_sha = old.sha(body)
+    url = "https://raw.githubusercontent.com/" + old.REPOSITORY + "/lab-state/state/public/weekly-adaptive-v1/receipts/" + feed_sha + ".json.gz"
+    raw = fetch(url, RECEIPT_CAP)
+    old.require(type(raw) is bytes and 0 < len(raw) <= RECEIPT_CAP, "V4_PUBLIC_RECEIPT_BOUND")
+    try:
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        plain = decoder.decompress(raw, RECEIPT_CAP + 1)
+        old.require(len(plain) <= RECEIPT_CAP and decoder.eof and not decoder.unused_data
+                    and not decoder.unconsumed_tail, "V4_PUBLIC_RECEIPT_INFLATION_OR_TRAILING_BYTES")
+    except zlib.error:
+        raise old.FeedError("V4_PUBLIC_RECEIPT_COMPRESSION") from None
+    r = old.strict_public_json(plain)
+    old.require(type(r) is dict and set(r) == RECEIPT_KEYS and r["schema_version"] == RECEIPT_SCHEMA
+        and plain == old.canonical(r) and type(r["fits"]) is int and r["fits"] == 0
+        and r["raw_or_models_public"] is False, "V4_CLOSED_NEW_PUBLIC_RECEIPT")
+    old.require(all(old.h(r[k]) for k in DISCOVERY_HASH_KEYS | {"root_go_sha256", "policy_sha256", "workflow_sha256",
+        "recipe_registration_sha256", "rights_authority_sha256", "r0_identity_sha256", "origin_choice_sha256", "feed_sha256"}),
+        "V4_PUBLIC_RECEIPT_HASH_FIELDS")
+    old.require(r["policy_sha256"] == p["lab_public_policy_sha256"] and r["workflow_sha256"] == p["workflow_sha256"]
+        and r["recipe_registration_sha256"] == p["recipe_registration_sha256"]
+        and r["source_sha"] == p["publication_authority"]["source_sha"] and r["run_id"] == feed["publication"]["run_id"]
+        and r["rights_authority_sha256"] == feed["rights_authority_sha256"] and r["r0_identity_sha256"] == feed["r0_identity_sha256"],
+        "V4_EXACT_PUBLIC_POLICY_RECIPE_SOURCE_RECEIPT")
+    old.require(r["feed_sha256"] == feed_sha and type(r["feed_bytes"]) is int and r["feed_bytes"] == len(body)
+        and type(r["rows"]) is int and r["rows"] == len(feed["rows"])
+        and r["categories"] == sorted({row["category"] for row in feed["rows"]}) and r["created_at"] == feed["created_at"],
+        "V4_PUBLIC_RECEIPT_EXACT_FEED")
+    expected = {role:dict(job_id=p["jobs"][role], api_job_id=j["id"])
+                for role,j in zip(("produce", "restore", "consume"), chain)}
+    old.require(type(r["jobs"]) is dict and r["jobs"] == expected and all(type(j["api_job_id"]) is int
+        and set(j) == {"job_id", "api_job_id"} for j in r["jobs"].values()), "V4_PUBLIC_RECEIPT_ACTUAL_JOB_IDS")
+    old.require(old.utc(p["lab_recipe_registered_at_utc"]) <= old.utc(r["policy_registered_at_utc"])
+        <= min(old.utc(row["issued_at"]) for row in feed["rows"])
+        and old.utc(r["policy_registered_at_utc"]) <= old.utc(r["verified_at"])
+        and old.utc(chain[2]["started_at"]) <= old.utc(r["verified_at"]) <= old.utc(r["created_at"]),
+        "V4_PUBLIC_RECEIPT_HONEST_POLICY_CLOCKS")
+    return dict(public_receipt_sha256=old.sha(raw), public_receipt_body_sha256=old.sha(plain),
+        lab_public_policy_sha256=r["policy_sha256"], lab_policy_registered_at_utc=r["policy_registered_at_utc"],
+        workflow_sha256=r["workflow_sha256"], public_receipt_schema=r["schema_version"],
+        public_receipt_GETs=1, receipt_policy_and_workflow_checked=True)
+
+
+def verify_execution(feed, p, *, now, fetch):
+    responses = {}
+    pub = feed["publication"]
+    old.require(type(pub) is dict and type(pub.get("run_id")) is str
+        and re.fullmatch(r"[1-9][0-9]{0,19}", pub["run_id"]), "V4_PUBLICATION_RUN")
+    base = "https://api.github.com/repos/" + old.REPOSITORY + "/actions/runs/" + pub["run_id"]
+    jobs_url = base + "/jobs?per_page=100&page=1"
+    def tracked(url, cap):
+        old.require(url in {base, jobs_url} and cap == 1 << 20, "V4_FIXED_METADATA_ROUTES")
+        body = fetch(url, cap)
+        old.require(type(body) is bytes and 0 < len(body) <= cap, "PUBLICATION_METADATA_BOUND")
+        responses[url] = old.strict_public_json(body)
+        return body
+    proof = old.verify_publication_execution(feed, p, now=now, fetch=tracked)
+    run = responses[base]
+    data = responses[jobs_url]
+    chain = []
+    for role in ("produce", "restore", "consume"):
+        found = [j for j in data["jobs"] if j.get("name") == p["jobs"][role]]
+        old.require(len(found) == 1, "V4_UNIQUE_REGISTERED_WORKFLOW_ROLE")
+        j = found[0]
+        old.require(type(j.get("id")) is int and j["id"] > 0
+            and type(j.get("run_id")) is int and j["run_id"] == int(pub["run_id"])
+            and j.get("head_sha") == p["publication_authority"]["source_sha"]
+            and j.get("status") == "completed" and j.get("conclusion") == "success"
+            and old.utc(j["started_at"]) <= old.utc(j["completed_at"]), "V4_SUCCESSFUL_REGISTERED_WORKFLOW_ROLE")
+        chain.append(j)
+    old.require(len({j["id"] for j in chain}) == 3
+        and old.utc(chain[0]["completed_at"]) <= old.utc(chain[1]["started_at"])
+        and old.utc(chain[1]["completed_at"]) <= old.utc(chain[2]["started_at"]), "V4_PRODUCER_READER_EXPORTER_ORDER")
+    receipt = verify_public_receipt(feed, p, chain, fetch=fetch)
+    # Completed runs can be restarted. Reject a changed run before approval.
+    before = copy.deepcopy(run)
+    tracked(base, 1 << 20)
+    after = responses[base]
+    fields = ("id", "repository", "head_repository", "head_sha", "head_branch", "path",
+              "event", "run_attempt", "status", "conclusion", "updated_at")
+    old.require(all(after.get(k) == before.get(k) for k in fields), "V4_RUN_CHANGED_DURING_VERIFICATION")
+    proof.update(schema_version="weekly-derived-v4-publication-execution", API_GETs=3,
+        registered_jobs={r:j["id"] for r,j in zip(("produce", "restore", "consume"), chain)},
+        recipe_registration_sha256=p["recipe_registration_sha256"], final_run_response_sha256=old.digest(after),
+        verification_HTTP_GETs=4, **receipt)
+    return proof
+
+
+def validate_feed(feed, p, board, *, now, fetch, root=ROOT):
+    policy_check(p, root=root, now=now)
+    old.require(type(feed) is dict and set(feed) == old.META_FIELDS | {"publication", "publication_sha256"}
+        and feed["schema_version"] == old.VERSION_V2 and feed["state"] == "DERIVED_SELECTED_ONLY"
+        and len(old.canonical(feed)) <= old.MAX_BYTES, "V4_V2_WIRE_CONTRACT")
+    old.require(board.get("execution_model") == p["current_execution"], "V4_BOARD_CURRENT_EXECUTION")
+    old.require(type(feed["season"]) is int and type(feed["week"]) is int
+        and (feed["season"],feed["week"]) == (board["season"],board["week"])
+        and feed["producer_policy_sha256"] == p["recipe_registration_sha256"]
+        and feed["rights_authority_sha256"] in p["rights_authorities"] and feed["r0_identity_sha256"] in p["r0_identities"],
+        "V4_STATIC_SCOPE_OR_RECIPE")
+    old.require(all(old.h(feed[k]) for k in ("rights_receipt_sha256", "durability_receipt_sha256", "identity_scope_sha256"))
+        and old.utc(p["lab_recipe_registered_at_utc"]) <= old.utc(feed["created_at"]) <= old.utc(now) < old.utc(feed["expires_at"])
+        and type(feed["rows"]) is list and 0 < len(feed["rows"]) <= 5000, "V4_FEED_CLOCK_OR_BOUND")
+    old.require(all(type(r) is dict and set(r) == set(old.overlay().ROW_FIELDS) for r in feed["rows"]),
+                "CLOSED_UNIQUE_PUBLIC_ROWS")
+    c = feed["coverage"]
+    old.require(type(c) is dict and set(c) == {"private_selected_rows", "public_rows", "fallback_counts"}
+        and type(c["private_selected_rows"]) is int and 0 < c["private_selected_rows"] <= 5000
+        and type(c["public_rows"]) is int and c["public_rows"] == len(feed["rows"])
+        and type(c["fallback_counts"]) is dict and set(c["fallback_counts"]) <= {"private_ineligible_R0", "outside_board_R0", "started_R0"}
+        and all(type(v) is int and v >= 0 for v in c["fallback_counts"].values())
+        and c["private_selected_rows"] == c["public_rows"] + sum(c["fallback_counts"].values()), "CLOSED_PUBLIC_COVERAGE")
+    proof = verify_execution(feed, p, now=now, fetch=fetch)
+    allowed = declared_catalog(feed["publication"]["version_catalog"], p)
+    offers = old.overlay().board_offers(board)
+    old.require(feed["identity_scope_sha256"] == old.identity_scope(feed["rows"], board), "CURRENT_BOARD_SCOPE_CHANGED")
+    seen = set(); rows = []
+    for r in feed["rows"]:
+        old.require(type(r) is dict and set(r) == set(old.overlay().ROW_FIELDS), "CLOSED_UNIQUE_PUBLIC_ROWS")
+        key = old.overlay().key(r)
+        old.require(key not in seen, "CLOSED_UNIQUE_PUBLIC_ROWS"); seen.add(key)
+        old.require((r["category"],r["method_id"],r["procedure_version"],r["model_version"]) in allowed,
+                    "V4_ROW_NOT_IN_DECLARED_CATALOG")
+        old.require(r["source_policy_sha256"] == p["source_policy_sha256"]
+            and old.utc(p["lab_recipe_registered_at_utc"]) <= old.utc(r["issued_at"]), "V4_ROW_POLICY_AND_REGISTRATION")
+        old.overlay().validate_row(dict(r, first_prepared_at=feed["created_at"]), offers)
+        player, game, _ = offers[key]
+        old.require(player.get("pos", player.get("position")) in p["public_roles"][r["category"]], "V4_REGISTERED_PLAYER_ROLE")
+        if game.get("state") != "pre" or old.utc(r["valid_until_utc"]) <= old.utc(now):
+            continue
+        rows.append(dict(r, season=board["season"],week=board["week"],team=player["team"],opponent=player["opp"],
+                         evidence_lane="original_pregame",operational_eligible=True))
+    return dict(rows=rows), proof
+
+
+def writer_input(root, p, board, *, website_source_sha, now, feed=None, fetch=old.download):
+    try:
+        with old.publication_deadline(4):
+            policy_check(p, root=root, now=now)
+            checked = old.code_review(root, p, website_source_sha)
+            if feed is None:
+                def strict_fetch(url, cap):
+                    raw = fetch(url, cap); old.strict_public_json(raw); return raw
+                feed = old.fetch_feed(p, board, fetch=strict_fetch)
+            selected, proof = validate_feed(feed, p, board, now=now, fetch=fetch, root=root)
+            old.require(old.code_review(root, p, website_source_sha) == checked, "V4_INVENTORY_CHANGED_DURING_VERIFICATION")
+        review = dict(schema_version=old.overlay().REVIEW, approved=True, selected_input_sha256=old.digest(selected),
+            website_source_sha=website_source_sha, authority_kind="AUTOMATED_REGISTERED_POLICY",human_approval=False,
+            authority_policy_sha256=old.digest(p),code_inventory_sha256=checked,feed_sha256=old.digest(feed),reviewed_at=now,
+            board_membership_sha256=feed["identity_scope_sha256"],publication_execution=proof,
+            current_reference_model=p["current_execution"]["model"],recipe_registration_sha256=p["recipe_registration_sha256"],
+            lab_public_policy_sha256=p["lab_public_policy_sha256"],static_registration_sha256=p["static_registration_sha256"])
+        return selected, review, dict(state="AUTOMATED_POLICY_ACCEPTED",rows=len(selected["rows"]),
+            website_source_sha=website_source_sha,policy_sha256=old.digest(p),review_sha256=old.digest(review),publication_execution=proof)
+    except Exception as error:
+        reason = str(error) if isinstance(error, old.FeedError) and re.fullmatch(r"[A-Z0-9_]+", str(error)) else "OPTIONAL_FEED_REJECTED"
+        return {}, {}, dict(state="CURRENT_REFERENCE_FALLBACK",reason=reason,rows=0,human_approval=False)
