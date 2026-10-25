@@ -23,6 +23,9 @@ VERSION="weekly-derived-selected-feed-v1"
 POLICY="weekly-derived-selected-policy-v1"
 VERSION_V2="weekly-derived-selected-feed-v2"
 POLICY_V2="weekly-derived-selected-policy-v2"
+POLICY_V3="weekly-derived-selected-policy-v3"
+HISTORICAL_POLICY_PATH="config/weekly-derived-selected-policy-v2.json"
+HISTORICAL_POLICY_SHA256="e8e037a00a22d3e0e07e41ed5816f2374e8f162a7fa78ea8cc45888ed2e2f094"
 AUTHORITY_V2="weekly-derived-publication-authority-v2"
 PUBLICATION_V2="weekly-derived-publication-v2"
 CATALOG_V2="weekly-generic-future-producer-v1-selected-version-catalog"
@@ -33,6 +36,8 @@ MAX_BYTES=4<<20
 META_FIELDS={"schema_version","state","season","week","created_at","expires_at","producer_policy_sha256","rights_authority_sha256","rights_receipt_sha256","durability_receipt_sha256","r0_identity_sha256","identity_scope_sha256","rows","coverage"}
 ENGINE_FILES={"pull/build.py","pull/matchup.py","pull/scoring.py","pull/books.py","pull/gamemodel.py","pull/sources.py","pull/news.py"}
 CODE_FILES=ENGINE_FILES|{"config/release-mode.json","tools/reliability.py","tools/weekly_adaptive_overlay.py","tools/weekly_selected_rankings.py","tools/weekly_public_feed.py","output/app.js","output/weekly-adaptive-overlay.js"}
+
+CURRENT_CODE_FILES=CODE_FILES|{"output/index.html","pull/grade.py","tools/classic_model_v1.py","tools/classic_source_replay_v1.py","tools/classic_build_pair_v1.py","tools/publication_guard_v1.py","tools/classic_failure_v1.py"}
 
 
 class FeedError(ValueError):pass
@@ -50,6 +55,7 @@ def overlay():return importlib.import_module("nfl_lab.weekly_website_overlay" if
 
 
 def policy_check(policy):
+    if policy.get("schema_version")==POLICY_V3:return policy_check_v3(policy)
     if policy.get("schema_version")==POLICY_V2:return policy_check_v2(policy)
     require(policy.get("schema_version")==POLICY and policy.get("registration_id")=="weekly-adaptive-release-v1","POLICY_CONTRACT")
     require(policy.get("public_fields")==list(overlay().ROW_FIELDS) and "fantasy_ppr" not in policy.get("procedures",{}),"PUBLIC_SCOPE")
@@ -70,7 +76,7 @@ def policy_check(policy):
 
 
 def member(policy,row):
-    require(policy.get("schema_version")!=POLICY_V2,"VERIFIED_ISSUED_CATALOG_REQUIRED")
+    require(policy.get("schema_version") not in {POLICY_V2,POLICY_V3},"VERIFIED_ISSUED_CATALOG_REQUIRED")
     candidates=policy["procedures"].get(row["category"],[])
     require(any(all(row.get(k)==value for k,value in allowed.items()) for allowed in candidates),"PROCEDURE_NOT_REGISTERED")
 
@@ -83,6 +89,7 @@ def identity_scope(rows,board):
 
 def private_gates(bundle,policy,*,now,durable_acceptance=None):
     """Validate metadata BEFORE any selected JSONL is decoded by the CLI."""
+    require(policy.get("schema_version")!=POLICY_V3,"WEBSITE_EXECUTION_POLICY_NOT_LAB_EXPORT")
     policy_check(policy)
     if policy.get("schema_version")==POLICY_V2:require(durable_acceptance is not None,"LIVE_DURABILITY_VERIFIER_REQUIRED_FOR_V2")
     now=utc(now);terminal=bundle["terminal"];completion=bundle["completion"];decision=bundle["decision"]
@@ -236,6 +243,8 @@ def fetch_feed(policy,board,*,fetch=download):
 
 def writer_input(root,policy,board,*,website_source_sha,now,feed=None,fetch=download):
     """Optional feed failure returns in-memory empty input; never reuses a stale descriptor."""
+    if policy.get("schema_version")==POLICY_V3:
+        return writer_input_v3(root,policy,board,website_source_sha=website_source_sha,now=now,feed=feed,fetch=fetch)
     if policy.get("schema_version")==POLICY_V2:
         return writer_input_v2(root,policy,board,website_source_sha=website_source_sha,now=now,feed=feed,fetch=fetch)
     try:
@@ -265,7 +274,7 @@ def prepare_writer(root,policy_path,policy_sha256,board,*,website_source_sha,now
         body=path.read_bytes();require(sha(body)==policy_sha256,"REGISTERED_POLICY_FILE_HASH")
         selected,review,receipt=writer_input(root,json.loads(body),board,website_source_sha=website_source_sha,now=now,fetch=fetch)
     except Exception:
-        selected,review,receipt={},{},dict(state="R0_FALLBACK",reason="POLICY_INPUT_UNAVAILABLE",rows=0,human_approval=False)
+        selected,review,receipt={},{},dict(state="CURRENT_REFERENCE_FALLBACK" if board.get("execution_model") else "R0_FALLBACK",reason="POLICY_INPUT_UNAVAILABLE",rows=0,human_approval=False)
     if not isinstance(website_source_sha,str) or not re.fullmatch(r"[a-f0-9]{40}",website_source_sha):return {},{}
     try:utc(now)
     except Exception:return {},{}
@@ -440,3 +449,51 @@ def writer_input_v2(root,policy,board,*,website_source_sha,now,feed,fetch):
     except Exception as error:
         reason=str(error) if isinstance(error,FeedError) and re.fullmatch(r"[A-Z0-9_]+",str(error)) else "OPTIONAL_FEED_REJECTED"
         return {},{},dict(state="R0_FALLBACK",reason=reason,rows=0,human_approval=False)
+
+def historical_policy_v2(root=None):
+    root=Path(root) if root is not None else Path(__file__).resolve().parents[1]
+    path=root/HISTORICAL_POLICY_PATH
+    require(not path.is_symlink() and path.resolve().is_relative_to(root.resolve()) and path.stat().st_size<=1<<20,"HISTORICAL_POLICY_SCOPE")
+    body=path.read_bytes()
+    require(sha(body)==HISTORICAL_POLICY_SHA256,"HISTORICAL_POLICY_IDENTITY")
+    policy=strict_public_json(body);policy_check_v2(policy)
+    return policy
+
+
+def current_execution_contract(root=None):
+    from classic_model_v1 import contract
+    return contract(Path(root) if root is not None else Path(__file__).resolve().parents[1])
+
+
+def policy_check_v3(policy,*,root=None):
+    require(policy.get("schema_version")==POLICY_V3,"V3_POLICY_CONTRACT")
+    historical=historical_policy_v2(root);execution=current_execution_contract(root)
+    require(set(policy)==set(historical)|{"historical_policy_sha256","current_execution"},"CLOSED_V3_POLICY_FIELDS")
+    code=policy.get("website_code_sha256",{})
+    require(type(code) is dict and set(code)==CURRENT_CODE_FILES and all(h(v)for v in code.values()),"CLOSED_CURRENT_CODE_INVENTORY")
+    require(all(code[name]==expected for name,expected in execution["engine_sha256"].items()),"CURRENT_ENGINE_CODE_MISMATCH")
+    expected=copy.deepcopy(historical)
+    expected.update(schema_version=POLICY_V3,historical_policy_sha256=HISTORICAL_POLICY_SHA256,
+        current_execution=execution,website_code_sha256=code)
+    require(canonical(policy)==canonical(expected),"HISTORICAL_OR_CURRENT_EXECUTION_CHANGED")
+    return historical
+
+
+def writer_input_v3(root,policy,board,*,website_source_sha,now,feed,fetch):
+    try:
+        with publication_deadline(4):
+            historical=policy_check_v3(policy,root=root)
+            require(board.get("execution_model")==policy["current_execution"],"CURRENT_BOARD_EXECUTION_BINDING")
+            inventory=code_review(root,policy,website_source_sha)
+            if feed is None:feed=fetch_feed(historical,board,fetch=fetch)
+            selected,proof=validate_feed_v2(feed,historical,board,now=now,fetch=fetch)
+        review=dict(schema_version=overlay().REVIEW,approved=True,selected_input_sha256=digest(selected),website_source_sha=website_source_sha,
+            authority_kind="AUTOMATED_REGISTERED_POLICY",human_approval=False,authority_policy_sha256=digest(policy),code_inventory_sha256=inventory,
+            historical_policy_sha256=HISTORICAL_POLICY_SHA256,current_reference_model=policy["current_execution"]["model"],
+            feed_sha256=digest(feed),reviewed_at=now,board_membership_sha256=feed["identity_scope_sha256"],publication_execution=proof)
+        return selected,review,dict(state="AUTOMATED_POLICY_ACCEPTED",rows=len(selected["rows"]),website_source_sha=website_source_sha,
+            policy_sha256=digest(policy),review_sha256=digest(review),publication_execution=proof,
+            historical_policy_sha256=HISTORICAL_POLICY_SHA256,current_reference_model=policy["current_execution"]["model"])
+    except Exception as error:
+        reason=str(error)if isinstance(error,FeedError)and re.fullmatch(r"[A-Z0-9_]+",str(error))else"OPTIONAL_FEED_REJECTED"
+        return {},{},dict(state="CURRENT_REFERENCE_FALLBACK",reason=reason,rows=0,human_approval=False)

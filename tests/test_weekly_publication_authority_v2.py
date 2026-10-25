@@ -207,7 +207,10 @@ class CurrentStaticPortChecks(unittest.TestCase):
         body = f.canonical(policy)
         original = (ROOT/'.github/workflows/hourly.yml').read_text()
         import re
-        hourly, count = re.subn(r'(--feed-policy-sha256 )[a-f0-9]{64}', lambda match: match[1]+f.sha(body), original)
+        # This is the explicit fictional V2 candidate, independently of the
+        # installed V3 workflow. Keep one writer and every negative assertion.
+        hourly, count = re.subn(r'--feed-policy \S+ --feed-policy-sha256 [a-f0-9]{64}',
+            lambda match: '--feed-policy config/weekly-derived-selected-policy-v2.json --feed-policy-sha256 '+f.sha(body), original)
         self.assertEqual(count, 1)
         hourly = hourly.encode()
         pins = dict(policy_path='config/weekly-derived-selected-policy-v2.json',

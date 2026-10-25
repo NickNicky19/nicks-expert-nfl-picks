@@ -10,12 +10,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Install declared application dependencies
+        run: python -m pip install -r requirements.txt
       - name: Select explicit release mode
         id: mode
         run: python tools/release_mode.py >> "$GITHUB_OUTPUT"
@@ -24,4 +28,4 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Python syntax
         run: python -m compileall -q pull tools
-      - run: node --check output/app.js && node --check output/reliability-ui.js && node tests/test-ui.cjs && node tests/test-weekly-overlay.cjs && node tests/test-selected-rankings.cjs
+      - run: node --check output/app.js && node --check output/reliability-ui.js && node --check output/weekly-adaptive-overlay.js && node tests/test-ui.cjs && node tests/test-weekly-overlay.cjs && node tests/test-selected-rankings.cjs && node tests/test-classic-ranking-model.cjs

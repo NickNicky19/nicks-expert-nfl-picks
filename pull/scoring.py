@@ -32,7 +32,7 @@ YDS_ALLOWED = [(99, 5), (199, 3), (299, 2), (349, 0), (399, -1), (449, -3), (499
 # The raw stats kept from Sleeper (everything else is dropped to keep files small)
 STAT_KEYS = sorted(set(PPR) | set(K_SCORING) | set(DEF_SCORING)
                    | {"pass_cmp", "pass_att", "rush_att", "rec_tgt", "gp", "off_snp", "pts_ppr", "pts_half_ppr", "idp_fum_rec",
-                      "pts_allow", "yds_allow", "tm_off_snp", "fgm_50p"})
+                      "pts_allow", "yds_allow", "tm_off_snp", "fgm_50p", "fgm"})
 
 
 def ppr_points(stats):

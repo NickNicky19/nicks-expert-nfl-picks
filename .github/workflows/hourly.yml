@@ -25,13 +25,14 @@ jobs:
     timeout-minutes: 20
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment-retry.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Use latest main before building
-        run: git pull --ff-only origin main
+      - name: Bind the trigger workflow and checkout to current main
+        id: fence
+        run: python tools/publication_guard_v1.py begin --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -44,6 +45,7 @@ jobs:
       - name: Install existing dependencies
         run: pip install -r requirements.txt
       - name: Required offline regression tests
+        id: checks
         if: steps.mode.outputs.mode == 'phase1'
         run: |
           python -m unittest discover -s tests -v
@@ -52,26 +54,47 @@ jobs:
           python -m unittest discover -s tests -p test_weekly_adaptive_overlay.py -v
           node tests/test-weekly-overlay.cjs
           node tests/test-selected-rankings.cjs
+          node tests/test-classic-ranking-model.cjs
           node --check output/reliability-ui.js
           node tests/test-ui.cjs
       - name: Preserve original grading output
         if: steps.mode.outputs.mode == 'phase1'
         run: python tools/preserve_legacy.py
-      - name: Build unchanged projection engine
-        run: python pull/build.py
+      - name: Run default original R0 then current model with qualified history acquisition
+        id: pair
+        run: python tools/classic_build_pair_v1.py --root . --original-repository . --private-run-dir "$RUNNER_TEMP/classic-pair-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --mode live
+      - name: Install validated data without changing source or old R0 caches
+        id: install
+        run: python tools/classic_build_pair_v1.py --root . --original-repository . --private-run-dir "$RUNNER_TEMP/classic-pair-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --mode live --install-staged-output
       - name: Required integrity checks and pregame capture
+        id: capture
         if: steps.mode.outputs.mode == 'phase1'
-        run: GITHUB_SHA="$(git rev-parse HEAD)" python tools/reliability.py --mode live
+        run: GITHUB_SHA="$(git rev-parse HEAD)" python tools/reliability.py --mode live --model sleeper-matchup-classic-fg-identity-v1
 
       # The old verifier mixes network availability, diagnostics, and model warnings.
       # Required deterministic invariants are enforced above, not bypassed here.
       - name: Legacy diagnostic verification (advisory)
         id: legacy
-        run: python tools/verify.py
+        run: timeout --signal=KILL 75s python tools/verify.py
         continue-on-error: true
       - name: Historical DraftKings comparison (advisory)
         id: comparison
-        run: python tools/compare_lines.py --json output/data/dk_backtest.json
+        run: |
+          timeout --signal=KILL 60s python tools/compare_lines.py --json "$RUNNER_TEMP/classic-comparison.json"
+          python - <<'PYCOMPARE'
+          import json, os, tempfile
+          from pathlib import Path
+          raw=(Path(os.environ['RUNNER_TEMP'])/'classic-comparison.json').read_bytes()
+          def invalid(_):raise ValueError('NONFINITE_COMPARISON')
+          value=json.loads(raw,parse_constant=invalid)
+          if not isinstance(value,dict) or len(raw)>1048576:raise ValueError('BOUNDED_COMPARISON_REQUIRED')
+          target=Path('output/data/dk_backtest.json')
+          descriptor,name=tempfile.mkstemp(prefix='.comparison-',dir=target.parent)
+          try:
+              with os.fdopen(descriptor,'wb')as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
+              os.replace(name,target)
+          finally:Path(name).unlink(missing_ok=True)
+          PYCOMPARE
         continue-on-error: true
       - name: Record advisory outcomes
         if: steps.mode.outputs.mode == 'phase1'
@@ -88,7 +111,8 @@ jobs:
           p.write_text(json.dumps(d, separators=(',', ':'), allow_nan=False))
           PY
       - name: Prepare isolated provisional overlay (default R0)
-        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v2.json --feed-policy-sha256 e8e037a00a22d3e0e07e41ed5816f2374e8f162a7fa78ea8cc45888ed2e2f094
+        id: overlay
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v3.json --feed-policy-sha256 29e7d5166b08737d7f59e18303008e5c9e39690122bdc5cb1872ce436d2c02b1
       - name: Commit validated data and immutable receipts
         id: commit
         run: |
@@ -98,25 +122,80 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || { echo "Main changed during build; refusing to merge generated evidence. Re-run on new main."; exit 1; }
           git add output/data data/cache
           if [ -d data/weekly-adaptive-audit ]; then git add data/weekly-adaptive-audit; fi
-          for dir in data/forward data/history; do
+          for dir in data/forward data/history data/current-classic data/classic-r0-shadow; do
             if [ -d "$dir" ]; then git add "$dir"; fi
           done
           if ! git diff --cached --quiet; then
             git commit -m "Scheduled update (${{ steps.mode.outputs.mode }})"
             git push origin HEAD:main
           fi
+      - name: Bind the published data head and complete output inventory
+        run: python tools/publication_guard_v1.py sealed --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
       - uses: actions/configure-pages@v5
+      - name: Refuse superseded or changed output before upload
+        run: python tools/publication_guard_v1.py check --stage upload --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
       - uses: actions/upload-pages-artifact@v3
         id: artifact
         with:
           path: output
+      - name: Refuse superseded or changed output before deployment
+        run: python tools/publication_guard_v1.py check --stage deploy --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
       - name: Deploy validated output
         id: deployment
         uses: actions/deploy-pages@v4
         continue-on-error: true
+      - name: Verify the successful deployment still has current source and assets
+        if: ${{ !cancelled() && steps.deployment.outcome == 'success' }}
+        run: python tools/publication_guard_v1.py check --stage postdeploy --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
       - name: Wait before deployment retry
         if: ${{ !cancelled() && steps.commit.outcome == 'success' && steps.artifact.outcome == 'success' && steps.deployment.outcome == 'failure' }}
         run: sleep 20
-      - name: Deploy validated output (retry)
+      - name: Refuse a superseded deployment retry
+        id: retry-fence
         if: ${{ !cancelled() && steps.commit.outcome == 'success' && steps.artifact.outcome == 'success' && steps.deployment.outcome == 'failure' }}
+        run: python tools/publication_guard_v1.py check --stage retry --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+      - name: Deploy validated output (retry)
+        id: deployment-retry
+        if: ${{ !cancelled() && steps.commit.outcome == 'success' && steps.artifact.outcome == 'success' && steps.deployment.outcome == 'failure' && steps.retry-fence.outcome == 'success' }}
         uses: actions/deploy-pages@v4
+      - name: Verify successful retry still has current source and assets
+        if: ${{ !cancelled() && steps.deployment-retry.outcome == 'success' }}
+        run: python tools/publication_guard_v1.py check --stage postdeploy --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+      - name: Preserve terminal failures without publishing a partial forecast
+        if: ${{ failure() && steps.fence.outcome == 'success' }}
+        env:
+          RUN_OUTCOME: ${{ job.status }}
+          CHECKS_OUTCOME: ${{ steps.checks.outcome }}
+          PAIR_OUTCOME: ${{ steps.pair.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
+          OVERLAY_OUTCOME: ${{ steps.overlay.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.commit.outcome }}
+          DEPLOY_OUTCOME: ${{ steps.deployment.outcome }}
+          RETRY_OUTCOME: ${{ steps.deployment-retry.outcome }}
+        run: |
+          python tools/classic_failure_v1.py --root . --private-run-dir "$RUNNER_TEMP/classic-pair-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --fence "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          export GIT_INDEX_FILE="$RUNNER_TEMP/classic-failure-index-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git read-tree "$GITHUB_SHA"
+          git add -- "data/classic-failures/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git diff --cached --name-only -z "$GITHUB_SHA" > "$RUNNER_TEMP/classic-failure-paths"
+          python - <<'PYFAIL'
+          import os
+          from pathlib import Path
+          names=Path(os.environ['RUNNER_TEMP'],'classic-failure-paths').read_bytes().split(b'\0')
+          prefix=('data/classic-failures/'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']+'/').encode()
+          if not names or any(name and not name.startswith(prefix) for name in names):
+              raise ValueError('ONLY_THIS_FAILED_ATTEMPT_MAY_BE_PERSISTED')
+          PYFAIL
+          failure_tree=$(git write-tree)
+          failure_commit=$(git commit-tree "$failure_tree" -p "$GITHUB_SHA" -m "Retain failed update attempt $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT")
+          failure_ref="refs/heads/audit-failures/classic-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git push origin "$failure_commit:$failure_ref"
+          git fetch --no-tags origin "$failure_ref"
+          test "$(git rev-parse FETCH_HEAD)" = "$failure_commit"
+          failure_restore="$RUNNER_TEMP/classic-failure-restored-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$failure_restore"
+          git archive "$failure_commit" -- "data/classic-failures/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" | tar -x -C "$failure_restore"
+          python tools/classic_failure_v1.py --verify-retained-root "$failure_restore/data/classic-failures/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
