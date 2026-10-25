@@ -1623,7 +1623,7 @@ jobs:
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
           task_code="$GITHUB_WORKSPACE/source"
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '7908ea28df65531b1a573755f822d4923e347cc9b822c687f76a32aea303bd4b'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '989679c7bc85819a2f61976174ede7d8bd8d125ae924295d829ef066a1d6a5d1'
           test "$(sha256sum "$task_code/tools/genuine_case_recovery.py" | cut -d' ' -f1)" = 'ec4e1aaa3aa25fd36d4959e64812245a33b8c4f84cd7a3a2abeabd6805c4bc38'
           task_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-baseline-pyc.XXXXXX")";chmod 0700 "$task_prefix"
           PYTHONPYCACHEPREFIX="$task_prefix" python -P "$task_code/tools/genuine_case_recovery.py" baseline > "$RUNNER_TEMP/nfl-genuine-baseline-$GITHUB_RUN_ID.json"
@@ -1637,7 +1637,7 @@ jobs:
           task_sample=1
           task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '7908ea28df65531b1a573755f822d4923e347cc9b822c687f76a32aea303bd4b'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '989679c7bc85819a2f61976174ede7d8bd8d125ae924295d829ef066a1d6a5d1'
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
           task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
           task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
@@ -1780,7 +1780,7 @@ jobs:
           task_sample=2
           task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '7908ea28df65531b1a573755f822d4923e347cc9b822c687f76a32aea303bd4b'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '989679c7bc85819a2f61976174ede7d8bd8d125ae924295d829ef066a1d6a5d1'
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
           task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
           task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
