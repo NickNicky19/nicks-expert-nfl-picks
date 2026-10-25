@@ -202,5 +202,19 @@ class SelectedRankingsTests(unittest.TestCase):
                 with self.assertRaises(ValueError): r.validate_document(bad, pointer, board, o.digest(board), doc)
 
 
+    def test_valid_over_cannot_be_rehomed_into_under_container(self):
+        board, doc = fixture(); good = make(board, doc)
+        with tempfile.TemporaryDirectory() as td:
+            pointer = r.write_public(good, td, atomic_json, clock=lambda: PERSIST)
+            r.validate_document(good, pointer, board, o.digest(board), doc, root=td)
+            bad = copy.deepcopy(good)
+            bad["picks"]["under"].append(bad["picks"]["over"].pop(0))
+            bad["picks"]["under"].sort(key=r.order)
+            pointer = r.write_public(bad, td, atomic_json, clock=lambda: PERSIST)
+            with self.assertRaisesRegex(ValueError, "ranking side mismatch"):
+                r.validate_document(bad, pointer, board, o.digest(board), doc, root=td)
+
+
+
 if __name__ == "__main__":
     unittest.main()

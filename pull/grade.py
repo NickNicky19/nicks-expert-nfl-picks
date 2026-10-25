@@ -5,6 +5,10 @@ not DNP. Equality is a statistical push; venue-specific payout rules are not inf
 The public keys used by the original UI remain available.
 """
 import json
+import hashlib
+import os
+import tempfile
+from pathlib import Path
 import math
 import statistics
 from collections import Counter
@@ -12,7 +16,7 @@ from collections import Counter
 import gamemodel
 import scoring
 
-GRADING_VERSION = "statistical-v2"
+GRADING_VERSION = "statistical-v3-identity-20261025"
 RESULTS = ("hit", "miss", "push", "dnp", "unresolved")
 
 
@@ -100,6 +104,78 @@ def grade_games(archive, scores):
     return {"spread": tally(spread), "total": tally(total)}
 
 
+def _bound_stats(archive, player, entry, *, game_id=None):
+    """Reject recorded identity contradictions without inventing legacy evidence."""
+    gid = player.get("game_id")
+    if game_id is not None and game_id != gid:
+        return None
+    matches = [game for game in archive.get("games", []) if game.get("id") == gid]
+    if archive.get("games") and len(matches) != 1:
+        return None
+    game = matches[0] if matches else {}
+    team, opponent = player.get("team"), player.get("opp")
+    home, away = game.get("home"), game.get("away")
+    if home is not None and away is not None:
+        if team not in (home, away) or home == away:
+            return None
+        expected = away if team == home else home
+        if opponent is not None and opponent != expected:
+            return None
+        opponent = expected
+    if not isinstance(entry, dict):
+        return entry
+    if (entry.get("team") is not None and team is not None and entry["team"] != team
+            or entry.get("opp") is not None and opponent is not None and entry["opp"] != opponent):
+        return None
+    stats = entry.get("stats")
+    if isinstance(stats, dict) and "_presence" in stats:
+        metadata = stats["_presence"]
+        if not isinstance(metadata, dict):
+            return None
+        original, context = metadata.get("original_row"), metadata.get("source_context")
+        if (metadata.get("version") != getattr(scoring, "PRESENCE_VERSION", None) or metadata.get("kind") != "actual"
+                or not isinstance(original, dict) or not isinstance(context, dict)
+                or original.get("player_id") != player["id"]
+                or original.get("team") != team or original.get("opponent") != opponent
+                or (context.get("season"), context.get("week")) != (archive["season"], archive["week"])
+                or original.get("stats") != {key: value for key, value in stats.items() if key != "_presence"}):
+            return None
+    return entry
+
+
+def preserve_issued_record(path):
+    """Keep exact previously issued bytes before a caller replaces its pointer.
+
+    Original grading versions and historical results remain inside their
+    original bytes. These snapshots are prior publications, not new forecasts.
+    A corrupt existing history object fails before the live pointer is written.
+    Temporary partial writes never occupy the final content-addressed path.
+    """
+    path = Path(path)
+    if not path.exists():
+        return None
+    issued = path.read_bytes()
+    target = path.parent / "grading-history" / (hashlib.sha256(issued).hexdigest() + ".json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".issued-grading-", suffix=".tmp", dir=target.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(issued)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, target, follow_symlinks=False)
+        except FileExistsError:
+            if target.is_symlink() or not target.is_file() or target.read_bytes() != issued:
+                raise ValueError("Previously issued grading history checksum mismatch")
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    return target
+
+
 def _prop_result(prop, direction, entry):
     status = participation(entry)
     if status != "played":
@@ -123,7 +199,7 @@ def grade_week(archive, stats, final_games):
                 continue
             if p.get("line_from") not in ("dk", "sleeper"):
                 continue
-            value, outcome = _prop_result(p, side, stats.get(p["player_id"]))
+            value, outcome = _prop_result(p, side, _bound_stats(archive, who, stats.get(p["player_id"]), game_id=p["game_id"]))
             graded.append({
                 "player_id": p["player_id"], "game_id": p["game_id"], "name": who.get("name", p["player_id"]),
                 "key": p["key"], "line": p["line"], "line_from": p.get("line_from"),
@@ -141,7 +217,7 @@ def grade_week(archive, stats, final_games):
     for p in archive["players"]:
         if not done(p["game_id"]) or p.get("late"):
             continue
-        entry = stats.get(p["id"])
+        entry = _bound_stats(archive, p, stats.get(p["id"]))
         for prop in p["props"]:
             venue, side = prop.get("line_from"), prop.get("lean")
             if side and venue in ("dk", "sleeper") and prop["key"] != "anytime_td":

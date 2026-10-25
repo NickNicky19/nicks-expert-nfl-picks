@@ -283,18 +283,60 @@ def atomic_json(path: Path, value):
         Path(temp).unlink(missing_ok=True)
 
 
+def capture_profile(data, meta, root, observed_at, *, model, mode="replay"):
+    """Explicit production dispatcher; unknown/crossed profiles never fall back."""
+    from classic_model_v1 import MODEL, ORIGINAL_MODEL, CAPTURE, contract
+    if model == ORIGINAL_MODEL:
+        return capture(data, meta, root, observed_at, engine_hashes(root), mode=mode)
+    if model != MODEL:
+        raise IntegrityError("UNKNOWN_CAPTURE_PROFILE")
+    current = contract(root)
+    if data.get("execution_model") != current or meta.get("execution_model") != current:
+        raise IntegrityError("CURRENT_BOARD_EXECUTION_BINDING")
+    games={g['id']:g for g in data['games']}
+    for player in data['players']:
+        game=games[player['game_id']]
+        if game['state']=='pre'and utc(game['kickoff'])>utc(observed_at)and player.get('reference_model')!=MODEL:
+            raise IntegrityError('CURRENT_PLAYER_MODEL_BINDING')
+    observed_at = utc(observed_at)
+    health = validate(data, meta, observed_at)
+    payload = make_payload(data, observed_at, current["engine_sha256"], mode)
+    payload.update(schema_version=CAPTURE, model=MODEL, execution_contract=current,
+                   execution_contract_sha256=digest(current))
+    identity = digest(dict(data=digest(data), execution=digest(current), mode=mode))
+    lane = "current-classic" if mode == "live" else "current-classic-replay"
+    path = Path(root) / "data" / lane / str(data["season"]) / f"w{data['week']:02d}" / (identity + ".json.gz")
+    created = immutable_write(path, payload)
+    stored = json.loads(gzip.decompress(path.read_bytes()))["payload"]
+    first = utc(stored["captured_at"])
+    if first > observed_at:
+        raise IntegrityError("CURRENT_NATIVE_FUTURE_CLOCK")
+    expected = make_payload(data, first, current["engine_sha256"], mode)
+    expected.update(schema_version=CAPTURE, model=MODEL, execution_contract=current,
+                    execution_contract_sha256=digest(current))
+    expected["code_commit"] = stored.get("code_commit")
+    if expected != stored:
+        raise IntegrityError("CURRENT_NATIVE_CONTENT")
+    health.update(capture_model=MODEL, capture_schema=CAPTURE, capture_mode=mode,
+                  capture_created=created, receipt=str(path.relative_to(root)),
+                  first_captured_at=stored["captured_at"], capture_rows=len(stored["rows"]))
+    return path, health
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--mode", choices=("live", "replay"), required=True)
+    from classic_model_v1 import MODEL, ORIGINAL_MODEL
+    parser.add_argument("--model", choices=(ORIGINAL_MODEL, MODEL), default=ORIGINAL_MODEL)
     parser.add_argument("--replay-at", help="An explicit test clock; forbidden in live mode")
     args = parser.parse_args()
     if args.mode == "live" and args.replay_at:
         parser.error("Live capture cannot use a supplied clock")
     now = utc(args.replay_at) if args.replay_at else datetime.now(timezone.utc)
     root = args.root.resolve()
-    path, health = capture(load_json(root / "output/data/week.json"), load_json(root / "output/data/meta.json"),
-                           root, now, engine_hashes(root), mode=args.mode)
+    path, health = capture_profile(load_json(root / "output/data/week.json"), load_json(root / "output/data/meta.json"),
+                                  root, now, model=args.model, mode=args.mode)
     if args.mode == "live":
         atomic_json(root / "output/data/health.json", health)
     print(json.dumps(health, indent=2))
