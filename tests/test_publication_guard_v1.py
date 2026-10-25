@@ -1,8 +1,11 @@
 """Real local Git races, fictional website bytes/context; no provider or GitHub I/O."""
 import importlib.util
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 SPEC=importlib.util.spec_from_file_location('publication_guard',Path(__file__).resolve().parents[1]/'tools/publication_guard_v1.py')
@@ -118,6 +121,70 @@ class PublicationFenceTests(unittest.TestCase):
             for status in ['M','D']:
                 with self.subTest(name=name,status=status),patch.object(f,'git',return_value=(status+'\0'+name+'\0').encode()),self.assertRaises(f.FenceError):
                     f.classic_generated(self.root,'source','head')
+
+
+class FailurePublicationTests(unittest.TestCase):
+    """Exercise the real failure-step shell against a local bare Git remote."""
+    git=PublicationFenceTests.git
+    advance_elsewhere=PublicationFenceTests.advance_elsewhere
+
+    def setUp(self):
+        PublicationFenceTests.setUp(self)
+        self.source_root=Path(__file__).resolve().parents[1]
+        (self.root/'tools').mkdir()
+        for name in ['classic_failure_v1.py','classic_model_v1.py','publication_guard_v1.py']:
+            shutil.copyfile(self.source_root/'tools'/name,self.root/'tools'/name)
+        self.git('add','tools');self.git('commit','-m','fictional failure helper source');self.git('push','origin','main')
+        self.source=self.git('rev-parse','HEAD')
+        self.env.update(GITHUB_SHA=self.source,GITHUB_WORKFLOW_SHA=self.source)
+        self.runner=self.base/'runner';self.runner.mkdir()
+        self.receipt=self.runner/'publication-fence-12345-1.json'
+        f.begin(self.root,self.receipt,self.env)
+        self.environment=dict(os.environ,**self.env,RUNNER_TEMP=str(self.runner),RUN_OUTCOME='failure',
+                              PAIR_OUTCOME='failure',PYTHONDONTWRITEBYTECODE='1')
+        for name in ['GH_TOKEN','GITHUB_TOKEN','GIT_INDEX_FILE']:
+            self.environment.pop(name,None)
+        workflow=(self.source_root/'.github/workflows/hourly.yml').read_text()
+        step=workflow.split('      - name: Preserve terminal failures without publishing a partial forecast\n',1)[1]
+        self.command=textwrap.dedent(step.split('        run: |\n',1)[1])
+
+    def execute_failure(self):
+        return subprocess.run(['bash','-e','-o','pipefail','-c',self.command],cwd=self.root,
+                              env=self.environment,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+
+    def verify_only_failure_was_published(self,main_before):
+        self.assertEqual(self.git('rev-parse','refs/heads/main',root=self.origin),main_before)
+        ref='refs/heads/audit-failures/classic-12345-1'
+        commit=self.git('rev-parse',ref,root=self.origin)
+        self.assertEqual(self.git('rev-parse',commit+'^',root=self.origin),self.source)
+        names=self.git('diff','--name-only',self.source,commit,root=self.origin).splitlines()
+        self.assertTrue(names)
+        self.assertTrue(all(name.startswith('data/classic-failures/12345-1/')for name in names))
+        self.assertEqual(self.git('show',commit+':output/data/week.json',root=self.origin),'{"fictional":1}')
+        restored=self.runner/'classic-failure-restored-12345-1/data/classic-failures/12345-1/FAILED.json'
+        self.assertTrue(restored.is_file())
+        import json
+        document=json.loads(restored.read_bytes())
+        self.assertEqual(document['state'],'FAILED_ATTEMPT_RETAINED')
+        self.assertIs(document['successful_forecast'],False)
+        self.assertIs(document['failure_record_publishes_forecasts'],False)
+        return commit
+
+    def test_failure_never_commits_previously_staged_partial_output(self):
+        (self.root/'output/data/week.json').write_text('{"fictional_partial":true}')
+        self.git('add','output/data/week.json')
+        result=self.execute_failure()
+        self.assertEqual(result.returncode,0,result.stderr+result.stdout)
+        self.verify_only_failure_was_published(self.source)
+        self.assertIn('output/data/week.json',self.git('diff','--cached','--name-only'))
+        self.assertEqual((self.root/'output/data/week.json').read_text(),'{"fictional_partial":true}')
+
+    def test_failure_remains_durable_when_main_legitimately_advances(self):
+        self.advance_elsewhere()
+        main=self.git('rev-parse','refs/heads/main',root=self.origin)
+        result=self.execute_failure()
+        self.assertEqual(result.returncode,0,result.stderr+result.stdout)
+        self.verify_only_failure_was_published(main)
 
 
 if __name__=='__main__':unittest.main()

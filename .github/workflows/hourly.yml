@@ -75,11 +75,26 @@ jobs:
       # Required deterministic invariants are enforced above, not bypassed here.
       - name: Legacy diagnostic verification (advisory)
         id: legacy
-        run: python tools/verify.py
+        run: timeout --signal=KILL 75s python tools/verify.py
         continue-on-error: true
       - name: Historical DraftKings comparison (advisory)
         id: comparison
-        run: python tools/compare_lines.py --json output/data/dk_backtest.json
+        run: |
+          timeout --signal=KILL 60s python tools/compare_lines.py --json "$RUNNER_TEMP/classic-comparison.json"
+          python - <<'PYCOMPARE'
+          import json, os, tempfile
+          from pathlib import Path
+          raw=(Path(os.environ['RUNNER_TEMP'])/'classic-comparison.json').read_bytes()
+          def invalid(_):raise ValueError('NONFINITE_COMPARISON')
+          value=json.loads(raw,parse_constant=invalid)
+          if not isinstance(value,dict) or len(raw)>1048576:raise ValueError('BOUNDED_COMPARISON_REQUIRED')
+          target=Path('output/data/dk_backtest.json')
+          descriptor,name=tempfile.mkstemp(prefix='.comparison-',dir=target.parent)
+          try:
+              with os.fdopen(descriptor,'wb')as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
+              os.replace(name,target)
+          finally:Path(name).unlink(missing_ok=True)
+          PYCOMPARE
         continue-on-error: true
       - name: Record advisory outcomes
         if: steps.mode.outputs.mode == 'phase1'
@@ -97,7 +112,7 @@ jobs:
           PY
       - name: Prepare isolated provisional overlay (default R0)
         id: overlay
-        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v3.json --feed-policy-sha256 4a5efc5e6647bf339c0e71ad64cafc242d4592f7b046b44ccde5e5f164b4fe68
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v3.json --feed-policy-sha256 29e7d5166b08737d7f59e18303008e5c9e39690122bdc5cb1872ce436d2c02b1
       - name: Commit validated data and immutable receipts
         id: commit
         run: |
@@ -160,12 +175,27 @@ jobs:
           RETRY_OUTCOME: ${{ steps.deployment-retry.outcome }}
         run: |
           python tools/classic_failure_v1.py --root . --private-run-dir "$RUNNER_TEMP/classic-pair-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --fence "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
-          git fetch origin main
-          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || { echo "Main advanced; failure bytes remain local and the original failed Actions run is preserved. Refusing a stale write."; exit 1; }
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          export GIT_INDEX_FILE="$RUNNER_TEMP/classic-failure-index-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git read-tree "$GITHUB_SHA"
           git add -- "data/classic-failures/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          if ! git diff --cached --quiet; then
-            git commit -m "Retain failed update attempt $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-            git push origin HEAD:main
-          fi
+          git diff --cached --name-only -z "$GITHUB_SHA" > "$RUNNER_TEMP/classic-failure-paths"
+          python - <<'PYFAIL'
+          import os
+          from pathlib import Path
+          names=Path(os.environ['RUNNER_TEMP'],'classic-failure-paths').read_bytes().split(b'\0')
+          prefix=('data/classic-failures/'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']+'/').encode()
+          if not names or any(name and not name.startswith(prefix) for name in names):
+              raise ValueError('ONLY_THIS_FAILED_ATTEMPT_MAY_BE_PERSISTED')
+          PYFAIL
+          failure_tree=$(git write-tree)
+          failure_commit=$(git commit-tree "$failure_tree" -p "$GITHUB_SHA" -m "Retain failed update attempt $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT")
+          failure_ref="refs/heads/audit-failures/classic-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git push origin "$failure_commit:$failure_ref"
+          git fetch --no-tags origin "$failure_ref"
+          test "$(git rev-parse FETCH_HEAD)" = "$failure_commit"
+          failure_restore="$RUNNER_TEMP/classic-failure-restored-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$failure_restore"
+          git archive "$failure_commit" -- "data/classic-failures/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" | tar -x -C "$failure_restore"
+          python tools/classic_failure_v1.py --verify-retained-root "$failure_restore/data/classic-failures/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
