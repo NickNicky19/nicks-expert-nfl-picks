@@ -4621,7 +4621,7 @@ function renderMine() {
       <button class="tbtn" data-mine-clear="all">Clear all</button>
       ${nonCurrent ? `<button class="tbtn" data-mine-clear="old">Clear ${nonCurrent} non-current period selections</button>` : ""}
     </div>
-    <p class="note">Counts describe individual selections, not a combined ticket. Game bets use your saved line and require a recorded Final status with valid whole-number scores. Live positions can reverse, including downward corrections. Player-prop results still use the current statistics feed; missing player data is not fully resolved by this update. Venue settlement and combined-ticket results are unavailable.</p>`;
+    <p class="note">Counts describe individual selections, not a combined ticket. Game bets use your saved line and require a recorded Final status with valid whole-number scores. Live prop values remain provisional, including overs already above the line: signed yardage and corrections can move down. Final equality with an integer line is a push. Player-prop results still use the current statistics feed; missing player data is not fully resolved by this update. Venue settlement and combined-ticket results are unavailable.</p>`;
 }
 
 // ---------------------------------------------------------------- render and events
