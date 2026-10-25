@@ -3072,6 +3072,11 @@ m['rel'].atomic_json(root/'recovery-result.json',dict(updates=updates,immutable_
         for name, raw in originals.items(): self.assertEqual((self.root / name).read_bytes(), raw)
 
 
+# Both closed retained sources have this exact historical static inventory.
+# Current-only assets must never be copied under an older source identity.
+RETAINED_RANKED_OUTPUT_FILES = ("app.js", "index.html", "recovery.html", "reliability-ui.js", "style.css")
+
+
 class RetainedRankedSourcePipelineTests(unittest.TestCase):
     """Actual e2d fictional lineage replayed by the changed current reader."""
     @classmethod
@@ -3082,10 +3087,9 @@ class RetainedRankedSourcePipelineTests(unittest.TestCase):
         cls.addClassCleanup(cls.retained.__exit__, None, None, None)
         cls.source_commit = strategies.RETAINED_SOURCE
         (cls.source_code / "output").mkdir()
-        for path in (ROOT / "output").iterdir():
-            if path.is_file():
-                raw = corrected._git(ROOT, "show", cls.source_commit + ":output/" + path.name)
-                (cls.source_code / "output" / path.name).write_bytes(raw)
+        for name in RETAINED_RANKED_OUTPUT_FILES:
+            raw = corrected._git(ROOT, "show", cls.source_commit + ":output/" + name)
+            (cls.source_code / "output" / name).write_bytes(raw)
         RankedStrategyConnectedPipelineTests.setUpClass.__func__(cls)
 
     setUp = RankedStrategyConnectedPipelineTests.setUp
@@ -3333,9 +3337,8 @@ class Retained045RankedSourcePipelineTests(unittest.TestCase):
         cls.addClassCleanup(cls.retained.__exit__, None, None, None)
         cls.source_commit = cls.SOURCE
         (cls.source_code / "output").mkdir()
-        for path in (ROOT / "output").iterdir():
-            if path.is_file():
-                (cls.source_code / "output" / path.name).write_bytes(corrected._git(ROOT, "show", cls.SOURCE + ":output/" + path.name))
+        for name in RETAINED_RANKED_OUTPUT_FILES:
+            (cls.source_code / "output" / name).write_bytes(corrected._git(ROOT, "show", cls.SOURCE + ":output/" + name))
         RankedStrategyConnectedPipelineTests.setUpClass.__func__(cls)
 
     setUp = RankedStrategyConnectedPipelineTests.setUp
