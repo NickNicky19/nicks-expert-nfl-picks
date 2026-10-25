@@ -240,7 +240,12 @@ def validate_public_root(output):
     board, board_sha = read_bound(output / "data/week.json", limit=16 * 1024 * 1024)
     validate_overlay(doc, board, board_sha)
     if pointer["display_board_sha256"] != board_sha: raise ValueError("overlay pointer has a different R0 board")
-    return allowed | {"data/weekly-adaptive-overlay.json", pointer["path"]}
+    allowed |= {"data/weekly-adaptive-overlay.json", pointer["path"]}
+    if (output / "data/weekly-selected-rankings.json").exists():
+        from weekly_selected_rankings import read_public as read_rankings, validate_document
+        ranking_pointer, rankings = read_rankings(output / "data")
+        allowed |= {"data/" + path for path in validate_document(rankings, ranking_pointer, board, board_sha, doc, root=output / "data")}
+    return allowed
 
 
 def stage_assets(root):
@@ -311,6 +316,11 @@ def main():
     doc = prepare_overlay(board, board_sha, selected, review, website_source_sha=args.website_source_sha,
                           prepared_at=now, previous=previous)
     write_public(doc, root / "output/data", atomic_json)
+    # A separate, versioned selection stream; original R0 board/picks stay intact.
+    from weekly_selected_rankings import prepare_writer as prepare_rankings
+    ranking_pointer = prepare_rankings(root, board, board_sha, doc,
+        website_source_sha=args.website_source_sha, atomic_json=atomic_json)
+    print(json.dumps({"state": "SELECTED_RANKINGS_PERSISTED", "sha256": ranking_pointer["sha256"]}))
 
 
 if __name__ == "__main__": main()

@@ -1,5 +1,14 @@
 # Primary provisional category forecasts
 
+Current integration: selected category forecasts also supply directional leans,
+new normalized-gap sorting, and separately persisted Top selections. See
+[Selected forecasts in Top Picks and sorting](WEEKLY_SELECTED_RANKINGS.md) for the
+versioned policy, fallback/expiry behavior and pregame completion evidence.
+Fantasy/PPR, game projections, on-pace estimates and original historical records
+retain R0. The original display-only checkpoint below is historical evidence;
+its source scope does not describe the later integration.
+
+
 The selected typed forecast is the first projection in each supported category
 panel and the leading forecast in its collapsed chip. Counts show their mean,
 yards their signed median, and anytime rushing-or-receiving TD a genuine event
