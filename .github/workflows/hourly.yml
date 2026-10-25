@@ -88,7 +88,7 @@ jobs:
           p.write_text(json.dumps(d, separators=(',', ':'), allow_nan=False))
           PY
       - name: Prepare isolated provisional overlay (default R0)
-        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v2.json --feed-policy-sha256 e36b6d4ead70471286ee6c762e32790bbbd4ffcdd5f37853463646eaf3c55fe2
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v2.json --feed-policy-sha256 e8e037a00a22d3e0e07e41ed5816f2374e8f162a7fa78ea8cc45888ed2e2f094
       - name: Commit validated data and immutable receipts
         id: commit
         run: |
