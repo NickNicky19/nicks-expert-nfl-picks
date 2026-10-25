@@ -1246,7 +1246,11 @@ jobs:
 
           CONF='NFL-WEB-GENUINE-PRODUCTION-CASE-20261024'
           REPO='NickNicky19/nicks-expert-nfl-picks'
-          BASE='7156c6cf7f97eb25501a4f084e8060d6fe52e6bb'
+          BASE='89512ed952308dacc1f6a930915ddbcdccd460d9'
+          REVIEWED_MAIN_TREE='c88d5b3740c820b30387ec2eaca2b0bceafd9a51'
+          CONTROLLER_CONTRACT='genuine-current-production-controller-v3'
+          WEEKLY_POLICY_PATH='config/weekly-derived-selected-policy-v3.json'
+          WEEKLY_POLICY_SHA256='5ddd3af107f1a547fca3100be792a5c2c1b35d26415e1bb8eaf03164f9df4193'
           WORKFLOW=REPO+'/.github/workflows/prepare-diagnostic-seed.yml@refs/heads/upgrade/phase2-reproducible-comparison'
           MIB=1024**2; GIB=1024**3; CAP=127*MIB
           FIXED={
@@ -1256,10 +1260,13 @@ jobs:
           HASHED=re.compile(r'output/data/selection-grading/[0-9a-f]{64}/')
           REPORT=re.compile(r'data/selection-grading/(?:latest\.json|hosting\.json|[0-9a-f]{64}/(?:summary|outcomes|rows|rows-[0-9]{4}|manifest|registry|archive)\.json|[0-9a-f]{64}/snapshot-(?:app\.js|index\.html|data_(?:week|meta|verification-scope|forecast-scorecard|health|release-identity)\.json|data_selection-grading_latest\.json))\Z')
           ALIASES=set('week meta future teams track_record dk_backtest forecast-scorecard offer-capture health release-identity verification-scope'.split())
-          STATIC={'app.js','index.html','style.css','reliability-ui.js','recovery.html'}
+          STATIC={'app.js','index.html','style.css','reliability-ui.js','recovery.html','weekly-adaptive-overlay.js'}
+          WEEKLY_PUBLIC=re.compile(r'data/(?:weekly-adaptive-overlay\.json|weekly-adaptive/[0-9a-f]{64}\.json|weekly-selected-rankings\.json|weekly-selected-rankings/[0-9a-f]{64}(?:\.receipt)?\.json)\Z')
+          IMMUTABLE_WEEKLY=re.compile(r'output/data/(?:weekly-adaptive/[0-9a-f]{64}\.json|weekly-selected-rankings/[0-9a-f]{64}(?:\.receipt)?\.json)\Z')
+          AUDIT=re.compile(r'data/weekly-adaptive-audit/([0-9a-f]{64})\.json\Z')
           SCHEMAS=set('baseline-capture-v2 matchup-inputs-v3 sleeper-selection-offers-v1 forecast-outcomes-v1 forecast-outcomes-v2 descriptive-statistic-outcomes-v1 descriptive-statistic-outcomes-v2 matchup-verification-v1 partial-schedule-baseline-v1 partial-registration-data-integrity-v2 partial-scope-data-integrity-v2 partial-completion-data-integrity-v2 completion-failure-data-integrity-v2 partial-completion-failure-v1 ranked-selection-observation-v1 ranked-selection-completion-v1 ranked-selection-decision-ledger-v1 derived-selection-ledger-v1 rich-scorecard-evidence-v1 selection-publication-run-v1 point-candidate-evaluation-v1 hosting-generation-proof-v1 generation-failure-v1 unqualified-native-preservation-v1 ranked-selection-failure-v1'.split())
           FIELDS=('proj','adj','mf','mf_n','values','line','line_from','lean','our_line','td_chance','source','sleeper','adj_h','line_h','proj_h')
-          NORMAL_DATA=('output/data','data/cache','data/forward','data/history','data/verification','data/shadow','data/offers','data/outcomes')
+          NORMAL_DATA=('output/data','data/cache','data/forward','data/history','data/verification','data/shadow','data/offers','data/outcomes','data/weekly-adaptive-audit')
           SOURCE_FIXTURE='data/verification/2026/w06/dcf4bce0b2d3a162bdea39217eb6ae0ee2545e3895cce129338afc715a5e8e2a.json.gz'
           HEALTH_ANNOTATION="import json,pathlib,sys\np=pathlib.Path('output/data/health.json')\nd=json.loads(p.read_text())\nd['legacy_verifier']=sys.argv[1]\nd['historical_comparison']=sys.argv[2]\np.write_text(json.dumps(d,separators=(',',':'),allow_nan=False))\n"
           META={'RELEASE_CASE_MANIFEST.json','INPUT_DATA_MANIFEST.json','OUTPUT_DATA_MANIFEST.json','NEW_RECEIPTS_MANIFEST.json','PAGES_MEMBERS_MANIFEST.json','SOURCE_CI_BINDINGS.json'}
@@ -1310,9 +1317,26 @@ jobs:
                       result[p.relative_to(root).as_posix()]={'bytes':size,'sha256':file_hash(p),'mode':stat.S_IMODE(p.stat().st_mode)}
               return result
           def public_path(name):
-              return name in STATIC or name.startswith('data/') and name[5:].removesuffix('.json') in ALIASES and name.endswith('.json') or bool(re.fullmatch(r'data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json',name)) or bool(REPORT.fullmatch(name))
-          def safe_json(path, receipt=False):
-              raw=path.read_bytes();decoded=gzip.decompress(raw) if raw[:2]==b'\x1f\x8b' else raw
+              return name in STATIC or name.startswith('data/') and name[5:].removesuffix('.json') in ALIASES and name.endswith('.json') or bool(re.fullmatch(r'data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json',name)) or bool(REPORT.fullmatch(name)) or bool(WEEKLY_PUBLIC.fullmatch(name))
+          def safe_json(path, receipt=False, *, plain_limit=None):
+              if plain_limit is None:
+                  # Preserve the historical receipt/plain reader and its exact meaning.
+                  raw=path.read_bytes();decoded=gzip.decompress(raw) if raw[:2]==b'\x1f\x8b' else raw
+              else:
+                  # The new audit role is application-plain JSON, never legacy gzip.
+                  require(type(plain_limit) is int and plain_limit==4*MIB and receipt is False,'PLAIN_JSON_ROLE_BOUND')
+                  initial=path.lstat()
+                  require(stat.S_ISREG(initial.st_mode) and not path.is_symlink() and initial.st_size<=plain_limit,'PLAIN_JSON_FILE_BOUND')
+                  identity=lambda info:(info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+                  descriptor=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+                  with os.fdopen(descriptor,'rb') as stream:
+                      opened=os.fstat(stream.fileno())
+                      require(stat.S_ISREG(opened.st_mode) and identity(opened)==identity(initial),'PLAIN_JSON_FILE_CHANGED')
+                      raw=stream.read(plain_limit+1)
+                      require(len(raw)<=plain_limit,'PLAIN_JSON_BYTE_BOUND')
+                      require(len(raw)==opened.st_size and identity(os.fstat(stream.fileno()))==identity(opened) and identity(path.lstat())==identity(opened),'PLAIN_JSON_FILE_CHANGED')
+                  require(not raw.startswith(b'\x1f\x8b'),'PLAIN_JSON_ENCODING')
+                  decoded=raw
               require(len(decoded)<=32*MIB,'DECODED_BOUND');value=parse(decoded);require(isinstance(value,dict),'JSON_OBJECT')
               if receipt:
                   require(set(value)=={'payload','payload_sha256'} and sha(canonical(value['payload']))==value['payload_sha256'],'RECEIPT_ENVELOPE')
@@ -1327,6 +1351,14 @@ jobs:
                   elif isinstance(item,list):
                       for v in item:walk(v)
               walk(value);return value
+          def audit_document(name,path):
+              # This plain public technical audit is retained, never native proof.
+              value=safe_json(path,plain_limit=4*MIB);match=AUDIT.fullmatch(name)
+              fields={'schema_version','website_source_sha','at','policy_file_sha256','authority_kind','human_approval','validation','review'}
+              require(match is not None and set(value)==fields and value['schema_version']=='weekly-public-feed-writer-audit-v1','WEEKLY_AUDIT_CONTRACT')
+              require(match[1]==sha(canonical(value)) and re.fullmatch('[0-9a-f]{40}',value['website_source_sha']) and re.fullmatch('[0-9a-f]{64}',value['policy_file_sha256']),'WEEKLY_AUDIT_IDENTITY')
+              require(utc(value['at']).utcoffset() is not None and value['authority_kind']=='AUTOMATED_REGISTERED_POLICY' and value['human_approval'] is False and type(value['validation']) is dict and type(value['review']) is dict,'WEEKLY_AUDIT_TYPES')
+              return value
           def contract(board,gid):
               players=[{'id':p['id'],'game_id':gid,'team':p['team'],'opp':p['opp'],'pos':p['pos'],'late':p.get('late',False),'props':sorted([{k:q.get(k) for k in ('key',*FIELDS)} for q in p['props']],key=lambda q:q['key'])} for p in board['players'] if p['game_id']==gid]
               picks={side:sorted([p for p in rows if p['game_id']==gid],key=lambda p:(p['player_id'],p['key'])) for side,rows in board['picks'].items()}
@@ -1364,19 +1396,39 @@ jobs:
           def collect_receipts(app,before,after):
               payload=[];receipts=[];errors=[]
               for name,info in sorted(after.items()):
-                  if not LANE.match(name) or before.get(name,{}).get('sha256')==info['sha256']:continue
+                  if before.get(name,{}).get('sha256')==info['sha256']:continue
+                  if AUDIT.fullmatch(name):
+                      try:
+                          require(name not in before,'IMMUTABLE_OVERWRITE');audit_document(name,app/name);payload.append(('mutable/'+name,app/name))
+                      except (RuntimeError,ValueError,KeyError,OSError) as error:errors.append({'path':name,'sha256':info['sha256'],'failure_code':str(error) if re.fullmatch('[A-Z0-9_]+',str(error)) else type(error).__name__})
+                      continue
+                  if name.startswith(('output/data/weekly-selected-rankings/', 'output/data/weekly-selected-rankings.json')):
+                      try:
+                          require(name not in before or name=='output/data/weekly-selected-rankings.json','IMMUTABLE_OVERWRITE')
+                          sys.path.insert(0,str(app/'tools'));import weekly_selected_rankings
+                          public=name[len('output/'):];role=weekly_selected_rankings.public_role(public)
+                          require(role is not None,'RANKING_PUBLIC_ROLE')
+                          value,actual,length=weekly_selected_rankings._read_asset(app/'output/data',public[len('data/'):])
+                          require(actual==info['sha256'] and length==info['bytes'],'RANKING_PUBLIC_BYTES')
+                          payload.append(('mutable/'+name,app/name))
+                      except (RuntimeError,ValueError,KeyError,OSError) as error:errors.append({'path':name,'sha256':info['sha256'],'failure_code':str(error) if re.fullmatch('[A-Z0-9_]+',str(error)) else type(error).__name__})
+                      continue
+                  if not LANE.match(name):continue
                   try:
                       require(name not in before,'IMMUTABLE_OVERWRITE');require(name.endswith('.json.gz'),'RECEIPT_EXTENSION');require(not name.startswith('data/shadow/'),'UNEXPECTED_EXPERIMENTAL_OBSERVATION')
                       value=safe_json(app/name,True);payload.append(('receipts/'+name,app/name));receipts.append({'path':name,**info,'schema_version':value['schema_version'],'original_source_sha':value.get('code_commit',value.get('source_sha'))})
                   except (RuntimeError,ValueError,KeyError,OSError) as error:errors.append({'path':name,'sha256':info['sha256'],'failure_code':str(error) if re.fullmatch('[A-Z0-9_]+',str(error)) else type(error).__name__})
               return payload,receipts,errors
           def immutable_violations(before,after):
-              return [{'path':name,'before_sha256':info['sha256'],'after_sha256':after.get(name,{}).get('sha256')} for name,info in before.items() if (LANE.match(name) or HASHED.match(name)) and after.get(name,{}).get('sha256')!=info['sha256']]
+              return [{'path':name,'before_sha256':info['sha256'],'after_sha256':after.get(name,{}).get('sha256')} for name,info in before.items() if (LANE.match(name) or HASHED.match(name) or AUDIT.fullmatch(name) or IMMUTABLE_WEEKLY.fullmatch(name)) and after.get(name,{}).get('sha256')!=info['sha256']]
           def new_payloads(app,before,after,pages):
               payload=[];new_receipts=[];representations={}
               for name,info in sorted(after.items()):
                   if before.get(name,{}).get('sha256')==info['sha256']:continue
                   path=app/name
+                  if AUDIT.fullmatch(name):
+                      require(name not in before,'IMMUTABLE_OVERWRITE');audit_document(name,path)
+                      payload.append(('mutable/'+name,path));representations[name]={'storage':'mutable/'+name,**info};continue
                   if LANE.match(name):
                       require(name not in before,'IMMUTABLE_OVERWRITE');require(name.endswith('.json.gz'),'RECEIPT_EXTENSION')
                       require(not name.startswith('data/shadow/'),'UNEXPECTED_EXPERIMENTAL_OBSERVATION')
@@ -1399,7 +1451,8 @@ jobs:
                   return payload+[('public-pages.tar',complete_pages_tar)],receipts,representations,None,receipt_errors
               except (RuntimeError,ValueError,KeyError,OSError) as error:
                   code=str(error) if re.fullmatch('[A-Z0-9_]+',str(error)) else type(error).__name__
-                  return primary,receipts,{},code,receipt_errors
+                  audit_representations={name[len('mutable/'):]:{'storage':name,**after[name[len('mutable/'):]]} for name,_ in primary if name.startswith(('mutable/data/weekly-adaptive-audit/','mutable/output/data/weekly-selected-rankings/','mutable/output/data/weekly-selected-rankings.json'))}
+                  return primary,receipts,audit_representations,code,receipt_errors
           def write_tar(target,payload,metadata):
               require(set(metadata)==META,'TYPED_METADATA_ALLOWLIST')
               for name,p in payload:
@@ -1425,7 +1478,9 @@ jobs:
               require(paths[:2]==list(NORMAL_DATA[:2]),'NORMAL_DATA_DIRECTORIES_MISSING')
               run('git-stage-data',command+['add','--',*paths],limit=1200)
               staged=[n.decode() for n in git(app,'diff','--cached','--name-only','-z',timeout=remaining()).split(b'\0') if n]
-              require(all(n!=SOURCE_FIXTURE and n.startswith(tuple(d+'/' for d in NORMAL_DATA)) and n.endswith(('.json','.json.gz')) for n in staged),'LOCAL_COMMIT_HAS_NONDATA_SOURCE_CHANGE')
+              require(all(n!=SOURCE_FIXTURE and n.startswith(tuple(d+'/' for d in NORMAL_DATA)) and n.endswith(('.json','.json.gz')) and (not n.startswith('data/weekly-adaptive-audit/') or AUDIT.fullmatch(n)) for n in staged),'LOCAL_COMMIT_HAS_NONDATA_SOURCE_CHANGE')
+              for name in staged:
+                  if AUDIT.fullmatch(name):audit_document(name,app/name)
               if staged:run('git-local-commit',command+['-c','commit.gpgsign=false','commit','-m','Scheduled update (phase1)'],limit=1200)
               commit=git(app,'rev-parse','HEAD',timeout=remaining()).decode().strip()
               return {'commit':commit,'tree':git(app,'rev-parse','HEAD^{tree}',timeout=remaining()).decode().strip(),'created':bool(staged),'captured_source':source,'changed_data_paths':staged,'pushed':False}
@@ -1433,7 +1488,7 @@ jobs:
           def main():
               started=time.monotonic();source=invocation(os.environ,parse(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes()))
               app=Path(os.environ['GITHUB_WORKSPACE'])/'source';prod=Path(os.environ['GITHUB_WORKSPACE'])/'production';out=Path(os.environ['RUNNER_TEMP'])/'nfl-real-production-case';out.mkdir(exist_ok=False);logs=out/'private-logs';logs.mkdir()
-              result={'schema_version':'genuine-current-production-case-v1','status':'FAILED','source':source,'run_id':int(os.environ['GITHUB_RUN_ID']),'attempt':1,'started_at':now(),'steps':[],'provider_case_attempts':0,'deployed':False,'main_written':False,'operating_qualification':'NOT_ESTABLISHED','resource_verdict':'UNKNOWN','job_aggregate_peak_bytes':None,'application_budget_seconds':1200,'termination_grace_seconds':90}
+              result={'schema_version':'genuine-current-production-case-v1','controller_contract':CONTROLLER_CONTRACT,'reviewed_main_base':BASE,'reviewed_main_source_tree':REVIEWED_MAIN_TREE,'status':'FAILED','source':source,'run_id':int(os.environ['GITHUB_RUN_ID']),'attempt':1,'started_at':now(),'steps':[],'provider_case_attempts':0,'deployed':False,'main_written':False,'operating_qualification':'NOT_ESTABLISHED','resource_verdict':'UNKNOWN','job_aggregate_peak_bytes':None,'application_budget_seconds':1200,'termination_grace_seconds':90}
               before={};after={};pages={};ci={};main_files={};deadline=None;payload=[];receipts=[];representations={};pages_tar_valid=False
               wrapper=out/'entry.py';wrapper.write_text("import runpy,signal,sys\nfrom pathlib import Path\ndef stop(*_): raise TimeoutError('BOUNDED_APPLICATION_DEADLINE')\nsignal.signal(signal.SIGTERM,stop)\np=Path(sys.argv[1]);sys.argv=sys.argv[1:];sys.path.insert(0,str(p.parent));runpy.run_path(str(p),run_name='__main__')\n")
               def run(tag,args,token=False,limit=180,advisory=False):
@@ -1470,6 +1525,7 @@ jobs:
                   result['early_headroom']=capacity((app,out));require(git(app,'rev-parse','HEAD').decode().strip()==source,'APPLICATION_HEAD')
                   require(git(app,'remote','get-url','origin').decode().strip() in ('https://github.com/'+REPO,'https://github.com/'+REPO+'.git'),'SOURCE_ORIGIN')
                   main=git(prod,'rev-parse','HEAD').decode().strip();require(main==git(prod,'rev-parse','refs/remotes/origin/main').decode().strip()==fresh_main(),'ACTUAL_MAIN_BRANCH_PIN')
+                  require(git(prod,'rev-parse',BASE+'^{tree}').decode().strip()==REVIEWED_MAIN_TREE,'REVIEWED_MAIN_SOURCE_TREE')
                   require(subprocess.run(['git','-C',str(prod),'merge-base','--is-ancestor',BASE,main],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0,'MAIN_BASE_ANCESTRY')
                   changes=git(prod,'diff','--name-only',BASE,main).decode().splitlines();require(all(n.startswith(('data/','output/data/')) for n in changes),'MAIN_HAS_UNREVIEWED_SOURCE_CHANGE')
                   for raw in git(prod,'ls-tree','-r','-l','-z',main,'--','data','output/data').split(b'\0'):
@@ -1477,7 +1533,7 @@ jobs:
                       meta,name=raw.split(b'\t',1);mode,kind,blob,size=meta.decode().split();name=name.decode();require(kind=='blob' and mode=='100644' and not PurePosixPath(name).is_absolute() and '..' not in PurePosixPath(name).parts,'MAIN_DATA_PATH')
                       p=prod/name;require(p.is_file() and not p.is_symlink() and p.stat().st_size==int(size) and int(size)<=128*MIB,'MAIN_DATA_TYPE');body=p.read_bytes();require(hashlib.sha1(b'blob '+str(len(body)).encode()+b'\0'+body).hexdigest()==blob,'MAIN_DATA_BLOB')
                       target=app/name
-                      if (LANE.match(name) or HASHED.match(name)) and target.exists():require(file_hash(target)==sha(body),'MAIN_IMMUTABLE_COLLISION')
+                      if (LANE.match(name) or HASHED.match(name) or AUDIT.fullmatch(name) or IMMUTABLE_WEEKLY.fullmatch(name)) and target.exists():require(file_hash(target)==sha(body),'MAIN_IMMUTABLE_COLLISION')
                       target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(body);main_files[name]={'blob':blob,'bytes':len(body),'sha256':sha(body)}
                   result['production_main']=main;result['production_tree']=git(prod,'rev-parse','HEAD^{tree}').decode().strip()
                   for name,expected in FIXED.items():
@@ -1489,13 +1545,14 @@ jobs:
                   before=inventory(app);result['native_before']=sum(n.startswith('data/forward/') for n in before)
                   first=run('source-ci-before',[sys.executable,'tools/source_ci.py','verify'],True,240);require(type(first.get('run_id')) is int and first['run_id']>0,'SOURCE_CI_RUN')
                   require(fresh_main()==main,'MAIN_MOVED_BEFORE_PROVIDER');capacity((app,out));deadline=time.monotonic()+1200;result['application_started_at']=now()
-                  for tag,cmd in [('compile',[sys.executable,'-m','compileall','-q','pull','tools']),('js-app',['node','--check','output/app.js']),('js-reliability',['node','--check','output/reliability-ui.js']),('ui',['node','tests/test-ui.cjs']),('about',['node','tests/test-about.cjs']),('legacy',[sys.executable,'tools/preserve_legacy.py'])]:run(tag,cmd,limit=1200)
+                  for tag,cmd in [('compile',[sys.executable,'-m','compileall','-q','pull','tools']),('js-app',['node','--check','output/app.js']),('js-reliability',['node','--check','output/reliability-ui.js']),('js-weekly-overlay',['node','--check','output/weekly-adaptive-overlay.js']),('ui',['node','tests/test-ui.cjs']),('about',['node','tests/test-about.cjs']),('legacy',[sys.executable,'tools/preserve_legacy.py'])]:run(tag,cmd,limit=1200)
                   result['provider_case_attempts']=1;run('build-capture',[sys.executable,str(wrapper),str(app/'tools/phase2_capture.py'),'--mode','live','--build-and-capture'],limit=1200)
                   run('validate',[sys.executable,str(wrapper),str(app/'tools/phase2_capture.py'),'--mode','live','--validate-generation'],limit=1200)
                   legacy_outcome=run('legacy-advisory',[sys.executable,'tools/verify.py'],limit=1200,advisory=True)
                   comparison_outcome=run('historical-comparison',[sys.executable,'tools/compare_lines.py','--json','output/data/dk_backtest.json'],limit=1200,advisory=True)
                   run('record-advisory-outcomes',[sys.executable,'-c',HEALTH_ANNOTATION,legacy_outcome,comparison_outcome],limit=1200)
                   result['advisory_outcomes']={'legacy_verifier':legacy_outcome,'historical_comparison':comparison_outcome}
+                  run('weekly-provisional-overlay',[sys.executable,'tools/weekly_adaptive_overlay.py','--root','.', '--website-source-sha',source,'--feed-policy',WEEKLY_POLICY_PATH,'--feed-policy-sha256',WEEKLY_POLICY_SHA256],limit=1200)
                   run('git-fetch-main',['git','--no-replace-objects','-c','core.hooksPath=/dev/null','fetch','origin','main'],limit=1200)
                   require(git(app,'rev-parse','FETCH_HEAD',timeout=remaining()).decode().strip()==main,'MAIN_MOVED_BEFORE_LOCAL_COMMIT')
                   run('source-ci-before-data-commit',[sys.executable,'tools/source_ci.py','verify','--run-id',str(first['run_id'])],True,240)
@@ -1503,12 +1560,14 @@ jobs:
                   page_root=out/'pages';run('stage',[sys.executable,str(wrapper),str(app/'tools/phase2_capture.py'),'--mode','live','--stage-pages',str(page_root)],limit=1200)
                   staged_ci=run('source-ci-after-stage',[sys.executable,'tools/source_ci.py','verify','--run-id',str(first['run_id'])],True,240)
                   require(staged_ci['executed_commit']==result['local_data_commit']['commit'] and staged_ci['executed_tree']==result['local_data_commit']['tree'],'LOCAL_DATA_COMMIT_SOURCE_CI_BINDING')
+                  sys.path.insert(0,str(app/'tools'));import weekly_adaptive_overlay
+                  weekly_pages=weekly_adaptive_overlay.validate_public_root(page_root)
                   run('pages-tar',['tar','--dereference','--hard-dereference','--directory',str(page_root),'-cf',str(out/'public-pages.tar'),'--exclude=.git','--exclude=.github','.'],limit=1200)
                   with tarfile.open(out/'public-pages.tar') as tar:
                       for member in tar:
                           name=member.name.removeprefix('./')
                           if member.isdir():continue
-                          require(member.isfile() and public_path(name) and name not in pages and '..' not in PurePosixPath(name).parts and not PurePosixPath(name).is_absolute(),'PAGES_TAR_MEMBER')
+                          require(member.isfile() and public_path(name) and (not WEEKLY_PUBLIC.fullmatch(name) or name in weekly_pages) and name not in pages and '..' not in PurePosixPath(name).parts and not PurePosixPath(name).is_absolute(),'PAGES_TAR_MEMBER')
                           with tar.extractfile(member) as f:pages[name]={'bytes':member.size,'sha256':sha(f.read())}
                   pages_tar_valid=True
                   final_board=parse((app/'output/data/week.json').read_bytes());require(all(contract(final_board,gid)==h for gid,h in frozen.items()),'FROZEN_CONTRACT_CHANGED')
@@ -1524,14 +1583,14 @@ jobs:
                   if result['provider_case_attempts']:
                       payload,receipts,representations,output_error,receipt_errors=retention_delta(app,before,after,pages if pages_tar_valid and not violations else {},out/'public-pages.tar' if pages_tar_valid and not violations else None)
                       result['receipt_validation_errors']=receipt_errors
-                      if output_error:result['status']='FAILED_INHERITED_IMMUTABLE_CHANGED' if violations else 'FAILED_OUTPUT_CLASSIFICATION';result['retention_mode']='VALID_NEW_ORIGINAL_RECEIPTS_AND_TYPED_FAILURE_ONLY';result['output_failure_code']=output_error
+                      if output_error:result['status']='FAILED_INHERITED_IMMUTABLE_CHANGED' if violations else 'FAILED_OUTPUT_CLASSIFICATION';result['retention_mode']='VALID_NEW_ORIGINAL_RECEIPTS_TYPED_AUDITS_AND_FAILURE_ONLY';result['output_failure_code']=output_error
                   result.update(finished_at=now(),controller_seconds_before_retention=time.monotonic()-started,new_receipt_count=len(receipts),largest_individual_child_peak_rss_kib=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,per_process_peak_is_not_aggregate=True)
                   try:result['late_headroom']=capacity((app,out))
                   except RuntimeError:result['late_headroom']={'status':'HEADROOM_THRESHOLD_NOT_MET','resource_verdict':'UNKNOWN'};result['status']='FAILED_HEADROOM'
                   meta={'RELEASE_CASE_MANIFEST.json':result,'INPUT_DATA_MANIFEST.json':{'source':source,'production_main':result.get('production_main'),'production_files':main_files,'before':before,'fixed_inputs':FIXED},'OUTPUT_DATA_MANIFEST.json':{'after':after,'representations':representations},'NEW_RECEIPTS_MANIFEST.json':receipts,'PAGES_MEMBERS_MANIFEST.json':pages,'SOURCE_CI_BINDINGS.json':ci}
                   try:write_tar(out/'release-review.tar',payload,meta)
                   except RuntimeError as error:
-                      require(str(error)=='RETENTION_CAP','PACKAGING_ERROR');result['status']='FAILED_RETENTION_CAP';result['retention_mode']='ORIGINAL_NEW_RECEIPTS_AND_TYPED_FAILURE_ONLY';payload=[(n,p) for n,p in payload if n.startswith('receipts/')];write_tar(out/'release-review.tar',payload,meta)
+                      require(str(error)=='RETENTION_CAP','PACKAGING_ERROR');result['status']='FAILED_RETENTION_CAP';result['retention_mode']='ORIGINAL_NEW_RECEIPTS_TYPED_AUDITS_AND_FAILURE_ONLY';payload=[(n,p) for n,p in payload if n.startswith(('receipts/','mutable/data/weekly-adaptive-audit/'))];write_tar(out/'release-review.tar',payload,meta)
                   final={'status':result['status'],'source':source,'artifact_tar_bytes':(out/'release-review.tar').stat().st_size,'artifact_tar_sha256':file_hash(out/'release-review.tar'),'new_receipts':len(receipts),'operating_qualification':'NOT_ESTABLISHED','resource_verdict':'UNKNOWN'}
               except BaseException as error:
                   final={'status':'FAILED_RETENTION','failure_type':type(error).__name__,'operating_qualification':'NOT_ESTABLISHED','resource_verdict':'UNKNOWN'}
@@ -1564,8 +1623,8 @@ jobs:
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
           task_code="$GITHUB_WORKSPACE/source"
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '86cb09f4dce8aa365939548ff30747ed27083ab9c352df4bed302e94025613b2'
-          test "$(sha256sum "$task_code/tools/genuine_case_recovery.py" | cut -d' ' -f1)" = '2a175d65b90b586303622e98380680f92e31de965a3707ead509985c749a74b9'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '7908ea28df65531b1a573755f822d4923e347cc9b822c687f76a32aea303bd4b'
+          test "$(sha256sum "$task_code/tools/genuine_case_recovery.py" | cut -d' ' -f1)" = 'ec4e1aaa3aa25fd36d4959e64812245a33b8c4f84cd7a3a2abeabd6805c4bc38'
           task_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-baseline-pyc.XXXXXX")";chmod 0700 "$task_prefix"
           PYTHONPYCACHEPREFIX="$task_prefix" python -P "$task_code/tools/genuine_case_recovery.py" baseline > "$RUNNER_TEMP/nfl-genuine-baseline-$GITHUB_RUN_ID.json"
       - name: Require cached-kernel unit capability without providers
@@ -1578,7 +1637,7 @@ jobs:
           task_sample=1
           task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '86cb09f4dce8aa365939548ff30747ed27083ab9c352df4bed302e94025613b2'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '7908ea28df65531b1a573755f822d4923e347cc9b822c687f76a32aea303bd4b'
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
           task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
           task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
@@ -1721,7 +1780,7 @@ jobs:
           task_sample=2
           task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '86cb09f4dce8aa365939548ff30747ed27083ab9c352df4bed302e94025613b2'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '7908ea28df65531b1a573755f822d4923e347cc9b822c687f76a32aea303bd4b'
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
           task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
           task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
@@ -2283,7 +2342,7 @@ jobs:
           REPO='NickNicky19/nicks-expert-nfl-picks'
           BRANCH='upgrade/phase2-reproducible-comparison'
           WORKFLOW='.github/workflows/prepare-diagnostic-seed.yml'
-          BROWSER='d88d911a3ee10741cae7a01e63a15fc824647e7138afe2bc6fff7bf3bc7f543f'
+          BROWSER='070d173cf26222489630bb5a0ffb108015e169f485a87cb74551b00f15b43f3d'
           MIB=1024**2; GIB=1024**3; CAP=128*MIB
           stage='INVOCATION'; aggregate={'schema_version':'genuine-generated-browser-acceptance-v1','status':'FAIL','resource_verdict':'UNKNOWN','operating_qualification':'NOT_ESTABLISHED','provider_calls':0,'deployment':False}
           source=Path(os.environ['GITHUB_WORKSPACE'])/'source'
@@ -2424,7 +2483,7 @@ jobs:
               code_before=sci.source(source)
               need(code_before['source_manifest_sha256']==ci['source_manifest_sha256'],'INSTALLED_SOURCE_CLOSURE')
               need(sha((source/'tools/release_browser.cjs').read_bytes())==BROWSER,'REVIEWED_BROWSER_BYTES')
-              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='2a175d65b90b586303622e98380680f92e31de965a3707ead509985c749a74b9','REVIEWED_RECOVERY_BYTES')
+              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='ec4e1aaa3aa25fd36d4959e64812245a33b8c4f84cd7a3a2abeabd6805c4bc38','REVIEWED_RECOVERY_BYTES')
               capture_source=capture_source_for_approval(approval,current);capture_root=source;capture_ci=ci;capture_code=code_before
               compatibility={'difference_count':0,'comparison_sha256':sha(canonical({}))}
               if capture_source!=current:
@@ -2473,7 +2532,12 @@ jobs:
               for key in ('GH_TOKEN','GITHUB_TOKEN','ACTIONS_RUNTIME_TOKEN','ACTIONS_ID_TOKEN_REQUEST_TOKEN'):os.environ.pop(key,None)
               api.token=None;del api
               stage='EXACT_RUNTIME_RESTORATION'
-              driver=bootstrap.genuine_driver(capture_root,capture_source);need(len(driver)==30854 and sha(driver)=='2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf','REVIEWED_ORIGINAL_CONTROLLER');module=types.ModuleType('verified_original_controller')
+              driver=bootstrap.genuine_driver(capture_root,capture_source)
+              if capture_source==CAPTURE_F130:
+                  need(len(driver)==30854 and sha(driver)=='2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf','REVIEWED_ORIGINAL_CONTROLLER')
+              else:
+                  need((len(driver),sha(driver)) in ((35468,'2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'),(36877,'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5')),'REVIEWED_CURRENT_CONTROLLER')
+              module=types.ModuleType('verified_original_controller')
               exec(compile(driver,'verified-controller','exec'),module.__dict__)
               original=meta['INPUT_DATA_MANIFEST.json'];after=meta['OUTPUT_DATA_MANIFEST.json']['after'];main=original['production_main']
               need(re.fullmatch('[0-9a-f]{40}',main) and case['production_main']==main,'PRODUCTION_COMMIT')
@@ -2671,7 +2735,7 @@ jobs:
           REPO='NickNicky19/nicks-expert-nfl-picks'
           BRANCH='upgrade/phase2-reproducible-comparison'
           WORKFLOW='.github/workflows/prepare-diagnostic-seed.yml'
-          BROWSER='d88d911a3ee10741cae7a01e63a15fc824647e7138afe2bc6fff7bf3bc7f543f'
+          BROWSER='070d173cf26222489630bb5a0ffb108015e169f485a87cb74551b00f15b43f3d'
           MIB=1024**2; GIB=1024**3; CAP=128*MIB
           stage='INVOCATION'; aggregate={'schema_version':'genuine-generated-browser-acceptance-v1','status':'FAIL','resource_verdict':'UNKNOWN','operating_qualification':'NOT_ESTABLISHED','provider_calls':0,'deployment':False}
           source=Path(os.environ['GITHUB_WORKSPACE'])/'source'
@@ -2788,7 +2852,7 @@ jobs:
               code=sci.source(source)
               need(ci.get('schema_version')=='source-ci-verification-v1' and ci['executed_commit']==current and ci['source_manifest_sha256']==code['source_manifest_sha256'],'FRESH_INSTALLED_SOURCE_CI')
               need(sha((source/'tools/release_browser.cjs').read_bytes())==BROWSER,'REVIEWED_BROWSER_BYTES')
-              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='2a175d65b90b586303622e98380680f92e31de965a3707ead509985c749a74b9','REVIEWED_RECOVERY_BYTES')
+              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='ec4e1aaa3aa25fd36d4959e64812245a33b8c4f84cd7a3a2abeabd6805c4bc38','REVIEWED_RECOVERY_BYTES')
               api=sci.GitHub()
               def identity():
                   repo=api.get('');need(repo.get('id')==1411185749 and repo.get('full_name')==REPO and repo.get('private') is False,'PUBLIC_REPOSITORY')

@@ -1,0 +1,37 @@
+{
+  "CPU_seconds": 0.044525576,
+  "HTTP": 0,
+  "actual_new_NFL_outcomes_or_scores": 0,
+  "candidate_override_roles": [
+    "hourly",
+    "policy"
+  ],
+  "deployed": false,
+  "historical_reports_preserved": true,
+  "historical_reports_used": false,
+  "hosted_publication_or_deployment_acceptance": false,
+  "installed_acceptance": false,
+  "installed_port_acceptance": false,
+  "limits": {
+    "CPU_seconds": 1,
+    "wall_seconds": 5
+  },
+  "model_or_data_reads": 0,
+  "new_lab_source_sha": "bea4fd96f9ae057b393cbe9b746febd09302547f",
+  "physical_sha256": {
+    "helper": "14d6efe2d3ac5d8763cd289a8bff790eb1878536d77e84ec812162e66135a0e0",
+    "hourly": "99cca9550a98b6be656cfa75c65a2d1ec4b608e35455d4e8b0782657b9cb175d",
+    "policy": "7f350bb869d82ad9c822e7163d6e2b42f4867ba60f3f9aea5a92a9c18d944628",
+    "schema": "68709b6cb3d9a420835fcd74ee5dd5392ae83c36f54cce985fcd0fa47c372db5"
+  },
+  "policy_physical_and_canonical_sha256": "7f350bb869d82ad9c822e7163d6e2b42f4867ba60f3f9aea5a92a9c18d944628",
+  "prior_V4_unissued_packet_retained": true,
+  "production_model_changed": false,
+  "recipe_metadata_sha256": "63563bc26969d8a9c5c2489d059aacff03f9caacfeb72a457e42ed6d7bddc6d0",
+  "root_pins_sha256": "8631f08e28886a6772960d2e87a811d31bfa81e49bcbfa3a9de7d21f94d489b0",
+  "scope": "Final root-supplied V5 policy/hourly proposal and13 current code hashes; no installed protected edits",
+  "state": "PROPOSED_STATIC_CONTRACT_PASS",
+  "validator_sha256": "549ed975fa71897c16121a989b326594ea5484239b84555b3716da57cde773d6",
+  "wall_seconds": 0.046202048994018696,
+  "website_code_inventory_checks": 13
+}

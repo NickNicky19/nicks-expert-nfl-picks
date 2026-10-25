@@ -1,0 +1,18 @@
+{
+  "CPU_seconds": 0.227837,
+  "children_CPU_seconds": 0.070822,
+  "errors": 0,
+  "failures": 0,
+  "limits": {
+    "AS_bytes": 536870912,
+    "CPU_seconds": 30,
+    "wall_seconds": 60
+  },
+  "methods": 30,
+  "peak_RSS_bytes": 24961024,
+  "scope": "fictional V1/V2 consumer/overlay/API mocks only; no actualHTTP/credentials/NFL/model/runtime publication; local fictional git children in existing V1 tests",
+  "skipped": 0,
+  "source_SHA256": "14d6efe2d3ac5d8763cd289a8bff790eb1878536d77e84ec812162e66135a0e0",
+  "state": "PASS",
+  "wall_seconds": 0.2324413349997485
+}

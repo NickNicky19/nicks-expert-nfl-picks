@@ -49,7 +49,7 @@ jobs:
       - name: Python syntax
         run: PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-compile-pyc.XXXXXX")" python -m compileall -q pull tools
       - name: JavaScript and UI checks
-        run: node --check output/app.js && node --check output/reliability-ui.js && node tests/test-ui.cjs
+        run: node --check output/app.js && node --check output/reliability-ui.js && node --check output/weekly-adaptive-overlay.js && node tests/test-ui.cjs
       - name: About comparison states
         if: steps.mode.outputs.phase2_enabled == 'true'
         run: node tests/test-about.cjs

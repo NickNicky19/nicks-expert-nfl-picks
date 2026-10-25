@@ -80,6 +80,7 @@ jobs:
           fi
           node --check output/app.js
           node --check output/reliability-ui.js
+          node --check output/weekly-adaptive-overlay.js
           node tests/test-ui.cjs
           if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then node tests/test-about.cjs; fi
       - name: Preserve original grading output
@@ -126,6 +127,8 @@ jobs:
           d['historical_comparison'] = os.environ['COMPARISON_OUTCOME']
           p.write_text(json.dumps(d, separators=(',', ':'), allow_nan=False))
           PY
+      - name: Prepare isolated provisional display overlay (current reference fallback)
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v3.json --feed-policy-sha256 5ddd3af107f1a547fca3100be792a5c2c1b35d26415e1bb8eaf03164f9df4193
       - name: Commit validated data and immutable receipts
         id: commit
         run: |
@@ -139,6 +142,21 @@ jobs:
               python tools/source_ci.py verify --run-id '${{ steps.source_ci.outputs.run_id }}' > "$RUNNER_TEMP/source-ci-before-data-commit.json"
           fi
           git add output/data data/cache
+          if [ -d data/weekly-adaptive-audit ]; then
+            python - <<'PY_AUDIT'
+          from pathlib import Path
+          import re
+          from tools.genuine_case_recovery import encoded, weekly_json
+          # The existing source-CI-bound reader enforces this exact public audit role.
+          for path in sorted(Path('data/weekly-adaptive-audit').iterdir()):
+              name = path.as_posix()
+              if re.fullmatch(r'data/weekly-adaptive-audit/[0-9a-f]{64}\.json', name) is None:
+                  raise RuntimeError('Unclassified weekly audit path')
+              _, body = encoded(path, retain=True, limit=4 * 1024 * 1024)
+              weekly_json(name, body)
+          PY_AUDIT
+            git add data/weekly-adaptive-audit
+          fi
           for dir in data/forward data/history data/verification data/shadow data/offers data/outcomes; do
             if [ -d "$dir" ]; then git add "$dir"; fi
           done
