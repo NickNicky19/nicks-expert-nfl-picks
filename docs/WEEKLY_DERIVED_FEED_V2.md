@@ -83,3 +83,11 @@ It read code and invented metadata only, with zero HTTP/data/model access.
 This is consumer software acceptance; no final release policy, hosted export or
 deployment is accepted by these tests. Both historical V2 receipts remain byte
 exact. The UI app/index and their prior browser receipts remain unchanged.
+
+## Selected-ranking integration v1
+
+The new selected-ranking module is the fourteenth closed code-inventory member.
+The current app, overlay producer and portable feed helper require new exact
+physical policy bindings together. Original historical receipts remain evidence
+for their original bytes. They do not certify this later integration. See
+[Selected-ranking contract](WEEKLY_SELECTED_RANKINGS.md).

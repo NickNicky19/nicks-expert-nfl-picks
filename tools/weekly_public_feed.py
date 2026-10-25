@@ -32,7 +32,7 @@ PUBLICATION_FIELDS={"schema_version","authority_sha256","repository","source_sha
 MAX_BYTES=4<<20
 META_FIELDS={"schema_version","state","season","week","created_at","expires_at","producer_policy_sha256","rights_authority_sha256","rights_receipt_sha256","durability_receipt_sha256","r0_identity_sha256","identity_scope_sha256","rows","coverage"}
 ENGINE_FILES={"pull/build.py","pull/matchup.py","pull/scoring.py","pull/books.py","pull/gamemodel.py","pull/sources.py","pull/news.py"}
-CODE_FILES=ENGINE_FILES|{"config/release-mode.json","tools/reliability.py","tools/weekly_adaptive_overlay.py","tools/weekly_public_feed.py","output/app.js","output/weekly-adaptive-overlay.js"}
+CODE_FILES=ENGINE_FILES|{"config/release-mode.json","tools/reliability.py","tools/weekly_adaptive_overlay.py","tools/weekly_selected_rankings.py","tools/weekly_public_feed.py","output/app.js","output/weekly-adaptive-overlay.js"}
 
 
 class FeedError(ValueError):pass

@@ -226,7 +226,8 @@ class CurrentStaticPortChecks(unittest.TestCase):
         self.assertFalse(result['installed_port_acceptance'])
         self.assertFalse(result['historical_reports_used'])
         self.assertFalse(result['hosted_publication_or_deployment_acceptance'])
-        self.assertEqual(result['website_code_inventory_checks'], 13)
+        self.assertEqual(result['website_code_inventory_checks'], 14)
+        self.assertIn('tools/weekly_selected_rankings.py', f.CODE_FILES)
         self.assertEqual(result['HTTP'], 0)
         self.assertEqual(result['model_or_data_reads'], 0)
 

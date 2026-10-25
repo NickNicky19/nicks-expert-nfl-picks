@@ -51,6 +51,7 @@ jobs:
           node --check output/weekly-adaptive-overlay.js
           python -m unittest discover -s tests -p test_weekly_adaptive_overlay.py -v
           node tests/test-weekly-overlay.cjs
+          node tests/test-selected-rankings.cjs
           node --check output/reliability-ui.js
           node tests/test-ui.cjs
       - name: Preserve original grading output
@@ -87,7 +88,7 @@ jobs:
           p.write_text(json.dumps(d, separators=(',', ':'), allow_nan=False))
           PY
       - name: Prepare isolated provisional overlay (default R0)
-        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v2.json --feed-policy-sha256 45e51a07a077ce0aedede608fcef2ddb3592828a0734843d37a3991e6673a546
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v2.json --feed-policy-sha256 e36b6d4ead70471286ee6c762e32790bbbd4ffcdd5f37853463646eaf3c55fe2
       - name: Commit validated data and immutable receipts
         id: commit
         run: |

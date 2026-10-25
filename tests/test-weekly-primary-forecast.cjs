@@ -5,7 +5,7 @@ const { chromium } = require("playwright");
 const root = path.resolve(__dirname, ".."), source = fs.readFileSync(path.join(root, "output/app.js"), "utf8");
 new vm.Script(source); // Parse the complete changed application without booting it.
 const extract = name => { const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`)); assert(match, name); return match[0]; };
-const functions = ["selectedPropForecast", "propChip", "catCard", "displayedProps", "filteredPlayers", "renderProps"].map(extract).join("\n");
+const functions = ["selectedRankingPolicy", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "selectedPropForecast", "propChip", "catCard", "displayedProps", "filteredPlayers", "renderProps"].map(extract).join("\n");
 const helper = fs.readFileSync(path.join(root, "output/weekly-adaptive-overlay.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "output/style.css"), "utf8");
 const widths = process.env.WEEKLY_PRIMARY_CUSTOM_LINE_ONLY === "1" ? [390] : [320, 390, 1280];
@@ -75,7 +75,7 @@ ${functions}
           tdHasNoDirectionalLean:card("anytime_td").querySelector('.lean').className === 'lean none',
           chips:[...document.querySelectorAll('.pchip[data-weekly-primary]')].map(x=>x.textContent),
           pointWarning:card("rush_att").textContent.includes("does not give a bet-win probability"),
-          r0Controls:text.includes("Top Picks, leans, rankings, fantasy points and game forecasts use R0"),
+          r0Controls:text.includes("historical Record remain explicitly on R0"),
           r0Sort:[...document.querySelector('#f-sort').options].filter(x=>['proj','edge'].includes(x.value)).every(x=>x.textContent.includes('R0')),
           line:card("rush_att").querySelector('input').value,
           orderUnchanged:JSON.stringify(displayedProps(p).map(x=>x.key))===JSON.stringify(baselineOrder),
@@ -110,7 +110,7 @@ ${functions}
       for (const key of ["meansFirst","reference","negative","r0TD","primaryTD","tdHasNoDirectionalLean","pointWarning","r0Controls","r0Sort","orderUnchanged","rankUnchanged","noPageOverflow","customStillSelected","customBookLabel","customR0Label","frozen","expired","expiredCannotBecomeFrozen","absentSameCards","absentSameChips","fantasyNoSelection","malformedFallback","boardUnchanged"]) check(result[key],true,key+" at width "+width);
       check(result.line,"4","market line unchanged"); check(result.customLine,"6","personal line unchanged");
       check(result.chips.length,3,"all supported selected chips are primary");
-      check(result.chips.some(x=>x.includes('3.25')&&x.includes('provisional mean')&&x.includes('R0 lean')),true,"chip labels R0 lean");
+      check(result.chips.every(x=>!x.includes('R0 lean')),true,"selected chips do not inherit R0 direction");
       check(result.chips.some(x=>x.includes('35.0%')&&x.includes('provisional TD probability')),true,"chip uses selected TD probability");
       check(errors,[],"browser has no errors");
       await context.close();

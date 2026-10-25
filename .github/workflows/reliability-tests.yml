@@ -24,4 +24,4 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Python syntax
         run: python -m compileall -q pull tools
-      - run: node --check output/app.js && node --check output/reliability-ui.js && node tests/test-ui.cjs
+      - run: node --check output/app.js && node --check output/reliability-ui.js && node tests/test-ui.cjs && node tests/test-weekly-overlay.cjs && node tests/test-selected-rankings.cjs
