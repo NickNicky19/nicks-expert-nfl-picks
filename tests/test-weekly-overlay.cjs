@@ -19,7 +19,30 @@ check(()=>{const d=doc({...row(),valid_until_utc:"2026-10-24T11:00:00Z"});assert
 check(()=>{assert.equal(overlay.card(null,board.players[0],"rush_att"),"");const d=doc();assert.match(overlay.card(overlay.validate(d,board,H),board.players[0],"rush_att",Date.parse("2026-10-25T18:00:00Z")),/Frozen provisional forecast/);});
 // Actual pinned website propStatus body: no imports, sources or real row values.
 const appPath=process.env.WEEKLY_OVERLAY_PINNED_APP || (fs.existsSync(path.join(root,"output/app.js"))?path.join(root,"output/app.js"):"/tmp/weekly-website-source-78965e0/output/app.js");
-if(fs.existsSync(appPath))check(()=>{const source=fs.readFileSync(appPath,"utf8"),start=source.indexOf("function propStatus("),end=source.indexOf("\nfunction twoPointScorers",start);assert(start>=0&&end>start);const fn=source.slice(start,end),modern=fn.includes("finalOutcomes"),context={S:{games:{g:{state:"post"}},finalOutcomes:new Map([["id",{status:"resolved",final_confirmed:true,actual:3}]])},finalIdentity:()=>"id",finalIdentityMatches:()=>true,current:()=>({stats:{rush_att:3}}),statValue:()=>3};vm.createContext(context);vm.runInContext(fn+"\nthis.status=propStatus({game_id:'g'},'rush_att',3,'over');",context);assert.equal(context.status.res,"push");});
+if(fs.existsSync(appPath))check(()=>{
+  const source=fs.readFileSync(appPath,"utf8"),start=source.indexOf("function propStatus("),end=source.indexOf("\nfunction twoPointScorers",start);
+  assert(start>=0&&end>start);
+  const fn=source.slice(start,end),context={S:{games:{g:{state:"post"}},finalOutcomes:new Map([["id",{status:"resolved",final_confirmed:true,actual:3}]])},
+    finalIdentity:()=>"id",finalIdentityMatches:()=>true,current:()=>({stats:{rush_att:3}}),statValue:()=>3};
+  vm.createContext(context);
+  let player={game_id:'g'};
+  if(source.includes('function recordPropEvidence(')) {
+    // The strict reader needs actual event evidence, not an unbound live-stat double.
+    player={id:'fictional-player',game_id:'g',espn_id:'900000001',team:'QAA'};
+    const game={id:'g',kickoff,state:'post',detail:'Final',home:'QAA',away:'QAB'};
+    context.S.data={season:2026,week:8,players:[player]};context.S.games={g:game};context.teamCode=x=>x;
+    const helpers=['propFinal','propPickBound','propValue','recordPropEvidence','propEventStatus']
+      .filter(name=>source.includes('function '+name+'(')).map(name=>{
+        const found=source.match(new RegExp('function '+name+'\\([^]*?\\n\\}'));assert(found,name);return found[0];
+      }).join('\n');
+    vm.runInContext(helpers+'\n'+fn,context);
+    context.recordPropEvidence('g',{header:{id:'g',season:{year:2026,type:2},week:{number:8},
+      competitions:[{id:'g',date:kickoff,status:{type:{state:'post',shortDetail:'Final',completed:true}}}]},
+      boxscore:{players:[{team:{abbreviation:'QAA'},statistics:[{name:'rushing',labels:['CAR','YDS','TD'],
+        athletes:[{athlete:{id:player.espn_id},stats:['3','0','0']}]}]}]}},context.S.data);
+  } else vm.runInContext(fn,context);
+  assert.equal(context.propStatus(player,'rush_att',3,'over').res,'push');
+});
 (async()=>{const before=JSON.stringify(board);assert.equal(await overlay.load(board,H,async()=>new Response("bad",{status:404})),null);assert.equal(JSON.stringify(board),before);checks++;
 const body=JSON.stringify(doc()),hash=require("node:crypto").createHash("sha256").update(body).digest("hex"),pointer={schema_version:"weekly-adaptive-overlay-pointer-v1",path:`data/weekly-adaptive/${hash}.json`,sha256:hash,bytes:Buffer.byteLength(body),display_board_sha256:H};
 const mock=async url=>new Response(url.endsWith("weekly-adaptive-overlay.json")?JSON.stringify(pointer):body,{status:200});assert(await overlay.load(board,H,mock));checks++;

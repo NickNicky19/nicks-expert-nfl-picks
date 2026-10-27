@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory() as d:
  print(json.dumps(dict(board=board,overlay=overlay,ranking=ranking,pointer=pointer,frozen=frozen,frozen_pointer=frozen_pointer)))`;
 const fixture = JSON.parse(execFileSync(process.env.PYTHON || "python3", ["-c", python], { cwd: root, timeout: 10000 }));
 const helper = require("../output/weekly-adaptive-overlay.js");
-const names = ["selectedRankingPolicy", "rankingCanonical", "selectedPropForecast", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "compareSelectedRankingItems", "validateSelectedRankings", "startSelectedRankings", "displayedProps", "filteredPlayers", "propStatus"];
+const names = ["selectedRankingPolicy", "rankingCanonical", "selectedPropForecast", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "compareSelectedRankingItems", "validateSelectedRankings", "startSelectedRankings", "displayedProps", "filteredPlayers", "propFinal", "propPickBound", "propValue", "recordPropEvidence", "propStatus"];
 const functions = names.map(extract).join("\n");
 let checks = 0;
 const eq = (a, b, why) => { assert.deepEqual(a, b, why); checks++; };
@@ -31,7 +31,7 @@ const S = { data: fixture.board, weeklyOverlay: helper.validate(fixture.overlay,
   selectedRankings: null, lines: {}, games: {"fictional-game": fixture.board.games[0]}, f: { sort: "selected_edge", cat: "rush_yd", q: "", pos: "ALL", game: "", hideOut: false, favs: false },
   favs: new Set(), tab: "props", gameView: null };
 const context = { S, WeeklyAdaptiveOverlay: helper, Date: TestDate, crypto: webcrypto, TextEncoder,
-  UNAVAILABLE: new Set(), normName: x => x.toLowerCase(), posMatch: () => true, injOf: () => ({status:""}),
+  UNAVAILABLE: new Set(), normName: x => x.toLowerCase(), teamCode: x => x, posMatch: () => true, injOf: () => ({status:""}),
   projPts: p => p.proj_ppr, livePPR: () => null, current: () => ({stats:{rush_yd:30.5}}), statValue: (k,s) => s[k],
   fetch: () => { throw Error("unexpected network request"); }, renderProps: () => {}, renderGame: () => {} };
 vm.createContext(context); vm.runInContext(functions, context);
@@ -53,12 +53,21 @@ const clone = value => JSON.parse(JSON.stringify(value));
   eq(context.selectedPropGap(p, prop, true).lean, "under", "personal-line lean");
   eq(context.visibleTopPicks("over")[0].line, 30.5, "personal line does not rewrite saved Top");
   eq(context.selectedPropGap(p, prop).lean, "over", "official gap ignores custom line");
-  S.games["fictional-game"].state = "post";
-  eq(context.propStatus(p, "rush_yd", 30.5, "over").res, "push", "integer-line over push");
-  eq(context.propStatus(p, "rush_yd", 30.5, "under").res, "push", "integer-line under push");
-  S.games["fictional-game"].state = "in";
-  eq(context.propStatus(p, "rush_yd", 20, "over").res, "live", "signed yardage not irreversibly cleared live");
-  S.games["fictional-game"].state = "pre";
+  const rankingBoard=S.data,rankingGames=S.games;
+  const eventPlayer={...p,espn_id:'900000001',team:'QAA',opp:'QAB'};
+  const eventGame={...S.games[p.game_id],state:'post',detail:'Final',home:'QAA',away:'QAB'};
+  S.data={...rankingBoard,players:[eventPlayer]};S.games={[eventGame.id]:eventGame};
+  const event={header:{id:eventGame.id,season:{year:S.data.season,type:2},week:{number:S.data.week},
+    competitions:[{id:eventGame.id,date:eventGame.kickoff,status:{type:{state:'post',shortDetail:'Final',completed:true}}}]},
+    boxscore:{players:[{team:{abbreviation:eventPlayer.team},statistics:[{name:'rushing',labels:['CAR','YDS','TD'],
+      athletes:[{athlete:{id:eventPlayer.espn_id},stats:['1','30.5','0']}]}]}]}};
+  context.recordPropEvidence(eventGame.id,event,S.data);
+  eq(context.propStatus(eventPlayer, "rush_yd", 30.5, "over").res, "push", "integer-line over push");
+  eq(context.propStatus(eventPlayer, "rush_yd", 30.5, "under").res, "push", "integer-line under push");
+  eventGame.state="in";event.header.competitions[0].status.type={state:'in',shortDetail:'Q3',completed:false};
+  context.recordPropEvidence(eventGame.id,event,S.data);
+  eq(context.propStatus(eventPlayer, "rush_yd", 20, "over").res, "live", "signed yardage not irreversibly cleared live");
+  S.data=rankingBoard;S.games=rankingGames;
   for (const change of [d => d.picks.over[0].score += 1, d => d.picks.over[0].line += 1,
     d => d.picks.over[0].model_version = "f".repeat(64), d => d.picks.over[0].selected_row_sha256 = "f".repeat(64),
     d => d.picks.over[0].selected_row_canonical = '{}', d => d.extra_public_field='not allowed',

@@ -25,6 +25,8 @@ const S = {
   data: null, track: null, generatedAt: null,
   byId: {}, byKey: {},
   games: {},           // game id -> schedule merged with the latest ESPN scoreboard
+  propEvents: {},      // Exact ESPN event/athlete evidence; separate from fantasy live stats.
+  propSleeper: null,   // Period-bound provisional feed, never a final outcome.
   live: {},            // player id -> stat line from ESPN's box score (Sleeper field names)
   boxLoaded: new Set(),
   boxFinal: new Set(),
@@ -252,16 +254,105 @@ function pv(p, prop) {
 }
 
 // Where a prop stands. dir is the side being tracked (a pick or lean), or null.
-function propStatus(p, key, line, dir) {
-  const c = current(p);
-  if (!c) return null;
-  const g = S.games[p.game_id];
-  if (c.none) return { v: null, res: "dnp", final: true };
-  const v = statValue(key, c.stats);
+function propFinal(g) {
+  return g?.state === "post" && typeof g.detail === "string" && /^Final(?:\/\d*OT)?$/i.test(g.detail.trim());
+}
+
+function propPickBound(m, p, g) {
+  const id = x => typeof x === "string" && Boolean(x.trim()) || Number.isSafeInteger(x) && x >= 0;
+  return !!(m && p && g && m.schema_version === "mypicks-player-game-v1"
+    && [m.pid, p.id, m.gid, p.game_id, g.id].every(id)
+    && String(m.pid) === String(p.id) && String(m.gid) === String(p.game_id) && String(m.gid) === String(g.id)
+    && m.season === S.data.season && m.week === S.data.week && m.team === p.team
+    && (m.espn_id == null || id(m.espn_id) && id(p.espn_id) && String(m.espn_id) === String(p.espn_id))
+    && typeof m.kickoff === "string" && Number.isFinite(Date.parse(m.kickoff)) && Date.parse(m.kickoff) === Date.parse(g.kickoff)
+    && m.period === "full_game_including_overtime" && m.stat_source === "ESPN_EVENT_BOXSCORE");
+}
+
+function propValue(stats, key) {
+  const fields = key === "rush_rec_yd" ? ["rush_yd", "rec_yd"] : key === "anytime_td" ? ["rush_td", "rec_td"] : [key];
+  if (!["pass_yd", "pass_td", "pass_cmp", "pass_att", "pass_int", "rush_yd", "rush_att", "rec", "rec_yd", "rush_rec_yd", "anytime_td"].includes(key)) return null;
+  if (!stats || !fields.every(k => Object.hasOwn(stats, k) && Number.isFinite(stats[k])
+    && (k.endsWith("_yd") || Number.isSafeInteger(stats[k]) && stats[k] >= 0))) return null;
+  return fields.reduce((sum, k) => sum + stats[k], 0);
+}
+
+function recordPropEvidence(id, summary, board) {
+  if (board !== S.data) return;
+  S.propEvents ||= {};
+  delete S.propEvents[id];
+  const g = S.games[id], header = summary.header;
+  const c = header?.competitions?.find(x => String(x.id) === String(id));
+  const week = typeof header?.week === "object" ? header.week?.number : header?.week;
+  if (board !== S.data || !g || String(g.id) !== String(id) || String(header?.id) !== String(id) || !c
+    || !Number.isSafeInteger(header.season?.year) || header.season.year !== board.season
+    || header.season.type !== 2
+    || !Number.isSafeInteger(week) || week !== board.week
+    || typeof c.date !== "string" || !/(?:Z|[+-]\d{2}:\d{2})$/i.test(c.date)
+    || !Number.isFinite(Date.parse(c.date)) || Date.parse(c.date) !== Date.parse(g.kickoff)) return;
+  const identities = new Map(), players = {};
+  for (const p of board.players || []) if (String(p.game_id) === String(id) && p.espn_id != null) {
+    const key = String(p.espn_id);
+    identities.set(key, identities.has(key) ? null : p);
+  }
+  const number = raw => typeof raw === "number" && Number.isFinite(raw) ? raw
+    : typeof raw === "string" && /^-?\d+(?:\.\d+)?$/.test(raw.trim()) ? Number(raw) : null;
+  for (const team of summary.boxscore?.players || []) {
+    const abbr = teamCode(team.team?.abbreviation);
+    if (![g.home, g.away].includes(abbr)) continue;
+    for (const group of team.statistics || []) for (const athlete of group.athletes || []) {
+      const p = identities.get(String(athlete.athlete?.id));
+      if (!p || p.team !== abbr) continue; // Never resolve a statistical outcome by name.
+      const row = players[p.id] ||= { stats: {}, played: false, dnp: false, conflict: false, espn_id: String(p.espn_id), team: abbr };
+      if (athlete.didNotPlay === true) row.dnp = true;
+      if (athlete.didNotPlay === false) row.played = true;
+      const vals = Object.fromEntries((group.labels || []).map((label, n) => [label, athlete.stats?.[n]]));
+      const pairs = group.name === "passing" ? { pass_yd: "YDS", pass_td: "TD", pass_int: "INT" }
+        : group.name === "rushing" ? { rush_yd: "YDS", rush_att: "CAR", rush_td: "TD" }
+        : group.name === "receiving" ? { rec: "REC", rec_yd: "YDS", rec_td: "TD", rec_tgt: "TGTS" } : {};
+      const values = Object.fromEntries(Object.entries(pairs).map(([key, label]) => [key, number(vals[label])]));
+      if (group.name === "passing") {
+        const parts = typeof vals["C/ATT"] === "string" ? vals["C/ATT"].split("/") : [];
+        values.pass_cmp = parts.length === 2 ? number(parts[0]) : null;
+        values.pass_att = parts.length === 2 ? number(parts[1]) : null;
+      }
+      for (const [key, value] of Object.entries(values)) {
+        if (Object.hasOwn(row.stats, key) && row.stats[key] !== value) row.conflict = true;
+        row.stats[key] = value;
+        if (Number.isSafeInteger(value) && (key.endsWith("_yd") ? value !== 0 : value > 0)) row.played = true;
+      }
+      if (row.dnp && row.played) row.conflict = true;
+    }
+  }
+  S.propEvents[id] = { gid: String(id), kickoff: g.kickoff, season: board.season, week: board.week, players, source: "ESPN_EVENT_BOXSCORE",
+    observed_at: new Date().toISOString(), final: propFinal(g) && propFinal({ state: c.status?.type?.state, detail: c.status?.type?.shortDetail })
+      && c.status?.type?.completed === true };
+}
+
+function propStatus(p, key, line, dir, saved = null) {
+  const unknown = reason => ({ v: null, res: "unresolved", final: false, reason });
+  const g = p && S.games[p.game_id];
+  if (saved && !propPickBound(saved, p, g)) return unknown("Saved player/game/period binding unavailable; stored record retained");
+  if (!p || !g || String(g.id) !== String(p.game_id)) return unknown("Player/game identity unavailable");
+  if (!Number.isFinite(line) || dir != null && !["over", "under"].includes(dir)) return unknown("Saved line or direction unavailable");
+  if (g.state === "pre") return null;
+  if (!["in", "post"].includes(g.state)) return unknown("Game status unavailable");
+  const event = S.propEvents?.[p.game_id];
+  const scoped = event?.season === S.data.season && event?.week === S.data.week
+    && event.gid === String(p.game_id) && Date.parse(event.kickoff) === Date.parse(g.kickoff) && event.source === "ESPN_EVENT_BOXSCORE";
+  const candidate = scoped ? event.players[p.id] : null;
+  const row = candidate?.team === p.team && candidate?.espn_id === String(p.espn_id) ? candidate : null;
+  if (row?.conflict) return unknown("Conflicting participation or statistical evidence");
+  if (row?.dnp && event.final && propFinal(g)) return { v: null, res: "dnp", final: true };
+  let v = row?.played ? propValue(row.stats, key) : null;
+  if (v == null && g.state === "in" && S.propSleeper?.board === S.data) {
+    const stats = S.propSleeper.players[p.id];
+    if (stats && (["gp", "off_snp", "pass_att", "rush_att", "rec"].some(k => Number.isSafeInteger(stats[k]) && stats[k] > 0))) v = propValue(stats, key);
+  }
+  if (v == null) return unknown("Requested statistic or confirmed participation unavailable");
+  if (g.state !== "post" || !propFinal(g) || !event?.final) return { v, res: g.state === "in" ? "live" : "pending", final: false };
   const over = v > line;
-  if (g.state === "post") return { v, res: v === line ? "push" : dir ? ((dir === "over") === over ? "hit" : "miss") : over ? "over" : "under", final: true };
-  // Signed yards and statistical corrections can move down; live values are provisional.
-  return { v, res: "live", final: false };
+  return { v, res: v === line ? "push" : dir ? ((dir === "over") === over ? "hit" : "miss") : over ? "over" : "under", final: true };
 }
 
 function twoPointScorers(text) {
@@ -402,13 +493,18 @@ function liveLineText(p, key, line) {
 async function pollSleeper() {
   if (!Object.values(S.games).some((g) => g.state !== "pre")) return;
   const pos = ["QB", "RB", "WR", "TE", "K", "DEF"].map((x) => `position[]=${x}`).join("&");
+  const board = S.data;
   try {
-    const rows = await getJSON(`https://api.sleeper.app/stats/nfl/${S.data.season}/${S.data.week}?season_type=regular&${pos}`);
+    const rows = await getJSON(`https://api.sleeper.app/stats/nfl/${board.season}/${board.week}?season_type=regular&${pos}`);
+    if (S.data !== board) return;
     const next = {};
     for (const r of rows || []) if (S.byId[r.player_id] && r.stats) next[r.player_id] = r.stats;
     S.slp = next;
+    S.propSleeper = { board, players: next };
     S.slpOk = true;
   } catch (err) {
+    if (S.data !== board) return;
+    S.propSleeper = null;
     S.slpOk = false;   // fall back to ESPN box scores for every live game
     console.warn("sleeper live", err);
   }
@@ -417,23 +513,26 @@ async function pollSleeper() {
 // ESPN game summaries: the open game is handled by gameTick. Here: pregame injury news for games kicking off
 // soon, and box scores for live games only when Sleeper's feed is down.
 async function pollBoxScores() {
+  const board = S.data;
   const now = Date.now();
   const soon = (g) => g.state === "pre" && new Date(g.kickoff) - now < 4 * 3600000 && now - (S.injAt[g.id] || 0) > 300000;
-  const backup = (g) => !S.slpOk && (g.state === "in" || (g.state === "post" && !S.boxFinal.has(g.id)));
+  const backup = (g) => g.state === "post" || !S.slpOk && g.state === "in";
   const ids = Object.values(S.games)
     .filter((g) => g.id !== S.gameView && (backup(g) || soon(g)))
     .map((g) => { if (g.state === "pre") S.injAt[g.id] = now; return g.id; });
   await Promise.all(ids.map(async (id) => {
     try {
       const summary = await getJSON(`${ESPN}/summary?event=${id}`);
-      applySummary(id, summary);
+      applySummary(id, summary, board);
     } catch (err) {
       console.warn("box score", id, err);
     }
   }));
 }
 
-function applySummary(id, summary) {
+function applySummary(id, summary, board = S.data) {
+  if (board !== S.data) return;
+  recordPropEvidence(id, summary, board);
   S.sum[id] = summary;
   if (!S.games[id]) return;   // a finished week's game: its box score is drawn straight from the summary
   applyInjuries(summary);
@@ -552,12 +651,13 @@ async function liveTick() {
 }
 
 async function pollOpenGame() {
+  const board = S.data;
   const id = S.gameView;
   const g = id && gameOf(id);
-  if (!g || g.state === "pre" || (g.state === "post" && S.sum[id])) return;
+  if (!g || g.state === "pre" || (g.state === "post" && S.sum[id] && !S.games[id])) return;
   try {
-    applySummary(id, await getJSON(`${ESPN}/summary?event=${id}`));
-    syncGameFromSummary(id);
+    applySummary(id, await getJSON(`${ESPN}/summary?event=${id}`), board);
+    if (S.data === board) syncGameFromSummary(id);
   } catch (err) {
     console.warn("game", id, err);
   }
@@ -618,6 +718,7 @@ async function load() {
   S.weeklyOverlayBoardHash = null;
   S.rosKey = null; S.gradeKey = null;
   S.future = null; S.futureLoading = null; S.ideas = null; S.teamWeeksMap = null; S.teamOppsMap = null;
+  S.propEvents = {}; S.propSleeper = null;
   S.generatedAt = S.data.generated_at;
   try { S.track = await getJSON(`data/track_record.json?t=${Date.now()}`); } catch { S.track = null; }
   try { S.dk = await getJSON(`data/dk_backtest.json?t=${Date.now()}`); } catch { S.dk = null; }
@@ -1152,7 +1253,7 @@ function catCard(p, raw) {
       ${st && !st.final && st.v != null && prop.adj != null && prop.key !== "anytime_td" ? `<div title="What he has so far plus our pregame projection for the time left">${ref} on pace<span class="n" style="color:var(--amber)">${fmt(st.v + prop.adj * remaining(S.games[p.game_id]), prop.key === "fpts" ? 2 : 1)}</span></div>` : ""}
       ${prop.proj != null ? `<div>Sleeper proj<span class="n">${fmtStat(prop.key, prop.proj)}</span></div>` : ""}
       ${avg != null ? `<div>Season avg<span class="n">${fmt(avg)}</span></div>` : ""}
-      ${st ? `<div>${st.final ? "Final" : "Now"}<span class="n" style="color:var(--cyan)">${st.v == null ? "DNP" : fmtStat(prop.key, st.v)}</span></div>` : ""}
+      ${st ? `<div>${st.final ? "Final" : "Now"}<span class="n" style="color:var(--cyan)">${st.res === "dnp" ? "DNP" : st.v == null ? "Unavailable" : fmtStat(prop.key, st.v)}</span></div>` : ""}
     </div>
     ${vals.length ? `<div class="bars">${bars}<div class="lineat" style="bottom:${(100 * line) / top}%"></div></div><div class="bars-x">${xs}</div>` : ""}
     <div class="foot-n">${note}${selectedNote}</div>
@@ -4443,8 +4544,39 @@ function setCompare(slot, id) {
 
 // ---------------------------------------------------------------- my picks
 
+function persistMine() {
+  // Explicit user edits preserve every unchanged record's original JSON bytes.
+  // Reads/renders never invoke this writer and never migrate old identities.
+  try {
+    const raw = localStorage.getItem("nflprops.mine");
+    if (raw == null) { localStorage.setItem("nflprops.mine", JSON.stringify(S.mine)); return; }
+    const old = JSON.parse(raw);
+    if (!Array.isArray(old)) return;
+    const start = raw.indexOf("["), end = raw.lastIndexOf("]"), pieces = [];
+    let from = start + 1, depth = 0, quoted = false, escaped = false;
+    for (let n = from; n < end; n++) {
+      const ch = raw[n];
+      if (quoted) { if (escaped) escaped = false; else if (ch === "\\") escaped = true; else if (ch === '"') quoted = false; continue; }
+      if (ch === '"') quoted = true;
+      else if (ch === "[" || ch === "{") depth++;
+      else if (ch === "]" || ch === "}") depth--;
+      else if (ch === "," && depth === 0) { pieces.push(raw.slice(from, n)); from = n + 1; }
+    }
+    if (old.length) pieces.push(raw.slice(from, end));
+    if (pieces.length !== old.length) return;
+    const used = new Set(), forms = old.map(x => JSON.stringify(x));
+    const next = S.mine.map(m => {
+      const form = JSON.stringify(m), n = forms.findIndex((x, i) => !used.has(i) && x === form);
+      if (n < 0) return form;
+      used.add(n); return pieces[n];
+    });
+    localStorage.setItem("nflprops.mine", raw.slice(0, start + 1) + next.join(",") + raw.slice(end));
+  } catch { /* A storage error must never replace an unreadable old collection. */ }
+}
+
 function minePick(pid, key, dir) {
-  return S.mine.find((m) => m.pid === pid && m.key === key && m.dir === dir && m.season === S.data.season && m.week === S.data.week);
+  const p = S.byId[pid], g = p && S.games[p.game_id];
+  return S.mine.find((m) => m.pid === pid && m.key === key && m.dir === dir && propPickBound(m, p, g));
 }
 
 function toggleMine(pid, key, dir, line) {
@@ -4452,10 +4584,14 @@ function toggleMine(pid, key, dir, line) {
   if (have) S.mine = S.mine.filter((m) => m !== have);
   else {
     // one side per prop: picking the over replaces an under on the same prop
-    S.mine = S.mine.filter((m) => !(m.pid === pid && m.key === key && m.season === S.data.season && m.week === S.data.week));
-    S.mine.push({ pid, key, dir, line: +line, season: S.data.season, week: S.data.week, at: Date.now() });
+    const p = S.byId[pid], g = p && S.games[p.game_id];
+    if (!p || !g || !["string", "number"].includes(typeof line) || typeof line === "string" && !line.trim() || !Number.isFinite(+line) || !["over", "under"].includes(dir)) return;
+    S.mine = S.mine.filter((m) => !(m.pid === pid && m.key === key && propPickBound(m, p, g)));
+    S.mine.push({ pid, key, dir, line: +line, season: S.data.season, week: S.data.week, at: Date.now(),
+      schema_version: "mypicks-player-game-v1", gid: String(p.game_id), team: p.team, espn_id: p.espn_id ?? null,
+      kickoff: g.kickoff, period: "full_game_including_overtime", stat_source: "ESPN_EVENT_BOXSCORE" });
   }
-  store("mine", S.mine);
+  persistMine();
   updateMineBadge();
 }
 
@@ -4472,7 +4608,7 @@ function toggleGame(gid, market, side, line, odds) {
     S.mine = S.mine.filter((m) => !(m.kind === "game" && m.gid === gid && m.market === market && m.season === S.data.season && m.week === S.data.week));
     S.mine.push({ kind: "game", gid, market, side, line: line === "" ? null : +line, odds: odds === "" ? null : +odds, season: S.data.season, week: S.data.week, at: Date.now() });
   }
-  store("mine", S.mine);
+  persistMine();
   updateMineBadge();
 }
 
@@ -4532,7 +4668,7 @@ function renderMine() {
   }
   const validGameId = value => typeof value === "string" ? Boolean(value.trim()) : Number.isSafeInteger(value) && value >= 0;
   const thisWeek = (m) => m.season === S.data.season && m.week === S.data.week;
-  const now = S.mine.filter((m) => thisWeek(m) && (m.kind === "game" ? validGameId(m.gid) && S.games[m.gid] : validGameId(m.pid) && S.byId[m.pid]));
+  const now = S.mine.filter((m) => thisWeek(m) && (m.kind === "game" ? validGameId(m.gid) && S.games[m.gid] : true));
   const old = S.mine.length - now.length;
   const nonCurrent = S.mine.filter(m => !thisWeek(m)).length;
   if (!now.length) {
@@ -4547,9 +4683,9 @@ function renderMine() {
       const g = S.games[m.gid];
       return { m, g, st: gameBetStatus(m) };
     }
-    const p = S.byId[m.pid];
-    const g = S.games[p.game_id];
-    return { m, p, g, st: propStatus(p, m.key, m.line, m.dir), prop: p.props.find((x) => x.key === m.key) };
+    const p = validGameId(m.pid) ? S.byId[m.pid] : null;
+    const g = p && S.games[p.game_id] || { state: "unknown" };
+    return { m, p, g, st: m.schema_version === "mypicks-player-game-v1" ? propStatus(p, m.key, m.line, m.dir, m) : { v: null, res: "unresolved", final: false }, prop: p?.props?.find((x) => x.key === m.key) };
   });
   const rank = (r) => (r.g.state === "in" ? 0 : r.g.state === "pre" ? 1 : 2);
   rows.sort((a, b) => rank(a) - rank(b) || String(a.g.kickoff || "").localeCompare(String(b.g.kickoff || "")) || a.m.at - b.m.at);
@@ -4589,19 +4725,26 @@ function renderMine() {
     </div>`;
   };
   const propRow = ({ m, p, g, st, prop }) => {
-    const label = S.data.categories[m.key].label;
+    const label = typeof m.key === "string" ? S.data.categories?.[m.key]?.label || m.key : "Prop";
+    const index = S.mine.indexOf(m);
+    if (m.schema_version !== "mypicks-player-game-v1" || !propPickBound(m, p, g)) return `<div class="pick mine unresolved"><div class="av" aria-hidden="true"></div><div>
+      <b>${esc(p?.name || "Saved player selection unavailable")}</b>
+      <div class="what">${esc(m.dir === "over" ? "Over" : m.dir === "under" ? "Under" : "Saved direction unavailable")}
+      <label class="mline">line <input type="number" step="0.5" value="${Number.isFinite(m.line) ? m.line : ""}" data-mline="p" data-mine-index="${index}" aria-label="Your line"></label> ${esc(label)}</div>
+      <div class="small">Saved player/game/period binding unavailable; stored record retained</div></div>
+      <div class="side">${resBadge(st)}<button class="rm" data-rm="p" data-mine-index="${index}" aria-label="Remove">×</button></div></div>`;
     const lineNow = prop?.line;
     return `<div class="pick mine ${st?.res || ""}" data-open="${p.id}">
         ${avatar(p)}
         <div>
           <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)} <span class="muted">${oppText(p)}</span></div>
-          <div class="what">${m.dir === "over" ? "Over" : "Under"} <label class="mline"><input type="number" step="0.5" inputmode="decimal" value="${m.line}" data-mline="p|${p.id}|${m.key}|${m.dir}" aria-label="Your line"></label> ${label}${lineNow != null && lineNow !== m.line ? ` <span class="muted">(DK line ${lineNow})</span>` : ""}</div>
+          <div class="what">${m.dir === "over" ? "Over" : "Under"} <label class="mline"><input type="number" step="0.5" inputmode="decimal" value="${m.line}" data-mline="p" data-mine-index="${index}" aria-label="Your line"></label> ${label}${lineNow != null && lineNow !== m.line ? ` <span class="muted">(DK line ${lineNow})</span>` : ""}</div>
           <div class="small">${esc(gameStatus(g))}${liveLineText(p, m.key, m.line)}</div>
           ${progress(st, m.line, m.dir, m.key)}
         </div>
         <div class="side">
           ${st ? `<div class="big">${st.v == null ? "-" : fmtStat(m.key, st.v)}</div>${resBadge(st)}` : `<div class="small">${esc(kickoffText(g.kickoff))}</div>`}
-          <button class="rm" data-rm="${p.id}|${m.key}|${m.dir}" title="Remove" aria-label="Remove">×</button>
+          <button class="rm" data-rm="p" data-mine-index="${index}" title="Remove" aria-label="Remove">×</button>
         </div>
       </div>`;
   };
@@ -4621,7 +4764,7 @@ function renderMine() {
       <button class="tbtn" data-mine-clear="all">Clear all</button>
       ${nonCurrent ? `<button class="tbtn" data-mine-clear="old">Clear ${nonCurrent} non-current period selections</button>` : ""}
     </div>
-    <p class="note">Counts describe individual selections, not a combined ticket. Game bets use your saved line and require a recorded Final status with valid whole-number scores. Live prop values remain provisional, including overs already above the line: signed yardage and corrections can move down. Final equality with an integer line is a push. Player-prop results still use the current statistics feed; missing player data is not fully resolved by this update. Venue settlement and combined-ticket results are unavailable.</p>`;
+    <p class="note">Counts describe individual selections, not a combined ticket. Game bets use your saved line and require a recorded Final status with valid whole-number scores. Live prop values remain provisional, including overs already above the line: signed yardage and corrections can move down. Final equality with an integer line is a push. Player-prop results still use the current statistics feed: confirmed final results require exact event/athlete evidence and the requested statistic. Missing participation or fields stay unresolved; legacy picks without saved game bindings are retained unresolved. Venue settlement and combined-ticket results are unavailable.</p>`;
 }
 
 // ---------------------------------------------------------------- render and events
@@ -4888,8 +5031,10 @@ document.addEventListener("click", (e) => {
   }
   const rm = t.closest("[data-rm]");
   if (rm) {
-    const [pid, key, dir] = rm.dataset.rm.split("|");
-    toggleMine(pid, key, dir);
+    const index = Number(rm.dataset.mineIndex);
+    if (!Number.isSafeInteger(index) || !S.mine[index] || S.mine[index].kind === "game") return;
+    S.mine = S.mine.filter((m, n) => n !== index);
+    persistMine(); updateMineBadge();
     renderMine();
     return;
   }
@@ -4900,8 +5045,8 @@ document.addEventListener("click", (e) => {
     if (kind === "all" && !confirm("Remove all your picks for this week?")) return;
     S.mine = S.mine.filter((m) => kind === "old" ? thisWeek(m)
       : kind === "all" ? !thisWeek(m)
-      : !(thisWeek(m) && (m.kind === "game" ? gameBetStatus(m)?.final : S.byId[m.pid] && propStatus(S.byId[m.pid], m.key, m.line, m.dir)?.final)));
-    store("mine", S.mine);
+      : !(thisWeek(m) && (m.kind === "game" ? gameBetStatus(m)?.final : m.schema_version === "mypicks-player-game-v1" && ["string", "number"].includes(typeof m.pid) && S.byId[m.pid] && propStatus(S.byId[m.pid], m.key, m.line, m.dir, m)?.final)));
+    persistMine();
     renderMine();
     updateMineBadge();
     return;
@@ -5008,11 +5153,17 @@ document.addEventListener("change", (e) => {
   if (e.target.matches("[data-mu-week]")) { S.muWeek = +e.target.value; renderLeagueTab(); return; }
   const t = e.target;
   if (t.dataset.mline) {
-    const v = parseFloat(t.value);
-    if (Number.isNaN(v)) return;
+    if (!t.value.trim()) return;
+    const v = Number(t.value);
+    if (!Number.isFinite(v)) return;
     const [kind, a, b, c] = t.dataset.mline.split("|");
+    if (kind === "p") {
+      const index = Number(t.dataset.mineIndex), m = S.mine[index];
+      if (!Number.isSafeInteger(index) || !m || m.kind === "game" || m.season !== S.data.season || m.week !== S.data.week) return;
+      m.line = v; persistMine(); renderMine(); return;
+    }
     const m = S.mine.find((x) => (kind === "g" ? x.kind === "game" && x.gid === a && x.market === b && x.side === c : x.kind !== "game" && x.pid === a && x.key === b && x.dir === c) && x.season === S.data.season && x.week === S.data.week);
-    if (m) { m.line = v; store("mine", S.mine); renderMine(); }
+    if (m) { m.line = v; persistMine(); renderMine(); }
     return;
   }
   if (t.dataset.tradeSide) {
