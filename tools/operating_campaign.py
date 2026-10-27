@@ -667,7 +667,7 @@ def _seed_json(root,marker,name):
     return _decoded(raw),raw
 
 
-def _transition_spec(original,board,status,source_sha):
+def _transition_spec(original,board,status,source_sha,*,root=None):
     """Closed fictional transformation; this pure value builder grants no trust."""
     import data_integrity_v2 as api
     import partial_week
@@ -729,7 +729,7 @@ def _transition_spec(original,board,status,source_sha):
     spec=dict(plan=updated,plan_sha256=reliability.digest(updated),validator_sha256=api.code_sha256(),
         owner_authorization='FICTIONAL_ONLY_DERIVED_SOURCE_TRANSITION_NOT_REAL_ACTIVATION',initial_board_receipt=board_name)
     result=copy.deepcopy(original);result['partial_week']=spec
-    api.validate_plan(spec,board,at)
+    api.validate_plan(spec,board,at,root=api.ROOT if root is None else root)
     return result,board_payload
 
 
@@ -754,7 +754,7 @@ def _transition_material(root,marker):
         raise RuntimeError('Unsupported fictional transition lineage')
     provider=Provider(m,notice['dimensions'],_transition_clock())
     status=m['source'].record_scoreboard(provider.scoreboard(2026,6),dict(dates=2026,week=6,seasontype=2),_transition_clock())
-    target,board_payload=_transition_spec(original,board,status,marker['candidate_commit'])
+    target,board_payload=_transition_spec(original,board,status,marker['candidate_commit'],root=root)
     return m,api,original_raw,board,target,board_payload,status
 
 
@@ -1176,7 +1176,7 @@ def _final_statistic_contracts():
     # Exact existing model/schema dispatch, using the actual reviewed source.
     # A caller-supplied digest or self-consistent metric hash has no authority.
     from scorecard import descriptive_contract
-    return {model:sha(encoded(descriptive_contract(presence_aware=model=='sleeper-matchup-data-integrity-v2')))
+    return {model:sha(encoded(descriptive_contract(presence_aware=model=='sleeper-matchup-data-integrity-v2',model=model)))
         for model in FINAL_ACCURACY_MODELS}
 
 

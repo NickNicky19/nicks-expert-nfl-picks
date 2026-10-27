@@ -58,7 +58,12 @@ def permitted_accuracy_control():
                 rows.append(row)
         reports.append(helpers.evaluation(rows,td=td,model=model))
     typed=accuracy_publication.project_accuracy(reports);accuracy_publication.validate_accuracy(typed)
-    assert len(typed['cohorts'])==len(accuracy_publication.MODELS)*len(accuracy_publication.PROVENANCE)==12
+    expected={(model,provenance) for model in c.FINAL_ACCURACY_MODELS
+              for provenance in accuracy_publication.PROVENANCE}
+    assert set(c.FINAL_ACCURACY_MODELS)<=accuracy_publication.MODELS
+    assert len(typed['cohorts'])==len(expected)==12
+    assert {(cohort['model_version'],cohort['outcome_provenance'])
+            for cohort in typed['cohorts']}==expected
     return typed
 
 
@@ -927,6 +932,19 @@ class TransitionValues(unittest.TestCase):
         import reliability as rel
         import source_evidence
         self.api,self.rel=api,rel
+        # This value-builder control intentionally retains its original model.
+        # Supply that model's actual checked source, never current Classic bytes
+        # under the old identity. No new helper file or forecast is introduced.
+        self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
+        self.source_root=Path(self.temporary.name)
+        source=api.RETAINED_CORRECTED_SOURCE
+        api._source_commit(HERE,source)
+        self.assertEqual(api._git(HERE,'rev-parse',source+'^{tree}').decode().strip(),api.RETAINED_CORRECTED_TREE)
+        for name,expected in api.source_hashes(api.MODEL).items():
+            raw=api._source_file(HERE,source,name)
+            self.assertEqual(c.sha(raw),expected)
+            target=self.source_root/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
+        self.assertEqual(api.active_model(self.source_root),api.MODEL)
         self.at=c._transition_clock();self.source='0'*40
         provider=c.Provider({},c.seed_v1.SMALL,self.at)
         games=[dict(id=f'99202606{index:02}',home=f'F{index*2:02}',away=f'F{index*2+1:02}',
@@ -947,7 +965,7 @@ class TransitionValues(unittest.TestCase):
             validator_sha256=api.RETAINED_CORRECTED_HELPERS['tools/data_integrity_v2.py'],
             owner_authorization='FICTIONAL_ONLY_NOT_A_REAL_ACTIVATION'))
         self.status=source_evidence.record_scoreboard(provider.scoreboard(2026,6),dict(dates=2026,week=6,seasontype=2),self.at)
-    def derive(self):return c._transition_spec(self.original,self.board,self.status,self.source)[0]
+    def derive(self):return c._transition_spec(self.original,self.board,self.status,self.source,root=self.source_root)[0]
     def rehash(self):self.original['partial_week']['plan_sha256']=self.rel.digest(self.original['partial_week']['plan'])
     def test_fixed_clocks_and_preserved_predecessor_fields(self):
         before=copy.deepcopy(self.original);result=self.derive();old=before['partial_week'];new=result['partial_week']

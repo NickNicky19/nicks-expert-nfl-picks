@@ -106,7 +106,7 @@ class WeeklyPhase2BindingChecks(unittest.TestCase):
 
     def test_actual_corrected_contract_is_closed_and_same_size_corruption_rejects(self):
         contract=f.current_execution_contract(ROOT)
-        self.assertEqual(contract['model'],'sleeper-matchup-data-integrity-v2')
+        self.assertEqual(contract['model'],__import__('data_integrity_v2').active_model(ROOT))
         self.assertEqual(contract['inputs_schema'],'matchup-inputs-v3')
         self.assertEqual(set(contract['engine_sha256']),f.ENGINE_FILES|{'pull/grade.py'})
         with tempfile.TemporaryDirectory() as directory:
@@ -116,7 +116,7 @@ class WeeklyPhase2BindingChecks(unittest.TestCase):
                 path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(body)
             self.assertEqual(f.current_execution_contract(root),contract)
             path=root/'pull/build.py';body=path.read_bytes();old=path.stat();path.write_bytes(b'!'+body[1:]);os.utime(path,ns=(old.st_atime_ns,old.st_mtime_ns))
-            with self.assertRaisesRegex(ValueError,'Unrecognized corrected source bytes'):f.current_execution_contract(root)
+            with self.assertRaisesRegex(ValueError,'Unrecognized installed presence source'):f.current_execution_contract(root)
 
     def test_current_source_review_checks_actual_head_and_every_code_byte(self):
         policy,historical,execution,*_=transition_fixture()
@@ -217,7 +217,7 @@ class WeeklyPhase2StaticChecks(unittest.TestCase):
     def test_static_V3_keeps_public_feed_V2_and_separates_historical_R0(self):
         checker,policy,pins,bodies=self.metadata();result=checker.check_current_port(ROOT,pins,bodies)
         self.assertEqual(result['state'],'PROPOSED_STATIC_CONTRACT_PASS')
-        self.assertEqual(result['current_reference_model'],f.CURRENT_MODEL)
+        self.assertEqual(result['current_reference_model'],policy['current_execution']['model'])
         self.assertEqual(result['historical_policy_sha256'],f.HISTORICAL_POLICY_SHA256)
         self.assertEqual(result['website_code_inventory_checks'],14)
         self.assertFalse(result['installed_port_acceptance']);self.assertFalse(result['hosted_publication_or_deployment_acceptance'])

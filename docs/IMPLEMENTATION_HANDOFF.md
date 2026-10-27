@@ -2022,3 +2022,20 @@ rejects them. Their explicit source-scope exception remains unapplied. No findin
 counter, scope, old approval or gate is rewritten to hide that restriction. The
 960-second planning target, 1,200-second updater timeout and historical planning
 failure remain unchanged. No deployment or new provider capture occurred here.
+
+The owner subsequently approved the exact three-path compatibility exception.
+Permission `6452292428` was published/read back against `d9e42ec` and coordination
+`081216e`; the existing scope, gate and attempt counters remain unchanged. The
+7,038-byte patch SHA-256 is
+`2aa6d6321426e77049fe3eec5a4dd681e3904db3f1f8c46bb317039705b729fc`.
+Both complete affected test modules passed independently: 121 tests, zero failures,
+errors or skips. The correction explicitly selects retained model/source bytes,
+checks the exact declared model/provenance pairs and preserves all load floors.
+Final combined-source push and current-base PR CI are required for the new commit.
+
+This closes the three-file unit compatibility defect, not operating qualification.
+The old fictional campaign's transition and accuracy envelope target the retained
+original/Root-presence pair; current Classic-presence execution requires its actual
+supported production path. The existing genuine-production controller is being
+checked for the current source, Main and configuration bindings before execution.
+No old plan, helper digest or source identity is reused as approval of new bytes.
