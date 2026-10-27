@@ -192,16 +192,21 @@ def prepare(board, board_hash, doc, overlay_hash, *, now, website_source_sha, pr
     return result
 
 
-def read_public(root):
-    root = Path(root)
-    pointer, _ = overlay.read_bound(root / "weekly-selected-rankings.json", limit=4096)
-    name = pointer["path"]
+def validate_pointer(pointer):
+    """Use the same closed receipt contract for current and frozen origins."""
     if (set(pointer) != POINTER_FIELDS or pointer["schema_version"] != POINTER
             or not all(overlay.hash64(pointer[k]) for k in ("sha256", "display_board_sha256", "overlay_sha256"))
             or type(pointer["bytes"]) is not int or not 0 < pointer["bytes"] <= LIMIT
-            or name != "weekly-selected-rankings/" + pointer["sha256"] + ".json"):
+            or pointer["path"] != "weekly-selected-rankings/" + pointer["sha256"] + ".json"):
         raise ValueError("ranking pointer scope")
     overlay.utc(pointer["published_at"])
+
+
+def read_public(root):
+    root = Path(root)
+    pointer, _ = overlay.read_bound(root / "weekly-selected-rankings.json", limit=4096)
+    validate_pointer(pointer)
+    name = pointer["path"]
     doc, body_sha = overlay.read_bound(root / name, pointer["sha256"], limit=LIMIT)
     if (pointer["bytes"] != len((root / name).read_bytes()) or body_sha != overlay.digest(doc)
             or (pointer["display_board_sha256"], pointer["overlay_sha256"]) != (doc["display_board_sha256"], doc["overlay_sha256"])):
@@ -246,6 +251,7 @@ def validate_document(doc, pointer, board, board_hash, selected_doc, *, root=Non
             or len(doc["frozen_proofs"]) > 2 * POLICY["top_n"]
             or type(doc["website_source_sha"]) is not str or len(doc["website_source_sha"]) != 40
             or any(c not in "0123456789abcdef" for c in doc["website_source_sha"])
+            or doc["website_source_sha"] != selected_doc.get("website_source_sha")
             or not isinstance(doc["fallback_counts"], dict) or set(doc["fallback_counts"]) != FALLBACK_FIELDS
             or any(type(v) is not int or v < 0 for v in doc["fallback_counts"].values())
             or not overlay.utc(doc["prepared_at"]) <= overlay.utc(pointer["published_at"])):
@@ -286,15 +292,23 @@ def validate_document(doc, pointer, board, board_hash, selected_doc, *, root=Non
         for k, proof in proofs.items():
             receipt_path = "weekly-selected-rankings/" + proof["receipt_sha256"] + ".receipt.json"
             receipt, _ = overlay.read_bound(root / receipt_path, proof["receipt_sha256"], limit=4096)
+            validate_pointer(receipt)
             if receipt["schema_version"] != POINTER or receipt["published_at"] != proof["persisted_at"] or receipt["path"] != "weekly-selected-rankings/" + receipt["sha256"] + ".json":
                 raise ValueError("ranking original receipt binding")
-            original, _ = overlay.read_bound(root / receipt["path"], receipt["sha256"], limit=LIMIT)
-            old = [i for side in original["picks"].values() for i in side if identity(i) == k]
+            original, original_sha = overlay.read_bound(root / receipt["path"], receipt["sha256"], limit=LIMIT)
+            if (set(original) != fields or set(original["picks"]) != {"over", "under"}
+                    or any(type(items) is not list for items in original["picks"].values())
+                    or original_sha != overlay.digest(original)
+                    or receipt["bytes"] != len(overlay.canonical(original))
+                    or type(original["website_source_sha"]) is not str or len(original["website_source_sha"]) != 40
+                    or any(c not in "0123456789abcdef" for c in original["website_source_sha"])):
+                raise ValueError("ranking original body binding")
+            old = [(side, i) for side, items in original["picks"].items() for i in items if identity(i) == k]
             current = next(i for side in doc["picks"].values() for i in side if identity(i) == k)
-            if len(old) != 1 or old[0] != current:
+            if len(old) != 1 or old[0] != (current["direction"], current):
                 raise ValueError("ranking original membership changed")
-            validate_origin_policy(original, receipt, old[0], board)
-            validate_item(old[0], offers, selected, frozen=True)
+            validate_origin_policy(original, receipt, old[0][1], board)
+            validate_item(old[0][1], offers, selected, frozen=True)
             paths.update({receipt_path, receipt["path"]})
     return paths
 

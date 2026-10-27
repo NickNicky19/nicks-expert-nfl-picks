@@ -311,6 +311,35 @@ class FrozenPolicyOriginTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "original (membership changed|policy binding)"):
                     self.validate(td, board, doc, current)
 
+    def test_original_receipt_requires_exact_shape_and_actual_byte_count(self):
+        for mutation in ["bytes", "bool", "extra"]:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as td:
+                board, doc, old, receipt, current = self.setup_frozen(td)
+                changed = dict(receipt)
+                if mutation == "bytes": changed["bytes"] += 100
+                elif mutation == "bool": changed["bytes"] = True
+                else: changed["unexpected"] = "FICTIONAL"
+                atomic_json(Path(td) / ("weekly-selected-rankings/" + o.digest(changed) + ".receipt.json"), changed)
+                for proof in current["frozen_proofs"]: proof["receipt_sha256"] = o.digest(changed)
+                with self.assertRaises(ValueError): self.validate(td, board, doc, current)
+
+    def test_original_side_and_closed_body_cannot_be_rebound(self):
+        for mutation in ["side", "source", "extra"]:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as td:
+                board, doc, old, receipt, current = self.setup_frozen(td)
+                if mutation == "side": old["picks"]["under"].append(old["picks"]["over"].pop())
+                elif mutation == "source": old["website_source_sha"] = "FICTIONAL_FORGED"
+                else: old["unexpected"] = "FICTIONAL"
+                self.rebind_original(td, old, receipt, current)
+                with self.assertRaises(ValueError): self.validate(td, board, doc, current)
+
+    def test_current_source_must_match_current_overlay(self):
+        with tempfile.TemporaryDirectory() as td:
+            board, doc, old, receipt, current = self.setup_frozen(td)
+            current["website_source_sha"] = "c" * 40
+            self.assertNotEqual(current["website_source_sha"], doc["website_source_sha"])
+            with self.assertRaises(ValueError): self.validate(td, board, doc, current)
+
 
 if __name__ == "__main__":
     unittest.main()
