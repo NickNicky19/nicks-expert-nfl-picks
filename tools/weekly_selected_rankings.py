@@ -209,6 +209,33 @@ def read_public(root):
     return pointer, doc
 
 
+def validate_origin_policy(original, receipt, item, board):
+    """Authenticate the policy used by this item's original receipt.
+
+    The classic writer has its own reference identity. A frozen item keeps the
+    exact earlier policy, source, model and content; a policy name alone cannot
+    authorize a different reference stream or changed thresholds.
+    """
+    allowed = (POLICY, CURRENT_POLICY) if policy_for(board) == CURRENT_POLICY else (POLICY,)
+    if (original.get("schema_version") != VERSION
+            or (original.get("season"), original.get("week")) != (board["season"], board["week"])
+            or not any(overlay.canonical(original.get("policy")) == overlay.canonical(policy)
+                       and original.get("policy_sha256") == overlay.digest(policy) for policy in allowed)
+            or original.get("display_board_sha256") != receipt.get("display_board_sha256")
+            or original.get("overlay_sha256") != receipt.get("overlay_sha256")
+            or not overlay.utc(original["prepared_at"]) <= overlay.utc(receipt["published_at"])):
+        raise ValueError("ranking original policy binding")
+    source = item["forecast_source"]
+    if source == "CURRENT_BASELINE":
+        if original["policy"] != CURRENT_POLICY or item["model_version"] != CURRENT_MODEL:
+            raise ValueError("ranking original current reference policy")
+    elif source == "R0_FALLBACK":
+        if original["policy"] != POLICY or item["model_version"] is not None:
+            raise ValueError("ranking original R0 reference policy")
+    elif source != "SELECTED":
+        raise ValueError("ranking original forecast source")
+
+
 def validate_document(doc, pointer, board, board_hash, selected_doc, *, root=None):
     fields = {"schema_version", "policy", "policy_sha256", "season", "week", "display_board_sha256", "overlay_sha256",
               "prepared_at", "website_source_sha", "picks", "frozen_proofs", "fallback_counts"}
@@ -264,8 +291,10 @@ def validate_document(doc, pointer, board, board_hash, selected_doc, *, root=Non
             original, _ = overlay.read_bound(root / receipt["path"], receipt["sha256"], limit=LIMIT)
             old = [i for side in original["picks"].values() for i in side if identity(i) == k]
             current = next(i for side in doc["picks"].values() for i in side if identity(i) == k)
-            if len(old) != 1 or old[0] != current or original["policy_sha256"] != POLICY_SHA:
+            if len(old) != 1 or old[0] != current:
                 raise ValueError("ranking original membership changed")
+            validate_origin_policy(original, receipt, old[0], board)
+            validate_item(old[0], offers, selected, frozen=True)
             paths.update({receipt_path, receipt["path"]})
     return paths
 
