@@ -7,13 +7,17 @@ from datetime import datetime, timezone
 from datetime import timedelta
 from collections import defaultdict
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
+import selectors
 import subprocess
 import shutil
 import sys
 import tempfile
+import time
+import zlib
 from contextlib import contextmanager
 
 from evidence import read, write
@@ -42,7 +46,7 @@ RETAINED_SOURCES = {
 
 
 @contextmanager
-def _retained_source(source_sha=RETAINED_SOURCE):
+def _retained_source(source_sha=RETAINED_SOURCE, *, evidence_root=None):
     """Actual closed prior source, never current code wearing an old label."""
     if source_sha not in RETAINED_SOURCES:
         raise IntegrityError("Unsupported retained ranked source identity")
@@ -52,6 +56,7 @@ def _retained_source(source_sha=RETAINED_SOURCE):
     if (hashlib.sha1(b"commit " + str(len(commit)).encode() + b"\0" + commit).hexdigest() != source_sha
             or commit.splitlines()[0] != b"tree " + source_tree.encode()):
         raise IntegrityError("Retained ranked commit/tree identity mismatch")
+    original_head = git("rev-parse", "HEAD")
     entries, trees = [], {}
     def tree(oid, prefix=""):
         if len(trees) + len(entries) >= 512 or int(git("cat-file", "-s", oid)) > 4 * 1024**2:
@@ -99,15 +104,118 @@ def _retained_source(source_sha=RETAINED_SOURCE):
                != corrected.source_hashes(corrected.MODEL)):
         raise IntegrityError("Retained ranked qualification family changed")
     installed_before = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in shared}
+    objects = {}
+    dependency_inventory = corrected.legacy_dependency_inventory(evidence_root=evidence_root, _objects=objects)
+    objects[source_sha] = ("commit", commit)
+    objects.update({oid: ("tree", raw) for oid, raw in trees.items()})
+    objects.update({oid: ("blob", raw) for _, oid, raw in entries})
+    if len(objects) > 2048 or sum(len(raw) for _, raw in objects.values()) > 32 * 1024**2:
+        raise IntegrityError("Retained ranked Git closure exceeds supported bound")
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_") and key != "GITHUB_SHA"}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_LAZY_FETCH="1",
+               GIT_OPTIONAL_LOCKS="0", PYTHONDONTWRITEBYTECODE="1")
     with tempfile.TemporaryDirectory(prefix="nfl-retained-ranked-") as directory:
         source = Path(directory)
         for name, _, raw in entries:
             target = source / name; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(raw)
-        # Read-only access to the already retained actual Git objects. No
-        # alternates, ref mutation, network retrieval or copied private history.
-        git_dir = git("rev-parse", "--absolute-git-dir").decode().strip()
-        (source / ".git").write_text("gitdir: " + git_dir + "\n")
+        # Old validators may reconstruct a native payload using their current
+        # HEAD. Give them an independent, exact retained-source HEAD and freshly
+        # verified bounded source/evidence objects. A shared current HEAD would
+        # correctly fail the old engine check, even for valid saved evidence.
+        # No alternates, remote, shared-ref mutation or new historical receipt.
+        subprocess.run(["git", "init", "-q", str(source)], check=True, env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        gitdir = source / ".git"
+        # This is a new private store, not a repository configuration change.
+        # Its fixed minimal configuration cannot introduce remotes, filters,
+        # alternate object stores or a different worktree.
+        config = b"[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tfilemode = true\n\tlogallrefupdates = false\n"
+        (gitdir / "config").write_bytes(config)
+        encoded = {}
+        for oid, (kind, raw) in objects.items():
+            body = kind.encode() + b" " + str(len(raw)).encode() + b"\0" + raw
+            if kind not in ("commit", "tree", "blob") or hashlib.sha1(body).hexdigest() != oid:
+                raise IntegrityError("Copied retained ranked Git identity changed")
+            target = gitdir / "objects" / oid[:2] / oid[2:]
+            target.parent.mkdir(exist_ok=True)
+            stored = zlib.compress(body)
+            with target.open("xb") as stream:
+                stream.write(stored)
+            encoded[oid] = len(stored), hashlib.sha256(stored).hexdigest()
+        (gitdir / "HEAD").write_text(source_sha + "\n")
+
+        def private_context():
+            for name in ("", "objects", "objects/info", "objects/pack", "refs"):
+                path = gitdir / name
+                if path.is_symlink() or not path.is_dir():
+                    raise IntegrityError("Retained ranked Git directory context changed")
+            for name, expected in (("HEAD", (source_sha + "\n").encode()), ("config", config)):
+                path = gitdir / name
+                if path.is_symlink() or not path.is_file() or path.stat().st_size != len(expected) or path.read_bytes() != expected:
+                    raise IntegrityError("Retained ranked Git context changed during validation")
+            for name in ("commondir", "config.worktree", "packed-refs", "shallow", "info/grafts",
+                         "objects/info/alternates", "objects/info/http-alternates"):
+                path = gitdir / name
+                if path.exists() or path.is_symlink():
+                    raise IntegrityError("Retained ranked Git context changed during validation")
+            if any(path.is_file() or path.is_symlink() for path in (gitdir / "refs").rglob("*")):
+                raise IntegrityError("Retained ranked Git refs changed during validation")
+            if any((gitdir / "objects/pack").iterdir()):
+                raise IntegrityError("Retained ranked Git packed objects changed during validation")
+            for oid, (size, content_hash) in encoded.items():
+                path = gitdir / "objects" / oid[:2] / oid[2:]
+                if path.parent.is_symlink() or path.is_symlink() or not path.is_file() or path.stat().st_size != size:
+                    raise IntegrityError("Copied retained ranked Git object unavailable")
+                # Hash bounded actual encoded bytes before handing a changed
+                # compressed object to Git, and again at the final boundary.
+                with path.open("rb") as stream:
+                    stored = stream.read(size + 1)
+                if len(stored) != size or hashlib.sha256(stored).hexdigest() != content_hash:
+                    raise IntegrityError("Copied retained ranked Git content changed")
+
+        def verify_git_objects():
+            private_context()
+            query = "".join(oid + "\n" for oid in objects).encode()
+            limit = 32 * 1024**2
+            command = ["git", "--no-replace-objects", "-C", str(source), "cat-file", "--batch"]
+            with tempfile.TemporaryFile() as requests:
+                requests.write(query); requests.seek(0)
+                with subprocess.Popen(command, env=env, stdin=requests, stdout=subprocess.PIPE,
+                                      stderr=subprocess.DEVNULL) as child:
+                    result = bytearray(); deadline = time.monotonic() + 180
+                    try:
+                        with selectors.DefaultSelector() as ready:
+                            ready.register(child.stdout, selectors.EVENT_READ)
+                            while True:
+                                remaining = deadline - time.monotonic()
+                                if remaining <= 0 or not ready.select(remaining):
+                                    raise IntegrityError("Copied retained ranked Git validation timed out")
+                                block = os.read(child.stdout.fileno(), min(65536, limit + 1 - len(result)))
+                                if not block: break
+                                result.extend(block)
+                                if len(result) > limit:
+                                    raise IntegrityError("Copied retained ranked Git validation exceeded bound")
+                        if child.wait(timeout=max(.1, deadline - time.monotonic())) != 0:
+                            raise IntegrityError("Copied retained ranked Git object unavailable")
+                    except BaseException:
+                        if child.poll() is None: child.kill()
+                        child.wait()
+                        raise
+            stream = io.BytesIO(result)
+            for oid, (kind, raw) in objects.items():
+                header = stream.readline().decode().strip().split()
+                if header != [oid, kind, str(len(raw))] or stream.read(len(raw)) != raw or stream.read(1) != b"\n":
+                    raise IntegrityError("Copied retained ranked Git content changed")
+            if stream.read(1):
+                raise IntegrityError("Copied retained ranked Git validation returned extra bytes")
+            private_context()
+
+        verify_git_objects()
         yield source
+        if (git("rev-parse", "HEAD") != original_head
+                or corrected.legacy_dependency_inventory(evidence_root=evidence_root) != dependency_inventory):
+            raise IntegrityError("Retained ranked Git context changed during validation")
+        verify_git_objects()
         if git("cat-file", "commit", source_sha) != commit:
             raise IntegrityError("Retained ranked commit changed during validation")
         if any(git("cat-file", "tree", oid) != raw for oid, raw in trees.items()):
@@ -175,7 +283,7 @@ except Exception as error:
                     raise IntegrityError("Nonregular retained ranked evidence")
         return values
     original_evidence = evidence_inventory(root) if operation == "completed" else None
-    with _retained_source(source_sha) as source:
+    with _retained_source(source_sha, evidence_root=root if operation == "completed" else None) as source:
         if operation == "completed":
             # The old validator must see its actual old source AND an
             # independently copied evidence root. Passing the current source

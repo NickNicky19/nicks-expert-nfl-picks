@@ -64,7 +64,8 @@ const S = {
   scFound: null, scMsg: "",
   mine: store("mine") || [],
   paper: { legs: [], source: "dk", sides: "mixed", categories: [], game: "", size: 2,
-    opened: null, results: null, history: null, historyEpoch: 0, epoch: 0, error: "" },
+    opened: null, results: null, history: null, historyEpoch: 0, epoch: 0, error: "", draftLoaded: false,
+    openedLeg: null, legResult: null, legEpoch: 0 },
   cmp: store("cmp") || [null, null],    // the two players on the Compare tab
   trade: store("trade") || { give: [], get: [] },
   yahoo: store("yahoo") || null,       // Yahoo tokens (from the Worker's sign-in)
@@ -85,6 +86,9 @@ function store(key, value) {
 // Private paper selections are immutable revisions, never offers or accepted
 // financial entries. Each revision has its own key; no shared mutable index.
 const PAPER_PREFIX = "nflprops.paper-ticket.v1.";
+const PAPER_LEG_PREFIX = "nflprops.paper-leg.v1.";
+const PAPER_DRAFT_KEY = "nflprops.paper-draft.v1";
+const PAPER_STORAGE_LIMITS = Object.freeze({ legs: 64, legBytes: 8192, libraryBytes: 262144, draftBytes: 65536 });
 const PAPER_CATEGORIES = ["pass_yd", "pass_td", "pass_cmp", "pass_att", "pass_int", "rush_yd", "rush_att", "rec_yd", "rec", "rush_rec_yd"];
 function paperLegIdentity(leg) {
   return JSON.stringify([leg.season, leg.week, leg.game_id, leg.player_id, leg.category, leg.team, Date.parse(leg.kickoff)]);
@@ -170,6 +174,120 @@ function readPaperTickets(storage = localStorage) {
   });
   return { tickets: valid.sort((a, b) => Date.parse(b.ticket.saved_at) - Date.parse(a.ticket.saved_at) || a.key.localeCompare(b.key)), errors };
 }
+function paperStorageBytes(raw) {
+  if (typeof raw !== "string" || raw.length > PAPER_STORAGE_LIMITS.draftBytes) throw new Error("Paper storage record exceeds its bound");
+  return new TextEncoder().encode(raw).byteLength;
+}
+function validateSavedPaperLeg(record) {
+  const fields = ["schema_version", "saved_id", "saved_at", "clock_basis", "leg"];
+  if (!record || JSON.stringify(Object.keys(record).sort()) !== JSON.stringify(fields.sort())
+      || record.schema_version !== "paper-parlay-leg-v1"
+      || typeof record.saved_id !== "string" || !/^[a-zA-Z0-9-]{16,80}$/.test(record.saved_id)
+      || record.clock_basis !== "OWNER_DEVICE_TIME_NOT_INDEPENDENTLY_TIMESTAMPED"
+      || typeof record.saved_at !== "string" || !/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(record.saved_at) || !Number.isFinite(Date.parse(record.saved_at))) throw new Error("Unsupported saved paper leg");
+  validatePaperLeg(record.leg);
+  if (Date.parse(record.saved_at) >= Date.parse(record.leg.kickoff)
+      || Date.parse(record.saved_at) < Date.parse(record.leg.board_generated_at)) throw new Error("Saved paper leg clock is incompatible");
+  return record;
+}
+function readPaperLegs(storage = localStorage) {
+  const legs = [], errors = []; let storedCount = 0, storedBytes = 0;
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i);
+    if (!key?.startsWith(PAPER_LEG_PREFIX)) continue;
+    if (++storedCount > PAPER_STORAGE_LIMITS.legs) throw new Error("Saved leg library exceeds 64 records; all bytes were preserved");
+    const raw = storage.getItem(key);
+    storedBytes += raw === null ? 0 : paperStorageBytes(raw);
+    if (storedBytes > PAPER_STORAGE_LIMITS.libraryBytes) throw new Error("Saved leg library exceeds 256 KiB; all bytes were preserved");
+    try {
+      if (!raw || paperStorageBytes(raw) > PAPER_STORAGE_LIMITS.legBytes) throw new Error("Saved paper leg exceeds 8 KiB");
+      const record = validateSavedPaperLeg(JSON.parse(raw));
+      if (key !== PAPER_LEG_PREFIX + record.saved_id) throw new Error("Saved paper leg identity mismatch");
+      legs.push({ key, record });
+    } catch { errors.push("A saved paper leg is unavailable; its original bytes were preserved."); }
+  }
+  return { legs: legs.sort((a, b) => Date.parse(b.record.saved_at) - Date.parse(a.record.saved_at) || a.key.localeCompare(b.key)), errors, storedCount, storedBytes };
+}
+function savePaperLeg(record, storage = localStorage) {
+  validateSavedPaperLeg(record);
+  const key = PAPER_LEG_PREFIX + record.saved_id, raw = JSON.stringify(record), bytes = paperStorageBytes(raw);
+  if (bytes > PAPER_STORAGE_LIMITS.legBytes) throw new Error("Saved paper leg exceeds 8 KiB");
+  const previous = storage.getItem(key);
+  if (previous !== null && previous !== raw) throw new Error("Saved paper leg is immutable");
+  const inventory = readPaperLegs(storage);
+  if (inventory.storedCount + (previous === null ? 1 : 0) > PAPER_STORAGE_LIMITS.legs
+      || inventory.storedBytes + (previous === null ? bytes : 0) > PAPER_STORAGE_LIMITS.libraryBytes) throw new Error("Saved leg library capacity reached; existing bytes were preserved");
+  storage.setItem(key, raw);
+  if (storage.getItem(key) !== raw) throw new Error("Paper leg save could not be verified");
+  return key;
+}
+function validatePaperDraft(draft) {
+  const fields = ["schema_version", "saved_at", "clock_basis", "line_source", "parent_ticket_key", "legs"];
+  if (!draft || JSON.stringify(Object.keys(draft).sort()) !== JSON.stringify(fields.sort())
+      || draft.schema_version !== "paper-parlay-draft-v1"
+      || draft.clock_basis !== "OWNER_DEVICE_TIME_NOT_INDEPENDENTLY_TIMESTAMPED"
+      || typeof draft.saved_at !== "string" || !/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(draft.saved_at) || !Number.isFinite(Date.parse(draft.saved_at))
+      || !["dk", "sleeper"].includes(draft.line_source) || !Array.isArray(draft.legs) || draft.legs.length > 6
+      || draft.parent_ticket_key !== null && (typeof draft.parent_ticket_key !== "string" || !new RegExp("^" + PAPER_PREFIX.replaceAll(".", "\\.") + "[a-zA-Z0-9-]{16,80}\\.[a-zA-Z0-9-]{16,80}$").test(draft.parent_ticket_key))) throw new Error("Unsupported saved paper draft");
+  const players = new Set(), games = new Set();
+  for (const leg of draft.legs) {
+    validatePaperLeg(leg);
+    if (leg.line_source !== draft.line_source || players.has(leg.player_id) || games.has(leg.game_id)) throw new Error("Incompatible saved draft membership");
+    players.add(leg.player_id); games.add(leg.game_id);
+  }
+  return draft;
+}
+function paperDraftParent(draft, storage) {
+  if (draft.parent_ticket_key === null) return null;
+  const parent = readPaperTickets(storage).tickets.find(item => item.key === draft.parent_ticket_key);
+  if (!parent) throw new Error("Saved draft parent revision or lineage is unavailable; draft bytes were preserved");
+  return parent.ticket;
+}
+function readPaperDraft(storage = localStorage) {
+  const raw = storage.getItem(PAPER_DRAFT_KEY);
+  if (raw === null) return { draft: null, parent: null };
+  if (paperStorageBytes(raw) > PAPER_STORAGE_LIMITS.draftBytes) throw new Error("Saved paper draft exceeds 64 KiB; its bytes were preserved");
+  const draft = validatePaperDraft(JSON.parse(raw));
+  return { draft, parent: paperDraftParent(draft, storage) };
+}
+function savePaperDraft(paper, storage = localStorage, now = Date.now()) {
+  const draft = { schema_version: "paper-parlay-draft-v1", saved_at: new Date(now).toISOString(),
+    clock_basis: "OWNER_DEVICE_TIME_NOT_INDEPENDENTLY_TIMESTAMPED", line_source: paper.legs[0]?.line_source || paper.source,
+    parent_ticket_key: paper.opened ? PAPER_PREFIX + paper.opened.ticket_id + "." + paper.opened.revision_id : null,
+    legs: structuredClone(paper.legs) };
+  validatePaperDraft(draft); paperDraftParent(draft, storage);
+  const raw = JSON.stringify(draft);
+  if (paperStorageBytes(raw) > PAPER_STORAGE_LIMITS.draftBytes) throw new Error("Paper draft exceeds 64 KiB");
+  storage.setItem(PAPER_DRAFT_KEY, raw);
+  if (storage.getItem(PAPER_DRAFT_KEY) !== raw) throw new Error("Paper draft save could not be verified");
+  return draft;
+}
+function persistPaperDraft() {
+  try { savePaperDraft(S.paper); }
+  catch (error) { S.paper.error = (S.paper.error ? S.paper.error + " " : "") + "Draft remains in memory; it could not be saved: " + error.message; }
+}
+function restorePaperDraft() {
+  if (S.paper.draftLoaded) return;
+  S.paper.draftLoaded = true;
+  try {
+    const { draft, parent } = readPaperDraft();
+    if (!draft) return;
+    S.paper.legs = structuredClone(draft.legs); S.paper.source = draft.line_source; S.paper.opened = parent;
+    S.paper.error = "Restored this device's draft with its original reference clocks. It is not a saved ticket or verified pregame evidence; current eligibility is checked before saving.";
+    if (parent) gradeOpenedPaper();
+  } catch (error) { S.paper.error = "Saved draft unavailable; its original bytes were preserved. " + error.message; }
+}
+function paperCurrentLeg(leg, now = Date.now()) {
+  validatePaperLeg(leg);
+  return paperCandidates(now).find(value => gradingCanonical(value.leg) === gradingCanonical(leg))?.leg || null;
+}
+function addSavedPaperLeg(key, storage = localStorage, now = Date.now()) {
+  const saved = readPaperLegs(storage).legs.find(item => item.key === key);
+  const leg = saved && paperCurrentLeg(saved.record.leg, now);
+  if (!leg || S.paper.legs.length >= 6 || S.paper.legs.some(item => item.player_id === leg.player_id || item.game_id === leg.game_id || item.line_source !== leg.line_source)) throw new Error("Saved reference is unavailable or incompatible; its original contract was preserved");
+  S.paper.legs.push(structuredClone(leg));
+  return leg;
+}
 function paperLegStatus(leg, outcomes) {
   validatePaperLeg(leg);
   const row = outcomes.get(paperLegIdentity(leg));
@@ -235,6 +353,23 @@ async function gradeOpenedPaper() {
   } catch { if (paper.opened === ticket && paper.epoch === epoch) paper.error = "Required saved outcome evidence is unavailable; no result was substituted."; }
   if (S.tab === "parlay" && paper.opened === ticket && paper.epoch === epoch) renderParlay();
 }
+async function gradeOpenedPaperLeg() {
+  const paper = S.paper, record = paper.openedLeg, grading = S.grading, epoch = ++paper.legEpoch;
+  paper.legResult = null;
+  if (!record || !grading) return;
+  try {
+    validateSavedPaperLeg(record);
+    const key = PAPER_LEG_PREFIX + record.saved_id;
+    const original = readPaperLegs().legs.find(item => item.key === key);
+    if (!original || gradingCanonical(original.record) !== gradingCanonical(record)) throw new Error("Saved leg dependency changed");
+    const outcomes = grading.outcomeIndex ? await loadOutcomePeriod(grading, record.leg.season, record.leg.week) : S.finalOutcomes;
+    if (S.grading !== grading || paper.openedLeg !== record || paper.legEpoch !== epoch) return;
+    const current = readPaperLegs().legs.find(item => item.key === key);
+    if (!current || gradingCanonical(current.record) !== gradingCanonical(record)) throw new Error("Saved leg dependency changed");
+    paper.legResult = paperLegStatus(record.leg, outcomes);
+  } catch { if (S.grading === grading && paper.openedLeg === record && paper.legEpoch === epoch) paper.error = "Required saved leg outcome evidence is unavailable; no result was substituted."; }
+  if (S.tab === "parlay" && paper.openedLeg === record && paper.legEpoch === epoch) renderParlay();
+}
 async function gradeSavedPaper() {
   const paper=S.paper, grading=S.grading, epoch=++paper.historyEpoch;
   paper.history=null;
@@ -267,8 +402,10 @@ function paperPerformanceHtml(history) {
   }).join("")}<details><summary>Every saved ticket/revision and leg result</summary>${history.rows.map(r=>`<p>${esc(r.ticket.ticket_id)} / ${esc(r.ticket.revision_id)} · ${r.ticket.legs.length} legs · ${esc(r.status)} · ${esc(r.legs.map(l=>l.status).join(", "))}</p>`).join("")}</details><p style="overflow-wrap:anywhere">Outcome report ${esc(history.report_id)}. Financial ROI and venue settlement unavailable.</p></div>`;
 }
 function renderParlay() {
-  const f = S.paper, candidates = paperCandidates(); let saved;
+  restorePaperDraft();
+  const f = S.paper, candidates = paperCandidates(); let saved, savedLegs;
   try { saved = readPaperTickets(); } catch { saved = { tickets: [], errors: ["Private ticket storage is unavailable."] }; }
+  try { savedLegs = readPaperLegs(); } catch (error) { savedLegs = { legs: [], errors: ["Saved leg library unavailable: " + error.message] }; }
   const legText = leg => `${leg.name} · ${leg.side} ${leg.line} ${SHORT[leg.category]} · ${leg.team} · ${leg.season} W${leg.week}`;
   const opened = f.opened;
   $("#main").innerHTML = `<h2>Parlay Builder <small>Paper only</small></h2><div class="card note">Assemble 2–6 legs from one reference source. No accepted ticket, verified quote freshness, payout, probability, EV or ROI. Suggestions use the existing relative projection gap, not a win probability. Repeated players and same-game combinations are excluded; this does not prove independence. Saves stay on this device; its clock is not an independent pregame timestamp.</div>
@@ -281,9 +418,13 @@ function renderParlay() {
     <p class="note">Fantasy/PPR and anytime-TD offered legs are unavailable in this version. A missing Sleeper side is excluded. Saved multipliers do not verify paired thresholds, accepted product rules or executable prices; DK side availability is unverified. These remain paper reference legs.</p>
     <button class="tbtn" data-paper-suggest>Suggest up to ${+f.size}</button> <button class="tbtn" data-paper-new>New draft</button>
     <p role="status">${esc(f.error || (candidates.length ? `${candidates.length} eligible reference opportunities` : "NO_ACTION: no eligible reference opportunities"))}</p>
-    <h3>Draft · ${f.legs.length}/6 legs</h3>${f.legs.map((leg,i) => `<p>${esc(legText(leg))} <button class="tbtn" data-paper-remove="${i}" aria-label="Remove ${esc(leg.name)}">Remove</button></p>`).join("") || "<p>No legs selected.</p>"}
+    <h3>Draft · ${f.legs.length}/6 legs</h3><p class="note">Draft changes are saved separately on this device. A restored draft retains its original board clocks and is rechecked before a ticket can be saved.</p>${f.legs.map((leg,i) => `<p>${esc(legText(leg))} <button class="tbtn" data-paper-remove="${i}" aria-label="Remove ${esc(leg.name)}">Remove</button> <button class="tbtn" data-paper-store="${esc(JSON.stringify(leg))}">Save leg</button></p>`).join("") || "<p>No legs selected.</p>"}
     <button class="tbtn" data-paper-save ${f.legs.length < 2 ? "disabled" : ""}>${opened ? "Save as a new revision" : "Save private paper ticket"}</button>
-    <details><summary>Ranked shortlist · relative gap</summary>${candidates.slice(0, 60).map(v => `<p>${esc(legText(v.leg))} · ${fmt(v.score,3)} <button class="tbtn" data-paper-add="${esc(JSON.stringify(v.leg))}">Add leg</button></p>`).join("")}</details></section>
+    <details><summary>Ranked shortlist · relative gap</summary>${candidates.slice(0, 60).map(v => `<p>${esc(legText(v.leg))} · ${fmt(v.score,3)} <button class="tbtn" data-paper-add="${esc(JSON.stringify(v.leg))}">Add leg</button> <button class="tbtn" data-paper-store="${esc(JSON.stringify(v.leg))}">Save leg</button></p>`).join("")}</details></section>
+    <section class="card" style="overflow-wrap:anywhere"><h3>Saved legs</h3><p class="note">Exact private reference contracts, separate from tickets. Up to 64 records, 8 KiB each and 256 KiB in total. Past or changed references remain visible; only an exact eligible current reference can be added to the draft. No saved clock is independently authenticated.</p>${savedLegs.errors.map(error => `<p role="status">${esc(error)}</p>`).join("")}${savedLegs.legs.map(({key,record}) => {
+      const eligible = candidates.some(value => gradingCanonical(value.leg) === gradingCanonical(record.leg));
+      return `<p>${esc(legText(record.leg))} · board ${esc(record.leg.board_generated_at)} · saved ${esc(record.saved_at)} <button class="tbtn" data-paper-leg-add="${esc(key)}" ${eligible ? "" : "disabled"}>Add saved leg</button> <button class="tbtn" data-paper-leg-result="${esc(key)}">Check leg result</button>${eligible ? "" : " · unavailable under the current board/filters; original reference retained"}</p>`;
+    }).join("") || "<p>No saved legs.</p>"}${f.openedLeg ? `<h4>Saved leg result</h4><p>${esc(legText(f.openedLeg.leg))} · ${esc(f.legResult?.status || "Outcome evidence unavailable or loading")}${f.legResult?.actual != null ? ` (${esc(f.legResult.actual)})` : ""}</p><p class="note">This leg uses its saved season, week, game and kickoff. Corrected outcomes can change the statistical result without changing the saved reference.</p>` : ""}</section>
     <section class="card" style="overflow-wrap:anywhere"><h3>Saved tickets</h3>${saved.errors.map(e => `<p role="status">${esc(e)}</p>`).join("")}${saved.tickets.map(({key,ticket}) => `<p><button class="tbtn" data-paper-open="${esc(key)}">${ticket.legs.length} legs · ${esc(ticket.saved_at)}</button> ${esc(ticket.ticket_id)} / ${esc(ticket.revision_id)}${ticket.parent_revision_id ? " · revision" : ""}</p>`).join("") || "<p>No saved tickets.</p>"}
     <button class="tbtn" data-paper-evaluate>Evaluate saved tickets</button>${paperPerformanceHtml(f.history)}
     ${opened ? `<h3>Saved ${opened.legs.length}-leg revision</h3><p>Ticket state: ${esc(f.results ? paperTicketStatus(f.results) : "Outcome evidence unavailable or loading")}. Financial result unavailable.</p>${opened.legs.map((leg,i) => `<p>${esc(legText(leg))} · ${esc(f.results?.[i]?.status || "unresolved")}${f.results?.[i]?.actual != null ? ` (${esc(f.results[i].actual)})` : ""}</p>`).join("")}<p class="note">Push, confirmed DNP and unresolved results are distinct; venue void rules are unavailable. Saved membership stays fixed when outcomes are corrected. Revisions are related tickets, not independent performance samples.</p>` : ""}</section>`;
@@ -763,7 +904,7 @@ async function loadSelectedGradingSummary(grading = S.grading) {
 }
 async function loadGrading() {
   const revision = ++gradingLoadRevision;
-  S.paper.epoch++; S.paper.results = null; S.paper.historyEpoch++; S.paper.history=null;
+  S.paper.epoch++; S.paper.results = null; S.paper.historyEpoch++; S.paper.history=null; S.paper.legEpoch++; S.paper.legResult=null;
   S.grading = null; S.gradingError = null; S.finalOutcomes = new Map();
   try {
     const response = await fetch(GRADING_BASE + "latest.json", { cache: "no-store" });
@@ -804,6 +945,7 @@ async function loadGrading() {
     S.grading = grading; S.finalOutcomes = finalOutcomes; S.gradingGroup = null;
     if (partitioned) await loadSelectedGradingSummary(grading);
     if (S.paper.opened) gradeOpenedPaper();
+    if (S.paper.openedLeg) gradeOpenedPaperLeg();
   } catch (err) {
     if (revision !== gradingLoadRevision) return;
     S.grading = null; S.finalOutcomes = new Map(); S.gradingError = String(err.message || "Unavailable saved grading");
@@ -5587,9 +5729,39 @@ function renderLiveParts() {
 document.addEventListener("click", (e) => {
   const t = e.target;
   if(t.closest("[data-paper-evaluate]")){gradeSavedPaper();return;}
-  if (t.closest("[data-paper-new]")) { Object.assign(S.paper, { legs: [], opened: null, results: null, error: "" }); renderParlay(); return; }
+  const paperStore = t.closest("[data-paper-store]");
+  if (paperStore) {
+    try {
+      const now = Date.now(), leg = paperCurrentLeg(validatePaperLeg(JSON.parse(paperStore.dataset.paperStore)), now);
+      if (!leg) throw new Error("Reference changed or started; the old contract was not substituted");
+      const prior = readPaperLegs().legs.find(item => gradingCanonical(item.record.leg) === gradingCanonical(leg));
+      if (prior) S.paper.error = "This exact reference is already saved; its first saved clock was preserved.";
+      else {
+        savePaperLeg({ schema_version: "paper-parlay-leg-v1", saved_id: crypto.randomUUID(), saved_at: new Date(now).toISOString(),
+          clock_basis: "OWNER_DEVICE_TIME_NOT_INDEPENDENTLY_TIMESTAMPED", leg: structuredClone(leg) });
+        S.paper.error = "Leg saved and read back on this device with its original reference clocks.";
+      }
+    } catch (error) { S.paper.error = "Leg not saved: " + error.message; }
+    renderParlay(); return;
+  }
+  const paperSavedAdd = t.closest("[data-paper-leg-add]");
+  if (paperSavedAdd) {
+    try { addSavedPaperLeg(paperSavedAdd.dataset.paperLegAdd); S.paper.error = "Exact current saved reference added to the draft."; persistPaperDraft(); }
+    catch (error) { S.paper.error = error.message; }
+    renderParlay(); return;
+  }
+  const paperLegResult = t.closest("[data-paper-leg-result]");
+  if (paperLegResult) {
+    try {
+      const item = readPaperLegs().legs.find(saved => saved.key === paperLegResult.dataset.paperLegResult);
+      if (!item) throw new Error("Saved leg is unavailable; its bytes were preserved");
+      S.paper.openedLeg = item.record; S.paper.error = ""; gradeOpenedPaperLeg();
+    } catch (error) { S.paper.error = error.message; }
+    renderParlay(); return;
+  }
+  if (t.closest("[data-paper-new]")) { Object.assign(S.paper, { legs: [], opened: null, results: null, error: "" }); persistPaperDraft(); renderParlay(); return; }
   const paperRemove = t.closest("[data-paper-remove]");
-  if (paperRemove) { S.paper.legs.splice(+paperRemove.dataset.paperRemove, 1); renderParlay(); return; }
+  if (paperRemove) { S.paper.legs.splice(+paperRemove.dataset.paperRemove, 1); persistPaperDraft(); renderParlay(); return; }
   if (t.closest("[data-paper-suggest]")) {
     S.paper.legs = []; S.paper.error = "";
     for (const { leg } of paperCandidates()) {
@@ -5597,6 +5769,7 @@ document.addEventListener("click", (e) => {
       S.paper.legs.push(leg); if (S.paper.legs.length === +S.paper.size) break;
     }
     if (S.paper.legs.length < 2) S.paper.error = "NO_ACTION: fewer than two compatible legs; no forced filling.";
+    persistPaperDraft();
     renderParlay(); return;
   }
   const paperAdd = t.closest("[data-paper-add]");
@@ -5607,7 +5780,7 @@ document.addEventListener("click", (e) => {
       leg = paperCandidates().find(v => gradingCanonical(v.leg) === gradingCanonical(rendered))?.leg;
     } catch { /* Stale/malformed rendered contracts cannot select another leg. */ }
     if (!leg || S.paper.legs.length >= 6 || S.paper.legs.some(l => l.player_id === leg.player_id || l.game_id === leg.game_id || l.line_source !== leg.line_source)) S.paper.error = "Leg unavailable or incompatible with this draft.";
-    else { S.paper.legs.push(leg); S.paper.error = ""; }
+    else { S.paper.legs.push(leg); S.paper.error = ""; persistPaperDraft(); }
     renderParlay(); return;
   }
   if (t.closest("[data-paper-save]")) {
@@ -5617,7 +5790,7 @@ document.addEventListener("click", (e) => {
       const previous = S.paper.opened, ticket = { schema_version: "paper-parlay-ticket-v1", ticket_id: previous?.ticket_id || crypto.randomUUID(), revision_id: crypto.randomUUID(),
         parent_revision_id: previous?.revision_id || null, saved_at: new Date(now).toISOString(), clock_basis: "OWNER_DEVICE_TIME_NOT_INDEPENDENTLY_TIMESTAMPED",
         product: "paper_all_legs", line_source: S.paper.legs[0]?.line_source, legs: structuredClone(S.paper.legs) };
-      savePaperTicket(ticket); S.paper.opened = ticket; S.paper.history=null;S.paper.historyEpoch++; S.paper.error = "Saved and read back on this device."; gradeOpenedPaper();
+      savePaperTicket(ticket); S.paper.opened = ticket; S.paper.history=null;S.paper.historyEpoch++; S.paper.error = "Saved and read back on this device."; persistPaperDraft(); gradeOpenedPaper();
     } catch (error) { S.paper.error = "Not saved: " + error.message; }
     renderParlay(); return;
   }
@@ -5627,7 +5800,7 @@ document.addEventListener("click", (e) => {
       const item = readPaperTickets().tickets.find(v => v.key === paperOpen.dataset.paperOpen);
       if (!item) throw new Error("Saved revision unavailable");
       S.paper.opened = item.ticket; S.paper.legs = structuredClone(item.ticket.legs); S.paper.source = item.ticket.line_source; S.paper.error = "";
-      gradeOpenedPaper();
+      persistPaperDraft(); gradeOpenedPaper();
     } catch (error) { S.paper.error = error.message; }
     renderParlay(); return;
   }

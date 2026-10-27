@@ -1017,13 +1017,18 @@ def plan(modules, root, board, at, modern):
         api, version, validator = di, di.PLAN, di.VALIDATOR
     else:
         api, version, validator = partial, partial.PLAN_VERSION, partial.VERSION
+    # Select the actual closed source family being executed. Retained helpers
+    # predate active_model and have only their single explicit MODEL contract;
+    # a current helper must recognize the actual bytes instead of borrowing it.
+    model = ((api.active_model(root) if hasattr(api, "active_model") else api.MODEL)
+             if modern else "original_sleeper_matchup_baseline")
     # The caller provides the exact complete schedule/status, including all games.
     status = modules["source"].record_scoreboard(modules["_provider"].scoreboard(2026, 6),
         dict(dates=2026, week=6, seasontype=2), at)
     ev.write(root, "verification/partial-schedule-baselines", dict(schema_version="partial-schedule-baseline-v1",
         season=2026, week=6, status=status))
     p = dict(schema_version=version, plan_id="FICTIONAL_DIAGNOSTIC_" + ("V2" if modern else "V1"),
-        model="sleeper-matchup-data-integrity-v2" if modern else "original_sleeper_matchup_baseline",
+        model=model,
         season=2026, week=6, plan_prepared_at=rel.stamp(at), effective_not_before=rel.stamp(at),
         expires_at=rel.stamp(at + timedelta(days=3)), validator_contract=validator,
         engine_files=api.engine_files(root) if modern else rel.engine_hashes(root),

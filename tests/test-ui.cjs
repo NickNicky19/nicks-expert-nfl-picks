@@ -45,6 +45,83 @@ require('./test-selected-rankings.cjs');
   console.log(`Private paper contracts: ${checks} storage, identity, clock, correction and eligibility checks passed.`);
 }
 
+// Saved-leg and draft persistence run the actual bounded readers/writers across
+// fresh VM instances. Storage and async outcome transport are controlled doubles;
+// these tests establish no provider quote freshness or pregame authentication.
+(async()=>{
+  let checks=0;const check=new Proxy(assert,{get:(target,key)=>typeof target[key]==='function'?(...args)=>{checks++;return target[key](...args);}:target[key]});
+  const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+  const source=fs.readFileSync(path.join(__dirname,'../output/app.js'),'utf8');
+  const names=['paperLegIdentity','validatePaperLeg','validatePaperTicket','savePaperTicket','readPaperTickets','paperStorageBytes','validateSavedPaperLeg','readPaperLegs','savePaperLeg','validatePaperDraft','paperDraftParent','readPaperDraft','savePaperDraft','persistPaperDraft','restorePaperDraft','paperCurrentLeg','addSavedPaperLeg','paperLegStatus','paperTicketStatus','paperCandidates','gradeOpenedPaperLeg','paperPerformanceHtml','renderParlay'];
+  const functions=names.map(name=>{const value=source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`));check.ok(value,name);return value[0];}).join('\n');
+  const constants=['PAPER_PREFIX','PAPER_LEG_PREFIX','PAPER_DRAFT_KEY','PAPER_STORAGE_LIMITS','PAPER_CATEGORIES','gradingCanonical','esc'].map(name=>{const value=source.match(new RegExp(`^const ${name} = .+;$`,'m'));check.ok(value,name);return value[0];}).join('\n');
+  const at=Date.parse('2026-10-24T11:00:00Z'),prefix='nflprops.paper-leg.v1.',draftKey='nflprops.paper-draft.v1';
+  class FixtureDate extends Date { static now(){return at;} }
+  const leg=i=>({season:2026,week:7,game_id:'fictional-saved-game-'+i,player_id:'fictional-saved-player-'+i,category:'rec',team:'AAA',name:'Fictional '+i,period:'full_game',kickoff:'2026-10-25T17:00:00Z',line:5.5,side:'over',line_source:'dk',raw_projection:5,adjusted_projection:7,board_generated_at:'2026-10-24T10:00:00Z',quote_observed_at:null});
+  const record=i=>({schema_version:'paper-parlay-leg-v1',saved_id:'fictional-saved-leg-'+String(i).padStart(3,'0'),saved_at:'2026-10-24T11:00:00Z',clock_basis:'OWNER_DEVICE_TIME_NOT_INDEPENDENTLY_TIMESTAMPED',leg:leg(i)});
+  const data=new Map([['nflprops.mine','PRESERVED_MY_PICKS_BYTES']]);
+  const storageFor=values=>({get length(){return values.size;},key:i=>[...values.keys()][i],getItem:key=>values.has(key)?values.get(key):null,setItem:(key,value)=>values.set(key,value)});
+  const storage=storageFor(data);
+  function fresh(store=storage){
+    const state={tab:'props',paper:{legs:[],source:'dk',sides:'mixed',categories:[],game:'',size:2,opened:null,results:null,history:null,historyEpoch:0,epoch:0,error:'',draftLoaded:false,openedLeg:null,legResult:null,legEpoch:0},data:{season:2026,week:7,generated_at:'2026-10-24T10:00:00Z',games:[],players:[]},games:{},finalOutcomes:new Map(),grading:null};
+    const main={innerHTML:''};
+    const context={S:state,localStorage:store,TextEncoder,structuredClone,Date:FixtureDate,HASH64:/^[a-f0-9]{64}$/,UNAVAILABLE:new Set(['Out']),injOf:p=>({status:p.injury}),gradeOpenedPaper:()=>{},$:()=>main,SHORT:{rec:'Rec'},LINE_FROM:{dk:'DraftKings',sleeper:'Sleeper'},fmt:(n,d=1)=>Number(n).toFixed(d)};
+    vm.createContext(context);vm.runInContext(constants+'\n'+functions+'\nthis.api={'+names.join(',')+'};',context);
+    const l=leg(1),game={id:l.game_id,home:'AAA',away:'BBB',kickoff:l.kickoff,state:'pre'};
+    state.data.games=[game];state.games[l.game_id]={...game};state.data.players=[{id:l.player_id,name:l.name,team:l.team,game_id:l.game_id,injury:null,props:[{key:l.category,proj:l.raw_projection,adj:l.adjusted_projection,line:l.line,line_from:l.line_source,lean:l.side}]}];
+    return {a:context.api,state,context,main};
+  }
+  let {a,state,context,main}=fresh();
+  const first=record(1),key=a.savePaperLeg(first),original=data.get(key);
+  check.equal(a.readPaperLegs().legs.length,1);check.equal(a.readPaperLegs().storedCount,1);check.equal(a.readPaperLegs().storedBytes,Buffer.byteLength(original));
+  check.equal(a.savePaperLeg(first),key);check.equal(data.get(key),original,'unchanged retry preserves first stored bytes');
+  for(const change of [r=>r.saved_at=123,r=>r.saved_at=r.leg.kickoff,r=>r.saved_at='2026-10-24T09:00:00Z',r=>r.leg.quote_observed_at=r.saved_at,r=>r.leg.extra='PRIVATE',r=>r.leg.week=0,r=>r.saved_id='bad']){const r=structuredClone(first);change(r);check.throws(()=>a.savePaperLeg(r));}
+  check.throws(()=>a.savePaperLeg({...structuredClone(first),leg:{...leg(1),line:6.5}}),/immutable/);
+  const detached=a.readPaperLegs().legs[0].record;detached.leg.line=99;check.equal(data.get(key),original,'returned objects cannot mutate stored contracts');
+  a.addSavedPaperLeg(key,storage,at);check.equal(state.paper.legs[0].line,5.5);check.throws(()=>a.addSavedPaperLeg(key,storage,at),/incompatible/);
+  a.savePaperDraft(state.paper,storage,at);const draftBytes=data.get(draftKey);
+  check.equal(JSON.parse(draftBytes).legs[0].board_generated_at,first.leg.board_generated_at);
+  ({a,state,context,main}=fresh());a.restorePaperDraft();
+  check.equal(state.paper.legs.length,1);check.equal(state.paper.legs[0].board_generated_at,first.leg.board_generated_at);check.equal(state.paper.opened,null);check.equal(data.get(draftKey),draftBytes);
+  check.match(state.paper.error,/not a saved ticket or verified pregame evidence/);
+  check.equal(a.readPaperTickets().tickets.length,0,'draft restoration does not manufacture a saved selection');
+  check.equal(data.get('nflprops.mine'),'PRESERVED_MY_PICKS_BYTES');
+  for(const [field,value]of[['season',2027],['week',8],['game_id','other-game'],['player_id','other-player'],['category','rec_yd'],['team','BBB'],['kickoff','2026-10-26T17:00:00Z'],['line',6.5],['side','under'],['line_source','sleeper'],['raw_projection',6],['adjusted_projection',8],['board_generated_at','2026-10-24T10:01:00Z']])check.equal(a.paperCurrentLeg({...leg(1),[field]:value},at),null,field+' change cannot borrow saved contract');
+  check.equal(a.paperCurrentLeg(leg(1),Date.parse(leg(1).kickoff)),null,'kickoff does not refresh an old leg');
+  state.paper.legs=[];state.data.generated_at='2026-10-24T10:01:00Z';check.throws(()=>a.addSavedPaperLeg(key,storage,at));check.equal(data.get(key),original);
+  state.data.generated_at=leg(1).board_generated_at;
+  const parent={schema_version:'paper-parlay-ticket-v1',ticket_id:'fictional-ticket-saved-legs',revision_id:'fictional-revision-saved-legs',parent_revision_id:null,saved_at:'2026-10-24T11:00:00Z',clock_basis:'OWNER_DEVICE_TIME_NOT_INDEPENDENTLY_TIMESTAMPED',product:'paper_all_legs',line_source:'dk',legs:[leg(1),leg(2)]};
+  const parentKey=a.savePaperTicket(parent),parentBytes=data.get(parentKey);state.paper.opened=parent;state.paper.legs=structuredClone(parent.legs);
+  a.savePaperDraft(state.paper,storage,at);const parentDraft=data.get(draftKey);
+  ({a,state,context,main}=fresh());a.restorePaperDraft();check.equal(state.paper.opened.revision_id,parent.revision_id);check.equal(data.get(parentKey),parentBytes);
+  data.delete(parentKey);check.throws(()=>a.readPaperDraft(),/lineage/);check.equal(data.get(draftKey),parentDraft);data.set(parentKey,parentBytes);
+  for(const legs of [[leg(1),leg(1)],[leg(1),{...leg(2),game_id:leg(1).game_id}],[leg(1),{...leg(2),line_source:'sleeper'}],Array.from({length:7},(_,i)=>leg(i+1))])check.throws(()=>a.savePaperDraft({...state.paper,legs},storage,at));
+  data.set(prefix+'broken','{');check.equal(a.readPaperLegs().legs.length,1);check.equal(a.readPaperLegs().errors.length,1);check.equal(data.get(prefix+'broken'),'{');data.delete(prefix+'broken');
+  data.set(prefix+'wrong-id',original);check.equal(a.readPaperLegs().errors.length,1);data.delete(prefix+'wrong-id');
+  data.set(prefix+'oversized',original+' '.repeat(9000));check.equal(a.readPaperLegs().errors.length,1);check.ok(data.get(prefix+'oversized').length>8192);data.delete(prefix+'oversized');
+  for(const raw of ['{',JSON.stringify({...JSON.parse(parentDraft),schema_version:'unknown-draft'}),parentDraft+' '.repeat(65536)]){data.set(draftKey,raw);check.throws(()=>a.readPaperDraft());check.equal(data.get(draftKey),raw);}data.set(draftKey,parentDraft);
+  const quota={...storage,setItem:()=>{throw Error('QUOTA');}};check.throws(()=>a.savePaperLeg(record(2),quota),/QUOTA/);check.throws(()=>a.savePaperDraft(state.paper,quota,at),/QUOTA/);check.equal(data.get(key),original);check.equal(data.get(parentKey),parentBytes);
+  const failed=new Map(data),partial={...storageFor(failed),setItem:(k,v)=>failed.set(k,v.slice(0,-1))};
+  check.throws(()=>a.savePaperLeg(record(2),partial),/verified/);check.equal(failed.get(key),original);check.equal(failed.get(parentKey),parentBytes);check.equal(failed.get('nflprops.mine'),'PRESERVED_MY_PICKS_BYTES');
+  check.throws(()=>a.savePaperDraft(state.paper,partial,at),/verified/);
+  const full=new Map();for(let i=0;i<64;i++)full.set(prefix+record(i).saved_id,JSON.stringify(record(i)));check.equal(a.readPaperLegs(storageFor(full)).legs.length,64);check.throws(()=>a.savePaperLeg(record(64),storageFor(full)),/capacity/);full.set(prefix+record(64).saved_id,JSON.stringify(record(64)));check.throws(()=>a.readPaperLegs(storageFor(full)),/64 records/);
+  const large=new Map();for(let i=0;i<33;i++){const raw=JSON.stringify(record(i));large.set(prefix+record(i).saved_id,raw+' '.repeat(8100-Buffer.byteLength(raw)));}check.throws(()=>a.readPaperLegs(storageFor(large)),/256 KiB/);
+  a.renderParlay();check.match(main.innerHTML,/<h3>Saved legs<\/h3>/);check.match(main.innerHTML,/board 2026-10-24T10:00:00Z/);check.match(main.innerHTML,/data-paper-leg-result/);check.equal(data.get(key),original);check.equal(data.get(parentKey),parentBytes);
+  const outcome={...leg(1),status:'resolved',actual:3,final_confirmed:true,game_state:'post',outcome_selection:'confirmed',outcome_conflict:false,collected_at:'2026-10-25T21:00:00Z',outcome_snapshot_sha256:'a'.repeat(64),selected_outcome_row_sha256:'b'.repeat(64),selected_outcome_provenance_sha256:'c'.repeat(64)};
+  const outcomes=new Map([[a.paperLegIdentity(leg(1)),outcome]]),requests=[];
+  state.data.week=8;state.paper.openedLeg=JSON.parse(original);state.grading={outcomeIndex:{},pointer:{report_id:'first'}};
+  context.loadOutcomePeriod=async(g,season,week)=>{requests.push([season,week]);return outcomes;};
+  await a.gradeOpenedPaperLeg();check.equal(JSON.stringify(requests),JSON.stringify([[2026,7]]));check.equal(state.paper.legResult.status,'loss');
+  outcome.actual=8;await a.gradeOpenedPaperLeg();check.equal(state.paper.legResult.status,'win');check.equal(data.get(key),original,'outcome corrections leave saved references unchanged');
+  outcome.week=8;await a.gradeOpenedPaperLeg();check.equal(state.paper.legResult.status,'unresolved');outcome.week=7;
+  let complete;context.loadOutcomePeriod=()=>new Promise(done=>{complete=done;});const changedDependency=a.gradeOpenedPaperLeg();data.set(key,'{');complete(outcomes);await changedDependency;check.equal(state.paper.legResult,null,'changed stored dependency cannot inherit an in-flight result');check.equal(data.get(key),'{');data.set(key,original);
+  let resolve;context.loadOutcomePeriod=()=>new Promise(done=>{resolve=done;});const old=a.gradeOpenedPaperLeg();state.grading={outcomeIndex:{},pointer:{report_id:'new'}};resolve(outcomes);await old;check.equal(state.paper.legResult,null,'old publication response cannot grade a new selection');
+  const oldSelection=a.gradeOpenedPaperLeg();state.paper.openedLeg=record(2);resolve(outcomes);await oldSelection;check.equal(state.paper.legResult,null,'old selected-leg response cannot overwrite a later selection');
+  context.loadOutcomePeriod=async()=>{throw Error('missing partition');};await a.gradeOpenedPaperLeg();check.equal(state.paper.legResult,null);check.match(state.paper.error,/unavailable; no result was substituted/);
+  check.equal(data.get('nflprops.mine'),'PRESERVED_MY_PICKS_BYTES');check.equal(data.get(parentKey),parentBytes);
+  console.log(`Saved paper legs/draft: ${checks} reload, storage-boundary, exact-contract, correction and stale-response checks passed.`);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
 // Presence correction: actual helpers preserve known zero, signed PPR and
 // unknown components. No forecast, saved-line or device-state mutation.
 {

@@ -37,7 +37,7 @@ class RetainedFGCacheTests(unittest.TestCase):
             with patch.object(build,'CACHE',root),patch.object(build.sources,'week_stats',return_value=copy.deepcopy(ROWS))as source:
                 stats=build.week_stats(2098,18,refresh=False)
             source.assert_called_once_with(2098,18)
-            self.assertEqual(build.STATS_CACHE_VERSION,'stat-keys-fgm-v1')
+            self.assertEqual(build.STATS_CACHE_VERSION,'stat-keys-presence-fgm-v2')
             self.assertEqual(old.read_bytes(),OLD_BYTES)
             saved=root/build.STATS_CACHE_VERSION/'stats_2098_18.json'
             self.assertEqual(json.loads(saved.read_text()),stats)

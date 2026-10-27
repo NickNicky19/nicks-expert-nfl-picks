@@ -1758,7 +1758,7 @@ class PartialOperationalPipelineTests(unittest.TestCase):
             shutil.rmtree(root / "data/verification/partial-registrations")
             old_paths = {key: getattr(build, key) for key in ("ROOT", "OUT", "CACHE", "ARCHIVE", "WEEKS")}
             old_athletes = build.books.ATHLETES
-            def recorded(stage, mode, *, model):
+            def recorded(stage, mode, *, model, run):
                 self.assertEqual(mode, "live")
                 self.assertEqual(model, "original_sleeper_matchup_baseline")
                 self.assertTrue(list((stage / "data/verification/partial-registrations").rglob("*.json.gz")))
@@ -1768,16 +1768,20 @@ class PartialOperationalPipelineTests(unittest.TestCase):
                 self.assertEqual(build.WEEKS, stage / "output/data/weeks")
                 self.assertEqual(build.books.ATHLETES, stage / "data/cache/espn_athletes.json")
                 self.assertEqual(build.sources.nfl_state()["week"], 6)
+                self.assertTrue(callable(run))
+                run()
                 atomic_json(build.books.ATHLETES, {"fictional": "stage-only lookup"})
             class Clock(datetime):
                 @classmethod
                 def now(cls, tz=None): return NOW
             with patch.object(phase2_capture, "datetime", Clock), \
                     patch.object(build.sources, "nfl_state", return_value={"season": "2026", "week": 6, "season_type": "regular"}) as selector, \
+                    patch.object(build, "run") as current_builder, \
                     patch.object(build_recorded, "record_build", side_effect=recorded), \
                     patch.object(phase2_capture, "_closing_status", return_value=status(data, NOW)):
                 run_capture(root, build_first=True)
                 self.assertEqual(selector.call_count, 1)
+                current_builder.assert_called_once_with()
             self.assertEqual({key: getattr(build, key) for key in old_paths}, old_paths)
             self.assertEqual(build.books.ATHLETES, old_athletes)
             self.assertEqual(load_json(root / "data/cache/espn_athletes.json"), {"fictional": "stage-only lookup"})
@@ -3205,7 +3209,18 @@ class SavedGenerationPlanTransitionTests(unittest.TestCase):
         def exclude_registration(path, names):
             return names if Path(path).name == "partial-registrations" else []
         shutil.copytree(cls.base, alternative, ignore=exclude_registration)
-        alternative_source = corrected.recording_source("e2dd96a31690baad04c8660302933f45f77d72e7")
+        # A distinct actual same-code source gives the independent registration
+        # its own identity without pretending an older engine produced it. This
+        # creates only a local commit object: no ref, HEAD, index or source edit.
+        actual_source = corrected.recording_source()
+        actual_tree = corrected._git(ROOT, "rev-parse", actual_source + "^{tree}").decode().strip()
+        alternate_commit = corrected._git(ROOT,
+            "-c", "user.name=FictionalRegression", "-c", "user.email=fictional@example.invalid",
+            "commit-tree", actual_tree, "-p", actual_source,
+            "-m", "Wholly fictional independent registration of the same executed source").decode().strip()
+        alternative_source = corrected.recording_source(alternate_commit)
+        if (alternative_source == actual_source or corrected._git(ROOT, "rev-parse", "HEAD").decode().strip() != actual_source):
+            raise AssertionError("Independent source object changed or replaced the actual checkout")
         alternative_registration, _ = corrected.register_plan(alternative, spec,
             cls.at, source_sha=alternative_source, initial_board=data)
         class Clock(datetime):
@@ -3467,6 +3482,57 @@ class CorrectedCheckpointPersistenceTests(unittest.TestCase):
 
 
 class RetainedRankedTreeTests(unittest.TestCase):
+    def test_retained_HEAD_is_independent_and_old_payload_source_reconstructs_cold(self):
+        import selection_strategies as strategies
+        original_head = corrected._git(ROOT, "rev-parse", "HEAD")
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_") and key != "GITHUB_SHA"}
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        program = """import sys
+from pathlib import Path
+sys.path[:0]=[str(Path.cwd()/'tools'),str(Path.cwd()/'pull')]
+import data_integrity_v2 as d
+print(d.recording_source())
+"""
+        for commit in (strategies.RETAINED_SOURCE, Retained045RankedSourcePipelineTests.SOURCE):
+            with self.subTest(source=commit), strategies._retained_source(commit) as source:
+                self.assertTrue((source / ".git").is_dir())
+                self.assertFalse((source / ".git/objects/info/alternates").exists())
+                self.assertEqual(corrected._git(source, "rev-parse", "HEAD").decode().strip(), commit)
+                self.assertEqual(corrected._git(source, "remote").strip(), b"")
+                actual = subprocess.check_output([sys.executable, "-B", "-c", program], cwd=source, env=env, text=True).strip()
+                self.assertEqual(actual, commit)
+            self.assertEqual(corrected._git(ROOT, "rev-parse", "HEAD"), original_head)
+
+    def test_copied_object_same_size_corruption_fails_cold_and_final_boundary(self):
+        import selection_strategies as strategies
+        original_head = corrected._git(ROOT, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(IntegrityError, "Copied retained ranked Git"):
+            with strategies._retained_source() as source:
+                oid = corrected._git(source, "rev-parse", strategies.RETAINED_SOURCE + ":pull/scoring.py").decode().strip()
+                path = source / ".git/objects" / oid[:2] / oid[2:]
+                raw, info = path.read_bytes(), path.stat()
+                broken = bytearray(raw); broken[len(broken) // 2] ^= 1
+                path.chmod(0o600)  # Only this disposable, explicitly corrupt copy.
+                path.write_bytes(broken); os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+                # A new Git process and the adapter's final copied-object fence
+                # both independently reject it; the original store is untouched.
+                self.assertNotEqual(subprocess.run(["git", "-C", str(source), "cat-file", "blob", oid],
+                    capture_output=True).returncode, 0)
+        self.assertEqual(corrected._git(ROOT, "rev-parse", "HEAD"), original_head)
+
+    def test_private_git_context_changes_never_borrow_retained_source_trust(self):
+        import selection_strategies as strategies
+        original_head = corrected._git(ROOT, "rev-parse", "HEAD")
+        changes = (("HEAD", b"0" * 40 + b"\n"),
+                   ("config", b'[remote "origin"]\nurl = https://fictional.invalid/forbidden\n'),
+                   ("objects/info/alternates", b"/fictional/forbidden-object-store\n"),
+                   ("packed-refs", b"# Fictional forbidden replacement-ref control\n"))
+        for name, raw in changes:
+            with self.subTest(dependency=name), self.assertRaisesRegex(IntegrityError, "Retained ranked Git context"):
+                with strategies._retained_source() as source:
+                    (source / ".git" / name).write_bytes(raw)
+            self.assertEqual(corrected._git(ROOT, "rev-parse", "HEAD"), original_head)
+
     def test_corrupt_root_or_nested_tree_never_supplies_retained_executable_bytes(self):
         import selection_strategies as strategies
         actual = corrected._git

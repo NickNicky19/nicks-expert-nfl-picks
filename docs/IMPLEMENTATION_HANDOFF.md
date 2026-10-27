@@ -1962,3 +1962,30 @@ forward recovery and observed scheduled operation. The recovery source floor mus
 understand all retained models and shared/gzip reports. Blind restoration of older
 readers or the old monolithic publisher does not restore complete reporting.
 Odds acquisition and forecasting research remain separate from these release gates.
+
+## 2026-10-27 integration-CI follow-up (unreleased)
+
+The first combined push and PR checks at `484dbeff` both failed: 1,337 tests,
+12 failures and 18 errors. Those results remain evidence. This follow-up repairs
+the lost closed legacy capture CLI and gives retained ranked validators an
+independent bounded Git store with their actual historical HEAD, source objects
+and helper bytes. Fresh original and copied dependency checks remain mandatory.
+Historical fixtures now prove the correct old source valid before testing its
+corruption; current source and cache/grading identities remain separately closed.
+
+The paper builder now has a separate immutable saved-leg library and a persistent
+device-local draft. Original clocks, parent revisions and exact contracts remain
+fixed. Reuse requires an exact eligible current reference; statistical grading
+uses the saved leg's own period. My Picks and existing ticket bytes are retained.
+Local component checks include 42 legacy/compatibility tests, four retained-source
+controls, the build-callback regression, 121 new paper assertions, retained UI
+checks and 20 About checks. They are not final-source CI, aggregate-memory or
+public deployment acceptance.
+
+Main advanced separately to `e336bf7` with 65 data/evidence paths and no source
+change. That scheduled run succeeded; the earlier October 25 and 26 scheduled
+failures remain failures. The update is preserved and does not qualify the new
+Phase 2 updater. Current-main integration, the outdated operating/test contracts,
+final-source checks, finite operating assurance, a truthful current-week package,
+public verification and compatible recovery remain open. The fixed Week 7 plan
+is unchanged and does not authorize a Week 8 capture or automatic exemptions.

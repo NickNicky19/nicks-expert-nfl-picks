@@ -348,14 +348,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--mode", choices=("live", "replay"), required=True)
+    from classic_model_v1 import MODEL, ORIGINAL_MODEL
+    parser.add_argument("--model", choices=(ORIGINAL_MODEL, MODEL), default=ORIGINAL_MODEL)
     parser.add_argument("--replay-at", help="An explicit test clock; forbidden in live mode")
     args = parser.parse_args()
     if args.mode == "live" and args.replay_at:
         parser.error("Live capture cannot use a supplied clock")
     now = utc(args.replay_at) if args.replay_at else datetime.now(timezone.utc)
     root = args.root.resolve()
-    path, health = capture(load_json(root / "output/data/week.json"), load_json(root / "output/data/meta.json"),
-                           root, now, engine_hashes(root), mode=args.mode)
+    data, meta = load_json(root / "output/data/week.json"), load_json(root / "output/data/meta.json")
+    if args.model == ORIGINAL_MODEL:
+        # Preserve the original/default recovery route without requiring the
+        # corrected-model helper merely to select the original engine.
+        path, health = capture(data, meta, root, now, engine_hashes(root), mode=args.mode)
+    else:
+        path, health = capture_profile(data, meta, root, now, model=args.model, mode=args.mode)
     if args.mode == "live":
         atomic_json(root / "output/data/health.json", health)
     print(json.dumps(health, indent=2))
