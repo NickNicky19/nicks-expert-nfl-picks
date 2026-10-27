@@ -453,7 +453,7 @@ class GenuineRoute(unittest.TestCase):
         self.assertFalse(b.arguments(raw).genuine_case)
     def test_actual_reviewed_inline_source_bytes_and_changed_source_rejected(self):
         commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
-        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),37868);self.assertEqual(b.sha(raw),b.STAGED_POLICY_GENUINE_DRIVER)
+        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),40898);self.assertEqual(b.sha(raw),b.HISTORY_GENUINE_DRIVER)
         with patch.object(b,'git',return_value=b'not the actual source'):
             with self.assertRaisesRegex(RuntimeError,'actual source'):b.genuine_driver(ROOT,commit)
         original=(ROOT/b.GENUINE_WORKFLOW).read_bytes()
@@ -467,13 +467,14 @@ class GenuineRoute(unittest.TestCase):
                 ('e415912b9c3d3ff52e8f435517af02e794d97fa4',b.LEGACY_GENUINE_DRIVER,30854),
                 ('a247b378bd05bbb4cd93cb20c88c1498fecef523',b.GENUINE_DRIVER,36877),
                 ('d48493e559d6f9540af2a5f45ab75830fe52ee84',b.PRESENCE_GENUINE_DRIVER,37167),
-                ('a4815f7ce47720922c30f98c441ca561605bba48',b.CURRENT_PRESENCE_GENUINE_DRIVER,37868)]:
+                ('a4815f7ce47720922c30f98c441ca561605bba48',b.CURRENT_PRESENCE_GENUINE_DRIVER,37868),
+                ('e6b9dc777dd8c31e1c3e97739c3a3e5b1a2113d8',b.STAGED_POLICY_GENUINE_DRIVER,37868)]:
             # Read the real retained Git object; mock only its physical replay root.
             original=subprocess.check_output(['git','-C',str(ROOT),'show',legacy+':'+b.GENUINE_WORKFLOW])
             with patch.object(b,'regular_bytes',return_value=original),patch.object(b,'git',return_value=original):
                 raw=b.genuine_driver(ROOT,legacy)
             self.assertEqual(len(raw),length);self.assertEqual(b.sha(raw),digest)
-        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.WEEKLY_GENUINE_DRIVER:35468,b.GENUINE_DRIVER:36877,b.PRESENCE_GENUINE_DRIVER:37167,b.CURRENT_PRESENCE_GENUINE_DRIVER:37868,b.STAGED_POLICY_GENUINE_DRIVER:37868})
+        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.WEEKLY_GENUINE_DRIVER:35468,b.GENUINE_DRIVER:36877,b.PRESENCE_GENUINE_DRIVER:37167,b.CURRENT_PRESENCE_GENUINE_DRIVER:37868,b.STAGED_POLICY_GENUINE_DRIVER:37868,b.HISTORY_GENUINE_DRIVER:40898})
     def test_actual315_registration_stub_cannot_become_a_genuine_controller(self):
         source='315be5e86a1a3a93022b68c453739076487e2077'
         original=subprocess.check_output(['git','-C',str(ROOT),'show',source+':'+b.GENUINE_WORKFLOW])
@@ -1094,7 +1095,7 @@ class GenuineRecovery(unittest.TestCase):
     def test_recovery_driver_dispatch_uses_only_exact_actual_controller_bytes(self):
         r=self.r;original=(ROOT/r.WORKFLOW).read_bytes()
         with patch.object(r,'authenticated_bytes',return_value=original):
-            self.assertEqual(r.checked_driver(ROOT,'a'*40),r.STAGED_POLICY_DRIVER)
+            self.assertEqual(r.checked_driver(ROOT,'a'*40),r.HISTORY_DRIVER)
         changed=changed_actual_controller_contract(original)
         self.assertNotEqual(changed,original);self.assertEqual(len(changed),len(original))
         with patch.object(r,'authenticated_bytes',return_value=changed):
@@ -1104,11 +1105,12 @@ class GenuineRecovery(unittest.TestCase):
                 ('e415912b9c3d3ff52e8f435517af02e794d97fa4',r.LEGACY_DRIVER),
                 ('a247b378bd05bbb4cd93cb20c88c1498fecef523',r.DRIVER),
                 ('d48493e559d6f9540af2a5f45ab75830fe52ee84',r.PRESENCE_DRIVER),
-                ('a4815f7ce47720922c30f98c441ca561605bba48',r.CURRENT_PRESENCE_DRIVER)]:
+                ('a4815f7ce47720922c30f98c441ca561605bba48',r.CURRENT_PRESENCE_DRIVER),
+                ('e6b9dc777dd8c31e1c3e97739c3a3e5b1a2113d8',r.STAGED_POLICY_DRIVER)]:
             legacy=subprocess.check_output(['git','-C',str(ROOT),'show',source+':'+r.WORKFLOW])
             with patch.object(r,'authenticated_bytes',return_value=legacy):
                 self.assertEqual(r.checked_driver(ROOT,source),digest)
-        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.WEEKLY_DRIVER:35468,r.DRIVER:36877,r.PRESENCE_DRIVER:37167,r.CURRENT_PRESENCE_DRIVER:37868,r.STAGED_POLICY_DRIVER:37868})
+        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.WEEKLY_DRIVER:35468,r.DRIVER:36877,r.PRESENCE_DRIVER:37167,r.CURRENT_PRESENCE_DRIVER:37868,r.STAGED_POLICY_DRIVER:37868,r.HISTORY_DRIVER:40898})
 
     def test_actual315_registration_stub_is_rejected_by_saved_recovery(self):
         r=self.r;source='315be5e86a1a3a93022b68c453739076487e2077'
@@ -1245,7 +1247,7 @@ class GenuineRawRankedRetention(unittest.TestCase):
         import types
         commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
         raw=b.genuine_driver(ROOT,commit)
-        self.assertEqual(b.sha(raw),b.STAGED_POLICY_GENUINE_DRIVER)
+        self.assertEqual(b.sha(raw),b.HISTORY_GENUINE_DRIVER)
         module=types.ModuleType('genuine_installed_controller_under_test')
         exec(compile(raw,str(ROOT/b.GENUINE_WORKFLOW)+'::genuine-controller','exec'),module.__dict__)
         self.assertEqual(module.CONTROLLER_CONTRACT,b.PRESENCE_CONTRACT)
@@ -1348,7 +1350,7 @@ class GenuinePresenceController(unittest.TestCase):
         r=self.r
         expected={b.LEGACY_GENUINE_DRIVER:None,b.WEEKLY_GENUINE_DRIVER:r.WEEKLY_CONTRACT,
             b.GENUINE_DRIVER:r.RANKING_CONTRACT,b.PRESENCE_GENUINE_DRIVER:r.PRESENCE_CONTRACT,
-            b.CURRENT_PRESENCE_GENUINE_DRIVER:r.PRESENCE_CONTRACT,b.STAGED_POLICY_GENUINE_DRIVER:r.PRESENCE_CONTRACT}
+            b.CURRENT_PRESENCE_GENUINE_DRIVER:r.PRESENCE_CONTRACT,b.STAGED_POLICY_GENUINE_DRIVER:r.PRESENCE_CONTRACT,b.HISTORY_GENUINE_DRIVER:r.PRESENCE_CONTRACT}
         self.assertEqual(b.GENUINE_DRIVER_CONTRACTS,expected)
         self.assertEqual(r.DRIVER_CONTRACTS,expected)
         self.assertEqual(r.DRIVER,'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5')
@@ -1365,8 +1367,8 @@ class GenuinePresenceController(unittest.TestCase):
             git('init','-q');git('add','--',b.GENUINE_WORKFLOW)
             git('-c','user.name=Fictional regression','-c','user.email=fixture@example.invalid','commit','-qm','fictional local controller closure')
             commit=git('rev-parse','HEAD').decode()
-            self.assertEqual(b.sha(b.genuine_driver(root,commit)),b.STAGED_POLICY_GENUINE_DRIVER)
-            self.assertEqual(r.checked_driver(root,commit),r.STAGED_POLICY_DRIVER)
+            self.assertEqual(b.sha(b.genuine_driver(root,commit)),b.HISTORY_GENUINE_DRIVER)
+            self.assertEqual(r.checked_driver(root,commit),r.HISTORY_DRIVER)
             before=path.stat();path.write_bytes(changed_actual_controller_contract(original))
             os.utime(path,ns=(before.st_atime_ns,before.st_mtime_ns))
             with self.assertRaisesRegex(RuntimeError,'differs from actual source'):b.genuine_driver(root,commit)
@@ -1486,6 +1488,152 @@ class GenuinePresenceController(unittest.TestCase):
         entries=self.archive(cache=(name,b'{"access_token":"FICTIONAL_CONTROL"}'))
         with self.assertRaisesRegex(ValueError,'PRIVATE_FIELD'):
             r.controller_archive(self.helper.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.PRESENCE_DRIVER)
+
+
+class GenuineIssuedHistory(unittest.TestCase):
+    """Actual grade/stager/closed-controller/transport readers; no providers."""
+    def setUp(self):
+        self.helper=GenuineRecovery();self.helper.setUp();self.r=self.helper.r
+    def record(self,version=None):
+        import build
+        with tempfile.TemporaryDirectory() as directory:
+            value=build.grade.grade_all(Path(directory),lambda *_:{},(2026,8),set())
+        if version=='legacy':
+            for key in ('grading_version','settlement_status','provenance_note'):value.pop(key,None)
+        elif version is not None:value['grading_version']=version
+        return value
+    def fixture(self,directory,value=None,raw=None):
+        import build,phase2_capture
+        root=Path(directory);path=root/'output/data/track_record.json';path.parent.mkdir(parents=True,exist_ok=True)
+        body=self.r.canonical(self.record() if value is None else value) if raw is None else raw
+        path.write_bytes(body);issued=build.grade.preserve_issued_record(path)
+        typed=phase2_capture._grading_history_assets(root/'output')
+        return root,issued,body,typed
+    def archive(self,name,body):
+        r=self.r;raw,_=self.helper.controller_fixture();entries=r.tar_entries(raw)
+        case=r.parsed(entries['RELEASE_CASE_MANIFEST.json']);case.update(controller_contract=r.PRESENCE_CONTRACT,
+            reviewed_main_base=r.REVIEWED_MAIN[r.PRESENCE_CONTRACT][0],reviewed_main_source_tree=r.REVIEWED_MAIN[r.PRESENCE_CONTRACT][1])
+        entries['RELEASE_CASE_MANIFEST.json']=r.canonical(case)
+        pages=r.tar_entries(entries['public-pages.tar'],True,r.parsed(entries['PAGES_MEMBERS_MANIFEST.json']));pages[name]=body
+        entries['public-pages.tar']=self.helper.tar(pages,True)
+        entries['PAGES_MEMBERS_MANIFEST.json']=r.canonical({n:dict(bytes=len(v),sha256=r.sha(v))for n,v in pages.items()})
+        return self.helper.tar(entries)
+    def test_actual_producer_all_legacy_modern_versions_controller_and_complete_transport(self):
+        import phase2_capture
+        controller=GenuineRawRankedRetention().controller();r=self.r
+        versions=['legacy','statistical-v2','statistical-v3-identity-20261025','statistical-presence-v3','statistical-presence-fgm-identity-v4']
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'case';expected={}
+            for version in versions:
+                _,issued,body,typed=self.fixture(root,value=self.record(version));expected[issued.relative_to(root/'output').as_posix()]=body
+            pages=Path(directory)/'pages';phase2_capture.stage_pages(root,pages)
+            before={};after=controller.inventory(root)
+            page_info={name:dict(bytes=len(body),sha256=r.sha(body))for name,body in expected.items()}
+            payload,receipts,representation=controller.new_payloads(root,before,after,page_info,source_root=ROOT)
+            self.assertEqual(receipts,[])
+            for name,body in expected.items():
+                self.assertTrue(controller.public_path(name));self.assertTrue(r.public_path(name));self.assertEqual((pages/name).read_bytes(),body)
+                logical='output/'+name;self.assertEqual(representation[logical]['storage'],'public-pages.tar::'+name)
+            self.assertEqual(r.issued_history_assets(root/'output'),phase2_capture._grading_history_assets(root/'output'))
+            for name,body in expected.items():r.controller_archive(self.archive(name,body),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.HISTORY_DRIVER)
+    def test_current_public_main_issued_bytes_roundtrip_without_regrading(self):
+        raw=subprocess.check_output(['git','-C',str(ROOT),'show','e336bf7a68c32267c3c3eec48892aeadcd03a90e:output/data/track_record.json'])
+        with tempfile.TemporaryDirectory() as directory:
+            root,issued,body,typed=self.fixture(directory,raw=raw)
+            self.assertEqual(body,raw);self.assertEqual(len(raw),34698)
+            name=issued.relative_to(root/'output').as_posix()
+            self.r.controller_archive(self.archive(name,raw),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=self.r.HISTORY_DRIVER)
+    def test_failed_no_pages_retention_roundtrips_valid_typed_history(self):
+        controller=GenuineRawRankedRetention().controller();r=self.r
+        with tempfile.TemporaryDirectory() as directory:
+            root,issued,body,_=self.fixture(directory);after=controller.inventory(root)
+            payload,native,representations,failure,errors=controller.retention_delta(root,{},after,{},None,source_root=ROOT)
+            self.assertEqual(failure,'NO_COMPLETE_PAGES_TAR');self.assertEqual(native,[]);self.assertEqual(errors,[])
+            logical=issued.relative_to(root).as_posix();self.assertEqual(representations[logical]['storage'],'mutable/'+logical)
+            initial,_=self.helper.controller_fixture();entries=r.tar_entries(initial);meta={name:r.parsed(entries[name])for name in r.META}
+            meta['RELEASE_CASE_MANIFEST.json'].update(status='FAILED',controller_contract=r.PRESENCE_CONTRACT,
+                reviewed_main_base=r.REVIEWED_MAIN[r.PRESENCE_CONTRACT][0],reviewed_main_source_tree=r.REVIEWED_MAIN[r.PRESENCE_CONTRACT][1])
+            meta['NEW_RECEIPTS_MANIFEST.json']=[];meta['PAGES_MEMBERS_MANIFEST.json']={}
+            meta['OUTPUT_DATA_MANIFEST.json']=dict(after=after,representations=representations)
+            target=Path(directory)/'failure.tar';controller.write_tar(target,payload,meta)
+            restored=r.controller_archive(target.read_bytes(),'a'*40,'FAILED',driver=r.HISTORY_DRIVER)
+            self.assertEqual(restored['RELEASE_CASE_MANIFEST.json']['status'],'FAILED')
+            self.assertEqual(r.tar_entries(target.read_bytes())['mutable/'+logical],body)
+    def test_actual_main_hydration_guard_refuses_immutable_history_collision(self):
+        import ast
+        controller=GenuineRawRankedRetention().controller()
+        commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip();tree=ast.parse(b.genuine_driver(ROOT,commit))
+        guard=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(c,ast.Expr) and isinstance(c.value,ast.Call) and any(isinstance(a,ast.Constant) and a.value=='MAIN_IMMUTABLE_COLLISION'for a in c.value.args)for c in n.body))
+        with tempfile.TemporaryDirectory() as directory:
+            target=Path(directory)/'saved';target.write_bytes(b'old preserved bytes')
+            scope=dict(controller.__dict__,name='output/data/grading-history/'+'a'*64+'.json',target=target,body=b'changed imported bytes')
+            with self.assertRaisesRegex(RuntimeError,'MAIN_IMMUTABLE_COLLISION'):
+                exec(compile(ast.Module(body=[guard],type_ignores=[]),'actual-main-hydration-guard','exec'),scope)
+            self.assertEqual(target.read_bytes(),b'old preserved bytes')
+    def test_old_six_physical_drivers_cannot_claim_new_complete_history_role(self):
+        r=self.r;body=r.canonical(self.record());name='data/grading-history/'+r.sha(body)+'.json'
+        for driver,contract in r.DRIVER_CONTRACTS.items():
+            if driver==r.HISTORY_DRIVER:continue
+            entries=r.tar_entries(self.archive(name,body));case=r.parsed(entries['RELEASE_CASE_MANIFEST.json'])
+            if contract is None:
+                for key in ('controller_contract','reviewed_main_base','reviewed_main_source_tree'):case.pop(key,None)
+            else:case.update(controller_contract=contract,reviewed_main_base=r.REVIEWED_MAIN[contract][0],reviewed_main_source_tree=r.REVIEWED_MAIN[contract][1])
+            entries['RELEASE_CASE_MANIFEST.json']=r.canonical(case)
+            with self.subTest(driver=driver),self.assertRaisesRegex(ValueError,'ISSUED_HISTORY_CONTROLLER_REQUIRED'):
+                r.controller_archive(self.helper.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=driver)
+    def test_history_transport_rejects_hash_gzip_privacy_shape_version_and_size(self):
+        import gzip
+        r=self.r;valid=self.record();cases=[]
+        for field,value in [('grading_version','unregistered'),('settlement_status','venue-verified'),('provenance_note','changed')]:
+            changed=copy.deepcopy(valid);changed[field]=value;cases.append((field,r.canonical(changed),None))
+        changed=copy.deepcopy(valid);changed['cumulative']['api_key']='CONTROL';cases.append(('private',r.canonical(changed),None))
+        changed=copy.deepcopy(valid);changed['cumulative']['weeks']=True;cases.append(('invalid-count',r.canonical(changed),None))
+        changed=copy.deepcopy(valid);changed['cumulative']['unregistered']=1;cases.append(('unknown-field',r.canonical(changed),None))
+        body=r.canonical(valid);cases.extend([('hash',body,'0'*64),('gzip',gzip.compress(body,mtime=0),None),('oversized',b' '*(r.ISSUED_HISTORY_LIMIT+1),None)])
+        for label,raw,fixed in cases:
+            name='data/grading-history/'+(fixed or r.sha(raw))+'.json'
+            with self.subTest(label=label),self.assertRaises((ValueError,OSError)):
+                r.controller_archive(self.archive(name,raw),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.HISTORY_DRIVER)
+    def test_same_size_mutation_and_removed_immutable_history_do_not_inherit_trust(self):
+        r=self.r;controller=GenuineRawRankedRetention().controller()
+        with tempfile.TemporaryDirectory() as directory:
+            root,issued,body,_=self.fixture(directory);before=controller.inventory(root)
+            r.issued_history_assets(root/'output');old=issued.stat();issued.write_bytes(body[:-1]+bytes([body[-1]^1]));os.utime(issued,ns=(old.st_atime_ns,old.st_mtime_ns))
+            with self.assertRaises(ValueError):r.issued_history_assets(root/'output')
+            changed=controller.inventory(root);self.assertEqual([v['path']for v in controller.immutable_violations(before,changed)],[issued.relative_to(root).as_posix()])
+            issued.unlink();after=controller.inventory(root)
+            self.assertEqual([v['path']for v in controller.immutable_violations(before,after)],[issued.relative_to(root).as_posix()])
+    def test_fresh_validator_ignores_wrong_imported_module_and_rejects_changed_helper(self):
+        import types
+        r=self.r
+        with tempfile.TemporaryDirectory() as directory:
+            root,_,_,expected=self.fixture(directory)
+            fake=types.ModuleType('phase2_capture');fake._grading_history_assets=lambda *_:self.fail('borrowed unchecked sys.modules validator')
+            with patch.dict(sys.modules,phase2_capture=fake):self.assertEqual(r.issued_history_assets(root/'output'),expected)
+            actual=r.authenticated_bytes
+            def changed(source,head,name):
+                value=actual(source,head,name)
+                return value[:-1]+bytes([value[-1]^1]) if name=='tools/phase2_capture.py' else value
+            with patch.object(r,'authenticated_bytes',side_effect=changed),self.assertRaisesRegex(ValueError,'ISSUED_HISTORY_HELPER_IDENTITY'):
+                r.issued_history_assets(root/'output')
+    def test_source_symlink_near_paths_and_all_existing_staged_role_families(self):
+        r=self.r;controller=GenuineRawRankedRetention().controller()
+        allowed=['app.js','index.html','style.css','reliability-ui.js','recovery.html','weekly-adaptive-overlay.js',
+            *['data/'+n+'.json'for n in 'week meta future teams track_record dk_backtest forecast-scorecard offer-capture health release-identity verification-scope'.split()],
+            'data/archive/2026_w08.json','data/weeks/2026_w08.json','data/selection-grading/latest.json','data/selection-grading/hosting.json',
+            *['data/selection-grading/'+'a'*64+'/'+n+'.json'for n in ('summary','outcomes','rows','rows-0000','manifest','registry','archive')],
+            'data/weekly-adaptive-overlay.json','data/weekly-adaptive/'+'a'*64+'.json','data/weekly-selected-rankings.json',
+            'data/weekly-selected-rankings/'+'a'*64+'.json','data/weekly-selected-rankings/'+'a'*64+'.receipt.json',
+            'data/grading-history/'+'a'*64+'.json']
+        import weekly_selected_rankings
+        with patch.object(r,'weekly_rankings',weekly_selected_rankings):
+            for name in allowed:
+                with self.subTest(name=name):self.assertTrue(controller.public_path(name));self.assertTrue(r.public_path(name))
+        for name in ('data/grading-history/a.json','data/grading-history/'+'A'*64+'.json','data/grading-history/'+'a'*64+'.json.gz','data/grading-history/nested/'+'a'*64+'.json'):
+            self.assertFalse(controller.public_path(name));self.assertFalse(r.public_path(name))
+        with tempfile.TemporaryDirectory() as directory:
+            root,issued,body,_=self.fixture(directory);issued.unlink();issued.symlink_to(root/'output/data/track_record.json')
+            with self.assertRaises(ValueError):r.issued_history_assets(root/'output')
 
 
 class DiagnosticLifetimeDependencyContract(unittest.TestCase):

@@ -1262,6 +1262,7 @@ jobs:
           HASHED=re.compile(r'output/data/selection-grading/[0-9a-f]{64}/')
           REPORT=re.compile(r'data/selection-grading/(?:latest\.json|hosting\.json|[0-9a-f]{64}/(?:summary|outcomes|rows|rows-[0-9]{4}|manifest|registry|archive)\.json|[0-9a-f]{64}/snapshot-(?:app\.js|index\.html|data_(?:week|meta|verification-scope|forecast-scorecard|health|release-identity)\.json|data_selection-grading_latest\.json))\Z')
           ALIASES=set('week meta future teams track_record dk_backtest forecast-scorecard offer-capture health release-identity verification-scope'.split())
+          ISSUED_HISTORY=re.compile(r'data/grading-history/[0-9a-f]{64}\.json\Z')
           STATIC={'app.js','index.html','style.css','reliability-ui.js','recovery.html','weekly-adaptive-overlay.js'}
           WEEKLY_PUBLIC=re.compile(r'data/(?:weekly-adaptive-overlay\.json|weekly-adaptive/[0-9a-f]{64}\.json|weekly-selected-rankings\.json|weekly-selected-rankings/[0-9a-f]{64}(?:\.receipt)?\.json)\Z')
           IMMUTABLE_WEEKLY=re.compile(r'output/data/(?:weekly-adaptive/[0-9a-f]{64}\.json|weekly-selected-rankings/[0-9a-f]{64}(?:\.receipt)?\.json)\Z')
@@ -1319,7 +1320,17 @@ jobs:
                       result[p.relative_to(root).as_posix()]={'bytes':size,'sha256':file_hash(p),'mode':stat.S_IMODE(p.stat().st_mode)}
               return result
           def public_path(name):
-              return name in STATIC or name.startswith('data/') and name[5:].removesuffix('.json') in ALIASES and name.endswith('.json') or bool(re.fullmatch(r'data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json',name)) or bool(REPORT.fullmatch(name)) or bool(WEEKLY_PUBLIC.fullmatch(name))
+              return name in STATIC or name.startswith('data/') and name[5:].removesuffix('.json') in ALIASES and name.endswith('.json') or bool(re.fullmatch(r'data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json',name)) or bool(REPORT.fullmatch(name)) or bool(WEEKLY_PUBLIC.fullmatch(name)) or bool(ISSUED_HISTORY.fullmatch(name))
+          def issued_history(app,*,source_root=None):
+              # Reuse the actual closed producer validator; no generic JSON role.
+              import types
+              source_root=Path(source_root or app).resolve()
+              head=git(source_root,'rev-parse','HEAD').decode().strip()
+              raw=git(source_root,'show',head+':tools/genuine_case_recovery.py')
+              require(raw==(source_root/'tools/genuine_case_recovery.py').read_bytes(),'ISSUED_READER_SOURCE_CHANGED')
+              helper=types.ModuleType('actual_source_bound_issued_reader');helper.__file__=str(source_root/'tools/genuine_case_recovery.py')
+              exec(compile(raw,helper.__file__,'exec'),helper.__dict__)
+              return helper.issued_history_assets(Path(app)/'output',source_root=source_root)
           def safe_json(path, receipt=False, *, plain_limit=None):
               if plain_limit is None:
                   # Preserve the historical receipt/plain reader and its exact meaning.
@@ -1395,10 +1406,21 @@ jobs:
                   message=''.join(c if ord(c)>=32 else ' ' for c in message)[:240]
                   result.update(exception_class=exception_class,public_message=message);break
               return result
-          def collect_receipts(app,before,after):
-              payload=[];receipts=[];errors=[]
+          def collect_receipts(app,before,after,*,source_root=None):
+              payload=[];receipts=[];errors=[];histories=None
+              changed_history=any(name.startswith('output/data/grading-history/') and before.get(name,{}).get('sha256')!=info['sha256'] for name,info in after.items())
+              if changed_history:
+                  try:histories=issued_history(app,source_root=source_root)
+                  except (RuntimeError,ValueError,KeyError,OSError):histories={}
               for name,info in sorted(after.items()):
                   if before.get(name,{}).get('sha256')==info['sha256']:continue
+                  if name.startswith('output/data/grading-history/'):
+                      try:
+                          require(name not in before,'IMMUTABLE_HISTORY_OVERWRITE')
+                          require(ISSUED_HISTORY.fullmatch(name[7:]) and histories is not None and histories.get(name[7:])==(info['bytes'],info['sha256']),'ISSUED_HISTORY_BATCH_REJECTED')
+                          payload.append(('mutable/'+name,app/name))
+                      except (RuntimeError,ValueError,KeyError,OSError) as error:errors.append({'path':name,'sha256':info['sha256'],'failure_code':str(error) if re.fullmatch('[A-Z0-9_]+',str(error)) else type(error).__name__})
+                      continue
                   if AUDIT.fullmatch(name):
                       try:
                           require(name not in before,'IMMUTABLE_OVERWRITE');audit_document(name,app/name);payload.append(('mutable/'+name,app/name))
@@ -1422,12 +1444,21 @@ jobs:
                   except (RuntimeError,ValueError,KeyError,OSError) as error:errors.append({'path':name,'sha256':info['sha256'],'failure_code':str(error) if re.fullmatch('[A-Z0-9_]+',str(error)) else type(error).__name__})
               return payload,receipts,errors
           def immutable_violations(before,after):
-              return [{'path':name,'before_sha256':info['sha256'],'after_sha256':after.get(name,{}).get('sha256')} for name,info in before.items() if (LANE.match(name) or HASHED.match(name) or AUDIT.fullmatch(name) or IMMUTABLE_WEEKLY.fullmatch(name)) and after.get(name,{}).get('sha256')!=info['sha256']]
-          def new_payloads(app,before,after,pages):
+              return [{'path':name,'before_sha256':info['sha256'],'after_sha256':after.get(name,{}).get('sha256')} for name,info in before.items() if (LANE.match(name) or HASHED.match(name) or AUDIT.fullmatch(name) or IMMUTABLE_WEEKLY.fullmatch(name) or name.startswith('output/') and ISSUED_HISTORY.fullmatch(name[7:])) and after.get(name,{}).get('sha256')!=info['sha256']]
+          def new_payloads(app,before,after,pages,*,source_root=None):
               payload=[];new_receipts=[];representations={}
+              histories=issued_history(app,source_root=source_root) if any(n.startswith('output/data/grading-history/') and before.get(n,{}).get('sha256')!=v['sha256'] for n,v in after.items()) else {}
               for name,info in sorted(after.items()):
                   if before.get(name,{}).get('sha256')==info['sha256']:continue
                   path=app/name
+                  if name.startswith('output/data/grading-history/'):
+                      require(name not in before,'IMMUTABLE_HISTORY_OVERWRITE')
+                      require(ISSUED_HISTORY.fullmatch(name[7:]) and histories.get(name[7:])==(info['bytes'],info['sha256']),'ISSUED_HISTORY_BATCH_REJECTED')
+                      if name[7:] in pages and pages[name[7:]]['sha256']==info['sha256']:
+                          representations[name]={'storage':'public-pages.tar::'+name[7:],**info}
+                      else:
+                          payload.append(('mutable/'+name,path));representations[name]={'storage':'mutable/'+name,**info}
+                      continue
                   if AUDIT.fullmatch(name):
                       require(name not in before,'IMMUTABLE_OVERWRITE');audit_document(name,path)
                       payload.append(('mutable/'+name,path));representations[name]={'storage':'mutable/'+name,**info};continue
@@ -1444,16 +1475,16 @@ jobs:
                   require(cache or source_alias or pub,'UNCLASSIFIED_OUTPUT_DELTA')
                   safe_json(path);payload.append(('mutable/'+name,path));representations[name]={'storage':'mutable/'+name,**info}
               return payload,new_receipts,representations
-          def retention_delta(app,before,after,pages,complete_pages_tar):
-              primary,receipts,receipt_errors=collect_receipts(app,before,after)
+          def retention_delta(app,before,after,pages,complete_pages_tar,*,source_root=None):
+              primary,receipts,receipt_errors=collect_receipts(app,before,after,source_root=source_root)
               try:
                   require(not receipt_errors,'RECEIPT_VALIDATION_ERRORS')
                   require(complete_pages_tar is not None and complete_pages_tar.is_file(),'NO_COMPLETE_PAGES_TAR')
-                  payload,receipts,representations=new_payloads(app,before,after,pages)
+                  payload,receipts,representations=new_payloads(app,before,after,pages,source_root=source_root)
                   return payload+[('public-pages.tar',complete_pages_tar)],receipts,representations,None,receipt_errors
               except (RuntimeError,ValueError,KeyError,OSError) as error:
                   code=str(error) if re.fullmatch('[A-Z0-9_]+',str(error)) else type(error).__name__
-                  audit_representations={name[len('mutable/'):]:{'storage':name,**after[name[len('mutable/'):]]} for name,_ in primary if name.startswith(('mutable/data/weekly-adaptive-audit/','mutable/output/data/weekly-selected-rankings/','mutable/output/data/weekly-selected-rankings.json'))}
+                  audit_representations={name[len('mutable/'):]:{'storage':name,**after[name[len('mutable/'):]]} for name,_ in primary if name.startswith(('mutable/data/weekly-adaptive-audit/','mutable/output/data/weekly-selected-rankings/','mutable/output/data/weekly-selected-rankings.json','mutable/output/data/grading-history/'))}
                   return primary,receipts,audit_representations,code,receipt_errors
           def write_tar(target,payload,metadata):
               require(set(metadata)==META,'TYPED_METADATA_ALLOWLIST')
@@ -1535,7 +1566,7 @@ jobs:
                       meta,name=raw.split(b'\t',1);mode,kind,blob,size=meta.decode().split();name=name.decode();require(kind=='blob' and mode=='100644' and not PurePosixPath(name).is_absolute() and '..' not in PurePosixPath(name).parts,'MAIN_DATA_PATH')
                       p=prod/name;require(p.is_file() and not p.is_symlink() and p.stat().st_size==int(size) and int(size)<=128*MIB,'MAIN_DATA_TYPE');body=p.read_bytes();require(hashlib.sha1(b'blob '+str(len(body)).encode()+b'\0'+body).hexdigest()==blob,'MAIN_DATA_BLOB')
                       target=app/name
-                      if (LANE.match(name) or HASHED.match(name) or AUDIT.fullmatch(name) or IMMUTABLE_WEEKLY.fullmatch(name)) and target.exists():require(file_hash(target)==sha(body),'MAIN_IMMUTABLE_COLLISION')
+                      if (LANE.match(name) or HASHED.match(name) or AUDIT.fullmatch(name) or IMMUTABLE_WEEKLY.fullmatch(name) or name.startswith('output/') and ISSUED_HISTORY.fullmatch(name[7:])) and target.exists():require(file_hash(target)==sha(body),'MAIN_IMMUTABLE_COLLISION')
                       target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(body);main_files[name]={'blob':blob,'bytes':len(body),'sha256':sha(body)}
                   result['production_main']=main;result['production_tree']=git(prod,'rev-parse','HEAD^{tree}').decode().strip()
                   for name,expected in FIXED.items():
@@ -1565,6 +1596,7 @@ jobs:
                   require(staged_ci['executed_commit']==result['local_data_commit']['commit'] and staged_ci['executed_tree']==result['local_data_commit']['tree'],'LOCAL_DATA_COMMIT_SOURCE_CI_BINDING')
                   sys.path.insert(0,str(app/'tools'));import weekly_adaptive_overlay
                   weekly_pages=weekly_adaptive_overlay.validate_public_root(page_root)
+                  histories=issued_history(app)
                   run('pages-tar',['tar','--dereference','--hard-dereference','--directory',str(page_root),'-cf',str(out/'public-pages.tar'),'--exclude=.git','--exclude=.github','.'],limit=1200)
                   with tarfile.open(out/'public-pages.tar') as tar:
                       for member in tar:
@@ -1572,6 +1604,7 @@ jobs:
                           if member.isdir():continue
                           require(member.isfile() and public_path(name) and (not WEEKLY_PUBLIC.fullmatch(name) or name in weekly_pages) and name not in pages and '..' not in PurePosixPath(name).parts and not PurePosixPath(name).is_absolute(),'PAGES_TAR_MEMBER')
                           with tar.extractfile(member) as f:pages[name]={'bytes':member.size,'sha256':sha(f.read())}
+                          if ISSUED_HISTORY.fullmatch(name):require(histories.get(name)==(member.size,pages[name]['sha256']),'ISSUED_HISTORY_PAGES_CHANGED')
                   pages_tar_valid=True
                   final_board=parse((app/'output/data/week.json').read_bytes());require(all(contract(final_board,gid)==h for gid,h in frozen.items()),'FROZEN_CONTRACT_CHANGED')
                   require(fresh_main()==main,'MAIN_MOVED_DURING_CASE');result['generation']=parse((app/'output/data/release-identity.json').read_bytes());result['verification_scope']=parse((app/'output/data/verification-scope.json').read_bytes())
@@ -1628,8 +1661,8 @@ jobs:
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
           task_code="$GITHUB_WORKSPACE/source"
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '536ec752bd2fa0439fefdad7f2ca20fb67221eceb22db905f1984bf65c51dcbd'
-          test "$(sha256sum "$task_code/tools/genuine_case_recovery.py" | cut -d' ' -f1)" = '6a8cf8c84822a5e07f6559217a05a92725fc21fcd343224e8ce9f82956baf38f'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '0cbe31770e85a3fbeb78a4ecb6215bbb5c790d6567d9a2729ba8b06d8a498468'
+          test "$(sha256sum "$task_code/tools/genuine_case_recovery.py" | cut -d' ' -f1)" = '74b74c5d4ac03368223ef91874c44d4e49c577fb4871aac70e4b6a708d4e737e'
           task_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-baseline-pyc.XXXXXX")";chmod 0700 "$task_prefix"
           PYTHONPYCACHEPREFIX="$task_prefix" python -P "$task_code/tools/genuine_case_recovery.py" baseline > "$RUNNER_TEMP/nfl-genuine-baseline-$GITHUB_RUN_ID.json"
       - name: Require cached-kernel unit capability without providers
@@ -1642,7 +1675,7 @@ jobs:
           task_sample=1
           task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '536ec752bd2fa0439fefdad7f2ca20fb67221eceb22db905f1984bf65c51dcbd'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '0cbe31770e85a3fbeb78a4ecb6215bbb5c790d6567d9a2729ba8b06d8a498468'
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
           task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
           task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
@@ -1785,7 +1818,7 @@ jobs:
           task_sample=2
           task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '536ec752bd2fa0439fefdad7f2ca20fb67221eceb22db905f1984bf65c51dcbd'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '0cbe31770e85a3fbeb78a4ecb6215bbb5c790d6567d9a2729ba8b06d8a498468'
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
           task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
           task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
@@ -2488,7 +2521,7 @@ jobs:
               code_before=sci.source(source)
               need(code_before['source_manifest_sha256']==ci['source_manifest_sha256'],'INSTALLED_SOURCE_CLOSURE')
               need(sha((source/'tools/release_browser.cjs').read_bytes())==BROWSER,'REVIEWED_BROWSER_BYTES')
-              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='6a8cf8c84822a5e07f6559217a05a92725fc21fcd343224e8ce9f82956baf38f','REVIEWED_RECOVERY_BYTES')
+              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='74b74c5d4ac03368223ef91874c44d4e49c577fb4871aac70e4b6a708d4e737e','REVIEWED_RECOVERY_BYTES')
               capture_source=capture_source_for_approval(approval,current);capture_root=source;capture_ci=ci;capture_code=code_before
               compatibility={'difference_count':0,'comparison_sha256':sha(canonical({}))}
               if capture_source!=current:
@@ -2527,7 +2560,7 @@ jobs:
               before=identity();archive=work/'artifact.zip'
               transport._download(dict(artifact_id=approval['artifact_id'],archive_bytes=approval['artifact_bytes'],archive_sha256=approval['artifact_sha256']),archive,deadline=deadline)
               need(identity()==before,'ARTIFACT_IDENTITY_CHANGED')
-              case_raw=zip_single(archive,approval);meta=recovery.controller_archive(case_raw,capture_source,'COMPLETE_GENUINE_NONDEPLOY_CASE');entries=recovery.tar_entries(case_raw)
+              case_raw=zip_single(archive,approval);meta=recovery.controller_archive(case_raw,capture_source,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=recovery.checked_driver(capture_root,capture_source));entries=recovery.tar_entries(case_raw)
               case=meta['RELEASE_CASE_MANIFEST.json'];need(case.get('run_id')==approval['case_run_id'] and case.get('attempt')==1 and case.get('provider_case_attempts')==1 and case.get('deployed') is False and case.get('main_written') is False and case.get('operating_qualification')=='NOT_ESTABLISHED' and case.get('resource_verdict')=='UNKNOWN','GENUINE_CASE_MANIFEST')
               need(case['verification_scope']['complete_week_qualified'] is False and case['verification_scope']['full_board_verified'] is False,'CASE_SCOPE')
               for name in ('source-ci-before','source-ci-before-data-commit','source-ci-after-stage'):
@@ -2541,7 +2574,7 @@ jobs:
               if capture_source==CAPTURE_F130:
                   need(len(driver)==30854 and sha(driver)=='2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf','REVIEWED_ORIGINAL_CONTROLLER')
               else:
-                  need((len(driver),sha(driver)) in ((35468,'2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'),(36877,'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5'),(37167,'a045d47016a1e4646d6c430c4d73fb672da4f10592498ae9928a78f92a603693'),(37868,'0d80a96da370e9d59b1772c7d0a7b07700cd50395926a7d6477ae1da88e3d46d'),(37868,'8fe9ca56e45cd64598f78ad859247563de21526c28858ce1ebee81b3758cd7a5')),'REVIEWED_CURRENT_CONTROLLER')
+                  need((len(driver),sha(driver)) in ((35468,'2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'),(36877,'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5'),(37167,'a045d47016a1e4646d6c430c4d73fb672da4f10592498ae9928a78f92a603693'),(37868,'0d80a96da370e9d59b1772c7d0a7b07700cd50395926a7d6477ae1da88e3d46d'),(37868,'8fe9ca56e45cd64598f78ad859247563de21526c28858ce1ebee81b3758cd7a5'),(40898,'d32aad713defcd62366b33cc7fbf6d51648e27ca4b2fde36d57091f498f52ca8')),'REVIEWED_CURRENT_CONTROLLER')
               module=types.ModuleType('verified_original_controller')
               exec(compile(driver,'verified-controller','exec'),module.__dict__)
               original=meta['INPUT_DATA_MANIFEST.json'];after=meta['OUTPUT_DATA_MANIFEST.json']['after'];main=original['production_main']
@@ -2857,7 +2890,7 @@ jobs:
               code=sci.source(source)
               need(ci.get('schema_version')=='source-ci-verification-v1' and ci['executed_commit']==current and ci['source_manifest_sha256']==code['source_manifest_sha256'],'FRESH_INSTALLED_SOURCE_CI')
               need(sha((source/'tools/release_browser.cjs').read_bytes())==BROWSER,'REVIEWED_BROWSER_BYTES')
-              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='6a8cf8c84822a5e07f6559217a05a92725fc21fcd343224e8ce9f82956baf38f','REVIEWED_RECOVERY_BYTES')
+              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='74b74c5d4ac03368223ef91874c44d4e49c577fb4871aac70e4b6a708d4e737e','REVIEWED_RECOVERY_BYTES')
               api=sci.GitHub()
               def identity():
                   repo=api.get('');need(repo.get('id')==1411185749 and repo.get('full_name')==REPO and repo.get('private') is False,'PUBLIC_REPOSITORY')

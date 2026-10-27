@@ -2130,3 +2130,35 @@ generated-data/browser acceptance and the existing release/recovery checks remai
 required. The 960-second planning target, 1,200-second updater timeout and historical
 960.625703-second planning failure remain unchanged. No operating or public-release
 PASS is inferred from this source repair.
+
+### 2026-10-27: issued grading-history transport closure
+
+A read-only release-path check found that the existing grader and Pages stager
+preserve content-addressed `data/grading-history/<sha256>.json` records, while
+the diagnostic controller and recovery readers rejected that supported path.
+The actual current-Main issued record (34,698 bytes) passed the producer/stager
+validator and reproduced the transport-role rejection. No provider retry was
+issued against the known-incomplete source. The earlier namespace repair and
+its CI results remain separate evidence.
+
+The transport repair accepts only this exact plain-JSON path and the existing
+12 MiB bound. It batches each output or archive boundary through the actual
+fixed producer validator in a fresh bounded process, checking the actual source
+closure before and after. Hash names, privacy, known legacy/four modern grading
+versions and complete strict field/type checks remain required. It preserves
+all six earlier physical controllers; only the new exact controller can claim
+the added transport role. No public report format, grader, model, policy,
+configuration, experiment, cadence, resource limit or privilege changes.
+
+Root and a separate reviewer exercise real producer/stager/controller/recovery
+round trips, actual Main data, malformed/private/hash/gzip/oversize/mutation
+controls and the existing role families. Two review findings were fixed before
+publication: failed-run history representation metadata and immutable-history
+collision protection during Main hydration. The final independent run passed
+156 focused tests in 26.295452 seconds. Earlier failed controls remain retained.
+
+This is a diagnostic compatibility correction, not an operating PASS. Fresh
+combined-source/current-base CI and actual generated-package, time, aggregate
+updater-unit memory, public-content and recovery acceptance remain required
+before the authorized integration and deployment. Historical runtime failures
+and the 960-second target/1,200-second updater timeout remain unchanged.

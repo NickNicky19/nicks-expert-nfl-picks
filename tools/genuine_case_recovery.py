@@ -1,5 +1,5 @@
 """Closed nonprivileged preservation of one genuine case; never qualification."""
-import argparse, gzip, hashlib, io, itertools, json, math, os, re, stat, subprocess, sys, tarfile, types, zlib
+import argparse, gzip, hashlib, io, itertools, json, math, os, re, stat, subprocess, sys, tarfile, tempfile, types, zlib
 from datetime import datetime
 from pathlib import Path
 source_ci=None
@@ -16,8 +16,9 @@ WEEKLY_DRIVER='2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'
 PRESENCE_DRIVER='a045d47016a1e4646d6c430c4d73fb672da4f10592498ae9928a78f92a603693'
 CURRENT_PRESENCE_DRIVER='0d80a96da370e9d59b1772c7d0a7b07700cd50395926a7d6477ae1da88e3d46d'
 STAGED_POLICY_DRIVER='8fe9ca56e45cd64598f78ad859247563de21526c28858ce1ebee81b3758cd7a5'
+HISTORY_DRIVER='d32aad713defcd62366b33cc7fbf6d51648e27ca4b2fde36d57091f498f52ca8'
 PRESENCE_CONTRACT='genuine-current-production-controller-v4'
-DRIVER_BYTES={LEGACY_DRIVER:30854,WEEKLY_DRIVER:35468,DRIVER:36877,PRESENCE_DRIVER:37167,CURRENT_PRESENCE_DRIVER:37868,STAGED_POLICY_DRIVER:37868}
+DRIVER_BYTES={LEGACY_DRIVER:30854,WEEKLY_DRIVER:35468,DRIVER:36877,PRESENCE_DRIVER:37167,CURRENT_PRESENCE_DRIVER:37868,STAGED_POLICY_DRIVER:37868,HISTORY_DRIVER:40898}
 WORKFLOW='.github/workflows/prepare-diagnostic-seed.yml'
 MIB=1024**2
 CAP=127*MIB
@@ -32,6 +33,9 @@ CACHE=re.compile(r'data/cache/(?:(?:espn_athletes|injury_timeline|stats_[0-9]{4}
 BOARDS={'output/data/'+x+'.json' for x in 'week meta future teams track_record dk_backtest forecast-scorecard offer-capture health release-identity verification-scope game-status matchup-proof'.split()}
 META=set('RELEASE_CASE_MANIFEST.json INPUT_DATA_MANIFEST.json OUTPUT_DATA_MANIFEST.json NEW_RECEIPTS_MANIFEST.json PAGES_MEMBERS_MANIFEST.json SOURCE_CI_BINDINGS.json'.split())
 STATIC={'app.js','index.html','style.css','reliability-ui.js','recovery.html'}
+ISSUED_HISTORY=re.compile(r'data/grading-history/[0-9a-f]{64}\.json\Z')
+ISSUED_HISTORY_HELPER='12faa83aa0861d6d0891e31df99beefaa6f1a26302fdc4cbb0a8033f14f55dfc'
+ISSUED_HISTORY_LIMIT=12*MIB
 WEEKLY_JS='weekly-adaptive-overlay.js'
 WEEKLY_POINTER='data/weekly-adaptive-overlay.json'
 WEEKLY_BODY=re.compile(r'data/weekly-adaptive/[0-9a-f]{64}\.json\Z')
@@ -40,7 +44,7 @@ WEEKLY_CONTRACT='genuine-current-production-controller-v2'
 RANKING_POINTER='data/weekly-selected-rankings.json'
 RANKING_CONTRACT='genuine-current-production-controller-v3'
 RANKING_CONTRACTS=frozenset((RANKING_CONTRACT,PRESENCE_CONTRACT))
-DRIVER_CONTRACTS={LEGACY_DRIVER:None,WEEKLY_DRIVER:WEEKLY_CONTRACT,DRIVER:RANKING_CONTRACT,PRESENCE_DRIVER:PRESENCE_CONTRACT,CURRENT_PRESENCE_DRIVER:PRESENCE_CONTRACT,STAGED_POLICY_DRIVER:PRESENCE_CONTRACT}
+DRIVER_CONTRACTS={LEGACY_DRIVER:None,WEEKLY_DRIVER:WEEKLY_CONTRACT,DRIVER:RANKING_CONTRACT,PRESENCE_DRIVER:PRESENCE_CONTRACT,CURRENT_PRESENCE_DRIVER:PRESENCE_CONTRACT,STAGED_POLICY_DRIVER:PRESENCE_CONTRACT,HISTORY_DRIVER:PRESENCE_CONTRACT}
 REVIEWED_MAIN={WEEKLY_CONTRACT:('315be5e86a1a3a93022b68c453739076487e2077','dfdc11ac312a6a54c79e7379352106c315e13f5f'),
     RANKING_CONTRACT:('89512ed952308dacc1f6a930915ddbcdccd460d9','c88d5b3740c820b30387ec2eaca2b0bceafd9a51'),
     PRESENCE_CONTRACT:('e336bf7a68c32267c3c3eec48892aeadcd03a90e','26c1ca52eb1d9b3610a552ecf63ccd2fab5ad8f8')}
@@ -65,9 +69,11 @@ def ranking_role(name):
     logical=name[7:] if name.startswith('output/') else name
     return weekly_rankings.public_role(logical) if weekly_rankings is not None else None
 def recording_limit(name,kind):
+    if kind=='issued_history':return ISSUED_HISTORY_LIMIT
     ranked=ranking_role(name)
     return ranked[1] if ranked is not None else 4*MIB if kind and kind.startswith('weekly_') else ENCODED
 def role(name):
+    if name.startswith('output/') and ISSUED_HISTORY.fullmatch(name[7:]):return 'issued_history'
     ranked=ranking_role(name)
     if ranked is not None and name.startswith('output/') and safe_name(name):return 'weekly_'+ranked[0]
     if safe_name(name) and WEEKLY_AUDIT.fullmatch(name):return 'weekly_audit'
@@ -227,7 +233,7 @@ def fixed_git(app,*args):
     return result.stdout
 def authenticated_bytes(app,dispatch,relative):
     need(relative in ('tools/source_ci.py','tools/genuine_case_recovery.py','tools/weekly_adaptive_overlay.py',
-        'tools/weekly_selected_rankings.py','output/weekly-adaptive-overlay.js',WORKFLOW),'FIXED_DEPENDENCY')
+        'tools/weekly_selected_rankings.py','tools/phase2_capture.py','output/weekly-adaptive-overlay.js',WORKFLOW),'FIXED_DEPENDENCY')
     row=fixed_git(app,'ls-tree','-z',dispatch,'--',relative)
     need(row.endswith(b'\0') and row.count(b'\0')==1,'DEPENDENCY_GIT_ENTRY')
     header,name=row[:-1].split(b'\t');mode,kind,oid=header.decode().split()
@@ -343,7 +349,7 @@ def unchanged(name,info,before):
     versions=before.get(sha(name.encode()),{}).get('versions',{})
     return any(info['sha256']==value['sha256'] and info['bytes']==value['bytes'] for value in versions.values())
 def recover(roots,before):
-    records=[];queue=[];payload=[];kept=0;by_hash={}
+    records=[];queue=[];payload=[];kept=0;by_hash={};histories={}
     for origin,root in roots:
         try:
             for name,path,issue in candidates(root):
@@ -354,6 +360,11 @@ def recover(roots,before):
                     info,_=encoded(path,limit=recording_limit(name,kind));item.update(info)
                     if unchanged(name,info,before):continue
                     need(kind is not None,'ATOMIC_JSON_TARGET_UNAVAILABLE' if atomic_json_temp(name) else 'UNCLASSIFIED_ROLE')
+                    if kind=='issued_history':
+                        if origin not in histories:
+                            try:histories[origin]=issued_history_assets(Path(root)/'output')
+                            except (OSError,ValueError,TypeError,KeyError):histories[origin]=None
+                        need(histories[origin] is not None and histories[origin].get(name[7:])==(info['bytes'],info['sha256']),'ISSUED_HISTORY_BATCH_REJECTED')
                     queue.append((kind,origin,name,path,info,item))
                 except (OSError,ValueError,TypeError,KeyError,RecursionError,EOFError) as error:
                     item.update(state='UNAVAILABLE_INVALID_INCOMPLETE_OR_UNCLASSIFIED',reason=str(error) if isinstance(error,Rejected) else type(error).__name__)
@@ -383,7 +394,49 @@ def recover(roots,before):
             entry=tarfile.TarInfo(name);entry.size=len(raw);entry.mode=0o600;entry.mtime=0;tar.addfile(entry,io.BytesIO(raw))
     need(stream.tell()<=CAP-META_CAP-FINAL_CAP,'RECOVERY_TAR_BOUND')
     return stream.getvalue(),records
+def issued_history_assets(output,*,source_root=None):
+    """One fresh batch through the actual closed producer validator; never data proof."""
+    source_root=Path(source_root or Path(__file__).resolve().parents[1]).resolve()
+    head=fixed_git(source_root,'rev-parse','HEAD').decode().strip()
+    checked=checked_source_ci(source_root,head);before=checked.source(source_root)
+    need(sha(authenticated_bytes(source_root,head,'tools/phase2_capture.py'))==ISSUED_HISTORY_HELPER,'ISSUED_HISTORY_HELPER_IDENTITY')
+    code="""import hashlib,json,sys,types
+from pathlib import Path
+root,output,expected=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
+sys.path[:0]=[str(root/'tools'),str(root/'pull')]
+raw=(root/'tools/phase2_capture.py').read_bytes()
+if hashlib.sha256(raw).hexdigest()!=expected:raise ValueError('ISSUED_HISTORY_HELPER_IDENTITY')
+module=types.ModuleType('closed_issued_history_validator');module.__file__=str(root/'tools/phase2_capture.py')
+exec(compile(raw,module.__file__,'exec'),module.__dict__)
+print(json.dumps(module._grading_history_assets(output),sort_keys=True,separators=(',',':')))
+"""
+    with tempfile.TemporaryDirectory(prefix='nfl-issued-history-reader-') as temporary:
+        prefix=Path(temporary)/'pyc';prefix.mkdir(mode=0o700)
+        env={k:v for k,v in os.environ.items() if k not in ('GH_TOKEN','GITHUB_TOKEN','ACTIONS_RUNTIME_TOKEN','ACTIONS_ID_TOKEN_REQUEST_TOKEN','PYTHONPATH','PYTHONHOME','PYTHONSTARTUP') and not k.startswith(('ACTIONS_CACHE_','ACTIONS_RESULTS_'))}
+        env.update(PYTHONDONTWRITEBYTECODE='1',PYTHONPYCACHEPREFIX=str(prefix))
+        raw,_=checked.command([sys.executable,'-P','-c',code,str(source_root),str(Path(output).resolve()),ISSUED_HISTORY_HELPER],limit=META_CAP,env=env)
+    need(checked.source(source_root)==before,'ISSUED_HISTORY_SOURCE_CHANGED')
+    values=parsed(raw)
+    need(type(values) is dict and len(values)<=COUNT,'ISSUED_HISTORY_DESCRIPTOR_BOUND')
+    for name,value in values.items():
+        need(ISSUED_HISTORY.fullmatch(name) and type(value) is list and len(value)==2 and type(value[0]) is int and 0<=value[0]<=ISSUED_HISTORY_LIMIT and value[1]==Path(name).stem,'ISSUED_HISTORY_DESCRIPTOR')
+    return {name:tuple(value) for name,value in values.items()}
+
+def issued_history_members(members):
+    """Validate one bounded transport's complete issued-history member set."""
+    wanted={name:raw for name,raw in members.items() if ISSUED_HISTORY.fullmatch(name)}
+    if not wanted:return {}
+    with tempfile.TemporaryDirectory(prefix='nfl-issued-history-transport-') as temporary:
+        output=Path(temporary)
+        for name,raw in wanted.items():
+            need(len(raw)<=ISSUED_HISTORY_LIMIT,'ISSUED_HISTORY_ENCODED_BOUND')
+            target=output/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
+        actual=issued_history_assets(output)
+        need(set(actual)==set(wanted),'ISSUED_HISTORY_MEMBERSHIP')
+        return actual
+
 def public_path(name):
+    if ISSUED_HISTORY.fullmatch(name):return True
     return ranking_role(name) is not None or name in STATIC or name in (WEEKLY_JS,WEEKLY_POINTER) or bool(WEEKLY_BODY.fullmatch(name)) or 'output/'+name in BOARDS-{'output/data/game-status.json','output/data/matchup-proof.json'} or bool(re.fullmatch(r'data/(?:archive|weeks)/[0-9]{4}_w[0-9]{2}\.json',name)) or bool(REPORT.fullmatch(name))
 def tar_entries(raw,public=False,expected=None):
     need(len(raw)<=CAP and len(raw)%512==0,'TAR_BOUND')
@@ -427,6 +480,17 @@ def controller_archive(raw,dispatch,status,*,driver=None):
     if modern:
         need((case.get('reviewed_main_base'),case.get('reviewed_main_source_tree'))==REVIEWED_MAIN[contract],'CONTROLLER_REVIEWED_MAIN_SOURCE')
     outputs=meta['OUTPUT_DATA_MANIFEST.json'];after=outputs['after'];representations=outputs['representations']
+    mutable_history={name[len('mutable/output/'):]:body for name,body in entries.items() if name.startswith('mutable/output/') and ISSUED_HISTORY.fullmatch(name[len('mutable/output/'):])}
+    pages=meta['PAGES_MEMBERS_MANIFEST.json']
+    need(len(pages)<=COUNT and all(public_path(name) for name in pages),'CONTROLLER_PAGES_ROLES')
+    public_bodies=tar_entries(entries['public-pages.tar'],True,pages) if 'public-pages.tar' in entries else None
+    history=dict(mutable_history)
+    for name,body in (public_bodies or {}).items():
+        if ISSUED_HISTORY.fullmatch(name):
+            need(name not in history or history[name]==body,'ISSUED_HISTORY_DUPLICATE_BYTES')
+            history[name]=body
+    if history:need(driver==HISTORY_DRIVER and contract==PRESENCE_CONTRACT,'ISSUED_HISTORY_CONTROLLER_REQUIRED')
+    issued_history_members(history)
     receipts={}
     for item in meta['NEW_RECEIPTS_MANIFEST.json']:
         name=item['path'];need(name not in receipts and role(name)=='receipt','CONTROLLER_RECEIPT_INDEX');receipts[name]=item
@@ -450,10 +514,8 @@ def controller_archive(raw,dispatch,status,*,driver=None):
             need(same(body,after[logical]) and same(body,representations[logical]) and representations[logical]['storage']==name,'CONTROLLER_MUTABLE_BYTES')
         else:raise Rejected('CONTROLLER_UNCLASSIFIED_MEMBER')
     need(actual==set(receipts),'CONTROLLER_RECEIPT_MEMBERSHIP')
-    pages=meta['PAGES_MEMBERS_MANIFEST.json']
-    need(len(pages)<=COUNT and all(public_path(name) for name in pages),'CONTROLLER_PAGES_ROLES')
     if 'public-pages.tar' in entries:
-        bodies=tar_entries(entries['public-pages.tar'],True,pages)
+        bodies=public_bodies
         need(set(bodies)==set(pages) and all(same(body,pages[name]) for name,body in bodies.items()),'CONTROLLER_PAGES_MEMBERSHIP')
         if any(ranking_role(n) is not None for n in bodies):need(contract in RANKING_CONTRACTS,'RANKING_CONTROLLER_REQUIRED')
         if any(n==WEEKLY_JS or n==WEEKLY_POINTER or WEEKLY_BODY.fullmatch(n) or ranking_role(n) is not None for n in bodies):
