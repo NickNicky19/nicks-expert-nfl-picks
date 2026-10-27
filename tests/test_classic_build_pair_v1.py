@@ -16,6 +16,30 @@ import classic_build_pair_v1 as pair
 import classic_model_v1 as model
 
 class ActualBuildPairTests(unittest.TestCase):
+    def assert_workflow_feed_policy(self,workflow,*,candidate_policy=None):
+        import shlex
+        commands=[shlex.split(line.strip()[5:])for line in workflow.splitlines()
+                  if line.strip().startswith('run: python tools/weekly_adaptive_overlay.py ')]
+        self.assertEqual(len(commands),1)
+        command=commands[0]
+        path=command[command.index('--feed-policy')+1]
+        schemas={'config/weekly-derived-selected-policy-v3.json':'weekly-derived-selected-policy-v3',
+                 'config/weekly-derived-selected-policy-v4.json':'weekly-derived-selected-policy-v4'}
+        self.assertIn(path,schemas)
+        body=(ROOT/path).read_bytes()if candidate_policy is None else candidate_policy
+        self.assertEqual(command[command.index('--feed-policy-sha256')+1],hashlib.sha256(body).hexdigest())
+        value=json.loads(body)
+        self.assertEqual(value['schema_version'],schemas[path])
+        if path.endswith('-v3.json'):
+            import weekly_public_feed as feed
+            feed.policy_check_v3(value,root=ROOT)
+            self.assertEqual(value['historical_policy_sha256'],feed.HISTORICAL_POLICY_SHA256)
+        else:
+            import weekly_public_feed_v4 as feed
+            feed.policy_check(value,root=ROOT)
+            self.assertIn('tools/weekly_public_feed_v4.py',value['website_code_sha256'])
+        self.assertEqual(value['current_execution'],model.contract(ROOT))
+
     def test_workflow_installs_pair_before_current_policy_and_publishes_both_lanes(self):
         import re
         workflow=(ROOT/'.github/workflows/hourly.yml').read_text()
@@ -28,11 +52,41 @@ class ActualBuildPairTests(unittest.TestCase):
         self.assertEqual(commands[capture].count('--model '),1)
         self.assertIn('--model '+model.MODEL,commands[capture])
         self.assertIn('--mode live',commands[stage]);self.assertNotIn('--refresh',commands[stage])
-        policy=(ROOT/'config/weekly-derived-selected-policy-v3.json').read_bytes()
-        self.assertIn('--feed-policy config/weekly-derived-selected-policy-v3.json --feed-policy-sha256 '+hashlib.sha256(policy).hexdigest(),commands[feed])
+        self.assert_workflow_feed_policy(workflow)
         self.assertIn('data/current-classic data/classic-r0-shadow',workflow)
         for operation in ['begin','sealed','check --stage upload','check --stage deploy','check --stage retry','check --stage postdeploy']:
             self.assertIn('tools/publication_guard_v1.py '+operation,workflow)
+
+    def test_explicit_v4_workflow_branch_requires_new_schema_scope_and_physical_policy(self):
+        from test_weekly_public_feed_v4 import fixture
+        p,*_=fixture();body=json.dumps(p,sort_keys=True,separators=(',',':')).encode()
+        import re
+        actual=(ROOT/'.github/workflows/hourly.yml').read_text()
+        candidate,count=re.subn(r'--feed-policy \S+ --feed-policy-sha256 [a-f0-9]{64}',
+            '--feed-policy config/weekly-derived-selected-policy-v4.json --feed-policy-sha256 '+hashlib.sha256(body).hexdigest(),actual)
+        self.assertEqual(count,1)
+        self.assert_workflow_feed_policy(candidate,candidate_policy=body)
+        with self.assertRaises(AssertionError):
+            self.assert_workflow_feed_policy(candidate.replace(hashlib.sha256(body).hexdigest(),'0'*64),candidate_policy=body)
+        with self.assertRaises(AssertionError):
+            self.assert_workflow_feed_policy(candidate.replace('-policy-v4.json','-policy-v3.json'),candidate_policy=body)
+        p['website_code_sha256'].pop('tools/weekly_public_feed_v4.py')
+        invalid=json.dumps(p,sort_keys=True,separators=(',',':')).encode()
+        candidate=candidate.replace(hashlib.sha256(body).hexdigest(),hashlib.sha256(invalid).hexdigest())
+        with self.assertRaises(ValueError):self.assert_workflow_feed_policy(candidate,candidate_policy=invalid)
+
+    def test_v4_unregistered_template_cannot_activate_actual_workflow_branch(self):
+        import re
+        import weekly_public_feed_v4 as feed
+        template=feed.template(ROOT)
+        self.assertEqual(template['state'],'PREPARED_UNREGISTERED')
+        body=json.dumps(template,sort_keys=True,separators=(',',':')).encode()
+        workflow,count=re.subn(r'--feed-policy \S+ --feed-policy-sha256 [a-f0-9]{64}',
+            '--feed-policy config/weekly-derived-selected-policy-v4.json --feed-policy-sha256 '+hashlib.sha256(body).hexdigest(),
+            (ROOT/'.github/workflows/hourly.yml').read_text())
+        self.assertEqual(count,1)
+        with self.assertRaisesRegex(ValueError,'V4_ROOT_REGISTRATION_REQUIRED'):
+            self.assert_workflow_feed_policy(workflow,candidate_policy=body)
 
     def test_original_deployed_default_and_no_refresh_override(self):
         import ast
