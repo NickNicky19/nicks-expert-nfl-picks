@@ -2062,6 +2062,7 @@ historical dispatch, current-source binding, same-size mutation, typed retention
 and cache-lane controls. Only the two explicitly supported nested cache lanes
 are added; old archives cannot borrow the new contract. These are local code
 tests, not kernel resource or updater timing evidence. The existing bounded
-artifact remains at most 127 MiB with one-day retention. Final source CI,+actual capability/execution, verified retrieval, full measured accounting and
+artifact remains at most 127 MiB with one-day retention. Final source CI,
+actual capability/execution, verified retrieval, full measured accounting and
 production artifact/public verification are still required. Historical runtime
 failures, the 960-second target and the 1,200-second updater limit remain intact.
