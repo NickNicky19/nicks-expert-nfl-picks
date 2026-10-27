@@ -16,7 +16,7 @@ const roots = { after: path.resolve(arg('--root') || path.join(repo, 'output')) 
 if (arg('--baseline-root')) roots.before = path.resolve(arg('--baseline-root'));
 const contracts = Object.fromEntries(Object.entries(roots).map(([lane, root]) => {
   const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-  return [lane, { authoritativeFinals: app.includes('function finalIdentity('), leanFirst: app.includes('function displayedProps('), selectedForecasts: app.includes('function selectedPropForecast(') }];
+  return [lane, { authoritativeFinals: app.includes('function finalIdentity('), leanFirst: app.includes('function displayedProps('), selectedForecasts: app.includes('function selectedPropForecast('), archiveHeading: app.includes('<h2>Reference-policy archive') ? 'Reference-policy archive' : 'Track record' }];
 }));
 const evidence = arg('--evidence-dir') && path.resolve(arg('--evidence-dir'));
 if (evidence) fs.mkdirSync(path.join(evidence, 'screenshots'), { recursive: true });
@@ -79,9 +79,9 @@ async function open(browser, origin, lane, width, hash = 'props') {
   page.on('pageerror', e => errors.push(e.message));
   page.on('request', req => { if (!req.url().startsWith(origin + '/') && !mocked.some(x => x.host === new URL(req.url()).hostname)) unexpected.push(req.url()); });
   await page.goto(`${origin}/${lane}/#/${hash}`);
-  await page.waitForFunction(tab => S.data && !ticking && (tab === 'record'
-    ? [...document.querySelectorAll('#main h2')].some(el => el.textContent.trim().startsWith('Track record'))
-    : document.querySelector('#f-sort')), hash);
+  await page.waitForFunction(({tab,archiveHeading}) => S.data && !ticking && (tab === 'record'
+    ? [...document.querySelectorAll('#main h2')].some(el => el.textContent.trim().startsWith(S.track?.weeks?.length ? archiveHeading : 'Track record'))
+    : document.querySelector('#f-sort')), {tab:hash,archiveHeading:contracts[lane].archiveHeading});
   return { page, context, errors, mocked, unexpected };
 }
 async function order(page, id, panels = false) {

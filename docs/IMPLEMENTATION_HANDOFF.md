@@ -1989,3 +1989,36 @@ Phase 2 updater. Current-main integration, the outdated operating/test contracts
 final-source checks, finite operating assurance, a truthful current-week package,
 public verification and compatible recovery remain open. The fixed Week 7 plan
 is unchanged and does not authorize a Week 8 capture or automatic exemptions.
+
+The connected retained-source and mixed-generation regressions passed all 27
+methods at private source `2d7cfbbf`, including forward recovery and two mocked
+updates. Their 1,338.532-second multi-fixture test duration is not a single
+updater measurement or an operating PASS. The negative projected-count admission
+guard separately passed three tests with 44 negative subcases; fractional
+forecasts, signed yardage, valid zeros and original receipt bytes are preserved.
+
+The subsequent prop-consumer correction binds raw event values to exact provider,
+event, player, team, period, finality and observation clocks. Raw fallback requires
+a successfully validated current outcome period; a missing or corrupt required
+asset remains unavailable. Historical My Picks use their complete saved primary
+contract and own outcome period, independently of the current roster. Missing
+legacy bindings remain unresolved; saved bytes and personal lines are preserved.
+These raw display values never become paper-ticket or qualified report evidence.
+
+The actual composed app passed Node UI, 20 About checks and Chromium grading/
+paper checks at 1280, 390 and 320 pixels. The separate presentation suite passed
+177 checks. Providers were mocked; these were local correctness checks, not
+physical iPhone/Safari, throttled-network, final-source CI or public-site tests.
+The checks retain initial failures and correct stale fixture assumptions about
+selected-only sorting, whole-number actual counts and the versioned archive view.
+Shared-deadline and async-history tests now await the actual controlled operation,
+instead of assuming a fixed number of event-loop turns proves completion.
+
+Release state: IMPLEMENTED in development; connected and browser checks TESTED
+locally; final combined-source CI, OPERATING qualification, current-week artifact
+acceptance and PUBLIC verification remain open. Three necessary operating/test
+compatibility paths are outside the active exact writer scope; the unchanged gate
+rejects them. Their explicit source-scope exception remains unapplied. No finding
+counter, scope, old approval or gate is rewritten to hide that restriction. The
+960-second planning target, 1,200-second updater timeout and historical planning
+failure remain unchanged. No deployment or new provider capture occurred here.
