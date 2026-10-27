@@ -1034,6 +1034,17 @@ function visibleTopPicks(side) {
   }) : S.data.picks[side];
 }
 
+function topPicksSourceCaption(items) {
+  if (!items.length) return 'No eligible picks';
+  const selected = items.filter(item => item.forecast_source === 'SELECTED').length;
+  if (selected) return selected === items.length ? 'Selected forecasts · provisional' : 'Selected forecasts and reference fallbacks · provisional';
+  const classic = S.data.execution_model?.model === 'sleeper-matchup-classic-fg-identity-v1';
+  const current = items.some(item => item.forecast_source === 'CURRENT_BASELINE' || (!item.forecast_source && classic));
+  const original = items.some(item => item.forecast_source === 'R0_FALLBACK' || (!item.forecast_source && !classic));
+  if (current && original) return 'Current baseline and R0 fallbacks';
+  return current ? 'Current baseline fallback' : 'R0 reference fallback';
+}
+
 function compareSelectedRankingItems(a, b) {
   const gap = Math.abs(b.score) - Math.abs(a.score);
   if (gap) return gap;
@@ -1343,8 +1354,8 @@ function renderProps() {
     : "";
   $("#main").innerHTML = promo + `
     <div class="picks-wrap">
-      <div class="picks"><h3>Top Overs <span class="tag over">${picksFor("over").length}</span></h3><div class="small">${S.selectedRankings ? "Selected forecasts · provisional" : (S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "Current baseline fallback" : "R0 reference fallback")}</div>${pickList("over")}</div>
-      <div class="picks"><h3>Top Unders <span class="tag under">${picksFor("under").length}</span></h3><div class="small">${S.selectedRankings ? "Selected forecasts · provisional" : (S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "Current baseline fallback" : "R0 reference fallback")}</div>${pickList("under")}</div>
+      <div class="picks"><h3>Top Overs <span class="tag over">${picksFor("over").length}</span></h3><div class="small">${topPicksSourceCaption(picksFor("over"))}</div>${pickList("over")}</div>
+      <div class="picks"><h3>Top Unders <span class="tag under">${picksFor("under").length}</span></h3><div class="small">${topPicksSourceCaption(picksFor("under"))}</div>${pickList("under")}</div>
     </div>
     <p class="note">Top Picks use saved selected forecasts where available, with individually labeled ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "current baseline" : "R0"} fallbacks. They rank forecast-minus-sportsbook-line gaps using fixed category scales, for eligible players with established roles. Selections and lines are saved before kickoff and frozen afterward. These gaps are not win probabilities or expected returns. Without a validated new selection snapshot, the lists explicitly fall back to ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "the current baseline picks" : "the original R0 picks"}. <a href="#" data-goto="about">How it works</a></p>
 

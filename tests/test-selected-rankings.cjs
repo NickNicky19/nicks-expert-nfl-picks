@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory() as d:
  print(json.dumps(dict(board=board,overlay=overlay,ranking=ranking,pointer=pointer,frozen=frozen,frozen_pointer=frozen_pointer)))`;
 const fixture = JSON.parse(execFileSync(process.env.PYTHON || "python3", ["-c", python], { cwd: root, timeout: 10000 }));
 const helper = require("../output/weekly-adaptive-overlay.js");
-const names = ["selectedRankingPolicy", "rankingCanonical", "selectedPropForecast", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "compareSelectedRankingItems", "validateSelectedRankings", "startSelectedRankings", "displayedProps", "filteredPlayers", "propFinal", "propPickBound", "propValue", "recordPropEvidence", "propStatus"];
+const names = ["selectedRankingPolicy", "rankingCanonical", "selectedPropForecast", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "topPicksSourceCaption", "compareSelectedRankingItems", "validateSelectedRankings", "startSelectedRankings", "displayedProps", "filteredPlayers", "propFinal", "propPickBound", "propValue", "recordPropEvidence", "propStatus"];
 const functions = names.map(extract).join("\n");
 let checks = 0;
 const eq = (a, b, why) => { assert.deepEqual(a, b, why); checks++; };
@@ -37,6 +37,12 @@ const context = { S, WeeklyAdaptiveOverlay: helper, Date: TestDate, crypto: webc
 vm.createContext(context); vm.runInContext(functions, context);
 const clone = value => JSON.parse(JSON.stringify(value));
 (async () => {
+  eq(context.topPicksSourceCaption([{forecast_source:'CURRENT_BASELINE'}]),'Current baseline fallback','a loaded baseline ranking snapshot is not selected-model evidence');
+  eq(context.topPicksSourceCaption([{forecast_source:'R0_FALLBACK'}]),'R0 reference fallback','original-reference source remains explicit');
+  eq(context.topPicksSourceCaption([{forecast_source:'SELECTED'}]),'Selected forecasts · provisional','actual selected forecasts retain provisional status');
+  eq(context.topPicksSourceCaption([{forecast_source:'SELECTED'},{forecast_source:'CURRENT_BASELINE'}]),'Selected forecasts and reference fallbacks · provisional','mixed lists disclose reference fallbacks');
+  eq(context.topPicksSourceCaption([]),'No eligible picks','empty side does not imply installed forecasts');
+  eq(context.topPicksSourceCaption([{forecast_source:'CURRENT_BASELINE'},{forecast_source:'R0_FALLBACK'}]),'Current baseline and R0 fallbacks','mixed reference generations remain visible');
   eq(context.compareSelectedRankingItems({score:1,game_id:'g',player_id:'1',key:'rec'},{score:1,game_id:'g',player_id:'10',key:'rec'}),-1,'prefix IDs follow Python tuple order');
   eq((await context.validateSelectedRankings(fixture.ranking, fixture.pointer, S.data, S.weeklyOverlay)).policy.version, "selected-projection-gap-v1", "Python-produced contract accepted by actual JS");
   await context.validateSelectedRankings(fixture.frozen, fixture.frozen_pointer, S.data, S.weeklyOverlay); checks++;
