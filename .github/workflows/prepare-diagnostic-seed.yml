@@ -1547,9 +1547,10 @@ jobs:
                   before=inventory(app);result['native_before']=sum(n.startswith('data/forward/') for n in before)
                   first=run('source-ci-before',[sys.executable,'tools/source_ci.py','verify'],True,240);require(type(first.get('run_id')) is int and first['run_id']>0,'SOURCE_CI_RUN')
                   require(fresh_main()==main,'MAIN_MOVED_BEFORE_PROVIDER');capacity((app,out));deadline=time.monotonic()+1200;result['application_started_at']=now()
-                  for tag,cmd in [('compile',[sys.executable,'-m','compileall','-q','pull','tools']),('js-app',['node','--check','output/app.js']),('js-reliability',['node','--check','output/reliability-ui.js']),('js-weekly-overlay',['node','--check','output/weekly-adaptive-overlay.js']),('ui',['node','tests/test-ui.cjs']),('about',['node','tests/test-about.cjs']),('legacy',[sys.executable,'tools/preserve_legacy.py'])]:run(tag,cmd,limit=1200)
+                  for tag,cmd in [('compile',[sys.executable,'-m','compileall','-q','pull','tools']),('js-app',['node','--check','output/app.js']),('js-reliability',['node','--check','output/reliability-ui.js']),('js-weekly-overlay',['node','--check','output/weekly-adaptive-overlay.js']),('ui',['node','tests/test-ui.cjs']),('weekly-overlay-ui',['node','tests/test-weekly-overlay.cjs']),('selected-rankings-ui',['node','tests/test-selected-rankings.cjs']),('classic-ranking-model-ui',['node','tests/test-classic-ranking-model.cjs']),('about',['node','tests/test-about.cjs']),('legacy',[sys.executable,'tools/preserve_legacy.py'])]:run(tag,cmd,limit=1200)
                   result['provider_case_attempts']=1;run('build-capture',[sys.executable,str(wrapper),str(app/'tools/phase2_capture.py'),'--mode','live','--build-and-capture'],limit=1200)
                   run('validate',[sys.executable,str(wrapper),str(app/'tools/phase2_capture.py'),'--mode','live','--validate-generation'],limit=1200)
+                  run('validate-before-advisories',[sys.executable,str(wrapper),str(app/'tools/phase2_capture.py'),'--mode','live','--validate-generation'],limit=1200)
                   legacy_outcome=run('legacy-advisory',[sys.executable,'tools/verify.py'],limit=1200,advisory=True)
                   comparison_outcome=run('historical-comparison',[sys.executable,'tools/compare_lines.py','--json','output/data/dk_backtest.json'],limit=1200,advisory=True)
                   run('record-advisory-outcomes',[sys.executable,'-c',HEALTH_ANNOTATION,legacy_outcome,comparison_outcome],limit=1200)
@@ -1576,6 +1577,8 @@ jobs:
                   require(fresh_main()==main,'MAIN_MOVED_DURING_CASE');result['generation']=parse((app/'output/data/release-identity.json').read_bytes());result['verification_scope']=parse((app/'output/data/verification-scope.json').read_bytes())
                   require(result['generation']['source_sha']==source,'GENERATED_SOURCE_BINDING')
                   require(result['verification_scope']['complete_week_qualified'] is False and result['verification_scope']['full_board_verified'] is False,'FALSE_COMPLETE_WEEK_CLAIM')
+                  final_ci=run('source-ci-before-case-completion',[sys.executable,'tools/source_ci.py','verify','--run-id',str(first['run_id'])],True,240)
+                  require(final_ci['executed_commit']==result['local_data_commit']['commit'] and final_ci['executed_tree']==result['local_data_commit']['tree'],'FINAL_DATA_COMMIT_SOURCE_CI_BINDING')
                   result['status']='COMPLETE_GENUINE_NONDEPLOY_CASE'
               except BaseException as error:result['failure_type']=type(error).__name__;result['failure_code']=str(error) if re.fullmatch('[A-Z0-9_]+',str(error)) else 'SEE_STAGE_RETURN_CODES_AND_RETAINED_RECEIPTS'
               result['application_wall_seconds_including_failure_grace']=None if deadline is None else time.monotonic()-(deadline-1200)
@@ -1625,8 +1628,8 @@ jobs:
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
           task_code="$GITHUB_WORKSPACE/source"
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '5173766e58eea4333dcd78108808350320c514fe1157322a08a70775a4ca0e8d'
-          test "$(sha256sum "$task_code/tools/genuine_case_recovery.py" | cut -d' ' -f1)" = 'e35c790ecf939198ffd421955dc76a53082cb560f3090c80b95cd4f27cf54e08'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '720a6cc48fb22b97a44d1095bb08215aea98479e597a919b4b4cfef6a7043e94'
+          test "$(sha256sum "$task_code/tools/genuine_case_recovery.py" | cut -d' ' -f1)" = 'da656127994dc694a1b6c0fc29faae2013230bbb69f7b9dff9f1b3527f794387'
           task_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-baseline-pyc.XXXXXX")";chmod 0700 "$task_prefix"
           PYTHONPYCACHEPREFIX="$task_prefix" python -P "$task_code/tools/genuine_case_recovery.py" baseline > "$RUNNER_TEMP/nfl-genuine-baseline-$GITHUB_RUN_ID.json"
       - name: Require cached-kernel unit capability without providers
@@ -1639,7 +1642,7 @@ jobs:
           task_sample=1
           task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '5173766e58eea4333dcd78108808350320c514fe1157322a08a70775a4ca0e8d'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '720a6cc48fb22b97a44d1095bb08215aea98479e597a919b4b4cfef6a7043e94'
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
           task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
           task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
@@ -1782,7 +1785,7 @@ jobs:
           task_sample=2
           task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '5173766e58eea4333dcd78108808350320c514fe1157322a08a70775a4ca0e8d'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '720a6cc48fb22b97a44d1095bb08215aea98479e597a919b4b4cfef6a7043e94'
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
           task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
           task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
@@ -2485,7 +2488,7 @@ jobs:
               code_before=sci.source(source)
               need(code_before['source_manifest_sha256']==ci['source_manifest_sha256'],'INSTALLED_SOURCE_CLOSURE')
               need(sha((source/'tools/release_browser.cjs').read_bytes())==BROWSER,'REVIEWED_BROWSER_BYTES')
-              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='e35c790ecf939198ffd421955dc76a53082cb560f3090c80b95cd4f27cf54e08','REVIEWED_RECOVERY_BYTES')
+              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='da656127994dc694a1b6c0fc29faae2013230bbb69f7b9dff9f1b3527f794387','REVIEWED_RECOVERY_BYTES')
               capture_source=capture_source_for_approval(approval,current);capture_root=source;capture_ci=ci;capture_code=code_before
               compatibility={'difference_count':0,'comparison_sha256':sha(canonical({}))}
               if capture_source!=current:
@@ -2538,7 +2541,7 @@ jobs:
               if capture_source==CAPTURE_F130:
                   need(len(driver)==30854 and sha(driver)=='2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf','REVIEWED_ORIGINAL_CONTROLLER')
               else:
-                  need((len(driver),sha(driver)) in ((35468,'2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'),(36877,'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5'),(37167,'a045d47016a1e4646d6c430c4d73fb672da4f10592498ae9928a78f92a603693')),'REVIEWED_CURRENT_CONTROLLER')
+                  need((len(driver),sha(driver)) in ((35468,'2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'),(36877,'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5'),(37167,'a045d47016a1e4646d6c430c4d73fb672da4f10592498ae9928a78f92a603693'),(37868,'0d80a96da370e9d59b1772c7d0a7b07700cd50395926a7d6477ae1da88e3d46d')),'REVIEWED_CURRENT_CONTROLLER')
               module=types.ModuleType('verified_original_controller')
               exec(compile(driver,'verified-controller','exec'),module.__dict__)
               original=meta['INPUT_DATA_MANIFEST.json'];after=meta['OUTPUT_DATA_MANIFEST.json']['after'];main=original['production_main']
@@ -2854,7 +2857,7 @@ jobs:
               code=sci.source(source)
               need(ci.get('schema_version')=='source-ci-verification-v1' and ci['executed_commit']==current and ci['source_manifest_sha256']==code['source_manifest_sha256'],'FRESH_INSTALLED_SOURCE_CI')
               need(sha((source/'tools/release_browser.cjs').read_bytes())==BROWSER,'REVIEWED_BROWSER_BYTES')
-              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='e35c790ecf939198ffd421955dc76a53082cb560f3090c80b95cd4f27cf54e08','REVIEWED_RECOVERY_BYTES')
+              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='da656127994dc694a1b6c0fc29faae2013230bbb69f7b9dff9f1b3527f794387','REVIEWED_RECOVERY_BYTES')
               api=sci.GitHub()
               def identity():
                   repo=api.get('');need(repo.get('id')==1411185749 and repo.get('full_name')==REPO and repo.get('private') is False,'PUBLIC_REPOSITORY')

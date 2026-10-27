@@ -453,7 +453,7 @@ class GenuineRoute(unittest.TestCase):
         self.assertFalse(b.arguments(raw).genuine_case)
     def test_actual_reviewed_inline_source_bytes_and_changed_source_rejected(self):
         commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
-        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),37167);self.assertEqual(b.sha(raw),b.PRESENCE_GENUINE_DRIVER)
+        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),37868);self.assertEqual(b.sha(raw),b.CURRENT_PRESENCE_GENUINE_DRIVER)
         with patch.object(b,'git',return_value=b'not the actual source'):
             with self.assertRaisesRegex(RuntimeError,'actual source'):b.genuine_driver(ROOT,commit)
         original=(ROOT/b.GENUINE_WORKFLOW).read_bytes()
@@ -465,13 +465,14 @@ class GenuineRoute(unittest.TestCase):
         for legacy,digest,length in [('f1303ee9dfac61fb47fb6820eabd1d04b36f173c',b.LEGACY_GENUINE_DRIVER,30854),
                 ('25826e015e70cad74a375e9a5028e7cada5d5c88',b.LEGACY_GENUINE_DRIVER,30854),
                 ('e415912b9c3d3ff52e8f435517af02e794d97fa4',b.LEGACY_GENUINE_DRIVER,30854),
-                ('a247b378bd05bbb4cd93cb20c88c1498fecef523',b.GENUINE_DRIVER,36877)]:
+                ('a247b378bd05bbb4cd93cb20c88c1498fecef523',b.GENUINE_DRIVER,36877),
+                ('d48493e559d6f9540af2a5f45ab75830fe52ee84',b.PRESENCE_GENUINE_DRIVER,37167)]:
             # Read the real retained Git object; mock only its physical replay root.
             original=subprocess.check_output(['git','-C',str(ROOT),'show',legacy+':'+b.GENUINE_WORKFLOW])
             with patch.object(b,'regular_bytes',return_value=original),patch.object(b,'git',return_value=original):
                 raw=b.genuine_driver(ROOT,legacy)
             self.assertEqual(len(raw),length);self.assertEqual(b.sha(raw),digest)
-        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.WEEKLY_GENUINE_DRIVER:35468,b.GENUINE_DRIVER:36877,b.PRESENCE_GENUINE_DRIVER:37167})
+        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.WEEKLY_GENUINE_DRIVER:35468,b.GENUINE_DRIVER:36877,b.PRESENCE_GENUINE_DRIVER:37167,b.CURRENT_PRESENCE_GENUINE_DRIVER:37868})
     def test_actual315_registration_stub_cannot_become_a_genuine_controller(self):
         source='315be5e86a1a3a93022b68c453739076487e2077'
         original=subprocess.check_output(['git','-C',str(ROOT),'show',source+':'+b.GENUINE_WORKFLOW])
@@ -1092,7 +1093,7 @@ class GenuineRecovery(unittest.TestCase):
     def test_recovery_driver_dispatch_uses_only_exact_actual_controller_bytes(self):
         r=self.r;original=(ROOT/r.WORKFLOW).read_bytes()
         with patch.object(r,'authenticated_bytes',return_value=original):
-            self.assertEqual(r.checked_driver(ROOT,'a'*40),r.PRESENCE_DRIVER)
+            self.assertEqual(r.checked_driver(ROOT,'a'*40),r.CURRENT_PRESENCE_DRIVER)
         changed=changed_actual_controller_contract(original)
         self.assertNotEqual(changed,original);self.assertEqual(len(changed),len(original))
         with patch.object(r,'authenticated_bytes',return_value=changed):
@@ -1100,11 +1101,12 @@ class GenuineRecovery(unittest.TestCase):
         for source,digest in [('f1303ee9dfac61fb47fb6820eabd1d04b36f173c',r.LEGACY_DRIVER),
                 ('25826e015e70cad74a375e9a5028e7cada5d5c88',r.LEGACY_DRIVER),
                 ('e415912b9c3d3ff52e8f435517af02e794d97fa4',r.LEGACY_DRIVER),
-                ('a247b378bd05bbb4cd93cb20c88c1498fecef523',r.DRIVER)]:
+                ('a247b378bd05bbb4cd93cb20c88c1498fecef523',r.DRIVER),
+                ('d48493e559d6f9540af2a5f45ab75830fe52ee84',r.PRESENCE_DRIVER)]:
             legacy=subprocess.check_output(['git','-C',str(ROOT),'show',source+':'+r.WORKFLOW])
             with patch.object(r,'authenticated_bytes',return_value=legacy):
                 self.assertEqual(r.checked_driver(ROOT,source),digest)
-        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.WEEKLY_DRIVER:35468,r.DRIVER:36877,r.PRESENCE_DRIVER:37167})
+        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.WEEKLY_DRIVER:35468,r.DRIVER:36877,r.PRESENCE_DRIVER:37167,r.CURRENT_PRESENCE_DRIVER:37868})
 
     def test_actual315_registration_stub_is_rejected_by_saved_recovery(self):
         r=self.r;source='315be5e86a1a3a93022b68c453739076487e2077'
@@ -1241,7 +1243,7 @@ class GenuineRawRankedRetention(unittest.TestCase):
         import types
         commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
         raw=b.genuine_driver(ROOT,commit)
-        self.assertEqual(b.sha(raw),b.PRESENCE_GENUINE_DRIVER)
+        self.assertEqual(b.sha(raw),b.CURRENT_PRESENCE_GENUINE_DRIVER)
         module=types.ModuleType('genuine_installed_controller_under_test')
         exec(compile(raw,str(ROOT/b.GENUINE_WORKFLOW)+'::genuine-controller','exec'),module.__dict__)
         self.assertEqual(module.CONTROLLER_CONTRACT,b.PRESENCE_CONTRACT)
@@ -1343,7 +1345,8 @@ class GenuinePresenceController(unittest.TestCase):
     def test_closed_v4_addition_preserves_exact_v1_v2_v3_contracts(self):
         r=self.r
         expected={b.LEGACY_GENUINE_DRIVER:None,b.WEEKLY_GENUINE_DRIVER:r.WEEKLY_CONTRACT,
-            b.GENUINE_DRIVER:r.RANKING_CONTRACT,b.PRESENCE_GENUINE_DRIVER:r.PRESENCE_CONTRACT}
+            b.GENUINE_DRIVER:r.RANKING_CONTRACT,b.PRESENCE_GENUINE_DRIVER:r.PRESENCE_CONTRACT,
+            b.CURRENT_PRESENCE_GENUINE_DRIVER:r.PRESENCE_CONTRACT}
         self.assertEqual(b.GENUINE_DRIVER_CONTRACTS,expected)
         self.assertEqual(r.DRIVER_CONTRACTS,expected)
         self.assertEqual(r.DRIVER,'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5')
@@ -1360,8 +1363,8 @@ class GenuinePresenceController(unittest.TestCase):
             git('init','-q');git('add','--',b.GENUINE_WORKFLOW)
             git('-c','user.name=Fictional regression','-c','user.email=fixture@example.invalid','commit','-qm','fictional local controller closure')
             commit=git('rev-parse','HEAD').decode()
-            self.assertEqual(b.sha(b.genuine_driver(root,commit)),b.PRESENCE_GENUINE_DRIVER)
-            self.assertEqual(r.checked_driver(root,commit),r.PRESENCE_DRIVER)
+            self.assertEqual(b.sha(b.genuine_driver(root,commit)),b.CURRENT_PRESENCE_GENUINE_DRIVER)
+            self.assertEqual(r.checked_driver(root,commit),r.CURRENT_PRESENCE_DRIVER)
             before=path.stat();path.write_bytes(changed_actual_controller_contract(original))
             os.utime(path,ns=(before.st_atime_ns,before.st_mtime_ns))
             with self.assertRaisesRegex(RuntimeError,'differs from actual source'):b.genuine_driver(root,commit)
@@ -1382,6 +1385,49 @@ class GenuinePresenceController(unittest.TestCase):
         self.assertEqual(raw.FIXED['data/verification/partial-schedule-baselines/2026/w08/5abfdeef1e84f866463a470f2d05292e4f3af286cca622ef33f564d1da58624f.json.gz'],
             'cf9d319eaf9226dc6288fd75b9af6d1f438882f7f6e857b9b736b96eb76464fa')
         self.assertFalse(any('/partial-registrations/2026/w08/' in name for name in raw.FIXED))
+
+    def test_current_controller_accounts_for_actual_phase2_hourly_required_work(self):
+        import ast
+        import re
+        commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
+        tree=ast.parse(b.genuine_driver(ROOT,commit))
+        main=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='main')
+        hourly=(ROOT/'.github/workflows/hourly.yml').read_text()
+        offline=hourly.split('      - name: Required offline regression tests\n',1)[1].split('      - name: Preserve original grading output\n',1)[0]
+        required={tuple((('--check',) if check else ())+ (path,)) for check,path in
+            re.findall(r'\bnode\s+(--check\s+)?([A-Za-z0-9_./-]+\.(?:cjs|js))',offline)}
+        actual=[]
+        for node in ast.walk(main):
+            if isinstance(node,ast.List) and node.elts and isinstance(node.elts[0],ast.Constant) and node.elts[0].value=='node':
+                actual.append(tuple(ast.literal_eval(node)[1:]))
+        self.assertEqual(len(actual),len(required));self.assertEqual(set(actual),required)
+        for missing in ('tests/test-weekly-overlay.cjs','tests/test-selected-rankings.cjs','tests/test-classic-ranking-model.cjs'):
+            with self.subTest(missing=missing),self.assertRaises(AssertionError):
+                self.assertEqual(set(actual)-{(missing,)},required)
+        calls=[n for n in ast.walk(main) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='run']
+        validate=[n for n in calls if len(n.args)>1 and isinstance(n.args[1],ast.List) and
+            any(isinstance(item,ast.Constant) and item.value=='--validate-generation' for item in n.args[1].elts)]
+        proofs=[n for n in calls if len(n.args)>2 and isinstance(n.args[2],ast.Constant) and n.args[2].value is True]
+        self.assertEqual(len(validate),hourly.count('python tools/phase2_capture.py --mode live --validate-generation'))
+        self.assertEqual(len(validate),2)
+        normal=hourly.split('      - name: Deploy validated output\n',1)[0]
+        self.assertEqual(len(proofs),normal.count('python tools/source_ci.py verify'))
+        self.assertEqual(hourly.count('python tools/source_ci.py verify'),len(proofs)+1)  # Deployment-retry-only proof is outside this nondeploy case.
+        self.assertEqual([n.args[0].value for n in sorted(proofs,key=lambda n:n.lineno)],
+            ['source-ci-before','source-ci-before-data-commit','source-ci-after-stage','source-ci-before-case-completion'])
+        advisory=next(n for n in calls if n.args and isinstance(n.args[0],ast.Constant) and n.args[0].value=='legacy-advisory')
+        self.assertTrue(all(n.lineno<advisory.lineno for n in validate))
+        tar=next(n for n in calls if n.args and isinstance(n.args[0],ast.Constant) and n.args[0].value=='pages-tar')
+        complete=next(n for n in ast.walk(main) if isinstance(n,ast.Assign) and isinstance(n.value,ast.Constant) and n.value.value=='COMPLETE_GENUINE_NONDEPLOY_CASE')
+        final=next(n for n in proofs if n.args[0].value=='source-ci-before-case-completion')
+        frozen=next(n for n in ast.walk(main) if isinstance(n,ast.Call) and any(isinstance(a,ast.Constant) and a.value=='FROZEN_CONTRACT_CHANGED' for a in n.args))
+        self.assertLess(tar.lineno,final.lineno);self.assertLess(frozen.lineno,final.lineno);self.assertLess(final.lineno,complete.lineno)
+        guard=next(n for n in ast.walk(main) if isinstance(n,ast.Call) and any(isinstance(a,ast.Constant) and a.value=='FINAL_DATA_COMMIT_SOURCE_CI_BINDING' for a in n.args))
+        self.assertGreater(guard.lineno,final.lineno);self.assertLess(guard.lineno,complete.lineno)
+        self.assertEqual(b.GENUINE_DRIVER_BYTES[b.PRESENCE_GENUINE_DRIVER],37167)
+        self.assertEqual(b.GENUINE_DRIVER_CONTRACTS[b.PRESENCE_GENUINE_DRIVER],b.PRESENCE_CONTRACT)
+        self.assertEqual(b.GENUINE_DRIVER_CONTRACTS[b.CURRENT_PRESENCE_GENUINE_DRIVER],b.PRESENCE_CONTRACT)
+        self.assertNotEqual(b.PRESENCE_GENUINE_DRIVER,b.CURRENT_PRESENCE_GENUINE_DRIVER)
 
     def test_actual_controller_retains_both_nested_cache_lanes_and_signed_zero_values(self):
         raw=self.controller();r=self.r

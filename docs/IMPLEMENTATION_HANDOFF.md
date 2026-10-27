@@ -2075,3 +2075,24 @@ requirements remain enforced. A regression executes that actual guard against
 current updater step metadata and rejects missing, unsuccessful, duplicate,
 reordered and historical-label controls. This changes no updater behavior and
 does not establish a public-site or operating result before actual execution.
+
+The `b561e40` current-base PR run passed all 1,366 Python tests in 3,096.576
+seconds, then failed its JavaScript stage: a historical Classic1 fixture asked
+the unchanged closed-source guard to accept the current changed engine. That
+failure remains recorded. The fixture now exports the actual retained Classic1
+Git source and uses the actual bounded overlay loader; all five original
+ranking/frozen-membership assertions remain. The complete local JavaScript/UI/
+About command sequence passes with fictional inputs. Local Node 24/Python 3.13
+results do not replace the required final-source Node 22/Python 3.12 CI.
+
+The measurement controller now also executes the three explicit Node programs,
+second generation validation and fourth normal-path source proof required by
+the actual updater. Permission `6453685876` binds this exact five-path delta.
+Both initial and strengthened v4 physical identities remain accepted, alongside
+all v1-v3 identities. Independent focused validation passed 147 tests; limits,
+triggers, privileges, source/configuration and data qualification are unchanged.
+The genuine diagnostic still includes its extra inventory/overlay/retention work
+and excludes actual remote push, Pages deployment and deployment retry. Its
+completed job time must be reported separately from the finite updater-unit
+kernel peak; whole-GitHub-job/VM aggregate memory remains unmeasured. These
+accounting corrections and source tests establish no operating or release PASS.
