@@ -1,7 +1,9 @@
 """Real local Git races, fictional website bytes/context; no provider or GitHub I/O."""
+import ast
 import importlib.util
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -233,6 +235,55 @@ class FailurePublicationTests(unittest.TestCase):
         result=self.execute_failure()
         self.assertEqual(result.returncode,0,result.stderr+result.stdout)
         self.verify_only_failure_was_published(main)
+
+
+class PublicBrowserUpdaterBindingTests(unittest.TestCase):
+    """Execute the actual consumer's guard on current workflow step metadata."""
+    def setUp(self):
+        root=Path(__file__).resolve().parents[1]
+        workflow=(root/'.github/workflows/prepare-diagnostic-seed.yml').read_text()
+        public=workflow.split('  public-browser-acceptance:\n',1)[1]
+        assignment=next(line.strip() for line in public.splitlines() if line.strip().startswith('required=['))
+        assertion=next(line.strip() for line in public.splitlines() if "'MANDATORY_HOURLY_STEPS'" in line)
+        self.required=ast.literal_eval(assignment.split('=',1)[1])
+        self.guard=compile(assignment+'\n'+assertion,'actual-public-browser-step-guard','exec')
+        hourly=(root/'.github/workflows/hourly.yml').read_text()
+        self.names=re.findall(r'^      - name: ([^\n]+)$',hourly,re.M)
+        self.steps=[{'name':name,'conclusion':'success'} for name in self.names]
+
+    def validate(self,steps):
+        def need(value,reason):
+            if not value:raise ValueError(reason)
+        exec(self.guard,{'need':need,'steps':steps,'names':[step['name']for step in steps]})
+
+    def test_current_actual_updater_steps_satisfy_public_guard(self):
+        self.validate(self.steps)
+        for name in ('Verify qualified Phase 2 source CI before provider build',
+                     'Build accepted versioned production engine',
+                     'Install validated data without changing source or old R0 caches',
+                     'Required integrity checks and pregame capture',
+                     'Commit validated data and immutable receipts',
+                     'Stage approved Pages fields without altering retained originals'):
+            self.assertIn(name,self.required)
+
+    def test_each_missing_or_unsuccessful_mandatory_stage_rejects(self):
+        for name in self.required:
+            with self.subTest(name=name,mutation='missing'):
+                with self.assertRaisesRegex(ValueError,'MANDATORY_HOURLY_STEPS'):
+                    self.validate([step for step in self.steps if step['name']!=name])
+            for state in ('failure','skipped','cancelled'):
+                with self.subTest(name=name,mutation=state):
+                    steps=[{**step,'conclusion':state if step['name']==name else 'success'}for step in self.steps]
+                    with self.assertRaisesRegex(ValueError,'MANDATORY_HOURLY_STEPS'):self.validate(steps)
+
+    def test_duplicate_reordered_and_old_stage_names_reject(self):
+        cases=[self.steps+[dict(self.steps[0])],list(reversed(self.steps))]
+        old={'Build accepted versioned production engine':'Build unchanged projection engine',
+             'Required integrity checks and pregame capture':'Required explicit-route source and coherent-generation verification'}
+        cases.append([{**step,'name':old.get(step['name'],step['name'])}for step in self.steps])
+        for steps in cases:
+            with self.subTest(names=[step['name']for step in steps]):
+                with self.assertRaisesRegex(ValueError,'MANDATORY_HOURLY_STEPS'):self.validate(steps)
 
 
 if __name__=='__main__':unittest.main()

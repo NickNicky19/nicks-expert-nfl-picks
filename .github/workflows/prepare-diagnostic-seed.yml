@@ -2868,7 +2868,7 @@ jobs:
                   need(jobs.get('total_count')==len(jobs.get('jobs',[]))==1,'CLOSED_HOURLY_JOBS');job=jobs['jobs'][0]
                   need(job.get('name')=='update' and all(job.get(k)==v for k,v in {'run_id':approval['hourly_run_id'],'head_sha':run['head_sha'],'status':'completed','conclusion':'success'}.items()),'COMPLETE_HOURLY_UPDATE')
                   steps=job.get('steps',[]);names=[s.get('name') for s in steps]
-                  required=['Verify qualified Phase 2 source CI before provider build','Build unchanged projection engine','Required explicit-route source and coherent-generation verification','Commit validated data and immutable receipts','Stage approved Pages fields without altering retained originals']
+                  required=['Verify qualified Phase 2 source CI before provider build','Build accepted versioned production engine','Install validated data without changing source or old R0 caches','Required integrity checks and pregame capture','Commit validated data and immutable receipts','Stage approved Pages fields without altering retained originals']
                   need(len(set(names))==len(names) and all(n in names and steps[names.index(n)].get('conclusion')=='success' for n in required) and [names.index(n) for n in required]==sorted(names.index(n) for n in required),'MANDATORY_HOURLY_STEPS')
                   need(any(s.get('name') in ('Deploy validated output','Deploy validated output (retry)') and s.get('conclusion')=='success' for s in steps),'ACTUAL_DEPLOYMENT_STEP')
                   artifact=api.get('/actions/artifacts/'+str(approval['artifact_id']))

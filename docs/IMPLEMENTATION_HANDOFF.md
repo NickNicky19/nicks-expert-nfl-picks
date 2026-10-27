@@ -2066,3 +2066,12 @@ artifact remains at most 127 MiB with one-day retention. Final source CI,
 actual capability/execution, verified retrieval, full measured accounting and
 production artifact/public verification are still required. Historical runtime
 failures, the 960-second target and the 1,200-second updater limit remain intact.
+
+The final public-browser workflow review found two obsolete updater step labels.
+The exact protected delta was recorded/read back as `6453222512`; it binds the
+consumer to the actual accepted-engine build, staged-output installation and
+per-generation integrity/capture stages. Success, unique-step and stage-order
+requirements remain enforced. A regression executes that actual guard against
+current updater step metadata and rejects missing, unsuccessful, duplicate,
+reordered and historical-label controls. This changes no updater behavior and
+does not establish a public-site or operating result before actual execution.
