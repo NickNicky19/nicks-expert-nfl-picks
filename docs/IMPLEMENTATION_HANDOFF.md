@@ -2096,3 +2096,37 @@ and excludes actual remote push, Pages deployment and deployment retry. Its
 completed job time must be reported separately from the finite updater-unit
 kernel peak; whole-GitHub-job/VM aggregate memory remains unmeasured. These
 accounting corrections and source tests establish no operating or release PASS.
+
+### 2026-10-27: coherent-generation registration namespace repair
+
+The exact-source push run `40585130090` at `a4815f7` passed 1,378 Python tests
+and its terminal source seal; current-base PR run `40585138743` separately
+passed 1,378 tests at merge checkout `f068f1c`. These are source qualification,
+not whole-updater time or aggregate-memory qualification.
+
+The subsequent genuine nondeploy case `40594003805` passed its fresh source-CI
+proof, required UI checks and early runner capability checks, then failed during
+build/capture. The copied generation tried to validate the registered weekly
+policy before its required public Git-object namespace was attached. The guard
+correctly rejected unavailable local command evidence. No native completion,
+complete generated report, production write or deployment resulted. The three
+new original records and failure artifact were retrieved and hash/typed-manifest
+verified; they remain unqualified preserved evidence with their original clocks
+and source association.
+
+The repair attaches the actual source Git namespace before independently reading
+and validating the copied policy. It also rejects an existing or dangling-symlink
+namespace. Regression tests use the real retained registration commit/tree/blob
+readers, actual engine dispatch and all 31 current code bindings. Only the final
+display-writer launch is doubled in those focused tests. Missing source objects
+and same-size changed copied policies still reject before that launch. Dependent
+configuration/controller hashes are updated without changing the model, plan,
+registration, public format, capture clocks, selection/timing rules or experiment flags. All
+five prior physical controller bodies remain supported alongside the new exact
+body under the same versioned contract.
+
+Fresh final-source and current-base integration CI, the complete genuine updater,
+generated-data/browser acceptance and the existing release/recovery checks remain
+required. The 960-second planning target, 1,200-second updater timeout and historical
+960.625703-second planning failure remain unchanged. No operating or public-release
+PASS is inferred from this source repair.

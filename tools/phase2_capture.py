@@ -1320,15 +1320,15 @@ def _prepare_weekly_website(stage, source, config, source_sha):
     """Run the existing optional selected writer inside the coherent generation."""
     import weekly_public_feed as weekly
     setting = config["weekly_publication"]
-    _weekly_policy(stage, config)  # Independently read/hash the copied destination.
     # Only immutable public source objects are shared. No source-root data PASS
     # is borrowed: the writer freshly verifies every copied policy/code file.
     git_dir = subprocess.check_output(["git", "--no-replace-objects", "-C", str(source),
         "rev-parse", "--absolute-git-dir"], text=True).strip()
     pointer = Path(stage) / ".git"
-    if pointer.exists():
+    if pointer.exists() or pointer.is_symlink():
         raise IntegrityError("Unexpected generation source-object namespace")
     pointer.write_text("gitdir: " + git_dir + "\n")
+    _weekly_policy(stage, config)  # Read/hash the destination with its required fixed public objects.
     # Use the actual existing CLI: it creates both the bounded overlay graph
     # and the separately persisted selected-Top graph, after the optional feed.
     import sys

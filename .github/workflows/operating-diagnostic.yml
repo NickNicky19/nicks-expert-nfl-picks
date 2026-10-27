@@ -167,7 +167,7 @@ jobs:
               if not stat.S_ISREG(info.st_mode) or info.st_size>2*1024**2:raise RuntimeError('Bounded exact bootstrap required')
               bootstrap_raw=os.read(fd,2*1024**2+1)
           finally:os.close(fd)
-          if len(bootstrap_raw)>2*1024**2 or hashlib.sha256(bootstrap_raw).hexdigest()!='720a6cc48fb22b97a44d1095bb08215aea98479e597a919b4b4cfef6a7043e94':
+          if len(bootstrap_raw)>2*1024**2 or hashlib.sha256(bootstrap_raw).hexdigest()!='536ec752bd2fa0439fefdad7f2ca20fb67221eceb22db905f1984bf65c51dcbd':
               raise RuntimeError('Root bootstrap differs from the exact reviewed bytes')
           print('Exact bootstrap verified; campaign approval required only for campaign, capability has no seed')
           PY
@@ -458,7 +458,7 @@ jobs:
               if not stat.S_ISREG(info.st_mode) or info.st_size>2*1024**2:raise RuntimeError('Bounded exact bootstrap required')
               bootstrap_raw=os.read(fd,2*1024**2+1)
           finally:os.close(fd)
-          if len(bootstrap_raw)>2*1024**2 or hashlib.sha256(bootstrap_raw).hexdigest()!='720a6cc48fb22b97a44d1095bb08215aea98479e597a919b4b4cfef6a7043e94':
+          if len(bootstrap_raw)>2*1024**2 or hashlib.sha256(bootstrap_raw).hexdigest()!='536ec752bd2fa0439fefdad7f2ca20fb67221eceb22db905f1984bf65c51dcbd':
               raise RuntimeError('Root bootstrap differs from the exact reviewed bytes')
           print('Exact bootstrap verified; campaign approval required only for campaign, capability has no seed')
           PY
@@ -749,7 +749,7 @@ jobs:
               if not stat.S_ISREG(info.st_mode) or info.st_size>2*1024**2:raise RuntimeError('Bounded exact bootstrap required')
               bootstrap_raw=os.read(fd,2*1024**2+1)
           finally:os.close(fd)
-          if len(bootstrap_raw)>2*1024**2 or hashlib.sha256(bootstrap_raw).hexdigest()!='720a6cc48fb22b97a44d1095bb08215aea98479e597a919b4b4cfef6a7043e94':
+          if len(bootstrap_raw)>2*1024**2 or hashlib.sha256(bootstrap_raw).hexdigest()!='536ec752bd2fa0439fefdad7f2ca20fb67221eceb22db905f1984bf65c51dcbd':
               raise RuntimeError('Root bootstrap differs from the exact reviewed bytes')
           print('Exact bootstrap verified; campaign approval required only for campaign, capability has no seed')
           PY

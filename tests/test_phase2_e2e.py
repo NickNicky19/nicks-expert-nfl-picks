@@ -3825,6 +3825,69 @@ class CurrentProductionCompositionBoundaryTests(unittest.TestCase):
             self.assertEqual((stage/".git").read_text(),"gitdir: "+str(root/"public-objects")+"\n")
             self.assertTrue(run.call_args.kwargs["check"])
 
+    def test_weekly_stage_real_policy_and_source_objects_precede_writer(self):
+        import weekly_public_feed as weekly
+        import source_ci
+        config=load_json(ROOT/"config/phase2.json")
+        policy=load_json(ROOT/config["weekly_publication"]["path"])
+        source_sha=subprocess.check_output(["git","-C",str(ROOT),"rev-parse","HEAD"],text=True).strip()
+        with tempfile.TemporaryDirectory() as directory:
+            stage=Path(directory)/"generation";stage.mkdir()
+            for name in {*policy["website_code_sha256"],config["weekly_publication"]["path"]}:
+                target=stage/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/name,target)
+            # Actual copied-policy validation needs historical public Git objects.
+            with self.assertRaisesRegex(source_ci.Rejected,"Required local command evidence is unavailable"):
+                phase2_capture._weekly_policy(stage,config)
+            real_run=subprocess.run;called=[]
+            def invoke(command,*args,**kwargs):
+                if len(command)>2 and command[2]==str(stage/"tools/weekly_adaptive_overlay.py"):
+                    called.append(command)
+                    self.assertEqual(phase2_capture._weekly_policy(stage,config),policy)
+                    self.assertEqual(weekly.code_review(stage,policy,source_sha),digest(policy["website_code_sha256"]))
+                    return subprocess.CompletedProcess(command,0)
+                return real_run(command,*args,**kwargs)
+            # Only the final display-writer CLI is doubled: real Git commit/tree/
+            # blob readers, engine identity, policy and 31-file checks execute.
+            with patch.object(phase2_capture.subprocess,"run",side_effect=invoke):
+                phase2_capture._prepare_weekly_website(stage,ROOT,config,source_sha)
+            self.assertEqual(len(called),1)
+            self.assertTrue((stage/".git").is_file())
+
+    def test_weekly_stage_rejects_existing_namespace_before_policy_or_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/"source";source.mkdir()
+            subprocess.run(["git","init","-q",str(source)],check=True)
+            for kind in ("file","dangling-symlink"):
+                stage=root/kind;stage.mkdir();pointer=stage/".git"
+                if kind=="file":pointer.write_text("not an accepted namespace\n")
+                else:pointer.symlink_to(root/"missing")
+                with self.subTest(kind=kind),patch.object(phase2_capture,"_weekly_policy") as policy, \
+                        patch.object(phase2_capture.subprocess,"run",wraps=subprocess.run) as run:
+                    with self.assertRaisesRegex(IntegrityError,"Unexpected generation source-object namespace"):
+                        phase2_capture._prepare_weekly_website(stage,source,{"weekly_publication":{}},"1"*40)
+                    policy.assert_not_called()
+                    self.assertTrue(all(call.args[0][0]=="git" for call in run.call_args_list))
+
+    def test_weekly_stage_missing_fixed_objects_and_changed_copied_policy_fail(self):
+        import weekly_public_feed as weekly
+        config=load_json(ROOT/"config/phase2.json");policy=load_json(ROOT/config["weekly_publication"]["path"])
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory);source=base/"empty-source";source.mkdir()
+            subprocess.run(["git","init","-q",str(source)],check=True)
+            for kind in ("missing-public-objects","changed-destination"):
+                stage=base/kind;stage.mkdir()
+                for name in {*policy["website_code_sha256"],config["weekly_publication"]["path"]}:
+                    target=stage/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/name,target)
+                if kind=="changed-destination":
+                    target=stage/config["weekly_publication"]["path"];before=target.stat();raw=target.read_bytes()
+                    target.write_bytes(raw[:-1]+bytes([raw[-1]^1]));os.utime(target,ns=(before.st_atime_ns,before.st_mtime_ns))
+                    expected=IntegrityError;message="Weekly-publication policy bytes differ"
+                else:expected=weekly.FeedError;message="REGISTRATION_OBJECT_TYPE_SIZE"
+                with self.subTest(kind=kind),patch.object(phase2_capture.subprocess,"run",wraps=subprocess.run) as run:
+                    with self.assertRaisesRegex(expected,message):
+                        phase2_capture._prepare_weekly_website(stage,source,config,"1"*40)
+                    self.assertTrue(all(call.args[0][0]=="git" for call in run.call_args_list))
+
 
 if __name__ == "__main__":
     unittest.main()

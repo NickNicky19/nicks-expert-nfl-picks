@@ -136,6 +136,6 @@
   "verification_mode": "partial-week-data-integrity-v2",
   "weekly_publication": {
     "path": "config/weekly-derived-selected-policy-v3.json",
-    "sha256": "21c91276a27b644029ab57818c177f645d8ca2051bf4b248628a7ddadae9c3c1"
+    "sha256": "cc075055cec92d3eadd16d4a927cea7c787616f63dcacb89277dca409b24b90b"
   }
 }

@@ -453,7 +453,7 @@ class GenuineRoute(unittest.TestCase):
         self.assertFalse(b.arguments(raw).genuine_case)
     def test_actual_reviewed_inline_source_bytes_and_changed_source_rejected(self):
         commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
-        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),37868);self.assertEqual(b.sha(raw),b.CURRENT_PRESENCE_GENUINE_DRIVER)
+        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),37868);self.assertEqual(b.sha(raw),b.STAGED_POLICY_GENUINE_DRIVER)
         with patch.object(b,'git',return_value=b'not the actual source'):
             with self.assertRaisesRegex(RuntimeError,'actual source'):b.genuine_driver(ROOT,commit)
         original=(ROOT/b.GENUINE_WORKFLOW).read_bytes()
@@ -466,13 +466,14 @@ class GenuineRoute(unittest.TestCase):
                 ('25826e015e70cad74a375e9a5028e7cada5d5c88',b.LEGACY_GENUINE_DRIVER,30854),
                 ('e415912b9c3d3ff52e8f435517af02e794d97fa4',b.LEGACY_GENUINE_DRIVER,30854),
                 ('a247b378bd05bbb4cd93cb20c88c1498fecef523',b.GENUINE_DRIVER,36877),
-                ('d48493e559d6f9540af2a5f45ab75830fe52ee84',b.PRESENCE_GENUINE_DRIVER,37167)]:
+                ('d48493e559d6f9540af2a5f45ab75830fe52ee84',b.PRESENCE_GENUINE_DRIVER,37167),
+                ('a4815f7ce47720922c30f98c441ca561605bba48',b.CURRENT_PRESENCE_GENUINE_DRIVER,37868)]:
             # Read the real retained Git object; mock only its physical replay root.
             original=subprocess.check_output(['git','-C',str(ROOT),'show',legacy+':'+b.GENUINE_WORKFLOW])
             with patch.object(b,'regular_bytes',return_value=original),patch.object(b,'git',return_value=original):
                 raw=b.genuine_driver(ROOT,legacy)
             self.assertEqual(len(raw),length);self.assertEqual(b.sha(raw),digest)
-        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.WEEKLY_GENUINE_DRIVER:35468,b.GENUINE_DRIVER:36877,b.PRESENCE_GENUINE_DRIVER:37167,b.CURRENT_PRESENCE_GENUINE_DRIVER:37868})
+        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.WEEKLY_GENUINE_DRIVER:35468,b.GENUINE_DRIVER:36877,b.PRESENCE_GENUINE_DRIVER:37167,b.CURRENT_PRESENCE_GENUINE_DRIVER:37868,b.STAGED_POLICY_GENUINE_DRIVER:37868})
     def test_actual315_registration_stub_cannot_become_a_genuine_controller(self):
         source='315be5e86a1a3a93022b68c453739076487e2077'
         original=subprocess.check_output(['git','-C',str(ROOT),'show',source+':'+b.GENUINE_WORKFLOW])
@@ -1093,7 +1094,7 @@ class GenuineRecovery(unittest.TestCase):
     def test_recovery_driver_dispatch_uses_only_exact_actual_controller_bytes(self):
         r=self.r;original=(ROOT/r.WORKFLOW).read_bytes()
         with patch.object(r,'authenticated_bytes',return_value=original):
-            self.assertEqual(r.checked_driver(ROOT,'a'*40),r.CURRENT_PRESENCE_DRIVER)
+            self.assertEqual(r.checked_driver(ROOT,'a'*40),r.STAGED_POLICY_DRIVER)
         changed=changed_actual_controller_contract(original)
         self.assertNotEqual(changed,original);self.assertEqual(len(changed),len(original))
         with patch.object(r,'authenticated_bytes',return_value=changed):
@@ -1102,11 +1103,12 @@ class GenuineRecovery(unittest.TestCase):
                 ('25826e015e70cad74a375e9a5028e7cada5d5c88',r.LEGACY_DRIVER),
                 ('e415912b9c3d3ff52e8f435517af02e794d97fa4',r.LEGACY_DRIVER),
                 ('a247b378bd05bbb4cd93cb20c88c1498fecef523',r.DRIVER),
-                ('d48493e559d6f9540af2a5f45ab75830fe52ee84',r.PRESENCE_DRIVER)]:
+                ('d48493e559d6f9540af2a5f45ab75830fe52ee84',r.PRESENCE_DRIVER),
+                ('a4815f7ce47720922c30f98c441ca561605bba48',r.CURRENT_PRESENCE_DRIVER)]:
             legacy=subprocess.check_output(['git','-C',str(ROOT),'show',source+':'+r.WORKFLOW])
             with patch.object(r,'authenticated_bytes',return_value=legacy):
                 self.assertEqual(r.checked_driver(ROOT,source),digest)
-        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.WEEKLY_DRIVER:35468,r.DRIVER:36877,r.PRESENCE_DRIVER:37167,r.CURRENT_PRESENCE_DRIVER:37868})
+        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.WEEKLY_DRIVER:35468,r.DRIVER:36877,r.PRESENCE_DRIVER:37167,r.CURRENT_PRESENCE_DRIVER:37868,r.STAGED_POLICY_DRIVER:37868})
 
     def test_actual315_registration_stub_is_rejected_by_saved_recovery(self):
         r=self.r;source='315be5e86a1a3a93022b68c453739076487e2077'
@@ -1243,7 +1245,7 @@ class GenuineRawRankedRetention(unittest.TestCase):
         import types
         commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
         raw=b.genuine_driver(ROOT,commit)
-        self.assertEqual(b.sha(raw),b.CURRENT_PRESENCE_GENUINE_DRIVER)
+        self.assertEqual(b.sha(raw),b.STAGED_POLICY_GENUINE_DRIVER)
         module=types.ModuleType('genuine_installed_controller_under_test')
         exec(compile(raw,str(ROOT/b.GENUINE_WORKFLOW)+'::genuine-controller','exec'),module.__dict__)
         self.assertEqual(module.CONTROLLER_CONTRACT,b.PRESENCE_CONTRACT)
@@ -1346,7 +1348,7 @@ class GenuinePresenceController(unittest.TestCase):
         r=self.r
         expected={b.LEGACY_GENUINE_DRIVER:None,b.WEEKLY_GENUINE_DRIVER:r.WEEKLY_CONTRACT,
             b.GENUINE_DRIVER:r.RANKING_CONTRACT,b.PRESENCE_GENUINE_DRIVER:r.PRESENCE_CONTRACT,
-            b.CURRENT_PRESENCE_GENUINE_DRIVER:r.PRESENCE_CONTRACT}
+            b.CURRENT_PRESENCE_GENUINE_DRIVER:r.PRESENCE_CONTRACT,b.STAGED_POLICY_GENUINE_DRIVER:r.PRESENCE_CONTRACT}
         self.assertEqual(b.GENUINE_DRIVER_CONTRACTS,expected)
         self.assertEqual(r.DRIVER_CONTRACTS,expected)
         self.assertEqual(r.DRIVER,'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5')
@@ -1363,8 +1365,8 @@ class GenuinePresenceController(unittest.TestCase):
             git('init','-q');git('add','--',b.GENUINE_WORKFLOW)
             git('-c','user.name=Fictional regression','-c','user.email=fixture@example.invalid','commit','-qm','fictional local controller closure')
             commit=git('rev-parse','HEAD').decode()
-            self.assertEqual(b.sha(b.genuine_driver(root,commit)),b.CURRENT_PRESENCE_GENUINE_DRIVER)
-            self.assertEqual(r.checked_driver(root,commit),r.CURRENT_PRESENCE_DRIVER)
+            self.assertEqual(b.sha(b.genuine_driver(root,commit)),b.STAGED_POLICY_GENUINE_DRIVER)
+            self.assertEqual(r.checked_driver(root,commit),r.STAGED_POLICY_DRIVER)
             before=path.stat();path.write_bytes(changed_actual_controller_contract(original))
             os.utime(path,ns=(before.st_atime_ns,before.st_mtime_ns))
             with self.assertRaisesRegex(RuntimeError,'differs from actual source'):b.genuine_driver(root,commit)
@@ -1379,7 +1381,7 @@ class GenuinePresenceController(unittest.TestCase):
         raw=self.controller()
         self.assertEqual(raw.BASE,'e336bf7a68c32267c3c3eec48892aeadcd03a90e')
         self.assertEqual(raw.REVIEWED_MAIN_TREE,'26c1ca52eb1d9b3610a552ecf63ccd2fab5ad8f8')
-        self.assertEqual(raw.WEEKLY_POLICY_SHA256,'21c91276a27b644029ab57818c177f645d8ca2051bf4b248628a7ddadae9c3c1')
+        self.assertEqual(raw.WEEKLY_POLICY_SHA256,'cc075055cec92d3eadd16d4a927cea7c787616f63dcacb89277dca409b24b90b')
         self.assertEqual(len(raw.FIXED),3)
         self.assertEqual(sum('/2026/w07/' in name for name in raw.FIXED),2)
         self.assertEqual(raw.FIXED['data/verification/partial-schedule-baselines/2026/w08/5abfdeef1e84f866463a470f2d05292e4f3af286cca622ef33f564d1da58624f.json.gz'],

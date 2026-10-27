@@ -1250,7 +1250,7 @@ jobs:
           REVIEWED_MAIN_TREE='26c1ca52eb1d9b3610a552ecf63ccd2fab5ad8f8'
           CONTROLLER_CONTRACT='genuine-current-production-controller-v4'
           WEEKLY_POLICY_PATH='config/weekly-derived-selected-policy-v3.json'
-          WEEKLY_POLICY_SHA256='21c91276a27b644029ab57818c177f645d8ca2051bf4b248628a7ddadae9c3c1'
+          WEEKLY_POLICY_SHA256='cc075055cec92d3eadd16d4a927cea7c787616f63dcacb89277dca409b24b90b'
           WORKFLOW=REPO+'/.github/workflows/prepare-diagnostic-seed.yml@refs/heads/upgrade/phase2-reproducible-comparison'
           MIB=1024**2; GIB=1024**3; CAP=127*MIB
           FIXED={
@@ -1541,7 +1541,7 @@ jobs:
                   for name,expected in FIXED.items():
                       require((app/name).is_file() and not (app/name).is_symlink(),'REQUIRED_FIXED_INPUT_MISSING')
                       require(file_hash(app/name)==expected,'REQUIRED_FIXED_INPUT_CHANGED')
-                  config=parse((app/'config/phase2.json').read_bytes());require(sha((app/'config/phase2.json').read_bytes())=='3f32651cb6accdf33eb2e3dc302c62b9090fae3e0861c0329f01b97983b6a243' and config['experimental_recording_enabled'] is False,'FIXED_CONFIG')
+                  config=parse((app/'config/phase2.json').read_bytes());require(sha((app/'config/phase2.json').read_bytes())=='21b6e24f33cab06233f5f46d4fd214985841ae9eada525dfe8c766c3b61e9b5c' and config['experimental_recording_enabled'] is False,'FIXED_CONFIG')
                   for name in ('selection-grading/hosting.json','selection-grading/latest.json','matchup-proof.json','release-identity.json'):require(not (app/'output/data'/name).exists(),'OLD_OR_CONCURRENT_PHASE2_ALIAS')
                   board=parse((app/'output/data/week.json').read_bytes());at=utc(now());frozen={g['id']:contract(board,g['id']) for g in board['games'] if g['state']!='pre' or utc(g['kickoff'])<=at};result['frozen_before']=frozen
                   before=inventory(app);result['native_before']=sum(n.startswith('data/forward/') for n in before)
@@ -1628,8 +1628,8 @@ jobs:
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
           task_code="$GITHUB_WORKSPACE/source"
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '720a6cc48fb22b97a44d1095bb08215aea98479e597a919b4b4cfef6a7043e94'
-          test "$(sha256sum "$task_code/tools/genuine_case_recovery.py" | cut -d' ' -f1)" = 'da656127994dc694a1b6c0fc29faae2013230bbb69f7b9dff9f1b3527f794387'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '536ec752bd2fa0439fefdad7f2ca20fb67221eceb22db905f1984bf65c51dcbd'
+          test "$(sha256sum "$task_code/tools/genuine_case_recovery.py" | cut -d' ' -f1)" = '6a8cf8c84822a5e07f6559217a05a92725fc21fcd343224e8ce9f82956baf38f'
           task_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-genuine-baseline-pyc.XXXXXX")";chmod 0700 "$task_prefix"
           PYTHONPYCACHEPREFIX="$task_prefix" python -P "$task_code/tools/genuine_case_recovery.py" baseline > "$RUNNER_TEMP/nfl-genuine-baseline-$GITHUB_RUN_ID.json"
       - name: Require cached-kernel unit capability without providers
@@ -1642,7 +1642,7 @@ jobs:
           task_sample=1
           task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '720a6cc48fb22b97a44d1095bb08215aea98479e597a919b4b4cfef6a7043e94'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '536ec752bd2fa0439fefdad7f2ca20fb67221eceb22db905f1984bf65c51dcbd'
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
           task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
           task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
@@ -1785,7 +1785,7 @@ jobs:
           task_sample=2
           task_code="$GITHUB_WORKSPACE/source";task_unit="nfl-operating-$GITHUB_RUN_ID-$task_sample.service"
           test "$TMPDIR" = "$RUNNER_TEMP/nfl-capture-transactions-$GITHUB_RUN_ID"
-          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '720a6cc48fb22b97a44d1095bb08215aea98479e597a919b4b4cfef6a7043e94'
+          test "$(sha256sum "$task_code/tools/operating_resource_bootstrap.py" | cut -d' ' -f1)" = '536ec752bd2fa0439fefdad7f2ca20fb67221eceb22db905f1984bf65c51dcbd'
           test "$(git -C "$task_code" rev-parse HEAD)" = "$GITHUB_SHA"
           task_py="$(command -v python)";task_node="$(command -v node)";task_git="$(command -v git)"
           task_memory="$(awk '$1=="MemTotal:" {printf "%.0f\n",$2*1024}' /proc/meminfo)";[[ "$task_memory" =~ ^[1-9][0-9]*$ ]]
@@ -2488,7 +2488,7 @@ jobs:
               code_before=sci.source(source)
               need(code_before['source_manifest_sha256']==ci['source_manifest_sha256'],'INSTALLED_SOURCE_CLOSURE')
               need(sha((source/'tools/release_browser.cjs').read_bytes())==BROWSER,'REVIEWED_BROWSER_BYTES')
-              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='da656127994dc694a1b6c0fc29faae2013230bbb69f7b9dff9f1b3527f794387','REVIEWED_RECOVERY_BYTES')
+              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='6a8cf8c84822a5e07f6559217a05a92725fc21fcd343224e8ce9f82956baf38f','REVIEWED_RECOVERY_BYTES')
               capture_source=capture_source_for_approval(approval,current);capture_root=source;capture_ci=ci;capture_code=code_before
               compatibility={'difference_count':0,'comparison_sha256':sha(canonical({}))}
               if capture_source!=current:
@@ -2541,7 +2541,7 @@ jobs:
               if capture_source==CAPTURE_F130:
                   need(len(driver)==30854 and sha(driver)=='2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf','REVIEWED_ORIGINAL_CONTROLLER')
               else:
-                  need((len(driver),sha(driver)) in ((35468,'2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'),(36877,'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5'),(37167,'a045d47016a1e4646d6c430c4d73fb672da4f10592498ae9928a78f92a603693'),(37868,'0d80a96da370e9d59b1772c7d0a7b07700cd50395926a7d6477ae1da88e3d46d')),'REVIEWED_CURRENT_CONTROLLER')
+                  need((len(driver),sha(driver)) in ((35468,'2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'),(36877,'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5'),(37167,'a045d47016a1e4646d6c430c4d73fb672da4f10592498ae9928a78f92a603693'),(37868,'0d80a96da370e9d59b1772c7d0a7b07700cd50395926a7d6477ae1da88e3d46d'),(37868,'8fe9ca56e45cd64598f78ad859247563de21526c28858ce1ebee81b3758cd7a5')),'REVIEWED_CURRENT_CONTROLLER')
               module=types.ModuleType('verified_original_controller')
               exec(compile(driver,'verified-controller','exec'),module.__dict__)
               original=meta['INPUT_DATA_MANIFEST.json'];after=meta['OUTPUT_DATA_MANIFEST.json']['after'];main=original['production_main']
@@ -2857,7 +2857,7 @@ jobs:
               code=sci.source(source)
               need(ci.get('schema_version')=='source-ci-verification-v1' and ci['executed_commit']==current and ci['source_manifest_sha256']==code['source_manifest_sha256'],'FRESH_INSTALLED_SOURCE_CI')
               need(sha((source/'tools/release_browser.cjs').read_bytes())==BROWSER,'REVIEWED_BROWSER_BYTES')
-              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='da656127994dc694a1b6c0fc29faae2013230bbb69f7b9dff9f1b3527f794387','REVIEWED_RECOVERY_BYTES')
+              need(sha((source/'tools/genuine_case_recovery.py').read_bytes())=='6a8cf8c84822a5e07f6559217a05a92725fc21fcd343224e8ce9f82956baf38f','REVIEWED_RECOVERY_BYTES')
               api=sci.GitHub()
               def identity():
                   repo=api.get('');need(repo.get('id')==1411185749 and repo.get('full_name')==REPO and repo.get('private') is False,'PUBLIC_REPOSITORY')
