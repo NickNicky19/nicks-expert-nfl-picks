@@ -24,10 +24,13 @@ const INJ_SHORT = { Questionable: "Q", Doubtful: "D", Out: "OUT", IR: "IR", PUP:
 const S = {
   data: null, track: null, generatedAt: null,
   selectedRankings: null, weeklyOverlay: null, weeklyOverlayReady: false, weeklyOverlayBoardHash: null, weeklyOverlayRequestBoard: null,
-  grading: null, gradingError: null, finalOutcomes: new Map(),
+  grading: null, gradingError: null, finalOutcomes: new Map(), propOutcomeAuthority: null,
   gradingFilters: {}, gradingGroup: null, gradingShown: 100,
   byId: {}, byKey: {},
   games: {},           // game id -> schedule merged with the latest ESPN scoreboard
+  propEvents: {},      // Exact event/athlete evidence, separate from fantasy stats and saved Phase 2 outcomes.
+  propEventChecks: {}, // Board identity for attempted summaries, including rejected scope.
+  propSleeper: null,   // Current-board provisional values; never a final outcome.
   live: {},            // player id -> stat line from ESPN's box score (Sleeper field names)
   boxLoaded: new Set(),
   boxFinal: new Set(),
@@ -903,9 +906,10 @@ async function loadSelectedGradingSummary(grading = S.grading) {
   }
 }
 async function loadGrading() {
-  const revision = ++gradingLoadRevision;
+  const board = S.data, revision = ++gradingLoadRevision;
   S.paper.epoch++; S.paper.results = null; S.paper.historyEpoch++; S.paper.history=null; S.paper.legEpoch++; S.paper.legResult=null;
   S.grading = null; S.gradingError = null; S.finalOutcomes = new Map();
+  S.propOutcomeAuthority = { board, state: "loading" };
   try {
     const response = await fetch(GRADING_BASE + "latest.json", { cache: "no-store" });
     if (!response.ok) throw new Error("Grading pointer unavailable");
@@ -928,27 +932,32 @@ async function loadGrading() {
     const modernAccuracy = summary.schema_version === 'selection-public-report-v6' && summary.report_schema_version === 'selection-report-v4' && pointer.schema_version === 'selection-publication-pointer-v4';
     if (Object.hasOwn(summary, 'forecast_accuracy') && !modernAccuracy) throw new Error('Aggregate accuracy outside its explicit report contract');
     const grading = { pointer, summary, chunks: new Map(), partitioned, viewRevision: 0, parts: new Map() };
-    let finalOutcomes;
+    let finalOutcomes, currentPeriodCovered;
     if (partitioned) {
       await validateGradingIndexes(pointer, summary, finals);
       grading.index = summary; grading.outcomeIndex = finals;
       grading.summary = { ...summary, summary: { ...summary.summary, tables: [] } };
-      finalOutcomes = await loadOutcomePeriod(grading, S.data.season, S.data.week);
+      currentPeriodCovered = finals.periods.some(part => part.season === board.season && part.week === board.week);
+      finalOutcomes = await loadOutcomePeriod(grading, board.season, board.week);
     } else {
       const supported = summary.schema_version === "selection-public-report-v1" && summary.report_schema_version === "selection-report-v2"
         || summary.schema_version === "selection-public-report-v2" && summary.report_schema_version === "selection-report-v3";
       if (!supported || finals.schema_version !== "selection-final-outcomes-v1") throw new Error("Unsupported grading data schema");
       validateGradingTables(pointer, summary.summary?.tables, summary.schema_version);
       finalOutcomes = validateFinalOutcomes(pointer, finals.outcomes);
+      currentPeriodCovered = finals.outcomes.some(row => row.season === board.season && row.week === board.week);
     }
-    if (revision !== gradingLoadRevision) return;
+    if (revision !== gradingLoadRevision || S.data !== board) return;
     S.grading = grading; S.finalOutcomes = finalOutcomes; S.gradingGroup = null;
+    S.propOutcomeAuthority = { board, state: currentPeriodCovered ? "validated_current_period" : "missing_current_period",
+      season: board.season, week: board.week, report_id: pointer.report_id, grading, outcomes: finalOutcomes, outcomeCount: finalOutcomes.size };
     if (partitioned) await loadSelectedGradingSummary(grading);
     if (S.paper.opened) gradeOpenedPaper();
     if (S.paper.openedLeg) gradeOpenedPaperLeg();
   } catch (err) {
-    if (revision !== gradingLoadRevision) return;
+    if (revision !== gradingLoadRevision || S.data !== board) return;
     S.grading = null; S.finalOutcomes = new Map(); S.gradingError = String(err.message || "Unavailable saved grading");
+    S.propOutcomeAuthority = { board, state: "unavailable" };
   }
 }
 
@@ -1090,12 +1099,205 @@ function pv(p, prop) {
 }
 
 // Where a prop stands. dir is the side being tracked (a pick or lean), or null.
-function propStatus(p, key, line, dir) {
-  const g = S.games[p.game_id];
-  if (!g || g.state === "pre") return null;
+function propFinal(g) {
+  return g?.state === "post" && typeof g.detail === "string" && /^Final(?:\/\d*OT)?$/i.test(g.detail.trim());
+}
+
+function propPickBound(m, p, g) {
+  const id = x => typeof x === "string" && Boolean(x.trim()) || Number.isSafeInteger(x) && x >= 0;
+  return !!(m && p && g && m.schema_version === "mypicks-player-game-v1"
+    && [m.pid, p.id, m.gid, p.game_id, g.id].every(id)
+    && String(m.pid) === String(p.id) && String(m.gid) === String(p.game_id) && String(m.gid) === String(g.id)
+    && m.season === S.data.season && m.week === S.data.week && m.team === p.team
+    && (m.espn_id == null || id(m.espn_id) && id(p.espn_id) && String(m.espn_id) === String(p.espn_id))
+    && typeof m.kickoff === "string" && Number.isFinite(Date.parse(m.kickoff)) && Date.parse(m.kickoff) === Date.parse(g.kickoff)
+    && m.period === "full_game_including_overtime" && m.stat_source === "ESPN_EVENT_BOXSCORE");
+}
+
+// Saved player contracts keep their own season/game/team/kickoff identity.
+// This cache belongs to the current validated publication object and board only;
+// it contains no qualification result and never falls back to current-week data.
+const mineOutcomeLoads = new WeakMap();
+function savedPropContract(m) {
+  const id = x => typeof x === "string" && Boolean(x.trim()) || Number.isSafeInteger(x) && x >= 0;
+  return !!(m && m.kind !== "game" && m.schema_version === "mypicks-player-game-v1"
+    && id(m.pid) && id(m.gid) && typeof m.team === "string" && Boolean(m.team.trim())
+    && (m.espn_id == null || id(m.espn_id)) && Number.isSafeInteger(m.season) && m.season >= 2000 && m.season <= 2200
+    && Number.isSafeInteger(m.week) && m.week >= 1 && m.week <= 18
+    && typeof m.kickoff === "string" && /(?:Z|[+-]\d{2}:\d{2})$/i.test(m.kickoff) && Number.isFinite(Date.parse(m.kickoff))
+    && typeof m.key === "string" && Object.hasOwn(SHORT, m.key) && Number.isFinite(m.line) && ["over", "under"].includes(m.dir)
+    && m.period === "full_game_including_overtime" && m.stat_source === "ESPN_EVENT_BOXSCORE");
+}
+function mineHistorical(m) {
+  return m.season !== S.data?.season || m.week !== S.data?.week;
+}
+function mineOutcomeState() {
+  const grading = S.grading, board = S.data;
+  if (!grading || !board || S.gradingError) return null;
+  let state = mineOutcomeLoads.get(grading);
+  if (!state || state.board !== board) {
+    state = { board, grading, periods: new Map(), attempts: new Set(), pending: new Set() };
+    mineOutcomeLoads.set(grading, state);
+  }
+  return state;
+}
+async function loadHistoricalMineOutcomes() {
+  const state = mineOutcomeState();
+  if (!state || !Array.isArray(S.mine) || S.tab !== "mine") return;
+  const grading = state.grading, board = state.board, selected = JSON.stringify(S.mine);
+  const periods = new Map(); let requested = false;
+  for (const m of S.mine) if (savedPropContract(m) && mineHistorical(m)) periods.set(m.season + ":" + m.week, [m.season, m.week]);
+  for (const [key, [season, week]] of periods) {
+    if (state.attempts.has(key)) continue;
+    requested = true; state.attempts.add(key); state.pending.add(key);
+    try {
+      const outcomes = grading.outcomeIndex ? await loadOutcomePeriod(grading, season, week) : S.finalOutcomes;
+      if (S.grading !== grading || S.data !== board || mineOutcomeLoads.get(grading) !== state) return;
+      state.periods.set(key, outcomes);
+    } catch { /* One failed period remains unknown until an explicit publication reload. */ }
+    finally { state.pending.delete(key); }
+  }
+  if (requested && S.grading === grading && S.data === board && S.tab === "mine" && JSON.stringify(S.mine) === selected
+      && !document.activeElement?.matches("input")) renderMine();
+}
+function historicalPropStatus(m) {
+  const unknown = reason => ({ v: null, res: "unresolved", final: false, reason });
+  if (!savedPropContract(m)) return unknown("Saved player/game/period binding unavailable; stored record retained");
+  // The saved primary player/game/period identity joins the public row directly.
+  // A current roster or ESPN mapping cannot authenticate or replace an old one.
+  const state = mineOutcomeState(), key = m.season + ":" + m.week;
+  const outcomes = state?.periods.get(key);
+  const row = outcomes?.get(JSON.stringify([m.season, m.week, String(m.gid), String(m.pid), m.key, m.team, Date.parse(m.kickoff)]));
+  if (!row || row.season !== m.season || row.week !== m.week || row.game_id !== String(m.gid)
+      || row.player_id !== String(m.pid) || row.category !== m.key || row.team !== m.team
+      || Date.parse(row.kickoff) !== Date.parse(m.kickoff) || row.outcome_conflict)
+    return unknown(row?.outcome_conflict ? "Conflicting saved evidence" : "Required saved-period outcome evidence unavailable");
+  if (row.status === "dnp" && row.final_confirmed) return { v: null, res: "dnp", final: true };
+  if (row.status === "pending") return { v: null, res: "pending", final: false, reason: "Awaiting a saved confirmed final outcome" };
+  if (row.status !== "resolved" || !row.final_confirmed || !Number.isFinite(row.actual)) return unknown(row.reason || "Awaiting confirmed participation");
+  const v = row.actual;
+  return { v, res: v === m.line ? "push" : ((m.dir === "over") === (v > m.line) ? "hit" : "miss"), final: true };
+}
+function minePlayerStatus(m) {
+  if (mineHistorical(m)) return historicalPropStatus(m);
+  const p = ["string", "number"].includes(typeof m.pid) ? S.byId?.[m.pid] : null;
+  return m.schema_version === "mypicks-player-game-v1" ? propStatus(p, m.key, m.line, m.dir, m) : { v: null, res: "unresolved", final: false };
+}
+
+function propValue(stats, key) {
+  const fields = key === "rush_rec_yd" ? ["rush_yd", "rec_yd"] : key === "anytime_td" ? ["rush_td", "rec_td"] : [key];
+  if (!["pass_yd", "pass_td", "pass_cmp", "pass_att", "pass_int", "rush_yd", "rush_att", "rec", "rec_yd", "rush_rec_yd", "anytime_td"].includes(key)) return null;
+  if (!stats || !fields.every(k => Object.hasOwn(stats, k) && Number.isSafeInteger(stats[k])
+    && (k.endsWith("_yd") || stats[k] >= 0))) return null;
+  return fields.reduce((sum, k) => sum + stats[k], 0);
+}
+
+function recordPropEvidence(id, summary, board) {
+  if (board !== S.data) return;
+  S.propEvents ||= {};
+  delete S.propEvents[id];
+  S.propEventChecks ||= {};
+  S.propEventChecks[id] = board;
+  const g = S.games[id], header = summary.header;
+  const c = header?.competitions?.find(x => String(x.id) === String(id));
+  const week = typeof header?.week === "object" ? header.week?.number : header?.week;
+  if (board !== S.data || !g || String(g.id) !== String(id) || String(header?.id) !== String(id) || !c
+    || !Number.isSafeInteger(header.season?.year) || header.season.year !== board.season
+    || header.season.type !== 2
+    || !Number.isSafeInteger(week) || week !== board.week
+    || typeof c.date !== "string" || !/(?:Z|[+-]\d{2}:\d{2})$/i.test(c.date)
+    || !Number.isFinite(Date.parse(c.date)) || Date.parse(c.date) !== Date.parse(g.kickoff)) return;
+  const identities = new Map(), players = {};
+  for (const p of board.players || []) if (String(p.game_id) === String(id) && p.espn_id != null) {
+    const key = String(p.espn_id);
+    identities.set(key, identities.has(key) ? null : p);
+  }
+  const number = raw => typeof raw === "number" && Number.isFinite(raw) ? raw
+    : typeof raw === "string" && /^-?\d+(?:\.\d+)?$/.test(raw.trim()) ? Number(raw) : null;
+  for (const team of summary.boxscore?.players || []) {
+    const abbr = teamCode(team.team?.abbreviation);
+    if (![g.home, g.away].includes(abbr)) continue;
+    for (const group of team.statistics || []) for (const athlete of group.athletes || []) {
+      const p = identities.get(String(athlete.athlete?.id));
+      if (!p || p.team !== abbr) continue; // Never resolve a statistical outcome by name.
+      const row = players[p.id] ||= { stats: {}, played: false, dnp: false, conflict: false, espn_id: String(p.espn_id), team: abbr };
+      if (athlete.didNotPlay === true) row.dnp = true;
+      if (athlete.didNotPlay === false) row.played = true;
+      const vals = Object.fromEntries((group.labels || []).map((label, n) => [label, athlete.stats?.[n]]));
+      const pairs = group.name === "passing" ? { pass_yd: "YDS", pass_td: "TD", pass_int: "INT" }
+        : group.name === "rushing" ? { rush_yd: "YDS", rush_att: "CAR", rush_td: "TD" }
+        : group.name === "receiving" ? { rec: "REC", rec_yd: "YDS", rec_td: "TD", rec_tgt: "TGTS" } : {};
+      const values = Object.fromEntries(Object.entries(pairs).map(([key, label]) => [key, number(vals[label])]));
+      if (group.name === "passing") {
+        const parts = typeof vals["C/ATT"] === "string" ? vals["C/ATT"].split("/") : [];
+        values.pass_cmp = parts.length === 2 ? number(parts[0]) : null;
+        values.pass_att = parts.length === 2 ? number(parts[1]) : null;
+      }
+      for (const [key, value] of Object.entries(values)) {
+        if (Object.hasOwn(row.stats, key) && row.stats[key] !== value) row.conflict = true;
+        row.stats[key] = value;
+        if (Number.isSafeInteger(value) && (key.endsWith("_yd") ? value !== 0 : value > 0)) row.played = true;
+      }
+      if (row.dnp && row.played) row.conflict = true;
+    }
+  }
+  S.propEvents[id] = { gid: String(id), kickoff: g.kickoff, season: board.season, week: board.week, players, source: "ESPN_EVENT_BOXSCORE",
+    observed_at: new Date().toISOString(), final: propFinal(g) && propFinal({ state: c.status?.type?.state, detail: c.status?.type?.shortDetail })
+      && c.status?.type?.completed === true };
+}
+
+function propEventStatus(p, key, line, dir, saved = null) {
+  const unknown = reason => ({ v: null, res: "unresolved", final: false, reason });
+  const g = p && S.games[p.game_id];
+  if (saved && !propPickBound(saved, p, g)) return unknown("Saved player/game/period binding unavailable; stored record retained");
+  if (!p || !g || String(g.id) !== String(p.game_id)) return unknown("Player/game identity unavailable");
+  if (!Number.isFinite(line) || dir != null && !["over", "under"].includes(dir)) return unknown("Saved line or direction unavailable");
+  if (g.state === "pre") return null;
+  if (!["in", "post"].includes(g.state)) return unknown("Game status unavailable");
+  const kickoff = Date.parse(g.kickoff), observedNow = Date.now();
+  if (!Number.isFinite(kickoff) || !Number.isFinite(observedNow) || kickoff > observedNow) return unknown("Game clock is incompatible with observed status");
+  const event = S.propEvents?.[p.game_id];
+  const scoped = event?.season === S.data.season && event?.week === S.data.week
+    && event.gid === String(p.game_id) && Date.parse(event.kickoff) === kickoff && event.source === "ESPN_EVENT_BOXSCORE"
+    && Number.isFinite(Date.parse(event.observed_at)) && Date.parse(event.observed_at) > kickoff && Date.parse(event.observed_at) <= observedNow;
+  const candidate = scoped ? event.players[p.id] : null;
+  const row = candidate?.team === p.team && candidate?.espn_id === String(p.espn_id) ? candidate : null;
+  if (row?.conflict) return unknown("Conflicting participation or statistical evidence");
+  if (row?.dnp && event.final && propFinal(g)) return { v: null, res: "dnp", final: true };
+  let v = row?.played ? propValue(row.stats, key) : null;
+  if (v == null && g.state === "in" && S.propSleeper?.board === S.data) {
+    const stats = S.propSleeper.players[p.id];
+    if (stats && (["gp", "off_snp", "pass_att", "rush_att", "rec"].some(k => Number.isSafeInteger(stats[k]) && stats[k] > 0))) v = propValue(stats, key);
+  }
+  if (v == null) return unknown("Requested statistic or confirmed participation unavailable");
+  if (g.state !== "post" || !propFinal(g) || !event?.final) return { v, res: g.state === "in" ? v === line ? "equal" : v > line ? "above" : "below" : "pending", final: false };
+  const over = v > line;
+  return { v, res: v === line ? "push" : dir ? ((dir === "over") === over ? "hit" : "miss") : over ? "over" : "under", final: true };
+}
+
+function propRawFallbackAllowed() {
+  const authority = S.propOutcomeAuthority;
+  return !!(authority && authority.board === S.data && authority.state === "validated_current_period"
+    && authority.season === S.data.season && authority.week === S.data.week
+    && authority.report_id === S.grading?.pointer.report_id && authority.grading === S.grading
+    && authority.outcomes === S.finalOutcomes && authority.outcomeCount === S.finalOutcomes?.size && !S.gradingError);
+}
+
+function propStatus(p, key, line, dir, saved = null) {
+  const g = p && S.games[p.game_id];
+  if (saved && !propPickBound(saved, p, g)) return { v: null, res: "unresolved", final: false, reason: "Saved player/game/period binding unavailable; stored record retained" };
+  if (!p || !g) return { v: null, res: "unresolved", final: false, reason: "Player/game identity unavailable" };
+  if (dir != null && !["over", "under"].includes(dir)) return { v: null, res: "unresolved", final: false, reason: "Saved direction unavailable" };
+  if (g.state === "pre") return null;
+  if (!["in", "post"].includes(g.state)) return { v: null, res: "unresolved", final: false, reason: "Game status unavailable" };
   if (!Number.isFinite(line)) return { v: null, res: "unresolved", final: false, reason: "Saved line missing or invalid" };
   if (g.state === "post") {
-    const outcome = S.finalOutcomes.get(finalIdentity(p, key));
+    // Phase 2 public outcomes keep their independent, identity-checked finality
+    // contract. Raw event evidence is a fallback, never a replacement for a
+    // published pending/conflicting/corrected outcome.
+    const outcome = S.finalOutcomes?.size ? S.finalOutcomes.get(finalIdentity(p, key)) : null;
+    if (!outcome && key !== "fpts" && (S.propEvents?.[p.game_id] || S.propEventChecks?.[p.game_id] === S.data) && propRawFallbackAllowed())
+      return propEventStatus(p, key, line, dir, saved);
     if (!outcome || !finalIdentityMatches(outcome, p, key) || outcome.outcome_conflict)
       return { v: null, res: "unresolved", final: false, reason: outcome?.outcome_conflict ? "Conflicting evidence" : "Awaiting saved final evidence" };
     if (outcome.status === "dnp" && outcome.final_confirmed) return { v: null, res: "dnp", final: true };
@@ -1106,12 +1308,16 @@ function propStatus(p, key, line, dir) {
     const relative = v === line ? "push" : v > line ? "over" : "under";
     return { v, res: relative === "push" ? "push" : dir ? (relative === dir ? "hit" : "miss") : relative, final: true };
   }
+  // Fantasy points retain the separate presence-aware Phase 2 scoring path.
+  if (key !== "fpts" && (S.propEvents?.[p.game_id] || S.propEventChecks?.[p.game_id] === S.data || S.propSleeper?.board === S.data))
+    return propEventStatus(p, key, line, dir, saved);
   const c = current(p);
   if (!c || c.status === "unresolved") return { v: null, res: "unresolved", final: false, reason: "Awaiting live statistics" };
   const required = key === "rush_rec_yd" ? ["rush_yd", "rec_yd"] : key === "anytime_td" ? ["rush_td", "rec_td"] : [key];
   if (required.some((name) => Object.hasOwn(c.stats, name) && (typeof c.stats[name] !== "number" || !Number.isFinite(c.stats[name]))))
     return { v: null, res: "unresolved", final: false, reason: "Live statistic explicitly missing or invalid" };
   const v = statValue(key, c.stats);
+  if (!Number.isFinite(v)) return { v: null, res: "unresolved", final: false, reason: "Live scoring components are unavailable or incomplete" };
   return { v, res: v === line ? "equal" : v > line ? "above" : "below", final: false };
 }
 
@@ -1251,15 +1457,20 @@ function liveLineText(p, key, line) {
 
 // Every player's live stats in one small request (about 90 KB), keyed by Sleeper id
 async function pollSleeper() {
+  const board = S.data;
   if (!Object.values(S.games).some((g) => g.state !== "pre")) return;
   const pos = ["QB", "RB", "WR", "TE", "K", "DEF"].map((x) => `position[]=${x}`).join("&");
   try {
-    const rows = await getJSON(`https://api.sleeper.app/stats/nfl/${S.data.season}/${S.data.week}?season_type=regular&${pos}`);
+    const rows = await getJSON(`https://api.sleeper.app/stats/nfl/${board.season}/${board.week}?season_type=regular&${pos}`);
+    if (S.data !== board) return;
     const next = {};
     for (const r of rows || []) if (S.byId[r.player_id] && r.stats) next[r.player_id] = r.stats;
     S.slp = next;
+    S.propSleeper = { board, players: next };
     S.slpOk = true;
   } catch (err) {
+    if (S.data !== board) return;
+    S.propSleeper = null;
     S.slpOk = false;   // fall back to ESPN box scores for every live game
     console.warn("sleeper live", err);
   }
@@ -1268,23 +1479,26 @@ async function pollSleeper() {
 // ESPN game summaries: the open game is handled by gameTick. Here: pregame injury news for games kicking off
 // soon, and box scores for live games only when Sleeper's feed is down.
 async function pollBoxScores() {
+  const board = S.data;
   const now = Date.now();
   const soon = (g) => g.state === "pre" && new Date(g.kickoff) - now < 4 * 3600000 && now - (S.injAt[g.id] || 0) > 300000;
-  const backup = (g) => !S.slpOk && (g.state === "in" || (g.state === "post" && !S.boxFinal.has(g.id)));
+  const backup = (g) => g.state === "post" || !S.slpOk && g.state === "in";
   const ids = Object.values(S.games)
     .filter((g) => g.id !== S.gameView && (backup(g) || soon(g)))
     .map((g) => { if (g.state === "pre") S.injAt[g.id] = now; return g.id; });
   await Promise.all(ids.map(async (id) => {
     try {
       const summary = await getJSON(`${ESPN}/summary?event=${id}`);
-      applySummary(id, summary);
+      applySummary(id, summary, board);
     } catch (err) {
       console.warn("box score", id, err);
     }
   }));
 }
 
-function applySummary(id, summary) {
+function applySummary(id, summary, board = S.data) {
+  if (board !== S.data) return;
+  recordPropEvidence(id, summary, board);
   S.sum[id] = summary;
   if (!S.games[id]) return;   // a finished week's game: its box score is drawn straight from the summary
   applyInjuries(summary);
@@ -1403,12 +1617,13 @@ async function liveTick() {
 }
 
 async function pollOpenGame() {
+  const board = S.data;
   const id = S.gameView;
   const g = id && gameOf(id);
-  if (!g || g.state === "pre" || (g.state === "post" && S.sum[id])) return;
+  if (!g || g.state === "pre" || (g.state === "post" && S.sum[id] && !S.games[id])) return;
   try {
-    applySummary(id, await getJSON(`${ESPN}/summary?event=${id}`));
-    syncGameFromSummary(id);
+    applySummary(id, await getJSON(`${ESPN}/summary?event=${id}`), board);
+    if (S.data === board) syncGameFromSummary(id);
   } catch (err) {
     console.warn("game", id, err);
   }
@@ -1492,7 +1707,15 @@ globalThis.addEventListener("weekly-adaptive-overlay-ready", () => startWeeklyOv
 
 async function load() {
   const board = await boundJSON(`data/week.json?t=${Date.now()}`);
+  const previousBoard = S.data;
   S.data = board.value;
+  S.propEvents = {}; S.propEventChecks = {}; S.propSleeper = null;
+  ++gradingLoadRevision; S.grading = null; S.gradingError = null; S.finalOutcomes = new Map();
+  S.propOutcomeAuthority = { board: S.data, state: "loading" };
+  S.paper.epoch++; S.paper.results = null; S.paper.historyEpoch++; S.paper.history = null; S.paper.legEpoch++; S.paper.legResult = null;
+  if (previousBoard && (previousBoard.season !== S.data.season || previousBoard.week !== S.data.week)) {
+    S.slp = {}; S.live = {}; S.slpOk = false;
+  }
   S.weeklyOverlay = null; S.weeklyOverlayReady = false;
   S.selectedRankings = null;
   S.weeklyOverlayBoardHash = board.hash;
@@ -5501,19 +5724,55 @@ function setCompare(slot, id) {
 
 // ---------------------------------------------------------------- my picks
 
+function persistMine() {
+  // Explicit user edits preserve every unchanged record's original JSON bytes.
+  // Reads/renders never invoke this writer and never migrate old identities.
+  try {
+    const raw = localStorage.getItem("nflprops.mine");
+    if (raw == null) { localStorage.setItem("nflprops.mine", JSON.stringify(S.mine)); return; }
+    const old = JSON.parse(raw);
+    if (!Array.isArray(old)) return;
+    const start = raw.indexOf("["), end = raw.lastIndexOf("]"), pieces = [];
+    let from = start + 1, depth = 0, quoted = false, escaped = false;
+    for (let n = from; n < end; n++) {
+      const ch = raw[n];
+      if (quoted) { if (escaped) escaped = false; else if (ch === "\\") escaped = true; else if (ch === '"') quoted = false; continue; }
+      if (ch === '"') quoted = true;
+      else if (ch === "[" || ch === "{") depth++;
+      else if (ch === "]" || ch === "}") depth--;
+      else if (ch === "," && depth === 0) { pieces.push(raw.slice(from, n)); from = n + 1; }
+    }
+    if (old.length) pieces.push(raw.slice(from, end));
+    if (pieces.length !== old.length) return;
+    const used = new Set(), forms = old.map(x => JSON.stringify(x));
+    const next = S.mine.map(m => {
+      const form = JSON.stringify(m), n = forms.findIndex((x, i) => !used.has(i) && x === form);
+      if (n < 0) return form;
+      used.add(n); return pieces[n];
+    });
+    localStorage.setItem("nflprops.mine", raw.slice(0, start + 1) + next.join(",") + raw.slice(end));
+  } catch { /* A storage error must never replace an unreadable old collection. */ }
+}
+
 function minePick(pid, key, dir) {
-  return S.mine.find((m) => m.pid === pid && m.key === key && m.dir === dir && m.season === S.data.season && m.week === S.data.week);
+  const p = S.byId[pid], g = p && S.games[p.game_id];
+  return Array.isArray(S.mine) ? S.mine.find((m) => m && m.kind !== "game" && m.pid === pid && m.key === key && m.dir === dir && propPickBound(m, p, g)) : undefined;
 }
 
 function toggleMine(pid, key, dir, line) {
+  if (!Array.isArray(S.mine)) return;
   const have = minePick(pid, key, dir);
   if (have) S.mine = S.mine.filter((m) => m !== have);
   else {
     // one side per prop: picking the over replaces an under on the same prop
-    S.mine = S.mine.filter((m) => !(m.pid === pid && m.key === key && m.season === S.data.season && m.week === S.data.week));
-    S.mine.push({ pid, key, dir, line: +line, season: S.data.season, week: S.data.week, at: Date.now() });
+    const p = S.byId[pid], g = p && S.games[p.game_id];
+    if (!p || !g || !["string", "number"].includes(typeof line) || typeof line === "string" && !line.trim() || !Number.isFinite(+line) || !["over", "under"].includes(dir)) return;
+    S.mine = S.mine.filter((m) => !(m && m.kind !== "game" && m.pid === pid && m.key === key && propPickBound(m, p, g)));
+    S.mine.push({ pid, key, dir, line: +line, season: S.data.season, week: S.data.week, at: Date.now(),
+      schema_version: "mypicks-player-game-v1", gid: String(p.game_id), team: p.team, espn_id: p.espn_id ?? null,
+      kickoff: g.kickoff, period: "full_game_including_overtime", stat_source: "ESPN_EVENT_BOXSCORE" });
   }
-  store("mine", S.mine);
+  persistMine();
   updateMineBadge();
 }
 
@@ -5530,7 +5789,7 @@ function toggleGame(gid, market, side, line, odds) {
     S.mine = S.mine.filter((m) => !(m.kind === "game" && m.gid === gid && m.market === market && m.season === S.data.season && m.week === S.data.week));
     S.mine.push({ kind: "game", gid, market, side, line: line === "" ? null : +line, odds: odds === "" ? null : +odds, season: S.data.season, week: S.data.week, at: Date.now() });
   }
-  store("mine", S.mine);
+  persistMine();
   updateMineBadge();
 }
 
@@ -5590,7 +5849,9 @@ function renderMine() {
   }
   const validGameId = value => typeof value === "string" ? Boolean(value.trim()) : Number.isSafeInteger(value) && value >= 0;
   const thisWeek = (m) => m.season === S.data.season && m.week === S.data.week;
-  const now = S.mine.filter((m) => thisWeek(m) && (m.kind === "game" ? validGameId(m.gid) && S.games[m.gid] : validGameId(m.pid) && S.byId[m.pid]));
+  const now = S.mine.filter((m) => m.kind === "game" ? thisWeek(m) && validGameId(m.gid) && S.games[m.gid]
+    : thisWeek(m) || m.schema_version === "mypicks-player-game-v1");
+  void loadHistoricalMineOutcomes();
   const old = S.mine.length - now.length;
   const nonCurrent = S.mine.filter(m => !thisWeek(m)).length;
   if (!now.length) {
@@ -5605,9 +5866,10 @@ function renderMine() {
       const g = S.games[m.gid];
       return { m, g, st: gameBetStatus(m) };
     }
-    const p = S.byId[m.pid];
-    const g = S.games[p.game_id];
-    return { m, p, g, st: propStatus(p, m.key, m.line, m.dir), prop: p.props.find((x) => x.key === m.key) };
+    const p = validGameId(m.pid) ? S.byId[m.pid] : null;
+    const historical = mineHistorical(m), st = minePlayerStatus(m);
+    const g = historical ? { id: m.gid, kickoff: m.kickoff, state: st?.final ? "post" : "unknown" } : p && S.games[p.game_id] || { state: "unknown" };
+    return { m, p, g, st, historical, prop: historical ? null : p?.props?.find((x) => x.key === m.key) };
   });
   const rank = (r) => (r.g.state === "in" ? 0 : r.g.state === "pre" ? 1 : 2);
   rows.sort((a, b) => rank(a) - rank(b) || String(a.g.kickoff || "").localeCompare(String(b.g.kickoff || "")) || a.m.at - b.m.at);
@@ -5646,25 +5908,39 @@ function renderMine() {
       </div>
     </div>`;
   };
-  const propRow = ({ m, p, g, st, prop }) => {
-    const label = S.data.categories[m.key].label;
+  const propRow = ({ m, p, g, st, prop, historical }) => {
+    const label = typeof m.key === "string" ? S.data.categories?.[m.key]?.label || m.key : "Prop";
+    const index = S.mine.indexOf(m);
+    if (historical) return `<div class="pick mine ${st?.res || "unresolved"}"><div class="av" aria-hidden="true"></div><div>
+      <b>${esc(p?.name || "Saved player selection unavailable")}</b>
+      <div class="what">${esc(m.dir === "over" ? "Over" : m.dir === "under" ? "Under" : "Saved direction unavailable")}
+      <label class="mline">line <input type="number" step="0.5" value="${Number.isFinite(m.line) ? m.line : ""}" data-mline="p" data-mine-index="${index}" aria-label="Your line"></label> ${esc(label)}</div>
+      <div class="small">Saved ${Number.isSafeInteger(m.season) ? m.season : "Season unavailable"} week ${Number.isSafeInteger(m.week) ? m.week : "unavailable"} · ${esc(typeof m.team === "string" ? m.team : "Team unavailable")} · game ${esc(["string", "number"].includes(typeof m.gid) ? m.gid : "unavailable")} · ${esc(typeof m.kickoff === "string" ? m.kickoff : "Kickoff unavailable")}</div>
+      <div class="small">${esc(st?.reason || "Exact saved-period statistical outcome; current projections are not substituted")}</div></div>
+      <div class="side"><div class="big">${st?.v == null ? "-" : fmtStat(m.key, st.v)}</div>${resBadge(st)}<button class="rm" data-rm="p" data-mine-index="${index}" aria-label="Remove">×</button></div></div>`;
+    if (m.schema_version !== "mypicks-player-game-v1" || !propPickBound(m, p, g)) return `<div class="pick mine unresolved"><div class="av" aria-hidden="true"></div><div>
+      <b>${esc(p?.name || "Saved player selection unavailable")}</b>
+      <div class="what">${esc(m.dir === "over" ? "Over" : m.dir === "under" ? "Under" : "Saved direction unavailable")}
+      <label class="mline">line <input type="number" step="0.5" value="${Number.isFinite(m.line) ? m.line : ""}" data-mline="p" data-mine-index="${index}" aria-label="Your line"></label> ${esc(label)}</div>
+      <div class="small">Saved player/game/period binding unavailable; stored record retained</div></div>
+      <div class="side">${resBadge(st)}<button class="rm" data-rm="p" data-mine-index="${index}" aria-label="Remove">×</button></div></div>`;
     const lineNow = prop?.line;
     return `<div class="pick mine ${st?.res || ""}" data-open="${p.id}">
         ${avatar(p)}
         <div>
           <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)} <span class="muted">${oppText(p)}</span></div>
-          <div class="what">${m.dir === "over" ? "Over" : "Under"} <label class="mline"><input type="number" step="0.5" inputmode="decimal" value="${m.line}" data-mline="p|${p.id}|${m.key}|${m.dir}" aria-label="Your line"></label> ${label}${lineNow != null && lineNow !== m.line ? ` <span class="muted">(DK line ${lineNow})</span>` : ""}</div>
+          <div class="what">${m.dir === "over" ? "Over" : "Under"} <label class="mline"><input type="number" step="0.5" inputmode="decimal" value="${m.line}" data-mline="p" data-mine-index="${index}" aria-label="Your line"></label> ${label}${lineNow != null && lineNow !== m.line ? ` <span class="muted">(DK line ${lineNow})</span>` : ""}</div>
           <div class="small">${esc(gameStatus(g))}${liveLineText(p, m.key, m.line)}</div>
           ${progress(st, m.line, m.dir, m.key)}
         </div>
         <div class="side">
           ${st ? `<div class="big">${st.v == null ? "-" : fmtStat(m.key, st.v)}</div>${resBadge(st)}` : `<div class="small">${esc(kickoffText(g.kickoff))}</div>`}
-          <button class="rm" data-rm="${p.id}|${m.key}|${m.dir}" title="Remove" aria-label="Remove">×</button>
+          <button class="rm" data-rm="p" data-mine-index="${index}" title="Remove" aria-label="Remove">×</button>
         </div>
       </div>`;
   };
   $("#main").innerHTML = `
-    <h2>My Picks <small>${S.data.season} week ${S.data.week}</small></h2>
+    <h2>My Picks <small>Saved selections · current board ${S.data.season} week ${S.data.week}</small></h2>
     <div class="mine-sum card">
       <div><div class="k">Final wins</div><div class="v num" style="color:var(--green)">${hit}</div></div>
       <div><div class="k">Final losses</div><div class="v num" style="color:var(--red)">${miss}</div></div>
@@ -5675,8 +5951,8 @@ function renderMine() {
     </div>
     <div class="plist">${rows.map((r) => (r.m.kind === "game" ? gameRow(r) : propRow(r))).join("")}</div>
     <div class="gtool" style="margin-top:12px">
-      ${final ? `<button class="tbtn" data-mine-clear="final">Clear finished</button>` : ""}
-      <button class="tbtn" data-mine-clear="all">Clear all</button>
+      ${final ? `<button class="tbtn" data-mine-clear="final">Clear current-period finished</button>` : ""}
+      <button class="tbtn" data-mine-clear="all">Clear current period</button>
       ${nonCurrent ? `<button class="tbtn" data-mine-clear="old">Clear ${nonCurrent} non-current period selections</button>` : ""}
     </div>
     <p class="note">Each selection uses your own saved line. Equality is a statistical push on either side. Game bets require a recorded Final status with valid whole-number scores. Live values are currently above, below or equal and can change, including downward corrections. Only confirmed final statistical outcomes enter the win/loss counts; missing evidence is unresolved. These are individual statistical results, not verified venue settlement or combined-ticket economics.</p>`;
@@ -6033,8 +6309,10 @@ document.addEventListener("click", (e) => {
   }
   const rm = t.closest("[data-rm]");
   if (rm) {
-    const [pid, key, dir] = rm.dataset.rm.split("|");
-    toggleMine(pid, key, dir);
+    const index = Number(rm.dataset.mineIndex);
+    if (!Number.isSafeInteger(index) || !S.mine[index] || S.mine[index].kind === "game") return;
+    S.mine = S.mine.filter((m, n) => n !== index);
+    persistMine(); updateMineBadge();
     renderMine();
     return;
   }
@@ -6045,8 +6323,8 @@ document.addEventListener("click", (e) => {
     if (kind === "all" && !confirm("Remove all your picks for this week?")) return;
     S.mine = S.mine.filter((m) => kind === "old" ? thisWeek(m)
       : kind === "all" ? !thisWeek(m)
-      : !(thisWeek(m) && (m.kind === "game" ? gameBetStatus(m)?.final : S.byId[m.pid] && propStatus(S.byId[m.pid], m.key, m.line, m.dir)?.final)));
-    store("mine", S.mine);
+      : !(thisWeek(m) && (m.kind === "game" ? gameBetStatus(m)?.final : minePlayerStatus(m)?.final)));
+    persistMine();
     renderMine();
     updateMineBadge();
     return;
@@ -6165,11 +6443,17 @@ document.addEventListener("change", (e) => {
   if (e.target.matches("[data-mu-week]")) { S.muWeek = +e.target.value; renderLeagueTab(); return; }
   const t = e.target;
   if (t.dataset.mline) {
-    const v = parseFloat(t.value);
-    if (Number.isNaN(v)) return;
+    if (!t.value.trim()) return;
+    const v = Number(t.value);
+    if (!Number.isFinite(v)) return;
     const [kind, a, b, c] = t.dataset.mline.split("|");
+    if (kind === "p") {
+      const index = Number(t.dataset.mineIndex), m = S.mine[index];
+      if (!Number.isSafeInteger(index) || !m || m.kind === "game") return;
+      m.line = v; persistMine(); renderMine(); return;
+    }
     const m = S.mine.find((x) => (kind === "g" ? x.kind === "game" && x.gid === a && x.market === b && x.side === c : x.kind !== "game" && x.pid === a && x.key === b && x.dir === c) && x.season === S.data.season && x.week === S.data.week);
-    if (m) { m.line = v; store("mine", S.mine); renderMine(); }
+    if (m) { m.line = v; persistMine(); renderMine(); }
     return;
   }
   if (t.dataset.tradeSide) {

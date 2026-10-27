@@ -1548,5 +1548,64 @@ class ComposedSourceDispatchTests(unittest.TestCase):
                     release_mode.read_phase2(root)
 
 
+# Focused recorded-input admission controls; retained engines remain byte-identical.
+class ProjectionCountBoundaryTests(unittest.TestCase):
+    def fixture(self, root):
+        for name in corrected.V2_PATHS:
+            path=root/name; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((ROOT/name).read_bytes())
+        retained=root/'data/forward/2099/w01/original.json.gz'
+        retained.parent.mkdir(parents=True); retained.write_bytes(b'fictional immutable old receipt')
+        return retained
+
+    def test_negative_counts_fail_before_builder_consumes_current_or_future_projection(self):
+        class ConsumedInvalidResponse(AssertionError): pass
+        for key in sorted(build.scoring.ACTUAL_COUNTS):
+            for week in (1,2):
+                with self.subTest(key=key,week=week), tempfile.TemporaryDirectory() as directory:
+                    root=Path(directory); retained=self.fixture(root); before=retained.read_bytes()
+                    rows=[dict(player_id='fictional-player', stats={key:-.25})]
+                    original=copy.deepcopy(rows)
+                    def run():
+                        build.sources.get_json(f'https://api.sleeper.app/projections/nfl/2099/{week}')
+                        raise ConsumedInvalidResponse('invalid projection reached the builder')
+                    with patch.object(build.sources,'get_json',return_value=rows) as provider:
+                        getter=build.sources.get_json; matchups=build.Matchups
+                        with self.assertRaisesRegex(reliability.IntegrityError,'NEGATIVE_PROJECTED_COUNT'):
+                            build_recorded.record_build(root,run=run,model=corrected.active_model(root))
+                        self.assertIs(build.sources.get_json,getter); self.assertIs(build.Matchups,matchups)
+                        provider.assert_called_once()
+                    self.assertEqual(rows,original); self.assertEqual(retained.read_bytes(),before)
+                    self.assertEqual(list((root/'data/forward').rglob('*.json.gz')),[retained])
+                    self.assertFalse((root/'output/data').exists())
+
+    def test_fractional_nonnegative_counts_and_signed_yards_remain_exact(self):
+        class CompleteProbe(Exception): pass
+        rows=[dict(player_id='fictional-player',stats={**{key:.25 for key in build.scoring.ACTUAL_COUNTS},
+            'rush_yd':-2.5,'rec_yd':0,'pass_yd':-1.25})]
+        original=copy.deepcopy(rows)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); retained=self.fixture(root)
+            def run():
+                for week in (1,2):
+                    self.assertIs(build.sources.get_json(f'https://api.sleeper.app/projections/nfl/2099/{week}'),rows)
+                raise CompleteProbe()
+            with patch.object(build.sources,'get_json',return_value=rows) as provider:
+                getter=build.sources.get_json; matchups=build.Matchups
+                with self.assertRaises(CompleteProbe):
+                    build_recorded.record_build(root,run=run,model=corrected.active_model(root))
+                self.assertIs(build.sources.get_json,getter); self.assertIs(build.Matchups,matchups)
+                self.assertEqual(provider.call_count,2)
+            self.assertEqual(rows,original)
+            self.assertEqual(retained.read_bytes(),b'fictional immutable old receipt')
+            self.assertFalse((root/'output/data').exists())
+
+    def test_closed_engine_and_frozen_registrations_are_not_relabelled(self):
+        self.assertEqual(corrected.engine_files(ROOT),corrected.CLASSIC_SOURCE_SHA256)
+        self.assertEqual(corrected.active_model(ROOT),corrected.CLASSIC_MODEL)
+        self.assertEqual(corrected.source_hashes(corrected.MODEL),corrected.V2_SOURCE_SHA256)
+        self.assertNotEqual(corrected.V2_SOURCE_SHA256,corrected.CLASSIC_SOURCE_SHA256)
+
+
 if __name__ == "__main__":
     unittest.main()

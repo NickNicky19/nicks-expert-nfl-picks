@@ -32,9 +32,23 @@ let cancelled=0,bodySignal;
 const stalledBody=async(_url,options)=>{bodySignal=options.signal;return {ok:true,headers:new Headers(),body:{getReader:()=>({read:()=>new Promise(()=>{}),cancel:()=>{cancelled++;return new Promise(()=>{});},releaseLock:()=>{}})}};};
 assert.equal(await overlay.load(board,H,stalledBody,20),null);assert(bodySignal.aborted);assert(cancelled>0);checks++;
 // One shared deadline is NOT restarted for pointer, payload or legacy board.
-const totalSignals=[];
-assert.equal(await overlay.load(board,H,async(url,options)=>{totalSignals.push(options.signal);return totalSignals.length===1?mock(url):new Promise(()=>{});},20),null);
-assert.equal(totalSignals.length,2);assert.equal(totalSignals[0],totalSignals[1]);assert(totalSignals[1].aborted);checks++;
+// Control the actual helper's timer: crypto/event-loop delay must not decide
+// whether this structural control gets as far as the second fetch.
+const totalSignals=[],scheduled=[],cleared=[],timers=new Map(),isolated={module:{exports:{}},AbortController,TextDecoder,Uint8Array,
+  crypto:require("node:crypto").webcrypto,
+  setTimeout:(fire,milliseconds)=>{const token={fire,milliseconds};scheduled.push(token);timers.set(token,fire);return token;},
+  clearTimeout:token=>{cleared.push(token);timers.delete(token);}};
+vm.createContext(isolated);vm.runInContext(fs.readFileSync(helper,"utf8"),isolated);
+let payloadReached;const waitingForPayload=new Promise(resolve=>{payloadReached=resolve;});
+const shared=isolated.module.exports.load(board,H,async(url,options)=>{totalSignals.push(options.signal);
+  if(totalSignals.length===1)return mock(url);payloadReached();return new Promise(()=>{});},20);
+let watchdog;
+try{await Promise.race([waitingForPayload,new Promise((_,reject)=>{watchdog=setTimeout(()=>reject(Error("Shared-deadline payload was not reached")),2000);})]);}
+finally{clearTimeout(watchdog);}
+assert.equal(totalSignals.length,2);assert.equal(totalSignals[0],totalSignals[1]);assert(!totalSignals[1].aborted);
+assert.equal(scheduled.length,1);assert.equal(scheduled[0].milliseconds,20);assert.equal(timers.size,1);
+timers.get(scheduled[0])();assert(totalSignals[1].aborted);assert.equal(await shared,null);
+assert.equal(scheduled.length,1);assert.deepEqual(cleared,[scheduled[0]]);assert.equal(timers.size,0);checks++;
 // A fetch resolving after the deadline has its unread body cancelled.
 let releaseFetch,lateCancelled=0;
 assert.equal(await overlay.load(board,H,()=>new Promise(r=>{releaseFetch=r;}),20),null);

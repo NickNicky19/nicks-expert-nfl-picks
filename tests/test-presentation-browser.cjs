@@ -16,7 +16,7 @@ const roots = { after: path.resolve(arg('--root') || path.join(repo, 'output')) 
 if (arg('--baseline-root')) roots.before = path.resolve(arg('--baseline-root'));
 const contracts = Object.fromEntries(Object.entries(roots).map(([lane, root]) => {
   const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-  return [lane, { authoritativeFinals: app.includes('function finalIdentity('), leanFirst: app.includes('function displayedProps(') }];
+  return [lane, { authoritativeFinals: app.includes('function finalIdentity('), leanFirst: app.includes('function displayedProps('), selectedForecasts: app.includes('function selectedPropForecast(') }];
 }));
 const evidence = arg('--evidence-dir') && path.resolve(arg('--evidence-dir'));
 if (evidence) fs.mkdirSync(path.join(evidence, 'screenshots'), { recursive: true });
@@ -147,7 +147,7 @@ async function controlChecks(browser, origin, lane, width) {
   const expected = contracts[lane].leanFirst ? sorted : normal;
   try {
     await page.waitForSelector('#f-sort');
-    equal(await page.evaluate(() => [S.f.sort, S.open.size]), ['proj', 0], 'default sort and collapsed state unchanged');
+    equal(await page.evaluate(() => [S.f.sort, S.open.size]), [contracts[lane].selectedForecasts ? 'selected_edge' : 'proj', 0], 'versioned default sort and collapsed state unchanged');
     const source = await page.evaluate(() => JSON.stringify(S.data));
     await page.evaluate(() => { S.f.q = 'FICTIONAL lead'; S.f.sort = 'edge'; S.f.hideOut = false; render(); });
     equal(await order(page, 'fictional-0'), expected, 'fictional tie order in collapsed chips');
@@ -231,7 +231,7 @@ async function controlChecks(browser, origin, lane, width) {
     equal(await page.evaluate(() => JSON.stringify(S.data)), source, 'controls do not mutate original source arrays or forecasts');
     equal(await page.evaluate(() => S.mine), mine, 'controls preserve saved fictional My Picks');
     await page.reload(); await page.waitForFunction(() => S.data && !ticking && document.querySelector('#f-sort'));
-    equal(await page.evaluate(() => [S.f.sort, S.f.q, S.f.cat, S.open.size]), ['proj', '', '', 0], 'full reload preserves existing filter/open reset');
+    equal(await page.evaluate(() => [S.f.sort, S.f.q, S.f.cat, S.open.size]), [contracts[lane].selectedForecasts ? 'selected_edge' : 'proj', '', '', 0], 'full reload preserves versioned default sort and existing filter/open reset');
     equal(await page.evaluate(() => S.mine), mine, 'full reload retains device saved selections');
     equal(await page.evaluate(() => S.lines['fictional-0|rec_yd']), undefined, 'full reload preserves existing temporary-line reset');
     const finality = await page.evaluate(() => {

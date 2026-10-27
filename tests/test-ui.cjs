@@ -507,13 +507,13 @@ const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8')
 // no modern outcome row, native proof or validator success is manufactured.
 {
   const extract = name => {
-    const value = source.match(new RegExp(`^function ${name}\\([^]*?^\\}`, 'm'))?.[0];
+    const value = source.match(new RegExp(`^(?:async )?function ${name}\\([^]*?^\\}`, 'm'))?.[0];
     assert.ok(value, 'actual ' + name + ' implementation found');
     return value;
   };
   const constant = name => {
     const key = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const value = source.match(new RegExp('^const ' + key + ' = .+;$', 'm'))?.[0];
+    const value = source.match(new RegExp('^const ' + key + ' = (?:.+;|\\{[^]*?^\\};)$', 'm'))?.[0];
     assert.ok(value, 'actual ' + name + ' declaration found');
     return value;
   };
@@ -525,8 +525,8 @@ const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8')
       setItem: (key, value) => saved.set(key, String(value)) },
     kickoffText: () => 'Fictional scheduled kickoff' };
   vm.createContext(context);
-  vm.runInContext(['$', 'esc', 'fmt', 'logo', 'ml'].map(constant).join('\n') + '\n'
-    + ['gameStatus', 'gameBetLabel', 'gameBetStatus', 'resBadge', 'renderMine', 'store'].map(extract).join('\n'), context);
+  vm.runInContext(['$', 'esc', 'fmt', 'logo', 'ml', 'SHORT', 'mineOutcomeLoads'].map(constant).join('\n') + '\n'
+    + ['gameStatus', 'gameBetLabel', 'gameBetStatus', 'resBadge', 'savedPropContract', 'mineHistorical', 'mineOutcomeState', 'loadHistoricalMineOutcomes', 'historicalPropStatus', 'minePlayerStatus', 'renderMine', 'store'].map(extract).join('\n'), context);
   let checks = 0;
   const check = (name, run) => { run(); checks++; };
   const game = (state = 'in', home = 30, away = 30, detail = 'Live') => ({
@@ -810,4 +810,536 @@ print(json.dumps(project_accuracy(reports)))`;
     else assert.ok(!main.innerHTML.includes(model));
   }
   console.log('3 closed-model standalone About controls passed.');
+}
+
+
+// Player-prop evidence correction: fictional event bodies and device records.
+// Execute actual app functions/events; no network, provider outcomes or models.
+(async () => {
+  const legacyPins = {"current": "30eb111166adf0ef9516e3363b81fc471eb45d0c82651255c2be53790bb81a64", "slpPlayed": "80d07c27863d2c513dc90656ff7e6c8712a3f4277ae1a7c89b0c0f4e75b4c084"};
+  for (const [name, expected] of Object.entries(legacyPins)) {
+    const fn = source.match(new RegExp('^function '+name+'\\([\\s\\S]*?^\\}', 'm'))?.[0];
+    assert.equal(require('node:crypto').createHash('sha256').update(fn).digest('hex'), expected);
+  }
+  const failures = []; let checks = 0;
+  const test = async (name, run) => {
+    checks++;
+    try { await run(); } catch (error) { failures.push({ name, error: error.message }); }
+  };
+  class FixtureClock extends Date {
+    constructor(...args) { super(...(args.length ? args : ['2099-10-25T18:00:00Z'])); }
+    static now() { return Date.parse('2099-10-25T18:00:00Z'); }
+  }
+  const harness = () => {
+    const nodes = new Map(), saved = new Map(), events = {};
+    const node = name => {
+      if (!nodes.has(name)) nodes.set(name, { innerHTML: '', hidden: false, style: {},
+        addEventListener() {}, classList: { add() {}, remove() {}, toggle() {} }, querySelectorAll: () => [] });
+      return nodes.get(name);
+    };
+    const box = { console, Date: FixtureClock, URL, URLSearchParams, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1,
+      localStorage: { getItem: k => saved.get(k) ?? null, setItem: (k, v) => saved.set(k, String(v)) },
+      document: { hidden: true, querySelector: node, querySelectorAll: () => [], body: node('body'),
+        documentElement: node('html'), addEventListener: (kind, fn) => (events[kind] ||= []).push(fn) },
+      location: { hash: '' }, history: {}, navigator: {}, CSS: { escape: x => x },
+      addEventListener() {}, innerWidth: 390, scrollY: 0, scrollTo() {}, confirm: () => true,
+      fetch: async () => { throw new Error('ACTUAL_NETWORK_FORBIDDEN'); } };
+    box.window = box;
+    vm.createContext(box);
+    vm.runInContext(source.slice(0, source.indexOf('(async function start()')), box);
+    const S = vm.runInContext('S', box);
+    S.data = { season: 2099, week: 2, players: [], games: [], scoring: {}, categories: { rush_yd: { label: 'Rush Yds' } } };
+    const p = { id: 'fictional-player', espn_id: '900000001', name: 'Fictional Player', team: 'QAA', pos: 'RB',
+      game_id: '900000101', props: [{ key: 'rush_yd', line: 5.5 }], log: [], actual: null };
+    const g = { id: p.game_id, home: 'QAA', away: 'QAB', state: 'post', detail: 'Final',
+      kickoff: '2099-10-25T17:00:00Z', home_score: 0, away_score: 0 };
+    S.data.players = [p]; S.data.games = [g]; S.byId = { [p.id]: p }; S.games = { [g.id]: g };
+    // Loader-state double isolates raw provider checks; it does not qualify a publication.
+    S.grading = { pointer: { report_id: 'fictional-unit-authority' } };
+    S.propOutcomeAuthority = { board: S.data, state: 'validated_current_period', season: S.data.season,
+      week: S.data.week, report_id: S.grading.pointer.report_id, grading: S.grading, outcomes: S.finalOutcomes, outcomeCount: S.finalOutcomes.size };
+    S.byKey = { 'fictional player|QAA': p.id }; S.byEspn = { [p.espn_id]: p.id };
+    S.slpOk = false; S.slp = {}; S.live = {};
+    vm.runInContext('applyInjuries=()=>{}; defenseFromSummary=()=>({});', box);
+    const pick = () => ({ pid: p.id, key: 'rush_yd', dir: 'under', line: 5.5, season: 2099, week: 2, at: 1,
+      schema_version: 'mypicks-player-game-v1', gid: g.id, team: p.team, espn_id: p.espn_id,
+      kickoff: g.kickoff, period: 'full_game_including_overtime', stat_source: 'ESPN_EVENT_BOXSCORE' });
+    const summary = (yards = '0', attempts = '1', opts = {}) => ({
+      header: { id: g.id, season: { year: 2099, type: 2 }, week: { number: 2 }, competitions: [{ id: g.id, date: g.kickoff,
+        status: { type: { state: opts.state || 'post', shortDetail: opts.detail || 'Final', completed: opts.completed ?? true } } }] },
+      boxscore: { players: [{ team: { abbreviation: 'QAA' }, statistics: [{ name: 'rushing', labels: ['CAR', 'YDS', 'TD'],
+        athletes: [{ athlete: { id: opts.athlete || p.espn_id, displayName: 'Fictional Player' },
+          ...(opts.dnp == null ? {} : { didNotPlay: opts.dnp }), stats: [attempts, yards, '0'] }] }] }] } });
+    const apply = value => box.applySummary(g.id, value, S.data);
+    const status = (m = pick()) => box.propStatus(p, m.key, m.line, m.dir, m);
+    return { box, S, p, g, pick, summary, apply, status, saved, events, main: node('#main') };
+  };
+  for (const flag of ['missing', 'sleeper_ok', 'box_loaded', 'INA', 'gp_zero']) await test('unknown is not zero/DNP: ' + flag, () => {
+    const h = harness();
+    if (flag === 'sleeper_ok') h.S.slpOk = true;
+    if (flag === 'box_loaded') h.S.boxLoaded.add(h.g.id);
+    if (flag === 'INA') h.p.injury = 'Out';
+    if (flag === 'gp_zero') h.S.slp[h.p.id] = { gp: 0, pts_ppr: 0, rush_yd: 0 };
+    const st = h.status(); assert.equal(st.final, false); assert.equal(st.res, 'unresolved'); assert.equal(st.v, null);
+    // V2 deliberately restores the shared fantasy helpers; prop status above remains independently strict.
+  });
+  await test('played zero is a real final zero; integer equality is a push', () => {
+    const h = harness(); h.apply(h.summary('0', '1'));
+    assert.equal(h.status().v, 0); assert.equal(h.status().res, 'hit');
+    const m = h.pick(); m.line = 0; assert.equal(h.status(m).res, 'push'); assert.equal(h.status(m).final, true);
+  });
+  // Mutate the raw event after construction: the helper's ?? default must
+  // never turn missing/null completion evidence into literal true.
+  for (const [label, completed] of [['true', true], ['false', false], ['absent', undefined],
+      ['null', null], ['zero', 0], ['string-false', 'false']]) await test('explicit boolean event completion: ' + label, () => {
+    const h = harness(), pick = h.pick(), before = JSON.stringify(pick);
+    class CompletionClock extends Date {
+      constructor(...args) { super(...(args.length ? args : ['2099-10-25T18:00:00Z'])); }
+      static now() { return Date.parse('2099-10-25T18:00:00Z'); }
+    }
+    h.box.Date = CompletionClock;
+    assert.ok(Date.parse(h.g.kickoff) < h.box.Date.now(), 'fictional kickoff is in the past');
+    const body = h.summary('0', '1'), type = body.header.competitions[0].status.type;
+    if (label === 'absent') delete type.completed; else type.completed = completed;
+    assert.equal(Object.hasOwn(type, 'completed'), label !== 'absent');
+    if (label !== 'absent') assert.equal(type.completed, completed);
+    h.apply(body);
+    const status = h.status(pick), final = completed === true;
+    assert.equal(h.S.propEvents[h.g.id].final, final);
+    assert.equal(status.final, final);
+    assert.equal(status.res, final ? 'hit' : 'pending');
+    assert.equal(status.v, 0, 'observed played zero remains exact');
+    assert.equal(JSON.stringify(pick), before, 'original saved selection remains exact');
+  });
+  await test('positive explicit DNP is distinct from missing data', () => {
+    const h = harness(); h.apply(h.summary('--', '--', { dnp: true }));
+    assert.equal(h.status().res, 'dnp'); assert.equal(h.status().final, true); assert.equal(h.status().v, null);
+  });
+  await test('contradictory DNP and nonzero observed statistics stay unresolved', () => {
+    const h = harness(); h.apply(h.summary('4', '1', { dnp: true }));
+    assert.equal(h.status().res, 'unresolved'); assert.equal(h.status().final, false);
+  });
+  for (const value of [undefined, null, '--', '', 'NaN', 'Infinity']) await test('missing/malformed field: ' + String(value), () => {
+    const h = harness(); h.apply(h.summary(value, '1')); // Explicitly overwrite the defaulted parameter.
+    const body = h.summary('0', '1'); body.boxscore.players[0].statistics[0].athletes[0].stats[1] = value; h.apply(body);
+    assert.equal(h.status().res, 'unresolved'); assert.equal(h.status().final, false); assert.equal(h.status().v, null);
+  });
+  for (const detail of ['Postponed', 'Canceled', 'Suspended', '', null]) await test('post is not confirmed Final: ' + detail, () => {
+    const h = harness(); h.g.detail = detail; h.apply(h.summary('9', '1'));
+    assert.equal(h.status().final, false); assert.notEqual(h.status().res, 'hit'); assert.notEqual(h.status().res, 'miss');
+  });
+  await test('summary still live cannot finalize after scoreboard transitions to Final', () => {
+    const h = harness(); h.apply(h.summary('9', '1', { state: 'in', detail: 'Q4', completed: false }));
+    assert.equal(h.status().final, false);
+  });
+  for (const detail of ['Final', 'Final/OT', 'Final/2OT']) await test('confirmed final marker: ' + detail, () => {
+    const h = harness(); h.g.detail = detail; h.apply(h.summary('9', '1', { detail }));
+    assert.equal(h.status().final, true); assert.equal(h.status().res, 'miss');
+  });
+  await test('live over is provisional and signed-yardage corrections can reverse it', () => {
+    const h = harness(); h.g.state = 'in'; h.g.detail = 'Q3'; const m = h.pick(); m.dir = 'over'; m.line = 0;
+    h.apply(h.summary('7', '1', { state: 'in', detail: 'Q3', completed: false }));
+    assert.equal(h.status(m).final, false); assert.equal(h.status(m).res, 'above');
+    h.apply(h.summary('-1', '1', { state: 'in', detail: 'Q4', completed: false }));
+    assert.equal(h.status(m).v, -1); assert.equal(h.status(m).final, false);
+    h.g.state = 'post'; h.g.detail = 'Final'; h.apply(h.summary('-1', '1'));
+    assert.equal(h.status(m).res, 'miss'); assert.equal(h.status(m).final, true);
+    h.apply(h.summary('1', '1')); assert.equal(h.status(m).res, 'hit');
+  });
+  for (const field of ['gid', 'pid', 'team', 'espn_id', 'kickoff', 'week', 'season', 'period', 'stat_source', 'schema_version']) {
+    await test('saved binding cannot be repointed: ' + field, () => {
+      const h = harness(); h.apply(h.summary('0', '1')); const m = h.pick(); m[field] = typeof m[field] === 'number' ? -1 : 'wrong-binding';
+      assert.equal(h.status(m).res, 'unresolved'); assert.equal(h.status(m).final, false);
+    });
+  }
+  for (const type of ['wrong-event', 'wrong-athlete', 'wrong-team', 'same-name', 'wrong-season']) await test('source identity: ' + type, () => {
+    const h = harness(); const body = h.summary('0', '1');
+    if (type === 'wrong-event') body.header.id = '900000999';
+    if (type === 'wrong-athlete' || type === 'same-name') body.boxscore.players[0].statistics[0].athletes[0].athlete.id = '900000999';
+    if (type === 'wrong-team') body.boxscore.players[0].team.abbreviation = 'QAB';
+    if (type === 'wrong-season') body.header.season.year = 2098;
+    h.apply(body); assert.equal(h.status().res, 'unresolved'); assert.equal(h.status().final, false);
+  });
+  await test('partial combined categories never pad missing fields with zero', () => {
+    const h = harness(); h.apply(h.summary('0', '1')); const m = h.pick(); m.key = 'rush_rec_yd';
+    assert.equal(h.status(m).res, 'unresolved'); assert.equal(h.status(m).v, null);
+  });
+  for (const value of [{}, { toString: 'unsupported' }, [], true]) await test('malformed saved provider identity stays unresolved', () => {
+    const h = harness(); h.apply(h.summary('0', '1')); const m = h.pick(); m.espn_id = value;
+    assert.equal(h.status(m).res, 'unresolved'); assert.equal(h.status(m).final, false);
+    h.S.mine = [m]; const raw = JSON.stringify([m]); h.saved.set('nflprops.mine', raw);
+    assert.doesNotThrow(() => h.box.renderMine()); assert.equal(h.saved.get('nflprops.mine'), raw);
+  });
+  await test('duplicate provider identity cannot resolve a player by name', () => {
+    const h = harness(); h.S.data.players.push({ ...h.p, id: 'other-fictional-player' }); h.apply(h.summary('0', '1'));
+    assert.equal(h.status().res, 'unresolved'); assert.equal(h.status().final, false);
+  });
+  await test('provided wrong source week and wrong source kickoff cannot finalize', () => {
+    const h = harness(); let body = h.summary('0', '1'); body.header.week = 3; h.apply(body);
+    assert.equal(h.status().res, 'unresolved');
+    body = h.summary('0', '1'); body.header.competitions[0].date = '2099-10-26T17:00:00Z'; h.apply(body);
+    assert.equal(h.status().res, 'unresolved');
+  });
+  await test('source success followed by a missing field clears the prior final value', () => {
+    const h = harness(); h.apply(h.summary('0', '1')); assert.equal(h.status().res, 'hit');
+    h.apply(h.summary('--', '1')); assert.equal(h.status().res, 'unresolved'); assert.equal(h.status().v, null);
+  });
+  await test('legacy picks render unresolved and keep original storage bytes', () => {
+    const h = harness(); h.apply(h.summary('0', '1')); const m = { ...h.pick() }; delete m.gid; delete m.schema_version;
+    h.S.mine = [m]; const raw = ' \n[ ' + JSON.stringify(m) + ' ]\n'; h.saved.set('nflprops.mine', raw);
+    h.box.renderMine(); assert.match(h.main.innerHTML, /UNRESOLVED/); assert.equal(h.saved.get('nflprops.mine'), raw);
+    assert.equal(m.gid, undefined); assert.equal(m.line, 5.5);
+  });
+  await test('adding a bound new pick preserves an unbound record and its exact JSON bytes', () => {
+    const h = harness(); const old = '{ "pid":"fictional-player", "key":"rush_yd", "dir":"under", "line":5.50, "season":2099, "week":2, "at":0, "note":"comma, quote\\\" and slash\\\\" }';
+    h.saved.set('nflprops.mine', '[\n' + old + '\n]'); h.S.mine = JSON.parse(h.saved.get('nflprops.mine'));
+    assert.equal(h.box.minePick(h.p.id, 'rush_yd', 'under'), undefined);
+    h.box.toggleMine(h.p.id, 'rush_yd', 'over', 9.5);
+    const raw = h.saved.get('nflprops.mine'); assert.ok(raw.includes(old));
+    const records = JSON.parse(raw); assert.equal(records.length, 2); assert.equal(records[0].line, 5.5); assert.equal(records[0].gid, undefined);
+    assert.equal(records[1].gid, h.g.id); assert.equal(records[1].period, 'full_game_including_overtime');
+  });
+  await test('personal line edits target the exact record; unchanged legacy bytes survive reload', () => {
+    const h = harness(); const old = '{ "pid":"fictional-player", "key":"rush_yd", "dir":"under", "line":5.50, "season":2099, "week":2, "at":0 }';
+    const m = h.pick(); h.saved.set('nflprops.mine', '[\n' + old + ',\n' + JSON.stringify(m) + ']'); h.S.mine = JSON.parse(h.saved.get('nflprops.mine'));
+    const target = { dataset: { mline: 'p', mineIndex: '1' }, value: '0', matches: () => false };
+    for (const fn of h.events.change) fn({ target });
+    const raw = h.saved.get('nflprops.mine'); assert.ok(raw.includes(old));
+    const records = JSON.parse(raw); assert.equal(records[0].line, 5.5); assert.equal(records[1].line, 0);
+    assert.equal(records[0].gid, undefined); assert.equal(records[1].gid, h.g.id);
+    assert.equal(h.box.store('mine')[1].line, 0);
+  });
+  await test('late previous-period Sleeper response never contaminates a new board', async () => {
+    const h = harness(); h.g.state = 'in'; let finish;
+    h.box.fixtureGetJSON = () => new Promise(resolve => { finish = resolve; });
+    vm.runInContext('getJSON=(...args)=>fixtureGetJSON(...args)', h.box);
+    const pending = h.box.pollSleeper(); const old = h.S.data; h.S.data = { ...old, week: 3 };
+    finish([{ player_id: h.p.id, stats: { gp: 1, rush_yd: 99 } }]); await pending;
+    assert.equal(h.S.propSleeper, null); assert.equal(h.S.slp[h.p.id], undefined);
+  });
+  await test('completed events are refreshed despite healthy Sleeper/final cache, allowing corrections', async () => {
+    const h = harness(); h.S.slpOk = true; h.S.boxFinal.add(h.g.id); let gets = 0;
+    h.box.fixtureGetJSON = async () => { gets++; return h.summary(gets === 1 ? '9' : '0', '1'); };
+    vm.runInContext('getJSON=(...args)=>fixtureGetJSON(...args)', h.box);
+    await h.box.pollBoxScores(); assert.equal(h.status().res, 'miss');
+    await h.box.pollBoxScores(); assert.equal(h.status().res, 'hit'); assert.equal(gets, 2);
+  });
+  console.log(JSON.stringify({ suite: 'player-prop-evidence-v1', fictional_cases: checks, failures }));
+  assert.equal(failures.length, 0, 'player-prop evidence regressions: ' + JSON.stringify(failures));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+
+
+// V2: mandatory provider identity/scope; local observation time is not availability proof.
+{
+  const extract=(text,name)=>{const m=text.match(new RegExp('^function '+name+'\\([\\s\\S]*?^\\}', 'm'));assert.ok(m,name);return m[0];};
+function identityProbe(mutate){
+  const S={data:{season:2099,week:2,players:[]},games:{},propEvents:{},propSleeper:null,finalOutcomes:new Map()};
+  const p={id:'fictional-p',espn_id:'900000001',game_id:'900000101',team:'QAA'};
+  const g={id:p.game_id,home:'QAA',away:'QAB',kickoff:'2099-10-25T17:00:00Z',state:'post',detail:'Final'};
+  S.data.players=[p];S.games[g.id]=g;
+  const body={header:{id:g.id,season:{year:2099,type:2},week:{number:2},competitions:[{id:g.id,date:g.kickoff,
+    status:{type:{state:'post',shortDetail:'Final',completed:true}}}]},boxscore:{players:[{team:{abbreviation:'QAA'},statistics:[{
+      name:'rushing',labels:['CAR','YDS','TD'],athletes:[{athlete:{id:p.espn_id},stats:['1','0','0']}]}]}]}};
+  mutate(body,S,g);
+  class ScopeClock extends Date { constructor(...args){super(...(args.length?args:['2099-10-25T18:00:00Z']));} static now(){return Date.parse('2099-10-25T18:00:00Z');} }
+  S.grading={pointer:{report_id:'fictional-scope-authority'}};
+  S.propOutcomeAuthority={board:S.data,state:'validated_current_period',season:S.data.season,week:S.data.week,report_id:S.grading.pointer.report_id,grading:S.grading,outcomes:S.finalOutcomes,outcomeCount:S.finalOutcomes.size};
+  const c={S,teamCode:x=>x,Date:ScopeClock};vm.createContext(c);
+  vm.runInContext(['propFinal','propValue','propPickBound','recordPropEvidence','propEventStatus','propRawFallbackAllowed','propStatus'].map(n=>extract(source,n)).join('\n'),c);
+  const m={pid:p.id,gid:g.id,team:p.team,espn_id:p.espn_id,kickoff:g.kickoff,season:S.data.season,week:S.data.week,
+    schema_version:'mypicks-player-game-v1',period:'full_game_including_overtime',stat_source:'ESPN_EVENT_BOXSCORE'};
+  c.recordPropEvidence(g.id,body,S.data);
+  const entry=S.propEvents[g.id];
+  return {status:c.propStatus(p,'rush_yd',5.5,'under',m),stored_scope:entry?{
+    season:entry.season,week:entry.week,kickoff:entry.kickoff,observed_at:entry.observed_at,final:entry.final}:null};
+}
+const invalid=[
+["missing-season",b=>{delete b.header.season;}],
+["missing-season-year",b=>{delete b.header.season.year;}],
+["missing-season-type",b=>{delete b.header.season.type;}],
+["null-season",b=>{b.header.season=null;}],
+["null-year",b=>{b.header.season.year=null;}],
+["string-year",b=>{b.header.season.year='2099';}],
+["wrong-season",b=>{b.header.season.year=2098;}],
+["wrong-season-type",b=>{b.header.season.type=3;}],
+["missing-week",b=>{delete b.header.week;}],
+["missing-week-number",b=>{delete b.header.week.number;}],
+["null-week",b=>{b.header.week=null;}],
+["string-week",b=>{b.header.week='2';}],
+["wrong-week",b=>{b.header.week.number=3;}],
+["missing-kickoff",b=>{delete b.header.competitions[0].date;}],
+["null-kickoff",b=>{b.header.competitions[0].date=null;}],
+["invalid-kickoff",b=>{b.header.competitions[0].date='not-a-date';}],
+["kickoff-without-timezone",b=>{b.header.competitions[0].date='2099-10-25T17:00:00';}],
+["wrong-kickoff",b=>{b.header.competitions[0].date='2099-10-26T17:00:00Z';}],
+["wrong-event-id",b=>{b.header.id='900000999';}],
+["wrong-competition-id",b=>{b.header.competitions[0].id='900000999';}],
+["wrong-team",b=>{b.boxscore.players[0].team.abbreviation='QAB';}],
+["wrong-athlete",b=>{b.boxscore.players[0].statistics[0].athletes[0].athlete.id='900000999';}],
+["all-required-scope-absent",b=>{delete b.header.season;delete b.header.week;delete b.header.competitions[0].date;}]
+];
+for(const [name,mutate]of invalid){
+  const result=identityProbe(mutate);
+  assert.equal(result.status.res,'unresolved',name);
+  assert.equal(result.status.final,false,name);
+  assert.equal(result.status.v,null,name);
+}
+const complete=identityProbe(()=>{});
+assert.equal(complete.status.res,'hit');assert.equal(complete.status.v,0);assert.equal(complete.status.final,true);
+const offset=identityProbe(b=>{b.header.competitions[0].date='2099-10-25T12:00:00-05:00';b.header.week=2;});
+assert.equal(offset.status.final,true);assert.equal(offset.status.v,0);
+console.log(JSON.stringify({suite:'v2-strict-provider-scope',invalid_cases:invalid.length,valid_cases:2,failures:0}));
+}
+
+
+// 484d composition: independently saved Phase 2 outcomes retain their contract;
+// raw ESPN evidence and device picks cannot silently replace that authority.
+{
+  const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const app = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8');
+  const failures = []; let checks = 0;
+  function harness() {
+    const nodes = new Map(), storage = new Map(), events = {};
+    const node = key => {
+      if (!nodes.has(key)) nodes.set(key, {innerHTML:'',hidden:false,style:{},addEventListener(){},
+        classList:{add(){},remove(){},toggle(){}},querySelectorAll:()=>[]});
+      return nodes.get(key);
+    };
+    class CompositionClock extends Date { constructor(...args){super(...(args.length?args:['2099-10-25T18:00:00Z']));} static now(){return Date.parse('2099-10-25T18:00:00Z');} }
+    const box = {console,Date:CompositionClock,URL,URLSearchParams,setTimeout:()=>1,clearTimeout(){},setInterval:()=>1,
+      localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,String(v))},
+      document:{hidden:true,querySelector:node,querySelectorAll:()=>[],body:node('body'),documentElement:node('html'),
+        addEventListener:(kind,fn)=>(events[kind]||=[]).push(fn)},
+      location:{hash:''},history:{},navigator:{},CSS:{escape:x=>x},addEventListener(){},innerWidth:390,scrollY:0,scrollTo(){},confirm:()=>true,
+      fetch:async()=>{throw new Error('ACTUAL_NETWORK_FORBIDDEN');}};
+    box.window=box;vm.createContext(box);vm.runInContext(app.slice(0,app.indexOf('(async function start()')),box);
+    const S=vm.runInContext('S',box);
+    const p={id:'fictional-player',espn_id:'900000001',game_id:'900000101',team:'QAA',name:'Fictional Player',pos:'RB',props:[{key:'rush_yd',line:5.5}],log:[]};
+    const g={id:p.game_id,home:'QAA',away:'QAB',kickoff:'2099-10-25T17:00:00Z',state:'post',detail:'Final'};
+    S.data={season:2099,week:2,players:[p],games:[g],categories:{rush_yd:{label:'Rush Yds'}},scoring:{}};
+    S.games={[g.id]:g};S.byId={[p.id]:p};S.byKey={'fictional player|QAA':p.id};S.byEspn={[p.espn_id]:p.id};
+    S.grading={pointer:{report_id:'fictional-composition-authority'}};
+    S.propOutcomeAuthority={board:S.data,state:'validated_current_period',season:S.data.season,week:S.data.week,report_id:S.grading.pointer.report_id,grading:S.grading,outcomes:S.finalOutcomes,outcomeCount:S.finalOutcomes.size};
+    const pick={pid:p.id,gid:g.id,team:p.team,espn_id:p.espn_id,kickoff:g.kickoff,season:2099,week:2,
+      key:'rush_yd',line:5.5,dir:'under',schema_version:'mypicks-player-game-v1',period:'full_game_including_overtime',stat_source:'ESPN_EVENT_BOXSCORE'};
+    const final={season:2099,week:2,game_id:g.id,player_id:p.id,category:'rush_yd',team:p.team,kickoff:g.kickoff,
+      status:'resolved',final_confirmed:true,actual:0,outcome_conflict:false};
+    const summary={header:{id:g.id,season:{year:2099,type:2},week:{number:2},competitions:[{id:g.id,date:g.kickoff,
+      status:{type:{state:'post',shortDetail:'Final',completed:true}}}]},boxscore:{players:[{team:{abbreviation:'QAA'},
+      statistics:[{name:'rushing',labels:['CAR','YDS','TD'],athletes:[{athlete:{id:p.espn_id,displayName:p.name},stats:['1','9','0']}]}]}]}};
+    vm.runInContext('applyInjuries=()=>{};defenseFromSummary=()=>({});',box);
+    return {S,p,g,pick,final,summary,box,storage,events,node,
+      publish:row=>S.finalOutcomes.set(box.finalIdentity(p,'rush_yd'),row),
+      status:()=>box.propStatus(p,'rush_yd',pick.line,pick.dir,pick)};
+  }
+  function test(name,run){checks++;try{run(harness());}catch(error){failures.push({name,error:error.message});}}
+  test('authoritative Phase 2 zero survives contradictory raw event fallback',h=>{
+    h.publish(h.final);h.box.applySummary(h.g.id,h.summary,h.S.data);
+    assert.equal(h.status().res,'hit');assert.equal(h.status().v,0);assert.equal(h.status().final,true);
+  });
+  for(const status of ['pending','unresolved'])test('saved '+status+' cannot be replaced by a raw final',h=>{
+    h.publish({...h.final,status,final_confirmed:false,actual:null});h.box.applySummary(h.g.id,h.summary,h.S.data);
+    assert.equal(h.status().res,status);assert.equal(h.status().final,false);
+  });
+  test('saved conflict cannot be replaced by raw final',h=>{
+    h.publish({...h.final,outcome_conflict:true});h.box.applySummary(h.g.id,h.summary,h.S.data);
+    assert.equal(h.status().res,'unresolved');assert.equal(h.status().v,null);
+  });
+  test('mismatched saved outcome scope cannot fall through to raw final',h=>{
+    h.publish({...h.final,team:'QAB'});h.box.applySummary(h.g.id,h.summary,h.S.data);
+    assert.equal(h.status().res,'unresolved');assert.equal(h.status().final,false);
+  });
+  test('saved final corrections remain original line-relative Phase 2 evidence',h=>{
+    h.publish(h.final);assert.equal(h.status().res,'hit');h.final.actual=9;
+    assert.equal(h.status().res,'miss');assert.equal(h.pick.line,5.5);
+  });
+  test('authoritative final cannot repoint an old saved athlete',h=>{
+    h.publish(h.final);h.pick.espn_id='900000999';assert.equal(h.status().res,'unresolved');
+  });
+  test('legacy pick stays unresolved even with a qualified current-player final',h=>{
+    h.publish(h.final);const old={...h.pick};delete old.schema_version;delete old.gid;
+    const raw=' \n[ '+JSON.stringify(old)+' ]\n';h.S.mine=[old];h.storage.set('nflprops.mine',raw);h.box.renderMine();
+    assert.match(h.node('#main').innerHTML,/UNRESOLVED/);assert.equal(h.storage.get('nflprops.mine'),raw);
+  });
+  test('invalid event headers cannot borrow name-matched fantasy live values',h=>{
+    h.g.state='in';h.g.detail='Q3';h.S.live[h.p.id]={gp:1,rush_yd:99};delete h.summary.header.week;
+    h.box.applySummary(h.g.id,h.summary,h.S.data);assert.equal(h.status().res,'unresolved');assert.equal(h.status().v,null);
+  });
+  test('previous-board summary cannot mutate caches or new event state',h=>{
+    const board=h.S.data;h.S.data={...board,week:3};const before=JSON.stringify({sum:h.S.sum,live:h.S.live,events:h.S.propEvents});
+    h.box.applySummary(h.g.id,h.summary,board);assert.equal(JSON.stringify({sum:h.S.sum,live:h.S.live,events:h.S.propEvents}),before);
+  });
+  test('live fantasy prop keeps Phase 2 presence/scoring with scoped Sleeper values',h=>{
+    h.g.state='in';h.S.data.scoring={rush_yd:.1,rec:1};h.S.slp[h.p.id]={gp:1,rush_yd:10,rec:1};
+    h.S.propSleeper={board:h.S.data,players:h.S.slp};
+    const st=h.box.propStatus(h.p,'fpts',2,'over');assert.equal(st.v,2);assert.equal(st.res,'equal');assert.equal(st.final,false);
+  });
+  test('fantasy prop keeps explicit unknown scoring components unresolved',h=>{
+    h.g.state='in';h.S.data.scoring={rush_yd:.1,rec:1};h.S.slp[h.p.id]={gp:1,rush_yd:null,rec:1};
+    h.S.propSleeper={board:h.S.data,players:h.S.slp};
+    const st=h.box.propStatus(h.p,'fpts',2,'over');
+    assert.deepEqual(JSON.parse(JSON.stringify(st)),{v:null,res:'unresolved',final:false,reason:'Live scoring components are unavailable or incomplete'});
+  });
+  test('exact saved removal preserves unrelated legacy object bytes',h=>{
+    const old='{ "pid":"fictional-old", "key":"rush_yd", "line":7.50, "season":2098, "week":1 }';
+    h.storage.set('nflprops.mine','[ '+old+', '+JSON.stringify(h.pick)+' ]');h.S.mine=JSON.parse(h.storage.get('nflprops.mine'));
+    const button={dataset:{rm:'p',mineIndex:'1'}};
+    for(const fn of h.events.click)fn({target:{closest:selector=>selector==='[data-rm]'?button:null},preventDefault(){}});
+    assert.equal(h.S.mine.length,1);assert.ok(h.storage.get('nflprops.mine').includes(old));
+  });
+  test('non-numeric personal edit cannot partially parse into a stored line',h=>{
+    h.S.mine=[h.pick];const raw=JSON.stringify(h.S.mine);h.storage.set('nflprops.mine',raw);
+    const target={dataset:{mline:'p',mineIndex:'0'},value:'0garbage',matches:()=>false};
+    for(const fn of h.events.change)fn({target});assert.equal(h.pick.line,5.5);assert.equal(h.storage.get('nflprops.mine'),raw);
+  });
+  console.log(JSON.stringify({suite:'actual-484d-prop-phase2-composition',fictional_cases:checks,failures}));
+  assert.equal(failures.length,0,'Phase 2 prop composition: '+JSON.stringify(failures));
+}
+
+
+// Correctness controls for required outcome availability, board epochs, raw clocks
+// and fantasy missingness. In-memory transport serves actual hash-checked assets.
+{
+// Fictional, actual bounded pointer/index/period readers and Node VM app functions.
+// All fetches are in-memory Responses; no provider or production qualification.
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict'),crypto=require('node:crypto');
+const file=path.join(__dirname,'../output/app.js'),app=fs.readFileSync(file,'utf8');
+const at='2099-10-25T18:00:00Z',kickoff='2099-10-25T17:00:00Z',hash=v=>crypto.createHash('sha256').update(v).digest('hex');
+function fixture(){
+ const nodes=new Map(),storage=new Map([['nflprops.mine','PRIVATE_BYTES'],['nflprops.paper-ticket.v1.existing','TICKET_BYTES'],['nflprops.paper-leg.v1.existing','LEG_BYTES'],['nflprops.paper-draft.v1','DRAFT_BYTES']]),requests=[];
+ const node=k=>{if(!nodes.has(k))nodes.set(k,{innerHTML:'',hidden:false,style:{},addEventListener(){},classList:{add(){},remove(){},toggle(){}},querySelectorAll:()=>[]});return nodes.get(k);};
+ let now=at;class Clock extends Date{constructor(...a){super(...(a.length?a:[now]));}static now(){return Date.parse(now);}}
+ const box={console,Date:Clock,URL,URLSearchParams,TextEncoder,TextDecoder,Response,ReadableStream,Blob,DecompressionStream,structuredClone,crypto:crypto.webcrypto,
+  setTimeout:()=>1,clearTimeout(){},setInterval:()=>1,localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,String(v))},
+  document:{hidden:true,querySelector:node,querySelectorAll:()=>[],body:node('body'),documentElement:node('html'),addEventListener(){}},
+  location:{hash:''},history:{},navigator:{},CSS:{escape:x=>x},addEventListener(){},innerWidth:390,scrollY:0,scrollTo(){},confirm:()=>true,
+  fetch:async(url)=>{requests.push(String(url));throw Error('NO_REAL_NETWORK');}};
+ box.window=box;vm.createContext(box);vm.runInContext(app.slice(0,app.indexOf('(async function start()')),box);
+ const S=vm.runInContext('S',box),p={id:'fictional-player',espn_id:'900000001',game_id:'900000101',team:'QAA',name:'Fictional Player',pos:'RB',props:[{key:'rush_yd',line:5.5}],log:[]};
+ const g={id:p.game_id,home:'QAA',away:'QAB',kickoff,state:'post',detail:'Final'};
+ S.data={season:2099,week:2,players:[p],games:[g],categories:{rush_yd:{label:'Rush Yds'},fpts:{label:'Fantasy'}},scoring:{rush_yd:.1,rec:1}};
+ S.games={[g.id]:g};S.byId={[p.id]:p};S.byKey={'fictional player|QAA':p.id};S.byEspn={[p.espn_id]:p.id};
+ const pick={pid:p.id,gid:g.id,team:p.team,espn_id:p.espn_id,kickoff,season:2099,week:2,key:'rush_yd',line:5.5,dir:'under',schema_version:'mypicks-player-game-v1',period:'full_game_including_overtime',stat_source:'ESPN_EVENT_BOXSCORE'};
+ const summary=()=>({header:{id:g.id,season:{year:2099,type:2},week:{number:2},competitions:[{id:g.id,date:kickoff,status:{type:{state:'post',shortDetail:'Final',completed:true}}}]},boxscore:{players:[{team:{abbreviation:'QAA'},statistics:[{name:'rushing',labels:['CAR','YDS','TD'],athletes:[{athlete:{id:p.espn_id,displayName:p.name},stats:['1','9','0']}]}]}]}});
+ vm.runInContext('applyInjuries=()=>{};defenseFromSummary=()=>({});',box);
+ function publication({id='a'.repeat(64),week=2,plain=false,wrongPeriod=false,wrongGeneration=false}={}){
+  const assets=new Map(),put=(payload,filename,partition=false)=>{const raw=Buffer.from(JSON.stringify({...payload,report_id:id}));const digest=hash(raw),name=(partition?digest:id)+'/'+filename;assets.set('data/selection-grading/'+name,raw);return {path:name,sha256:digest,...(!plain?{decoded_bytes:raw.length}:{})};};
+  const row={season:2099,week:wrongPeriod?3:week,game_id:'fictional-other-game',player_id:'fictional-other-player',category:'rec',team:'QAA',kickoff,status:'pending',actual:null,final_confirmed:false,outcome_conflict:false};
+  let summary,outcomes;
+  if(plain){summary=put({schema_version:'selection-public-report-v1',report_schema_version:'selection-report-v2',summary:{tables:[]}},'summary.json');outcomes=put({schema_version:'selection-final-outcomes-v1',outcomes:[row]},'outcomes.json');}
+  else{
+   const raw=Buffer.from(JSON.stringify({schema_version:'selection-final-outcome-period-v1',report_id:wrongGeneration?'b'.repeat(64):id,season:2099,week:wrongPeriod?3:week,outcomes:[row]}));
+   const digest=hash(raw),period={path:digest+'/outcomes.json',sha256:digest,decoded_bytes:raw.length,season:2099,week,count:1};assets.set('data/selection-grading/'+period.path,raw);
+   summary=put({schema_version:'selection-public-report-v3',report_schema_version:'selection-report-v3',row_count:0,contexts:{},summary_partitions:[],summary:{}},'summary.json');
+   outcomes=put({schema_version:'selection-final-outcome-index-v1',outcome_count:1,periods:[period]},'outcomes.json');
+  }
+  const pointer={schema_version:plain?'selection-publication-pointer-v1':'selection-publication-pointer-v2',report_id:id,generated_at:now,row_count:0,rows:[],summary,outcomes};
+  assets.set('data/selection-grading/latest.json',Buffer.from(JSON.stringify(pointer)));return {assets,pointer};
+ }
+ function serve(pub,override=null){box.fetch=async url=>{url=String(url);requests.push(url);if(override){const response=await override(url,pub);if(response)return response;}return pub.assets.has(url)?new Response(pub.assets.get(url),{status:200,headers:{'Content-Type':'application/json'}}):new Response('missing',{status:500});};}
+ const status=()=>box.propStatus(p,'rush_yd',pick.line,pick.dir,pick),apply=body=>box.applySummary(g.id,body||summary(),S.data);
+ return {box,S,p,g,pick,summary,status,apply,storage,requests,publication,serve,setClock:value=>now=value};
+}
+const failures=[],passed=[];
+async function test(name,fn){try{await fn(fixture());passed.push(name);}catch(e){failures.push({name,error:e.message});}}
+(async()=>{
+ for(const plain of [false,true])await test('actual hashed '+(plain?'plain':'partitioned')+' complete period permits absent-key raw fallback',async h=>{const pub=h.publication({plain});h.serve(pub);await h.box.loadGrading();assert.ok(h.S.grading,h.S.gradingError);h.apply();assert.equal(h.status().v,9);assert.equal(h.status().final,true);});
+ for(const status of [404,500])await test('pointer HTTP'+status+' stays unavailable',async h=>{h.serve(h.publication(),url=>url.endsWith('latest.json')?new Response('missing',{status}):null);h.apply();await h.box.loadGrading();assert.equal(h.status().res,'unresolved');assert.equal(h.status().v,null);});
+ await test('malformed pointer stays unavailable',async h=>{h.serve(h.publication(),url=>url.endsWith('latest.json')?new Response('{',{status:200}):null);h.apply();await h.box.loadGrading();assert.equal(h.status().res,'unresolved');});
+ for(const mode of ['missing','corrupt'])await test('required partition '+mode+' stays unavailable',async h=>{const pub=h.publication();h.serve(pub,(url,p)=>{if(url.endsWith('/outcomes.json')&&!url.startsWith('data/selection-grading/'+p.pointer.report_id+'/'))return mode==='missing'?new Response('missing',{status:500}):new Response(Buffer.concat([p.assets.get(url),Buffer.from(' ')]),{status:200});});h.apply();await h.box.loadGrading();assert.equal(h.status().res,'unresolved');assert.equal(h.status().v,null);});
+ for(const option of [{week:3},{wrongPeriod:true},{wrongGeneration:true}])await test('wrong/absent required period or generation '+JSON.stringify(option),async h=>{h.serve(h.publication(option));h.apply();await h.box.loadGrading();assert.equal(h.status().res,'unresolved');assert.equal(h.status().final,false);});
+ await test('loading is not successful absence',async h=>{let finish;const pub=h.publication();h.serve(pub,url=>url.endsWith('latest.json')?new Promise(done=>finish=done):null);h.apply();const pending=h.box.loadGrading();assert.equal(h.status().res,'unresolved');finish(new Response(pub.assets.get('data/selection-grading/latest.json')));await pending;assert.equal(h.status().final,true);});
+ await test('old board response cannot assign grading to a new board',async h=>{let finish;const pub=h.publication();h.serve(pub,url=>url.endsWith('latest.json')?new Promise(done=>finish=done):null);const pending=h.box.loadGrading();const old=h.S.data;h.S.data={...old,week:3};finish(new Response(pub.assets.get('data/selection-grading/latest.json')));await pending;assert.equal(h.S.grading,null);assert.equal(h.S.finalOutcomes.size,0);assert.equal(h.box.propRawFallbackAllowed(),false);});
+ await test('same-period replacement board cannot borrow old authority',async h=>{h.serve(h.publication());await h.box.loadGrading();h.apply();h.S.data={...h.S.data};assert.equal(h.status().res,'unresolved');});
+ await test('same-id replacement grading object cannot inherit old raw absence authority',async h=>{h.serve(h.publication());await h.box.loadGrading();h.apply();assert.equal(h.status().final,true);h.S.grading={...h.S.grading};assert.equal(h.box.propRawFallbackAllowed(),false);assert.equal(h.status().res,'unresolved');});
+ await test('clearing the witnessed outcome map cannot inherit successful complete-period absence',async h=>{h.serve(h.publication());await h.box.loadGrading();h.apply();assert.equal(h.status().final,true);h.S.finalOutcomes.clear();assert.equal(h.box.propRawFallbackAllowed(),false);assert.equal(h.status().res,'unresolved');});
+ await test('replacement outcome map cannot inherit old raw absence authority',async h=>{h.serve(h.publication());await h.box.loadGrading();h.apply();assert.equal(h.status().final,true);h.S.finalOutcomes=new Map(h.S.finalOutcomes);assert.equal(h.box.propRawFallbackAllowed(),false);assert.equal(h.status().res,'unresolved');});
+ await test('old publication response cannot overwrite newer complete report',async h=>{const a=h.publication(),b=h.publication({id:'b'.repeat(64)});let finish,count=0;h.serve({assets:new Map([...a.assets,...b.assets]),pointer:b.pointer},url=>url.endsWith('latest.json')?(++count===1?new Promise(done=>finish=done):new Response(b.assets.get(url))):null);const first=h.box.loadGrading();await h.box.loadGrading();finish(new Response(a.assets.get('data/selection-grading/latest.json')));await first;assert.equal(h.S.grading.pointer.report_id,b.pointer.report_id);h.apply();assert.equal(h.status().final,true);});
+ for(const fields of [{gp:1,rush_yd:null,rec:1},{gp:1,rush_yd:10,rec:null}])for(const line of [2,-1])await test('unknown fantasy component is unresolved '+JSON.stringify(fields)+' line'+line,h=>{h.g.state='in';h.S.slp[h.p.id]=fields;h.S.propSleeper={board:h.S.data,players:h.S.slp};const s=h.box.propStatus(h.p,'fpts',line,'over');assert.equal(s.v,null);assert.equal(s.res,'unresolved');});
+ for(const [stats,expected]of [[{gp:1,rush_yd:0,rec:0},0],[{gp:1,rush_yd:-2,rec:0},-.2],[{gp:1,rush_yd:10,rec:1},2]])await test('known fantasy zero/signed/complete preserved '+expected,h=>{h.g.state='in';h.S.slp[h.p.id]=stats;const s=h.box.propStatus(h.p,'fpts',2,'over');assert.equal(s.v,expected);assert.equal(s.res,expected===2?'equal':'below');});
+ for(const clock of ['2099-10-25T16:00:00Z'])await test('raw final cannot precede kickoff',async h=>{h.setClock(clock);h.serve(h.publication());await h.box.loadGrading();h.apply();assert.equal(h.status().res,'unresolved');assert.equal(h.status().final,false);});
+ for(const value of [undefined,'bad','2099-10-25T16:00:00Z','2099-10-25T17:00:00Z','2099-10-25T19:00:00Z'])await test('raw observation clock rejects '+String(value),async h=>{h.serve(h.publication());await h.box.loadGrading();h.apply();h.S.propEvents[h.g.id].observed_at=value;assert.equal(h.status().res,'unresolved');});
+ for(const yards of ['9.5','9007199254740992'])await test('raw yardage actual must be a safe integer '+yards,async h=>{h.serve(h.publication());await h.box.loadGrading();const body=h.summary();body.boxscore.players[0].statistics[0].athletes[0].stats[1]=yards;h.apply(body);assert.equal(h.status().res,'unresolved');});
+ for(const yards of ['0','-1','9'])await test('raw valid zero/signed/integer yardage '+yards,async h=>{h.serve(h.publication());await h.box.loadGrading();const body=h.summary();body.boxscore.players[0].statistics[0].athletes[0].stats[1]=yards;h.apply(body);assert.equal(h.status().v,Number(yards));assert.equal(h.status().final,true);});
+ await test('raw final cannot become paper or public outcome authority',async h=>{h.serve(h.publication());await h.box.loadGrading();const before=JSON.stringify([...h.S.finalOutcomes]);h.apply();assert.equal(h.status().final,true);assert.equal(JSON.stringify([...h.S.finalOutcomes]),before);const leg={season:2099,week:2,game_id:h.g.id,player_id:h.p.id,category:'rush_yd',team:h.p.team,name:h.p.name,period:'full_game',kickoff,line:5.5,side:'under',line_source:'dk',raw_projection:5,adjusted_projection:4,board_generated_at:'2099-10-25T15:00:00Z',quote_observed_at:null};assert.equal(h.box.paperLegStatus(leg,h.S.finalOutcomes).status,'unresolved');});
+ await test('all private namespaces remain unchanged',async h=>{const before=JSON.stringify([...h.storage]);h.serve(h.publication());await h.box.loadGrading();h.apply();h.status();assert.equal(JSON.stringify([...h.storage]),before);assert.ok(h.requests.every(url=>url.startsWith('data/selection-grading/')));});
+ console.log(JSON.stringify({suite:'prop-outcome-authority-actual-readers',checks:passed.length+failures.length,failures,actual_reader_used:true,HTTP_provider_requests:0,production_qualification:false}));if(failures.length)process.exitCode=1;
+})().catch(error=>{console.error(error);process.exitCode=1;});
+}
+
+// Fully bound saved personal selections keep their own historical period. These
+// tests use the actual bounded, hash-checked publication readers; all transport
+// is fictional in-memory Responses, without provider requests or qualification.
+{
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),crypto=require('node:crypto');
+const app=fs.readFileSync(path.join(__dirname,'../output/app.js'),'utf8'),digest=v=>crypto.createHash('sha256').update(v).digest('hex');
+function savedHistoryFixture(){
+ const nodes=new Map(),storage=new Map(),events={},requests=[];
+ const node=k=>{if(!nodes.has(k))nodes.set(k,{innerHTML:'',hidden:false,style:{},addEventListener(){},classList:{add(){},remove(){},toggle(){}},querySelectorAll:()=>[]});return nodes.get(k);};
+ class Clock extends Date{constructor(...a){super(...(a.length?a:['2099-10-25T22:00:00Z']));}static now(){return Date.parse('2099-10-25T22:00:00Z');}}
+ const box={console,Date:Clock,URL,URLSearchParams,TextEncoder,TextDecoder,Response,ReadableStream,Blob,DecompressionStream,structuredClone,crypto:crypto.webcrypto,
+  setTimeout:()=>1,clearTimeout(){},setInterval:()=>1,localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,String(v))},
+  document:{hidden:true,querySelector:node,querySelectorAll:()=>[],body:node('body'),documentElement:node('html'),addEventListener:(kind,fn)=>(events[kind]||=[]).push(fn)},
+  location:{hash:''},history:{},navigator:{},CSS:{escape:x=>x},addEventListener(){},innerWidth:390,scrollY:0,scrollTo(){},confirm:()=>true,
+  fetch:async()=>{throw Error('NO_REAL_NETWORK');}};box.window=box;vm.createContext(box);vm.runInContext(app.slice(0,app.indexOf('(async function start()')),box);
+ const S=vm.runInContext('S',box),p={id:'fictional-saved-player',espn_id:'900000001',game_id:'900000202',team:'QZZ',name:'Fictional Saved Player',pos:'RB',props:[{key:'rush_yd',line:99.5}],log:[]};
+ const g={id:p.game_id,home:'QZZ',away:'QZY',kickoff:'2099-10-25T17:00:00Z',state:'post',detail:'Final'};
+ S.data={season:2099,week:2,players:[p],games:[g],categories:{rush_yd:{label:'Rush Yds'}},scoring:{}};S.games={[g.id]:g};S.byId={[p.id]:p};
+ const pick={pid:p.id,gid:'900000101',team:'QAA',espn_id:p.espn_id,kickoff:'2099-10-18T17:00:00Z',season:2099,week:1,key:'rush_yd',line:5.5,dir:'under',schema_version:'mypicks-player-game-v1',period:'full_game_including_overtime',stat_source:'ESPN_EVENT_BOXSCORE'};
+ const outcome={season:2099,week:1,game_id:pick.gid,player_id:pick.pid,team:pick.team,category:pick.key,kickoff:pick.kickoff,status:'resolved',actual:0,final_confirmed:true,outcome_conflict:false,game_state:'post',outcome_selection:'confirmed',collected_at:'2099-10-18T21:00:00Z',outcome_snapshot_sha256:'1'.repeat(64),selected_outcome_row_sha256:'2'.repeat(64),selected_outcome_provenance_sha256:'3'.repeat(64)};
+ const current={...outcome,week:2,game_id:g.id,team:p.team,kickoff:g.kickoff,collected_at:'2099-10-25T21:00:00Z',actual:100};
+ function publication({id='a'.repeat(64),row=outcome,omit=false,wrongGeneration=false,plain=false}={}){
+  const assets=new Map(),put=(value,name,partition=false)=>{const raw=Buffer.from(JSON.stringify({...value,report_id:value.report_id||id})),sha=digest(raw),descriptor={path:(partition?sha:id)+'/'+name,sha256:sha,decoded_bytes:raw.length};assets.set('data/selection-grading/'+descriptor.path,raw);return descriptor;};
+  const part=(week,rows)=>({...put({schema_version:'selection-final-outcome-period-v1',report_id:wrongGeneration&&week===1?'b'.repeat(64):id,season:2099,week,outcomes:rows},'outcomes.json',true),season:2099,week,count:rows.length});
+  const periods=[part(2,[current]),...(!omit?[part(1,[row])]:[]),part(3,[{...current,week:3,status:'pending',actual:null,final_confirmed:false}])];
+  const summary=put({schema_version:'selection-public-report-v3',report_schema_version:'selection-report-v3',row_count:0,contexts:{},summary_partitions:[],summary:{}},'summary.json');
+  const outcomes=put({schema_version:'selection-final-outcome-index-v1',outcome_count:periods.length,periods},'outcomes.json');
+  let pointer={schema_version:'selection-publication-pointer-v2',report_id:id,generated_at:'2099-10-25T22:00:00Z',row_count:0,rows:[],summary,outcomes};
+  if(plain){const descriptor=(value,name)=>{const d=put(value,name);delete d.decoded_bytes;return d;};pointer={...pointer,schema_version:'selection-publication-pointer-v1',summary:descriptor({schema_version:'selection-public-report-v1',report_schema_version:'selection-report-v2',summary:{tables:[]}},'summary.json'),outcomes:descriptor({schema_version:'selection-final-outcomes-v1',outcomes:[current,...(!omit?[row]:[])]},'outcomes.json')};}
+  assets.set('data/selection-grading/latest.json',Buffer.from(JSON.stringify(pointer)));return {assets,pointer,periods};
+ }
+ function serve(pub,override){box.fetch=async url=>{url=String(url);requests.push(url);if(override){const response=await override(url,pub);if(response)return response;}return pub.assets.has(url)?new Response(pub.assets.get(url),{status:200}):new Response('missing',{status:500});};}
+ async function load(pub=publication(),override){serve(pub,override);await box.loadGrading();assert.ok(S.grading,S.gradingError);}
+ // Await the actual async loader jobs, including real WebCrypto work. A count
+ // of event-loop turns is not a completion signal when other retained suites
+ // run concurrently in this process.
+ const jobs=new Set(),actualHistoricalLoader=box.loadHistoricalMineOutcomes;
+ box.loadHistoricalMineOutcomes=(...args)=>{
+  const task={job:actualHistoricalLoader(...args),grading:S.grading,board:S.data};jobs.add(task);
+  task.job.then(()=>jobs.delete(task),()=>jobs.delete(task));return task.job;
+ };
+ async function drain({currentOnly=false}={}){
+  let watchdog;
+  const pending=()=>[...jobs].filter(task=>!currentOnly||task.grading===S.grading&&task.board===S.data);
+  try{await Promise.race([(async()=>{while(pending().length)await Promise.all(pending().map(task=>task.job));})(),
+   new Promise((_,reject)=>{watchdog=setTimeout(()=>reject(Error('Historical loader did not settle')),2000);})]);}
+  finally{clearTimeout(watchdog);}
+ }
+ function choose(records=[pick]){S.mine=records;storage.set('nflprops.mine',JSON.stringify(records));S.tab='mine';box.renderMine();}
+ return {box,S,p,g,pick,outcome,current,node,storage,events,requests,publication,serve,load,drain,choose,status:()=>box.historicalPropStatus(pick)};
+}
+const failures=[],passed=[];
+async function historyTest(name,run){try{await run(savedHistoryFixture());passed.push(name);}catch(error){failures.push({name,error:error.message});}}
+(async()=>{
+ await historyTest('exact old contract grades on its own team/game despite new current contract',async h=>{await h.load();h.choose();await h.drain();assert.equal(h.status().v,0);assert.equal(h.status().res,'hit');assert.equal(h.status().final,true);const html=h.node('#main').innerHTML;assert.match(html,/Saved 2099 week 1/);assert.match(html,/QAA/);assert.doesNotMatch(html,/DK line 99.5/);assert.match(html,/Final wins/);assert.equal(h.pick.line,5.5);});
+ await historyTest('supported complete plain legacy publication retains exact historical result',async h=>{await h.load(h.publication({plain:true}));const before=h.requests.length;h.choose();await h.drain();assert.equal(h.status().res,'hit');assert.equal(h.status().v,0);assert.equal(h.requests.length,before);});
+ for(const option of [{row:{season:2099,week:2}},{wrongGeneration:true}])await historyTest('self-consistently hashed historical wrong period/generation rejects '+JSON.stringify(option),async h=>{const pub=h.publication(option.row?{row:{...h.outcome,...option.row}}:option);await h.load(pub);h.choose();await h.drain();assert.equal(h.status().res,'unresolved');assert.equal(h.status().v,null);});
+ await historyTest('only current and actually required historical period are fetched once',async h=>{const pub=h.publication();await h.load(pub);const before=h.requests.length;h.choose([h.pick,{...h.pick,key:'rec'}]);await h.drain();h.box.renderMine();await h.drain();const old='data/selection-grading/'+pub.periods.find(p=>p.week===1).path,future='data/selection-grading/'+pub.periods.find(p=>p.week===3).path;assert.equal(h.requests.filter(x=>x===old).length,1);assert.equal(h.requests.filter(x=>x===future).length,0);assert.equal(h.requests.length,before+1);});
+ for(const actual of [5.5,8])await historyTest('saved line remains independently relative to correction '+actual,async h=>{const value=actual===5.5?5:actual;h.pick.line=actual===5.5?5:5.5;await h.load(h.publication({row:{...h.outcome,actual:value}}));h.choose();await h.drain();assert.equal(h.status().res,value===5?'push':'miss');assert.equal(h.pick.line,value===5?5:5.5);});
+ for(const status of ['dnp','pending','unresolved'])await historyTest('historical '+status+' retains exact supported state',async h=>{await h.load(h.publication({row:{...h.outcome,status,actual:null,final_confirmed:status==='dnp'}}));h.choose();await h.drain();assert.equal(h.status().res,status);assert.equal(h.status().final,status==='dnp');});
+ await historyTest('missing indexed history stays unresolved despite current matching player final',async h=>{await h.load(h.publication({omit:true}));h.choose();await h.drain();assert.equal(h.status().res,'unresolved');assert.equal(h.status().v,null);});
+ for(const failure of ['missing','corrupt'])await historyTest('required historical '+failure+' is unavailable without retry loop',async h=>{const pub=h.publication(),old='data/selection-grading/'+pub.periods.find(p=>p.week===1).path;await h.load(pub,url=>url===old?new Response(failure==='missing'?'missing':Buffer.concat([pub.assets.get(url),Buffer.from(' ')]),{status:failure==='missing'?500:200}):null);h.choose();await h.drain();h.box.renderMine();await h.drain();assert.equal(h.status().res,'unresolved');assert.equal(h.status().v,null);assert.equal(h.requests.filter(x=>x===old).length,1);});
+ for(const change of [{team:'QAB'},{game_id:'900000999'},{player_id:'fictional-other'},{kickoff:'2099-10-18T18:00:00Z'},{outcome_conflict:true,status:'unresolved',actual:null,final_confirmed:false}])await historyTest('historical identity/conflict cannot borrow '+JSON.stringify(change),async h=>{await h.load(h.publication({row:{...h.outcome,...change}}));h.choose();await h.drain();assert.equal(h.status().res,'unresolved');});
+ for(const mapping of [null,'900000999'])await historyTest('changed current ESPN mapping cannot alter exact saved primary identity '+mapping,async h=>{h.p.espn_id=mapping;await h.load();h.choose();await h.drain();assert.equal(h.status().res,'hit');assert.equal(h.status().v,0);});
+ await historyTest('absent current player cannot erase a fully bound saved public result',async h=>{delete h.S.byId[h.p.id];await h.load();h.choose();await h.drain();assert.equal(h.status().res,'hit');assert.equal(h.status().v,0);assert.match(h.node('#main').innerHTML,/Saved player selection unavailable/);});
+ await historyTest('supported nullable saved ESPN id retains exact primary historical grading',async h=>{h.pick.espn_id=null;await h.load();h.choose();await h.drain();assert.equal(h.status().res,'hit');assert.equal(h.status().v,0);});
+ await historyTest('old unbound record bytes remain excluded and untouched',async h=>{const old={pid:h.pick.pid,key:h.pick.key,line:1,season:2098,week:1};const raw='[  '+JSON.stringify(old)+' , '+JSON.stringify(h.pick)+' ]';await h.load();h.S.mine=JSON.parse(raw);h.storage.set('nflprops.mine',raw);h.S.tab='mine';h.box.renderMine();await h.drain();assert.equal(h.storage.get('nflprops.mine'),raw);assert.match(h.node('#main').innerHTML,/Saved 2099 week 1/);});
+ await historyTest('historical exact-index personal edit preserves unrelated original bytes',async h=>{const old='{ "pid":"unbound", "key":"rec", "line":7.50, "season":2098, "week":1 }';await h.load();h.S.mine=JSON.parse('[ '+old+', '+JSON.stringify(h.pick)+' ]');h.storage.set('nflprops.mine','[ '+old+', '+JSON.stringify(h.pick)+' ]');h.S.tab='mine';h.box.renderMine();await h.drain();const target={dataset:{mline:'p',mineIndex:'1'},value:'0',matches:()=>false};for(const fn of h.events.change)fn({target});assert.equal(h.S.mine[1].line,0);assert.ok(h.storage.get('nflprops.mine').includes(old));});
+ await historyTest('a delayed old board cannot assign historical results or redraw new selection',async h=>{const pub=h.publication(),old='data/selection-grading/'+pub.periods.find(p=>p.week===1).path;let finish;await h.load(pub,url=>url===old?new Promise(done=>finish=done):null);h.choose();await new Promise(done=>setImmediate(done));const html=h.node('#main').innerHTML;h.S.data={...h.S.data};finish(new Response(pub.assets.get(old)));await h.drain();assert.equal(h.status().res,'unresolved');assert.equal(h.node('#main').innerHTML,html);});
+ await historyTest('a delayed old publication cannot supply new publication totals',async h=>{const a=h.publication(),old='data/selection-grading/'+a.periods.find(p=>p.week===1).path;let finish;await h.load(a,url=>url===old?new Promise(done=>finish=done):null);h.choose();await new Promise(done=>setImmediate(done));const b=h.publication({id:'b'.repeat(64),row:{...h.outcome,actual:8}});await h.load(b);h.box.renderMine();await h.drain({currentOnly:true});assert.equal(h.status().res,'miss');finish(new Response(a.assets.get(old)));await h.drain();assert.equal(h.status().res,'miss');assert.equal(h.S.grading.pointer.report_id,b.pointer.report_id);});
+ await historyTest('selection changed during response never renders old saved-line totals',async h=>{const pub=h.publication(),old='data/selection-grading/'+pub.periods.find(p=>p.week===1).path;let finish;await h.load(pub,url=>url===old?new Promise(done=>finish=done):null);h.choose();await new Promise(done=>setImmediate(done));h.S.mine=[{...h.pick,line:-1}];h.box.renderMine();const html=h.node('#main').innerHTML;finish(new Response(pub.assets.get(old)));await h.drain();assert.equal(h.node('#main').innerHTML,html);h.box.renderMine();assert.match(h.node('#main').innerHTML,/value="-1"/);assert.equal(h.box.minePlayerStatus(h.S.mine[0]).res,'miss');});
+ for(const field of ['key','season','week','team','gid','pid','kickoff'])await historyTest('malformed historical saved '+field+' stays inspectable/unresolved',async h=>{h.pick[field]=JSON.parse('{"toString":null,"valueOf":null}');await h.load();const bytes=JSON.stringify([h.pick]);h.choose();await h.drain();assert.equal(h.box.minePlayerStatus(h.pick).res,'unresolved');assert.equal(h.storage.get('nflprops.mine'),bytes);assert.match(h.node('#main').innerHTML,/UNRESOLVED/);});
+ await historyTest('raw event current outcome and caches cannot settle unavailable history',async h=>{await h.load(h.publication({omit:true}));h.S.propEvents[h.pick.gid]={final:true,players:{[h.pick.pid]:{stats:{rush_yd:99},played:true}}};h.choose();await h.drain();assert.equal(h.status().res,'unresolved');assert.equal(h.status().final,false);});
+ console.log(JSON.stringify({suite:'saved-mypicks-own-period-actual-readers',checks:passed.length+failures.length,failures,actual_reader_used:true,HTTP_provider_requests:0,production_qualification:false}));if(failures.length)process.exitCode=1;
+})().catch(error=>{console.error(error);process.exitCode=1;});
 }

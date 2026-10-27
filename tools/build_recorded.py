@@ -6,6 +6,7 @@ proof is an error, never repaired by fetching a newer roster after the fact.
 """
 import argparse
 import copy
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +65,18 @@ def record_build(root=ROOT, run=None, *, mode="live", model="original_sleeper_ma
                                     "collected_at": stamp(collected),
                                     "response_sha256": response_hash,
                                     "response_hash_format": corrected.MODEL_INPUT_HASH if modern else HASH_FORMAT})
+        if modern and "/projections/nfl/" in url and isinstance(response, list):
+            # SYS011: input admission, not a revision of a frozen engine or
+            # receipt. Reject the whole new build before it consumes a negative
+            # count expectation; keep fractional counts and signed yards exact.
+            for row in response:
+                stats = row.get("stats") if isinstance(row, dict) else None
+                if isinstance(stats, dict):
+                    for key in build.scoring.ACTUAL_COUNTS:
+                        value = stats.get(key)
+                        if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                                and math.isfinite(value) and value < 0):
+                            raise IntegrityError("NEGATIVE_PROJECTED_COUNT: " + key)
         if url == SOURCE:
             # Retain exact rows in the permitted NFL/three-statistic scope. The
             # digest fingerprints the full response without storing other sports.

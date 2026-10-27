@@ -405,7 +405,11 @@ async function selectedRankingsChecks(browser,origin) {
             assert.ok(value.under.some(v=>v.player_id==='fixture-0'&&v.forecast_source==='SELECTED'));
             assert.ok(value.doc.frozen_proofs.length>0,'Actual prepared frozen original receipt is retained');
             await page.locator('#f-cat').selectOption('rec');await page.locator('#f-sort').selectOption('selected_value');
-            const sorted=await page.evaluate(()=>filteredPlayers().map(p=>effectivePropForecast(p,p.props.find(v=>v.key==='rec'))?.value??null));
+            // This mode explicitly sorts NEW selected forecasts, with missing
+            // selected values last; reference fallback values are a different
+            // display contract and must not be substituted into this assertion.
+            const sorted=await page.evaluate(()=>filteredPlayers().map(p=>selectedPropForecast(p,'rec')?.value??null));
+            assert.equal(sorted[0],2.5);assert.ok(sorted.slice(1).every(v=>v===null));
             for(let i=1;i<sorted.length;i++)assert.ok(sorted[i]===null||sorted[i-1]!==null&&sorted[i-1]>=sorted[i]);
             await page.locator('.picks-wrap .add.under').first().click();saved=await page.evaluate(()=>localStorage.getItem('nflprops.mine'));
             assert.ok(saved);await page.locator('[data-tab="record"]').first().click();await page.waitForFunction(()=>S.tab==='record');
@@ -501,8 +505,10 @@ async function presentationChecks(browser, origin, width) {
     equal(await page.evaluate(() => document.activeElement.id), 'f-q', 'live refresh retains input focus');
     equal(await order(), ordered, 'focused-input live refresh keeps chips');
     equal(await order('fixture-3', true), ordered, 'focused-input live refresh keeps panels');
-    const saved = [{ pid: 'fixture-3', key: 'rec_yd', dir: 'over', line: 45, season: 2026, week: 6, at: 1 }];
-    await page.evaluate(picks => { S.mine = picks; store('mine', picks); }, saved);
+    const saved = await page.evaluate(() => {
+      S.mine=[];toggleMine('fixture-3','rec_yd','over',45);
+      return structuredClone(S.mine);
+    });
     await page.locator('[data-line="fixture-3|rec_yd"]').fill('35');
     equal(await page.evaluate(() => S.lines['fixture-3|rec_yd']), 35, 'personal line editor still works');
     equal(await page.evaluate(() => S.byId['fixture-3'].props[1].line), 25, 'saved board line unchanged');
@@ -558,7 +564,7 @@ async function presentationChecks(browser, origin, width) {
     equal(await page.evaluate(() => S.lines['fixture-3|rec_yd']), 35, 'ordinary refresh retains temporary personal line');
     await page.reload();
     await page.waitForFunction(() => S.data && !ticking && document.querySelector('#f-sort'));
-    equal(await page.evaluate(() => [S.f.sort, S.f.q, S.f.cat, S.open.size]), ['proj', '', '', 0], 'full browser reload preserves existing reset behavior');
+    equal(await page.evaluate(() => [S.f.sort, S.f.q, S.f.cat, S.open.size]), ['selected_edge', '', '', 0], 'full browser reload preserves the integrated new-forecast default and filter/open reset');
     equal(await page.evaluate(() => S.mine), saved, 'full browser reload preserves device selections');
     equal(await page.evaluate(() => S.lines['fixture-3|rec_yd']), undefined, 'full browser reload retains existing temporary-line reset');
     const presence = await page.evaluate(() => {
@@ -1286,8 +1292,11 @@ async function paperHistoricalAsyncChecks(browser, origin) {
         await page.waitForFunction(() => !S.gradingGroup.loading);
         const nonTop = await page.evaluate(() => S.gradingGroup.rows.every(row => !row.top_at_decision));
         assert.equal(nonTop, true);
-        const saved = week.players.map((player, i) => ({ pid: player.id, key: 'rec', dir: 'over', line: i === 5 ? 5.5 : player.props[0].line, season: 2026, week: 6, at: 1 }));
-        await page.evaluate(picks => { S.mine = picks; store('mine', picks); S.tab = 'props'; render(); }, saved);
+        const saved = await page.evaluate(() => {
+          S.mine=[];
+          S.data.players.forEach((player,i)=>toggleMine(player.id,'rec','over',i===5?5.5:player.props[0].line));
+          S.tab='props';render();return structuredClone(S.mine);
+        });
         const statusesAtCards = await page.evaluate(() => S.data.players.map(p => propStatus(p, 'rec', p.props[0].line, 'over')?.res || 'pending'));
         assert.deepEqual(statusesAtCards, ['miss', 'unresolved', 'dnp', 'pending', 'push', 'hit', 'unresolved', 'unresolved']);
         assert.match(await page.locator('.picks-wrap').innerText(), /PUSH/);
@@ -1298,6 +1307,15 @@ async function paperHistoricalAsyncChecks(browser, origin) {
         assert.match(mine, /Push \/ DNP\s+1 \/ 1/); assert.match(mine, /Unresolved\s+3/);
         assert.doesNotMatch(mine, /All 8 together|CLEARED|LOST/);
         assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('nflprops.mine'))), saved);
+        const unsupportedLegacy=await page.evaluate(()=>{
+          const rows=S.mine,stored=localStorage.getItem('nflprops.mine');
+          try{
+            S.mine=[{pid:'fixture-5',key:'rec',dir:'over',line:5.5,season:2026,week:6,at:1}];
+            renderMine();return {text:document.querySelector('#main').innerText,bytes:localStorage.getItem('nflprops.mine')===stored};
+          }finally{S.mine=rows;renderMine();}
+        });
+        assert.match(unsupportedLegacy.text,/UNRESOLVED/);assert.match(unsupportedLegacy.text,/Final wins\s+0/);
+        assert.equal(unsupportedLegacy.bytes,true,'unbound legacy records are preserved without inheriting a current game contract');
         const unavailable = await page.evaluate(() => {
           const before = localStorage.getItem('nflprops.mine'), evidence = S.finalOutcomes;
           const tickets = Object.fromEntries(Object.keys(localStorage).filter(key => key.startsWith(PAPER_PREFIX)).map(key => [key, localStorage.getItem(key)]));
@@ -1316,7 +1334,16 @@ async function paperHistoricalAsyncChecks(browser, origin) {
         await page.evaluate(() => { S.slp['fixture-5'].rec = 2; render(); });
         assert.match(await page.locator('#main').innerText(), /CURRENTLY BELOW/);
         await page.evaluate(() => { S.slp['fixture-5'].rec = 5.5; render(); });
+        assert.match(await page.locator('#main').innerText(), /UNRESOLVED/, 'fractional actual receptions are invalid, not an equality');
+        // An equality control uses a valid integer count and the real personal
+        // line handler. Restore the original 5.5 contract before preservation
+        // and final-correction assertions below.
+        await page.locator('input[data-mline="p"][data-mine-index="5"]').fill('6');
+        await page.locator('input[data-mline="p"][data-mine-index="5"]').press('Tab');
+        await page.evaluate(() => { S.slp['fixture-5'].rec = 6; render(); });
         assert.match(await page.locator('#main').innerText(), /CURRENTLY EQUAL/);
+        await page.locator('input[data-mline="p"][data-mine-index="5"]').fill('5.5');
+        await page.locator('input[data-mline="p"][data-mine-index="5"]').press('Tab');
         await page.evaluate(() => { S.slp['fixture-5'].rec = null; render(); });
         assert.equal(await page.evaluate(() => propStatus(S.byId['fixture-5'], 'rec', 5.5, 'over').v), null);
         assert.match(await page.locator('#main').innerText(), /UNRESOLVED/);
