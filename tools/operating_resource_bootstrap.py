@@ -26,11 +26,15 @@ GENUINE_CONFIRMATION = 'NFL-WEB-GENUINE-PRODUCTION-CASE-20261024'
 GENUINE_DRIVER = 'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5'
 LEGACY_GENUINE_DRIVER = '2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf'
 WEEKLY_GENUINE_DRIVER = '2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'
-GENUINE_DRIVER_BYTES = {LEGACY_GENUINE_DRIVER: 30854, WEEKLY_GENUINE_DRIVER: 35468, GENUINE_DRIVER: 36877}
+PRESENCE_GENUINE_DRIVER = 'a045d47016a1e4646d6c430c4d73fb672da4f10592498ae9928a78f92a603693'
+PRESENCE_CONTRACT = 'genuine-current-production-controller-v4'
+GENUINE_DRIVER_BYTES = {LEGACY_GENUINE_DRIVER: 30854, WEEKLY_GENUINE_DRIVER: 35468, GENUINE_DRIVER: 36877, PRESENCE_GENUINE_DRIVER: 37167}
 GENUINE_DRIVER_CONTRACTS = {LEGACY_GENUINE_DRIVER: None,
                           WEEKLY_GENUINE_DRIVER: 'genuine-current-production-controller-v2',
-                          GENUINE_DRIVER: 'genuine-current-production-controller-v3'}
+                          GENUINE_DRIVER: 'genuine-current-production-controller-v3',
+                          PRESENCE_GENUINE_DRIVER: PRESENCE_CONTRACT}
 RANKING_CONTRACT = 'genuine-current-production-controller-v3'
+RANKING_CONTRACTS = frozenset((RANKING_CONTRACT, PRESENCE_CONTRACT))
 RANKING_FILES = ('tools/weekly_adaptive_overlay.py', 'tools/weekly_selected_rankings.py',
                  'output/weekly-adaptive-overlay.js')
 LIFETIME_BACKEND = 'SYSTEMD_INVOCATION_CACHED_KERNEL_MEMORY_PEAK_V1'
@@ -245,7 +249,7 @@ def closure(code, *, genuine=False, allow_data=False):
             or set(manifest.get('files', {})) != seed_names):
         raise RuntimeError('Unsupported immutable seed dependency inventory')
     driver = genuine_driver(code, actual) if genuine else None
-    ranked = driver is not None and GENUINE_DRIVER_CONTRACTS[sha(driver)] == RANKING_CONTRACT
+    ranked = driver is not None and GENUINE_DRIVER_CONTRACTS[sha(driver)] in RANKING_CONTRACTS
     names = sorted(set(FILES) | {'tools/' + name for name in seed_names}
                    | ({GENUINE_WORKFLOW, 'tools/genuine_case_recovery.py'} if genuine else set())
                    | (set(RANKING_FILES) if ranked else set()))

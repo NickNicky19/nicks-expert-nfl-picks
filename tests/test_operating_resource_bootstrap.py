@@ -25,7 +25,7 @@ def changed_actual_controller_contract(raw):
     start=b'          import datetime as dt, gzip, hashlib, json, math, os, re, resource, signal, stat, subprocess, sys, tarfile, time\n'
     end=b"          if __name__=='__main__':main()\n"
     first,last=raw.index(start),raw.index(end)+len(end)
-    block=raw[first:last];changed=block.replace(b'genuine-current-production-controller-v3',b'genuine-current-production-controller-v9',1)
+    block=raw[first:last];changed=block.replace(b.PRESENCE_CONTRACT.encode(),b'genuine-current-production-controller-v9',1)
     if changed==block:raise AssertionError('Actual current controller contract unavailable')
     return raw[:first]+changed+raw[last:]
 
@@ -183,7 +183,7 @@ class SourceClosure(unittest.TestCase):
     def test_ranked_genuine_closure_requires_actual_ranker_source_and_fresh_bytes(self):
         commit=subprocess.check_output(['git','-C',str(SOURCE),'rev-parse','HEAD'],text=True).strip()
         driver=b.genuine_driver(SOURCE,commit)
-        self.assertEqual(b.GENUINE_DRIVER_CONTRACTS[b.sha(driver)],b.RANKING_CONTRACT)
+        self.assertEqual(b.GENUINE_DRIVER_CONTRACTS[b.sha(driver)],b.PRESENCE_CONTRACT)
         names=set(b.RANKING_FILES)|{b.GENUINE_WORKFLOW,'tools/genuine_case_recovery.py'}
         for name in names:
             body=(SOURCE/name).read_bytes();path=self.code/name;path.parent.mkdir(parents=True,exist_ok=True)
@@ -453,7 +453,7 @@ class GenuineRoute(unittest.TestCase):
         self.assertFalse(b.arguments(raw).genuine_case)
     def test_actual_reviewed_inline_source_bytes_and_changed_source_rejected(self):
         commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
-        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),36877);self.assertEqual(b.sha(raw),b.GENUINE_DRIVER)
+        raw=b.genuine_driver(ROOT,commit);self.assertEqual(len(raw),37167);self.assertEqual(b.sha(raw),b.PRESENCE_GENUINE_DRIVER)
         with patch.object(b,'git',return_value=b'not the actual source'):
             with self.assertRaisesRegex(RuntimeError,'actual source'):b.genuine_driver(ROOT,commit)
         original=(ROOT/b.GENUINE_WORKFLOW).read_bytes()
@@ -464,13 +464,14 @@ class GenuineRoute(unittest.TestCase):
     def test_legacy_controller_reader_keeps_actual_retained_source_association(self):
         for legacy,digest,length in [('f1303ee9dfac61fb47fb6820eabd1d04b36f173c',b.LEGACY_GENUINE_DRIVER,30854),
                 ('25826e015e70cad74a375e9a5028e7cada5d5c88',b.LEGACY_GENUINE_DRIVER,30854),
-                ('e415912b9c3d3ff52e8f435517af02e794d97fa4',b.LEGACY_GENUINE_DRIVER,30854)]:
+                ('e415912b9c3d3ff52e8f435517af02e794d97fa4',b.LEGACY_GENUINE_DRIVER,30854),
+                ('a247b378bd05bbb4cd93cb20c88c1498fecef523',b.GENUINE_DRIVER,36877)]:
             # Read the real retained Git object; mock only its physical replay root.
             original=subprocess.check_output(['git','-C',str(ROOT),'show',legacy+':'+b.GENUINE_WORKFLOW])
             with patch.object(b,'regular_bytes',return_value=original),patch.object(b,'git',return_value=original):
                 raw=b.genuine_driver(ROOT,legacy)
             self.assertEqual(len(raw),length);self.assertEqual(b.sha(raw),digest)
-        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.WEEKLY_GENUINE_DRIVER:35468,b.GENUINE_DRIVER:36877})
+        self.assertEqual(b.GENUINE_DRIVER_BYTES,{b.LEGACY_GENUINE_DRIVER:30854,b.WEEKLY_GENUINE_DRIVER:35468,b.GENUINE_DRIVER:36877,b.PRESENCE_GENUINE_DRIVER:37167})
     def test_actual315_registration_stub_cannot_become_a_genuine_controller(self):
         source='315be5e86a1a3a93022b68c453739076487e2077'
         original=subprocess.check_output(['git','-C',str(ROOT),'show',source+':'+b.GENUINE_WORKFLOW])
@@ -1091,18 +1092,19 @@ class GenuineRecovery(unittest.TestCase):
     def test_recovery_driver_dispatch_uses_only_exact_actual_controller_bytes(self):
         r=self.r;original=(ROOT/r.WORKFLOW).read_bytes()
         with patch.object(r,'authenticated_bytes',return_value=original):
-            self.assertEqual(r.checked_driver(ROOT,'a'*40),r.DRIVER)
+            self.assertEqual(r.checked_driver(ROOT,'a'*40),r.PRESENCE_DRIVER)
         changed=changed_actual_controller_contract(original)
         self.assertNotEqual(changed,original);self.assertEqual(len(changed),len(original))
         with patch.object(r,'authenticated_bytes',return_value=changed):
             with self.assertRaisesRegex(ValueError,'CLOSED_DRIVER_IDENTITY'):r.checked_driver(ROOT,'a'*40)
         for source,digest in [('f1303ee9dfac61fb47fb6820eabd1d04b36f173c',r.LEGACY_DRIVER),
                 ('25826e015e70cad74a375e9a5028e7cada5d5c88',r.LEGACY_DRIVER),
-                ('e415912b9c3d3ff52e8f435517af02e794d97fa4',r.LEGACY_DRIVER)]:
+                ('e415912b9c3d3ff52e8f435517af02e794d97fa4',r.LEGACY_DRIVER),
+                ('a247b378bd05bbb4cd93cb20c88c1498fecef523',r.DRIVER)]:
             legacy=subprocess.check_output(['git','-C',str(ROOT),'show',source+':'+r.WORKFLOW])
             with patch.object(r,'authenticated_bytes',return_value=legacy):
                 self.assertEqual(r.checked_driver(ROOT,source),digest)
-        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.WEEKLY_DRIVER:35468,r.DRIVER:36877})
+        self.assertEqual(r.DRIVER_BYTES,{r.LEGACY_DRIVER:30854,r.WEEKLY_DRIVER:35468,r.DRIVER:36877,r.PRESENCE_DRIVER:37167})
 
     def test_actual315_registration_stub_is_rejected_by_saved_recovery(self):
         r=self.r;source='315be5e86a1a3a93022b68c453739076487e2077'
@@ -1203,6 +1205,15 @@ class GenuineRecovery(unittest.TestCase):
                 r.controller_archive(self.tar(entries),'c'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE')
                 self.assertEqual(r.DRIVER_CONTRACTS[r.DRIVER],r.RANKING_CONTRACT)
                 r.controller_archive(self.tar(entries),'c'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.DRIVER)
+                case.update(controller_contract=r.PRESENCE_CONTRACT,reviewed_main_base=r.REVIEWED_MAIN[r.PRESENCE_CONTRACT][0],
+                    reviewed_main_source_tree=r.REVIEWED_MAIN[r.PRESENCE_CONTRACT][1])
+                entries['RELEASE_CASE_MANIFEST.json']=r.canonical(case)
+                r.controller_archive(self.tar(entries),'c'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.PRESENCE_DRIVER)
+                with self.assertRaisesRegex(ValueError,'CONTROLLER_SOURCE_CONTRACT'):
+                    r.controller_archive(self.tar(entries),'c'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.DRIVER)
+                case.update(controller_contract=r.RANKING_CONTRACT,reviewed_main_base=r.REVIEWED_MAIN[r.RANKING_CONTRACT][0],
+                    reviewed_main_source_tree=r.REVIEWED_MAIN[r.RANKING_CONTRACT][1])
+                entries['RELEASE_CASE_MANIFEST.json']=r.canonical(case)
                 with self.assertRaisesRegex(ValueError,'CONTROLLER_SOURCE_CONTRACT'):
                     r.controller_archive(self.tar(entries),'c'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.WEEKLY_DRIVER)
                 with self.assertRaisesRegex(ValueError,'CONTROLLER_SOURCE_CONTRACT'):
@@ -1230,10 +1241,10 @@ class GenuineRawRankedRetention(unittest.TestCase):
         import types
         commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
         raw=b.genuine_driver(ROOT,commit)
-        self.assertEqual(b.sha(raw),b.GENUINE_DRIVER)
+        self.assertEqual(b.sha(raw),b.PRESENCE_GENUINE_DRIVER)
         module=types.ModuleType('genuine_installed_controller_under_test')
         exec(compile(raw,str(ROOT/b.GENUINE_WORKFLOW)+'::genuine-controller','exec'),module.__dict__)
-        self.assertEqual(module.CONTROLLER_CONTRACT,b.RANKING_CONTRACT)
+        self.assertEqual(module.CONTROLLER_CONTRACT,b.PRESENCE_CONTRACT)
         return module
 
     def fixture(self,directory):
@@ -1304,6 +1315,129 @@ class GenuineRawRankedRetention(unittest.TestCase):
                 self.assertEqual([v['path'] for v in violations],[name])
                 self.assertEqual(violations[0]['before_sha256'],before[name]['sha256'])
                 self.assertEqual(violations[0]['after_sha256'],after[name]['sha256'])
+
+
+class GenuinePresenceController(unittest.TestCase):
+    """Actual typed v4 readers and local Git; no provider or resource qualification."""
+
+    def setUp(self):
+        self.helper=GenuineRecovery();self.helper.setUp();self.r=self.helper.r
+
+    def controller(self):
+        return GenuineRawRankedRetention().controller()
+
+    def archive(self,contract=None,cache=None):
+        r=self.r;raw,_=self.helper.controller_fixture();entries=r.tar_entries(raw)
+        case=r.parsed(entries['RELEASE_CASE_MANIFEST.json'])
+        if contract is None:contract=r.PRESENCE_CONTRACT
+        case.update(controller_contract=contract,reviewed_main_base=r.REVIEWED_MAIN[contract][0],
+            reviewed_main_source_tree=r.REVIEWED_MAIN[contract][1])
+        entries['RELEASE_CASE_MANIFEST.json']=r.canonical(case)
+        if cache is not None:
+            name,body=cache;storage='mutable/'+name;info=dict(bytes=len(body),sha256=r.sha(body))
+            output=r.parsed(entries['OUTPUT_DATA_MANIFEST.json'])
+            output['after'][name]=info;output['representations'][name]=dict(info,storage=storage)
+            entries['OUTPUT_DATA_MANIFEST.json']=r.canonical(output);entries[storage]=body
+        return entries
+
+    def test_closed_v4_addition_preserves_exact_v1_v2_v3_contracts(self):
+        r=self.r
+        expected={b.LEGACY_GENUINE_DRIVER:None,b.WEEKLY_GENUINE_DRIVER:r.WEEKLY_CONTRACT,
+            b.GENUINE_DRIVER:r.RANKING_CONTRACT,b.PRESENCE_GENUINE_DRIVER:r.PRESENCE_CONTRACT}
+        self.assertEqual(b.GENUINE_DRIVER_CONTRACTS,expected)
+        self.assertEqual(r.DRIVER_CONTRACTS,expected)
+        self.assertEqual(r.DRIVER,'b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5')
+        self.assertEqual(r.REVIEWED_MAIN[r.RANKING_CONTRACT],
+            ('89512ed952308dacc1f6a930915ddbcdccd460d9','c88d5b3740c820b30387ec2eaca2b0bceafd9a51'))
+        self.assertEqual(r.REVIEWED_MAIN[r.PRESENCE_CONTRACT],
+            ('e336bf7a68c32267c3c3eec48892aeadcd03a90e','26c1ca52eb1d9b3610a552ecf63ccd2fab5ad8f8'))
+
+    def test_actual_local_git_closure_rejects_disk_and_committed_unknown_driver(self):
+        r=self.r;original=(ROOT/b.GENUINE_WORKFLOW).read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);path=root/b.GENUINE_WORKFLOW;path.parent.mkdir(parents=True);path.write_bytes(original)
+            def git(*argv):return subprocess.check_output(['git','-c','core.hooksPath=/dev/null','-C',str(root),*argv],stderr=subprocess.PIPE).strip()
+            git('init','-q');git('add','--',b.GENUINE_WORKFLOW)
+            git('-c','user.name=Fictional regression','-c','user.email=fixture@example.invalid','commit','-qm','fictional local controller closure')
+            commit=git('rev-parse','HEAD').decode()
+            self.assertEqual(b.sha(b.genuine_driver(root,commit)),b.PRESENCE_GENUINE_DRIVER)
+            self.assertEqual(r.checked_driver(root,commit),r.PRESENCE_DRIVER)
+            before=path.stat();path.write_bytes(changed_actual_controller_contract(original))
+            os.utime(path,ns=(before.st_atime_ns,before.st_mtime_ns))
+            with self.assertRaisesRegex(RuntimeError,'differs from actual source'):b.genuine_driver(root,commit)
+            with self.assertRaisesRegex(ValueError,'DEPENDENCY_DIFFERS_FROM_DISPATCH'):r.checked_driver(root,commit)
+            git('add','--',b.GENUINE_WORKFLOW)
+            git('-c','user.name=Fictional regression','-c','user.email=fixture@example.invalid','commit','-qm','unsupported local contract control')
+            changed=git('rev-parse','HEAD').decode()
+            with self.assertRaisesRegex(RuntimeError,'Unknown genuine controller bytes'):b.genuine_driver(root,changed)
+            with self.assertRaisesRegex(ValueError,'CLOSED_DRIVER_IDENTITY'):r.checked_driver(root,changed)
+
+    def test_controller_binds_actual_week8_config_and_keeps_week7_originals(self):
+        raw=self.controller()
+        self.assertEqual(raw.BASE,'e336bf7a68c32267c3c3eec48892aeadcd03a90e')
+        self.assertEqual(raw.REVIEWED_MAIN_TREE,'26c1ca52eb1d9b3610a552ecf63ccd2fab5ad8f8')
+        self.assertEqual(raw.WEEKLY_POLICY_SHA256,'21c91276a27b644029ab57818c177f645d8ca2051bf4b248628a7ddadae9c3c1')
+        self.assertEqual(len(raw.FIXED),3)
+        self.assertEqual(sum('/2026/w07/' in name for name in raw.FIXED),2)
+        self.assertEqual(raw.FIXED['data/verification/partial-schedule-baselines/2026/w08/5abfdeef1e84f866463a470f2d05292e4f3af286cca622ef33f564d1da58624f.json.gz'],
+            'cf9d319eaf9226dc6288fd75b9af6d1f438882f7f6e857b9b736b96eb76464fa')
+        self.assertFalse(any('/partial-registrations/2026/w08/' in name for name in raw.FIXED))
+
+    def test_actual_controller_retains_both_nested_cache_lanes_and_signed_zero_values(self):
+        raw=self.controller();r=self.r
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);expected={}
+            for lane in ('stat-keys-fgm-v1','stat-keys-presence-fgm-v2'):
+                name='data/cache/'+lane+'/stats_2026_08.json';path=root/name;path.parent.mkdir(parents=True)
+                body=r.canonical({'FICTIONAL':{'rec':0,'rush_yd':-3,'pass_yd':None}});path.write_bytes(body);expected[name]=body
+            after=raw.inventory(root);payload,receipts,representations=raw.new_payloads(root,{},after,{})
+            self.assertEqual(receipts,[]);self.assertEqual(set(representations),set(expected))
+            self.assertEqual({name:path.read_bytes() for name,path in payload},{'mutable/'+n:v for n,v in expected.items()})
+            self.assertTrue(all(r.role(name)=='cache_or_board' for name in expected))
+            self.assertEqual(raw.new_payloads(root,after,after,{}),([],[],{}))
+
+    def test_unknown_nested_cache_lanes_or_weeks_are_not_exportable(self):
+        raw=self.controller();r=self.r
+        for name in ('data/cache/unreviewed/stats_2026_08.json',
+                'data/cache/stat-keys-presence-fgm-v2/stats_2026_00.json',
+                'data/cache/stat-keys-fgm-v1/stats_2026_99.json'):
+            with self.subTest(name=name),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);path=root/name;path.parent.mkdir(parents=True);path.write_bytes(b'{}')
+                self.assertIsNone(r.role(name))
+                with self.assertRaisesRegex(RuntimeError,'UNCLASSIFIED_OUTPUT_DELTA'):
+                    raw.new_payloads(root,{},raw.inventory(root),{})
+
+    def test_v4_complete_archive_preserves_nested_caches_and_rejects_changed_bytes(self):
+        r=self.r
+        for lane in ('stat-keys-fgm-v1','stat-keys-presence-fgm-v2'):
+            name='data/cache/'+lane+'/stats_2026_08.json'
+            entries=self.archive(cache=(name,b'{"FICTIONAL":{"rec":0,"rush_yd":-3}}'))
+            r.controller_archive(self.helper.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.PRESENCE_DRIVER)
+            entries['mutable/'+name]=b'{"FICTIONAL":{"rec":1,"rush_yd":-3}}'
+            with self.assertRaisesRegex(ValueError,'CONTROLLER_MUTABLE_BYTES'):
+                r.controller_archive(self.helper.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.PRESENCE_DRIVER)
+
+    def test_nested_caches_do_not_expand_legacy_v2_v3_archive_contracts(self):
+        r=self.r;name='data/cache/stat-keys-fgm-v1/stats_2026_08.json'
+        for contract,digest in ((r.WEEKLY_CONTRACT,r.WEEKLY_DRIVER),(r.RANKING_CONTRACT,r.DRIVER)):
+            entries=self.archive(contract=contract)
+            r.controller_archive(self.helper.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=digest)
+            entries=self.archive(contract=contract,cache=(name,b'{}'))
+            with self.assertRaisesRegex(ValueError,'PRESENCE_CONTROLLER_REQUIRED'):
+                r.controller_archive(self.helper.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=digest)
+
+    def test_v4_wrong_main_or_crossed_driver_and_private_cache_fail(self):
+        r=self.r;entries=self.archive()
+        with self.assertRaisesRegex(ValueError,'CONTROLLER_SOURCE_CONTRACT'):
+            r.controller_archive(self.helper.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.DRIVER)
+        case=r.parsed(entries['RELEASE_CASE_MANIFEST.json']);case['reviewed_main_base']='0'*40
+        entries['RELEASE_CASE_MANIFEST.json']=r.canonical(case)
+        with self.assertRaisesRegex(ValueError,'CONTROLLER_REVIEWED_MAIN_SOURCE'):
+            r.controller_archive(self.helper.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.PRESENCE_DRIVER)
+        name='data/cache/stat-keys-presence-fgm-v2/stats_2026_08.json'
+        entries=self.archive(cache=(name,b'{"access_token":"FICTIONAL_CONTROL"}'))
+        with self.assertRaisesRegex(ValueError,'PRIVATE_FIELD'):
+            r.controller_archive(self.helper.tar(entries),'a'*40,'COMPLETE_GENUINE_NONDEPLOY_CASE',driver=r.PRESENCE_DRIVER)
 
 
 class DiagnosticLifetimeDependencyContract(unittest.TestCase):

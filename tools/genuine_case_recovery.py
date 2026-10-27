@@ -13,7 +13,9 @@ REF='refs/heads/upgrade/phase2-reproducible-comparison'
 DRIVER='b0776717b8dc98eae6d959a098e7d0926cd164bbce7ebd086ff55520ba5e73c5'
 LEGACY_DRIVER='2ee6d870c3bb6c8e667eae3a49cadf22220d6ab21d0c990c8035332d1deadfaf'
 WEEKLY_DRIVER='2f4d7f7eac10c4c82a56762929e5d3d8f853493f5b01edbee2925adf158b501e'
-DRIVER_BYTES={LEGACY_DRIVER:30854,WEEKLY_DRIVER:35468,DRIVER:36877}
+PRESENCE_DRIVER='a045d47016a1e4646d6c430c4d73fb672da4f10592498ae9928a78f92a603693'
+PRESENCE_CONTRACT='genuine-current-production-controller-v4'
+DRIVER_BYTES={LEGACY_DRIVER:30854,WEEKLY_DRIVER:35468,DRIVER:36877,PRESENCE_DRIVER:37167}
 WORKFLOW='.github/workflows/prepare-diagnostic-seed.yml'
 MIB=1024**2
 CAP=127*MIB
@@ -24,7 +26,7 @@ FINAL_CAP=65536
 COUNT=20000
 SCHEMAS=set('baseline-capture-v2 matchup-inputs-v3 sleeper-selection-offers-v1 forecast-outcomes-v1 forecast-outcomes-v2 descriptive-statistic-outcomes-v1 descriptive-statistic-outcomes-v2 matchup-verification-v1 partial-schedule-baseline-v1 partial-registration-data-integrity-v2 partial-scope-data-integrity-v2 partial-completion-data-integrity-v2 completion-failure-data-integrity-v2 partial-completion-failure-v1 ranked-selection-observation-v1 ranked-selection-completion-v1 ranked-selection-decision-ledger-v1 derived-selection-ledger-v1 rich-scorecard-evidence-v1 selection-publication-run-v1 point-candidate-evaluation-v1 hosting-generation-proof-v1 generation-failure-v1 unqualified-native-preservation-v1 ranked-selection-failure-v1'.split())
 LANE=re.compile(r'data/(?:forward|history|verification|offers|outcomes)/')
-CACHE=re.compile(r'data/cache/(?:espn_athletes|injury_timeline|stats_[0-9]{4}_[0-9]{2})\.json\Z')
+CACHE=re.compile(r'data/cache/(?:(?:espn_athletes|injury_timeline|stats_[0-9]{4}_[0-9]{2})\.json|(?:stat-keys-fgm-v1|stat-keys-presence-fgm-v2)/stats_[0-9]{4}_(?:0[1-9]|1[0-8])\.json)\Z')
 BOARDS={'output/data/'+x+'.json' for x in 'week meta future teams track_record dk_backtest forecast-scorecard offer-capture health release-identity verification-scope game-status matchup-proof'.split()}
 META=set('RELEASE_CASE_MANIFEST.json INPUT_DATA_MANIFEST.json OUTPUT_DATA_MANIFEST.json NEW_RECEIPTS_MANIFEST.json PAGES_MEMBERS_MANIFEST.json SOURCE_CI_BINDINGS.json'.split())
 STATIC={'app.js','index.html','style.css','reliability-ui.js','recovery.html'}
@@ -35,9 +37,11 @@ WEEKLY_AUDIT=re.compile(r'data/weekly-adaptive-audit/[0-9a-f]{64}\.json\Z')
 WEEKLY_CONTRACT='genuine-current-production-controller-v2'
 RANKING_POINTER='data/weekly-selected-rankings.json'
 RANKING_CONTRACT='genuine-current-production-controller-v3'
-DRIVER_CONTRACTS={LEGACY_DRIVER:None,WEEKLY_DRIVER:WEEKLY_CONTRACT,DRIVER:RANKING_CONTRACT}
+RANKING_CONTRACTS=frozenset((RANKING_CONTRACT,PRESENCE_CONTRACT))
+DRIVER_CONTRACTS={LEGACY_DRIVER:None,WEEKLY_DRIVER:WEEKLY_CONTRACT,DRIVER:RANKING_CONTRACT,PRESENCE_DRIVER:PRESENCE_CONTRACT}
 REVIEWED_MAIN={WEEKLY_CONTRACT:('315be5e86a1a3a93022b68c453739076487e2077','dfdc11ac312a6a54c79e7379352106c315e13f5f'),
-    RANKING_CONTRACT:('89512ed952308dacc1f6a930915ddbcdccd460d9','c88d5b3740c820b30387ec2eaca2b0bceafd9a51')}
+    RANKING_CONTRACT:('89512ed952308dacc1f6a930915ddbcdccd460d9','c88d5b3740c820b30387ec2eaca2b0bceafd9a51'),
+    PRESENCE_CONTRACT:('e336bf7a68c32267c3c3eec48892aeadcd03a90e','26c1ca52eb1d9b3610a552ecf63ccd2fab5ad8f8')}
 REPORT=re.compile(r'data/selection-grading/(?:latest\.json|hosting\.json|[0-9a-f]{64}/(?:summary|outcomes|rows|rows-[0-9]{4}|manifest|registry|archive)\.json|[0-9a-f]{64}/snapshot-(?:app\.js|index\.html|data_(?:week|meta|verification-scope|forecast-scorecard|health|release-identity)\.json|data_selection-grading_latest\.json))\Z')
 SECRET=re.compile(r'\b(?:gh[pousr]_|github_pat_|sk-proj-|AKIA[A-Z0-9]{16}|xox[baprs]-)|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+\S+',re.I)
 PRIVATE=re.compile(r'^(?:authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|password|credentials?|tokens?|(?:access|refresh|id|auth|session|bearer)[-_]?tokens?|x[-_]?(?:auth[-_]?token|api[-_]?key)|secret|client[-_]?secret|api[_-]?key|localStorage|device_id|session_id|account_balance)$',re.I)
@@ -299,12 +303,12 @@ def context():
     driver=checked_driver(app,dispatch)
     contract=DRIVER_CONTRACTS[driver]
     weekly_rankings=None
-    if contract in (WEEKLY_CONTRACT,RANKING_CONTRACT):
+    if contract in (WEEKLY_CONTRACT,*RANKING_CONTRACTS):
         weekly_raw=authenticated_bytes(app,dispatch,'tools/weekly_adaptive_overlay.py')
         weekly_overlay=types.ModuleType('genuine_verified_weekly_overlay');weekly_overlay.__file__=str(app/'tools/weekly_adaptive_overlay.py')
         exec(compile(weekly_raw,weekly_overlay.__file__,'exec'),weekly_overlay.__dict__)
         weekly_static=authenticated_bytes(app,dispatch,'output/weekly-adaptive-overlay.js')
-        if contract==RANKING_CONTRACT:
+        if contract in RANKING_CONTRACTS:
             weekly_rankings=checked_rankings(app,dispatch,weekly_overlay)
     else:weekly_overlay=weekly_static=None
     temp=Path(os.environ['RUNNER_TEMP']);need(temp.is_absolute() and temp.resolve()==temp,'TEMP_ROOT')
@@ -414,7 +418,7 @@ def controller_archive(raw,dispatch,status,*,driver=None):
     case=meta['RELEASE_CASE_MANIFEST.json']
     need(case.get('schema_version')=='genuine-current-production-case-v1' and case.get('source')==dispatch and case.get('status')==status and meta['INPUT_DATA_MANIFEST.json'].get('source')==dispatch,'CONTROLLER_METADATA_SOURCE')
     contract=case.get('controller_contract')
-    modern=contract in (WEEKLY_CONTRACT,RANKING_CONTRACT)
+    modern=contract in (WEEKLY_CONTRACT,*RANKING_CONTRACTS)
     need('controller_contract' not in case or modern,'CONTROLLER_CONTRACT')
     if driver is not None:
         need(driver in DRIVER_CONTRACTS and contract==DRIVER_CONTRACTS[driver],'CONTROLLER_SOURCE_CONTRACT')
@@ -434,9 +438,11 @@ def controller_archive(raw,dispatch,status,*,driver=None):
         elif name.startswith('mutable/'):
             logical=name[len('mutable/'):]
             ranked=ranking_role(logical)
-            need(ranked is None or contract==RANKING_CONTRACT,'RANKING_CONTROLLER_REQUIRED')
+            need(ranked is None or contract in RANKING_CONTRACTS,'RANKING_CONTROLLER_REQUIRED')
             weekly=ranked is not None or bool(WEEKLY_AUDIT.fullmatch(logical)) or logical=='output/'+WEEKLY_POINTER or logical.startswith('output/') and bool(WEEKLY_BODY.fullmatch(logical[7:]))
             allowed=bool(CACHE.fullmatch(logical)) or logical in ('output/data/game-status.json','output/data/matchup-proof.json','output/data/selection-grading/hosting.json') or logical.startswith('output/') and public_path(logical[7:]) or bool(WEEKLY_AUDIT.fullmatch(logical))
+            nested_cache=logical.startswith(('data/cache/stat-keys-fgm-v1/','data/cache/stat-keys-presence-fgm-v2/'))
+            need(not nested_cache or contract==PRESENCE_CONTRACT,'PRESENCE_CONTROLLER_REQUIRED')
             need(allowed and (not weekly or modern),'CONTROLLER_MUTABLE_ROLE')
             weekly_json(logical,body) if weekly else decoded(body)
             need(same(body,after[logical]) and same(body,representations[logical]) and representations[logical]['storage']==name,'CONTROLLER_MUTABLE_BYTES')
@@ -447,7 +453,7 @@ def controller_archive(raw,dispatch,status,*,driver=None):
     if 'public-pages.tar' in entries:
         bodies=tar_entries(entries['public-pages.tar'],True,pages)
         need(set(bodies)==set(pages) and all(same(body,pages[name]) for name,body in bodies.items()),'CONTROLLER_PAGES_MEMBERSHIP')
-        if any(ranking_role(n) is not None for n in bodies):need(contract==RANKING_CONTRACT,'RANKING_CONTROLLER_REQUIRED')
+        if any(ranking_role(n) is not None for n in bodies):need(contract in RANKING_CONTRACTS,'RANKING_CONTROLLER_REQUIRED')
         if any(n==WEEKLY_JS or n==WEEKLY_POINTER or WEEKLY_BODY.fullmatch(n) or ranking_role(n) is not None for n in bodies):
             need(modern,'WEEKLY_CONTROLLER_REQUIRED');weekly_pages(bodies,dispatch)
     else:need(status!='COMPLETE_GENUINE_NONDEPLOY_CASE','CONTROLLER_COMPLETE_PAGES_MISSING')

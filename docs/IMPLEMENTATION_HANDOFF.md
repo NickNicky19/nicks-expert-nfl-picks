@@ -2039,3 +2039,29 @@ original/Root-presence pair; current Classic-presence execution requires its act
 supported production path. The existing genuine-production controller is being
 checked for the current source, Main and configuration bindings before execution.
 No old plan, helper digest or source identity is reused as approval of new bytes.
+
+The existing genuine controller now has an additive closed v4 contract. Its
+exact Main/configuration/policy/status bindings support the current Classic
+presence source while v1-v3 identities and archive interpretation remain intact.
+The two helper exceptions and their coupled regression exception were recorded
+as `6452549820` and `6452631700`; protected workflow/configuration and one original
+status-evidence delta were separately bound/read back as `6452883946`. The
+ordinary gate does not validate those exceptions. No gate, scope or attempt
+counter was rewritten.
+
+The Week 8 plan preserves the complete 14-game population and prior plans. One
+actual supported status observation matched all 14 saved Main games as pregame;
+the new plan has no legacy exemptions and requires new qualifying inputs and
+strictly pregame completion for all 14. Old Week 7 exemptions and receipts remain
+unchanged in history. The effective clock is prospective to the actual plan
+preparation; no new forecast, registration or completed bundle is claimed from
+that observation. Both experimental flags remain inactive.
+
+The exact controller/helper patch passed 146 tests independently, including
+historical dispatch, current-source binding, same-size mutation, typed retention
+and cache-lane controls. Only the two explicitly supported nested cache lanes
+are added; old archives cannot borrow the new contract. These are local code
+tests, not kernel resource or updater timing evidence. The existing bounded
+artifact remains at most 127 MiB with one-day retention. Final source CI,+actual capability/execution, verified retrieval, full measured accounting and
+production artifact/public verification are still required. Historical runtime
+failures, the 960-second target and the 1,200-second updater limit remain intact.
