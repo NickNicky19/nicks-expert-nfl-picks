@@ -413,9 +413,9 @@ class V4ScopeWitnessTests(unittest.TestCase):
                 elif kind=='role':player['pos']='K'
                 elif kind=='allowed_role':player['pos']='WR'
                 elif kind=='started':game['state']='in'
-                elif kind=='expired':now='2026-10-26T18:00:00Z'
+                elif kind=='expired':feed['rows'][0]['valid_until_utc']='2026-10-25T12:00:20Z'
                 selected,proof=self.validate(root,p,feed,board,run,jobs,now=now)
-                self.assertEqual(len(selected['rows']),0 if kind in ('game','kickoff','started','expired')else 10)
+                self.assertEqual(len(selected['rows']),0 if kind in ('game','kickoff','started')else 10)
                 self.assertNotIn(pid,{r['player_id']for r in selected['rows']})
                 self.assertEqual(len(feed['rows']),11)
                 self.assertEqual(sum(proof['identity_scope_resolution']['current_unavailable_counts'].values())+len(selected['rows']),11)
@@ -482,11 +482,36 @@ class V4ScopeWitnessTests(unittest.TestCase):
             with tempfile.TemporaryDirectory()as other:
                 with self.assertRaises(ValueError):v4.read_scope_witness(Path(other),d)
             blob=root/'.git/objects'/d['git_blob_sha1'][:2]/d['git_blob_sha1'][2:]
-            raw=blob.read_bytes();blob.write_bytes(raw[:-1]+bytes([raw[-1]^1]))
+            raw=blob.read_bytes();blob.chmod(0o600);blob.write_bytes(raw[:-1]+bytes([raw[-1]^1]))
             with self.assertRaises(ValueError):v4.read_scope_witness(root,d)
             script='import sys,json;sys.path.insert(0,sys.argv[1]);import weekly_public_feed_v4 as v;v.read_scope_witness(sys.argv[2],json.loads(sys.argv[3]))'
             child=subprocess.run([sys.executable,'-c',script,str(ROOT/'tools'),str(root),json.dumps(d)],capture_output=True)
             self.assertNotEqual(child.returncode,0)
+
+    def test_two_valid_witnesses_are_deterministic_and_role_ambiguity_rejects(self):
+        for changed_role in (False,True):
+            with self.subTest(changed_role=changed_role),self.case()as(root,p,feed,board,run,jobs,git):
+                path=root/'output/data/week.json';witness=json.loads(path.read_bytes())
+                witness['generated_at']='fictional-later-witness-not-forecast-proof'
+                if changed_role:witness['players'][0]['pos']='WR'
+                raw=f.canonical(witness);path.write_bytes(raw);git('add','--','output/data/week.json')
+                git('-c','user.name=Fictional test','-c','user.email=fictional@example.invalid','commit','-qm','Second fictional identity witness')
+                d=dict(schema_version=v4.WITNESS_SCHEMA,commit=git('rev-parse','HEAD').decode().strip(),
+                    path='output/data/week.json',git_blob_sha1=git('rev-parse','HEAD:output/data/week.json').decode().strip(),bytes=len(raw),sha256=f.sha(raw))
+                p[v4.WITNESS_FIELD].append(d);board['players'].pop(0)
+                if changed_role:
+                    with self.assertRaisesRegex(ValueError,'V4_AMBIGUOUS_WITNESS_ROLES'):self.validate(root,p,feed,board,run,jobs)
+                else:
+                    selected,proof=self.validate(root,p,feed,board,run,jobs)
+                    self.assertEqual(len(selected['rows']),10)
+                    self.assertEqual(proof['identity_scope_resolution']['witness'],v4.witness_descriptors(p)[0])
+
+    def test_valid_other_week_witness_does_not_block_complete_current_scope(self):
+        with self.case(witness_change=lambda w:w.update(week=6))as(root,p,feed,board,run,jobs,git):
+            selected,proof=self.validate(root,p,feed,board,run,jobs)
+            self.assertEqual(len(selected['rows']),11)
+            self.assertIsNone(proof['identity_scope_resolution']['witness'])
+            self.assertEqual(proof['identity_scope_resolution']['current_unavailable_counts'],{})
 
     def test_duplicates_fatal_and_legacy_no_witness_keeps_strict_full_scope(self):
         for kind in ('game','player','offer'):
