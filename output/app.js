@@ -335,8 +335,21 @@ function propStatus(p, key, line, dir, saved = null) {
   if (saved && !propPickBound(saved, p, g)) return unknown("Saved player/game/period binding unavailable; stored record retained");
   if (!p || !g || String(g.id) !== String(p.game_id)) return unknown("Player/game identity unavailable");
   if (!Number.isFinite(line) || dir != null && !["over", "under"].includes(dir)) return unknown("Saved line or direction unavailable");
+  if (key === "fpts" && saved) return unknown("Saved fantasy-point scoring/source completeness unavailable; stored record retained");
   if (g.state === "pre") return null;
   if (!["in", "post"].includes(g.state)) return unknown("Game status unavailable");
+  if (key === "fpts") {
+    const c = current(p);
+    if (!c || c.none || !c.stats || typeof c.stats !== "object" || Array.isArray(c.stats) || !Object.keys(c.stats).length) {
+      return unknown("Provisional fantasy points unavailable; no current player statistic row");
+    }
+    const v = livePPR(p);
+    if (!Number.isFinite(v)) return unknown("Provisional fantasy points unavailable in current scoring");
+    // Preserve the existing scoring display, including its uncertified sparse
+    // inputs. Neither game finality nor the current scoring settles a saved FPts pick.
+    return { v, res: g.state === "in" ? "live" : "pending", final: false,
+      reason: "Provisional fantasy points in current scoring; complete source/scoring evidence is not certified" };
+  }
   const event = S.propEvents?.[p.game_id];
   const scoped = event?.season === S.data.season && event?.week === S.data.week
     && event.gid === String(p.game_id) && Date.parse(event.kickoff) === Date.parse(g.kickoff) && event.source === "ESPN_EVENT_BOXSCORE";
@@ -1189,7 +1202,7 @@ function propChip(p, raw) {
     : lean ? `<span class="arrow">${lean === "over" ? "▲" : "▼"}</span>` : "";
   const cls = [lean ? `lean-${lean}` : "", st && lean && (st.res === "hit" || st.res === "miss") ? st.res : ""].join(" ");
   const lineText = prop.key === "anytime_td" ? "" : `<b>${line}</b><span class="src ${selected && edited ? "" : prop.line_from || "ours"}">${selected && edited ? "custom" : LINE_TAG[prop.line_from] || "est"}</span>`;
-  const cur = st && st.v != null ? `<span class="cur">${fmtStat(prop.key, st.v)}</span>` : "";
+  const cur = st && st.v != null ? `<span class="cur">${fmtStat(prop.key, st.v)}${prop.key === "fpts" ? `<span class="src">provisional</span>` : ""}</span>` : "";
   if (selected) return `<span class="pchip ${cls}" data-weekly-primary title="Selected forecast assumes participation; lean is a projection gap, not a win probability">${SHORT[prop.key]}<b>${selected.text}</b><span class="src">${selected.frozen ? "frozen" : "provisional"} ${selected.label}</span>${lineText ? `<span class="muted"> · ${edited ? "Your line" : prop.line_from === "ours" || !prop.line_from ? ((p.reference_model || S.data.execution_model?.model) === "sleeper-matchup-classic-fg-identity-v1" ? "Baseline line" : "R0 line") : "book line"}</span>${lineText}` : ""}${arrow ? `<span class="muted"> selected lean</span>${arrow}` : ""}${cur}</span>`;
   return `<span class="pchip ${cls}">${SHORT[prop.key]}${lineText}${arrow}${cur}</span>`;
 }
@@ -1243,6 +1256,7 @@ function catCard(p, raw) {
     ? ` Matchup vs ${p.opp}: <b>${prop.mf >= 1 ? "+" : ""}${fmt(100 * (prop.mf - 1))}%</b> (similar ${p.pos}s against them this season, ${prop.mf_n} game${prop.mf_n === 1 ? "" : "s"}).`
     : prop.mf != null ? ` No similar ${p.pos}s have faced ${p.opp} yet, so no matchup adjustment.` : "";
   const selectedNote = selected ? ` Selected ${selected.label} assumes the player participates; accuracy is still being evaluated. ${selected.binary ? `${ref} probability is shown separately; TD probabilities are sorted separately from numeric gaps.` : `Leans use the selected forecast. Top Picks use saved sportsbook lines; your custom line changes only your displayed lean. On-pace estimates retain ${ref}. A point forecast does not give a bet-win probability.`}` : "";
+  const fantasyNote = prop.key === "fpts" ? " Fantasy-point totals use current scoring and stay provisional, even after Final. Saved FPts settlement is unavailable without verified original scoring and complete statistics." : "";
   const note = prop.key === "anytime_td"
     ? `${vals.length ? `Scored in ${vals.filter((x) => x.v > 0).length} of ${gamesText}. ` : ""}${selected ? `${ref} reference probability comes` : "Chance comes"} from Sleeper's projected TDs.`
     : (vals.length ? `Over in <b>${over}</b> of ${gamesText}${edited ? ` at your line (the ${LINE_FROM[from]} line is ${prop.line})` : ""}.` : "No games yet this season.")
@@ -1264,10 +1278,10 @@ function catCard(p, raw) {
       ${st && !st.final && st.v != null && prop.adj != null && prop.key !== "anytime_td" ? `<div title="What he has so far plus our pregame projection for the time left">${ref} on pace<span class="n" style="color:var(--amber)">${fmt(st.v + prop.adj * remaining(S.games[p.game_id]), prop.key === "fpts" ? 2 : 1)}</span></div>` : ""}
       ${prop.proj != null ? `<div>Sleeper proj<span class="n">${fmtStat(prop.key, prop.proj)}</span></div>` : ""}
       ${avg != null ? `<div>Season avg<span class="n">${fmt(avg)}</span></div>` : ""}
-      ${st ? `<div>${st.final ? "Final" : "Now"}<span class="n" style="color:var(--cyan)">${st.res === "dnp" ? "DNP" : st.v == null ? "Unavailable" : fmtStat(prop.key, st.v)}</span></div>` : ""}
+      ${st ? `<div>${prop.key === "fpts" ? "Provisional" : st.final ? "Final" : "Now"}<span class="n" style="color:var(--cyan)">${st.res === "dnp" ? "DNP" : st.v == null ? "Unavailable" : fmtStat(prop.key, st.v)}</span></div>` : ""}
     </div>
     ${vals.length ? `<div class="bars">${bars}<div class="lineat" style="bottom:${(100 * line) / top}%"></div></div><div class="bars-x">${xs}</div>` : ""}
-    <div class="foot-n">${note}${selectedNote}</div>
+    <div class="foot-n">${note}${selectedNote}${fantasyNote}</div>
   </div>`;
 }
 
@@ -4751,6 +4765,7 @@ function renderMine() {
           <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)} <span class="muted">${oppText(p)}</span></div>
           <div class="what">${m.dir === "over" ? "Over" : "Under"} <label class="mline"><input type="number" step="0.5" inputmode="decimal" value="${m.line}" data-mline="p" data-mine-index="${index}" aria-label="Your line"></label> ${label}${lineNow != null && lineNow !== m.line ? ` <span class="muted">(DK line ${lineNow})</span>` : ""}</div>
           <div class="small">${esc(gameStatus(g))}${liveLineText(p, m.key, m.line)}</div>
+          ${m.key === "fpts" && st?.reason ? `<div class="small">${esc(st.reason)}</div>` : ""}
           ${progress(st, m.line, m.dir, m.key)}
         </div>
         <div class="side">

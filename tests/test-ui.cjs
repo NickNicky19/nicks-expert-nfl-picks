@@ -560,3 +560,95 @@ for(const row of cases){
 console.log(JSON.stringify({suite:'v2-downstream-legacy-preservation',cases:cases.length,failures:0,
   legacy_missing_data_debt_fixed:false,new_values_introduced:false}));
 }
+
+
+// FPts is a preserved current-scoring display, never a certified saved outcome.
+// Actual application functions run in a DOM/storage VM with fictional rows;
+// HTTP/timers are disabled. Existing strict eleven-stat controls above remain.
+{
+  const scoring = {pass_yd:.04,pass_td:4,pass_int:-1,pass_2pt:2,rush_yd:.1,rush_td:6,rush_2pt:2,
+    rec:1,rec_yd:.1,rec_td:6,rec_2pt:2,fum_lost:-2,st_td:6,st_fum_rec:1,st_ff:1,fum_rec_td:6,idp_blk_kick:2};
+  const complete = () => ({...Object.fromEntries(Object.keys(scoring).map(k=>[k,0])),gp:1,rush_att:1,
+    rush_yd:10,rec:4,rec_yd:40,rec_td:1,pts_ppr:15});
+  function setupFantasy() {
+    const nodes = new Map(), stored = new Map();
+    const node = key => {
+      if (!nodes.has(key)) nodes.set(key,{innerHTML:'',hidden:false,style:{},addEventListener(){},
+        classList:{add(){},remove(){},toggle(){}},querySelectorAll:()=>[]});
+      return nodes.get(key);
+    };
+    const box = {console,Date,URL,URLSearchParams,setTimeout:()=>1,clearTimeout(){},setInterval:()=>1,
+      localStorage:{getItem:k=>stored.get(k)??null,setItem:(k,v)=>stored.set(k,String(v))},
+      document:{hidden:true,querySelector:node,querySelectorAll:()=>[],body:node('body'),
+        documentElement:node('html'),addEventListener(){}},location:{hash:''},history:{},navigator:{},
+      CSS:{escape:x=>x},addEventListener(){},innerWidth:390,scrollY:0,scrollTo(){},confirm:()=>true,
+      fetch:async()=>{throw Error('NETWORK_FORBIDDEN');}};
+    box.window=box;vm.createContext(box);
+    const start=source.indexOf('(async function start()');assert.ok(start>0);
+    vm.runInContext(source.slice(0,start),box);
+    const state=vm.runInContext('S',box);
+    state.data={season:2099,week:2,scoring,scoring_def:{},def_tiers:{pts:[[1000000,5]],yds:[[1000000,5]]},
+      categories:{fpts:{label:'Fantasy Points',lean:1},rush_yd:{label:'Rush Yards',lean:4}},
+      execution_model:{model:'sleeper-matchup-classic-fg-identity-v1'}};
+    const p={id:'fictional-fpts',espn_id:'900000001',name:'Fictional FPts',team:'QAA',opp:'QAB',pos:'WR',
+      game_id:'900000101',log:[],actual:null,proj:complete(),props:[{key:'fpts',line:14.5,adj:18,proj:18,
+        line_h:12.5,adj_h:16,proj_h:16,line_from:'ours',lean:'over',values:[],over:0,n:0}]};
+    const g={id:p.game_id,home:'QAA',away:'QAB',state:'post',detail:'Final',kickoff:'2099-10-25T17:00:00Z',home_score:0,away_score:0};
+    Object.assign(state,{byId:{[p.id]:p},games:{[g.id]:g},byKey:{'fictional fpts|QAA':p.id},byEspn:{[p.espn_id]:p.id},
+      slpOk:true,slp:{[p.id]:complete()},live:{},sc:{mode:'sleeper',half:false},
+      leagues:[{id:'fictional-league',name:'Fictional double reception',settings:{...scoring,rec:2}}]});
+    state.data.players=[p];state.data.games=[g];
+    const saved=()=>({schema_version:'mypicks-player-game-v1',pid:p.id,key:'fpts',dir:'over',line:14.5,
+      season:2099,week:2,at:1,gid:g.id,team:p.team,espn_id:p.espn_id,kickoff:g.kickoff,
+      period:'full_game_including_overtime',stat_source:'ESPN_EVENT_BOXSCORE'});
+    return {box,state,p,g,saved,node};
+  }
+  let checks=0;
+  const check=fn=>{fn();checks++;};
+  for (const [mode,expected] of [['ppr',15],['half',13],['league',19],['zero',0]]) {
+    const h=setupFantasy();
+    h.state.sc={mode:mode==='league'?'league':'sleeper',half:mode==='half',league:'fictional-league'};
+    if(mode==='zero')h.state.slp[h.p.id]={...Object.fromEntries(Object.keys(scoring).map(k=>[k,0])),gp:1,rush_att:1,pts_ppr:0};
+    const value=h.box.propStatus(h.p,'fpts',14.5,'over');
+    check(()=>assert.equal(value.v,expected,mode));
+    check(()=>assert.equal(value.final,false,mode));
+    check(()=>assert.equal(value.res,'pending',mode));
+    check(()=>assert.match(value.reason,/Provisional/));
+    const card=h.box.catCard(h.p,h.p.props[0]),chip=h.box.propChip(h.p,h.p.props[0]);
+    check(()=>assert.match(card,/<div>Provisional<span/));
+    check(()=>assert.match(card,/Saved FPts settlement is unavailable/));
+    check(()=>assert.match(chip,/class="cur"/));
+    check(()=>assert.match(chip,/>provisional</));
+    h.g.state='in';h.g.detail='Live';
+    check(()=>{const live=h.box.propStatus(h.p,'fpts',14.5,'over');assert.equal(live.v,expected);assert.equal(live.res,'live');assert.equal(live.final,false);});
+    const saved=Object.freeze(h.saved());h.state.mine=Object.freeze([saved]);const before=JSON.stringify(h.state.mine);
+    check(()=>{const st=h.box.propStatus(h.p,'fpts',14.5,'over',saved);assert.equal(st.v,null);assert.equal(st.final,false);assert.equal(st.res,'unresolved');assert.match(st.reason,/scoring\/source completeness/);});
+    h.g.state='post';h.g.detail='Final';h.box.renderMine();
+    check(()=>{assert.equal(JSON.stringify(h.state.mine),before);assert.match(h.node('#main').innerHTML,/scoring\/source completeness/);assert.doesNotMatch(h.node('#main').innerHTML,/data-mine-clear="final"/);});
+  }
+  for (const phase of ['in','post']) {
+    const h=setupFantasy();h.g.state=phase;delete h.state.slp[h.p.id];
+    check(()=>{const st=h.box.propStatus(h.p,'fpts',14.5,'over');assert.equal(st.v,null);assert.equal(st.res,'unresolved');assert.equal(st.final,false);assert.match(st.reason,/no current player statistic row/);});
+  }
+  for (const [pos,expected] of [['WR',0],['DEF',10]]) {
+    const h=setupFantasy();h.p.pos=pos;h.state.slp[h.p.id]={gp:1};
+    check(()=>{const st=h.box.propStatus(h.p,'fpts',14.5,'over');assert.equal(st.v,expected);assert.equal(st.final,false);assert.equal(st.res,'pending');});
+  }
+  const h=setupFantasy(),saved=h.saved();
+  for(const change of [{gid:'wrong'},{team:'QAB'},{week:3},{kickoff:'2099-10-26T17:00:00Z'},{stat_source:'SLEEPER'}]) {
+    check(()=>{const st=h.box.propStatus(h.p,'fpts',14.5,'over',{...saved,...change});assert.equal(st.v,null);assert.equal(st.res,'unresolved');assert.equal(st.final,false);assert.match(st.reason,/binding unavailable/);});
+  }
+  check(()=>assert.equal(h.box.propValue(complete(),'fpts'),null,'strict stat-value guard still excludes fantasy scoring'));
+  h.box.recordPropEvidence(h.g.id,{header:{id:h.g.id,season:{year:2099,type:2},week:{number:2},competitions:[
+    {id:h.g.id,date:h.g.kickoff,status:{type:{state:'post',shortDetail:'Final',completed:true}}}]},boxscore:{players:[
+    {team:{abbreviation:'QAA'},statistics:[
+      {name:'passing',labels:['C/ATT','YDS','TD','INT'],athletes:[{athlete:{id:h.p.espn_id},didNotPlay:false,stats:['0/0','0','0','0']}]},
+      {name:'rushing',labels:['CAR','YDS','TD'],athletes:[{athlete:{id:h.p.espn_id},didNotPlay:false,stats:['1','10','0']}]},
+      {name:'receiving',labels:['REC','YDS','TD','TGTS'],athletes:[{athlete:{id:h.p.espn_id},didNotPlay:false,stats:['4','40','1','5']}]}]}]}},h.state.data);
+  const strict={pass_yd:0,pass_td:0,pass_cmp:0,pass_att:0,pass_int:0,rush_yd:10,rush_att:1,rec:4,rec_yd:40,rush_rec_yd:50,anytime_td:1};
+  for(const [key,value]of Object.entries(strict))check(()=>{const st=h.box.propStatus(h.p,key,value,'over',{...saved,key,line:value});assert.equal(st.v,value,key);assert.equal(st.res,'push',key);assert.equal(st.final,true,key);});
+  check(()=>{const st=h.box.propStatus(h.p,'fpts',14.5,'over',saved);assert.equal(st.res,'unresolved');assert.equal(st.final,false);});
+  console.log(JSON.stringify({suite:'fpts-provisional-display-preservation',cases:checks,failures:0,
+    strict_categories:Object.keys(strict).length,saved_fpts_settlement:'UNAVAILABLE',
+    legacy_gp_only_zero_and_missing_defense_allowance_debt:'PRESERVED_UNCERTIFIED',network:'forbidden',browser:'Node VM only'}));
+}
