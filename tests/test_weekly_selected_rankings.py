@@ -216,5 +216,130 @@ class SelectedRankingsTests(unittest.TestCase):
 
 
 
+class FrozenPolicyOriginTests(unittest.TestCase):
+    def setup_frozen(self, root, *, classic=False, selected=True):
+        board, doc = fixture()
+        if classic:
+            board["execution_model"] = {"model": r.CURRENT_MODEL}
+            for player in board["players"]: player["reference_model"] = r.CURRENT_MODEL
+        if not selected: doc["rows"] = []
+        doc["display_board_sha256"] = doc["canonical_board_sha256"] = o.digest(board)
+        doc["board_contract_sha256"] = o.digest(o.board_contract(board))
+        old = make(board, doc)
+        receipt = r.write_public(old, root, atomic_json, clock=lambda: PERSIST)
+        current = make(board, doc, now="2031-10-25T18:00:00+00:00", previous=old, previous_receipt=receipt)
+        return board, doc, old, receipt, current
+
+    def validate(self, root, board, doc, current):
+        pointer = r.write_public(current, root, atomic_json, clock=lambda: "2031-10-25T18:00:01+00:00")
+        return r.validate_document(current, pointer, board, o.digest(board), doc, root=root)
+
+    def rebind_original(self, root, old, receipt, current):
+        """Fictional forged graph: hashes alone must not authorize a policy."""
+        body = o.canonical(old); digest = o.sha(body)
+        name = "weekly-selected-rankings/" + digest + ".json"
+        atomic_json(Path(root) / name, old)
+        rebound = dict(receipt, path=name, sha256=digest, bytes=len(body))
+        atomic_json(Path(root) / ("weekly-selected-rankings/" + o.digest(rebound) + ".receipt.json"), rebound)
+        for proof in current["frozen_proofs"]: proof["receipt_sha256"] = o.digest(rebound)
+
+    def test_both_exact_policy_origins_keep_original_items_and_receipts(self):
+        for classic in [False, True]:
+            for selected in [False, True]:
+                with self.subTest(classic=classic, selected=selected), tempfile.TemporaryDirectory() as td:
+                    board, doc, old, receipt, current = self.setup_frozen(td, classic=classic, selected=selected)
+                    saved = {p:p.read_bytes() for p in Path(td).rglob("*.json") if p.name != "weekly-selected-rankings.json"}
+                    self.assertEqual(current["picks"], old["picks"])
+                    self.validate(td, board, doc, current)
+                    self.assertTrue(all(p.read_bytes() == body for p, body in saved.items()))
+
+    def test_legacy_selected_origin_survives_classic_policy_transition(self):
+        with tempfile.TemporaryDirectory() as td:
+            board, doc, old, receipt, _ = self.setup_frozen(td)
+            board["execution_model"] = {"model": r.CURRENT_MODEL}
+            for player in board["players"]: player["reference_model"] = r.CURRENT_MODEL
+            doc["display_board_sha256"] = doc["canonical_board_sha256"] = o.digest(board)
+            doc["board_contract_sha256"] = o.digest(o.board_contract(board))
+            current = make(board, doc, now="2031-10-25T18:00:00+00:00", previous=old, previous_receipt=receipt)
+            self.assertEqual(current["picks"], old["picks"])
+            self.assertEqual(current["policy"], r.CURRENT_POLICY)
+            self.validate(td, board, doc, current)
+
+    def test_forged_threshold_and_mixed_policy_hash_rejected(self):
+        for mixed in [False, True]:
+            with self.subTest(mixed=mixed), tempfile.TemporaryDirectory() as td:
+                board, doc, old, receipt, current = self.setup_frozen(td, classic=True)
+                if mixed: old["policy"] = copy.deepcopy(r.POLICY)
+                else:
+                    old["policy"]["minimum_score"] = .2
+                    old["policy_sha256"] = o.digest(old["policy"])
+                self.rebind_original(td, old, receipt, current)
+                with self.assertRaisesRegex(ValueError, "original policy binding"):
+                    self.validate(td, board, doc, current)
+
+    def test_classic_reference_cannot_claim_legacy_origin_policy(self):
+        with tempfile.TemporaryDirectory() as td:
+            board, doc, old, receipt, current = self.setup_frozen(td, classic=True, selected=False)
+            old["policy"] = copy.deepcopy(r.POLICY); old["policy_sha256"] = r.POLICY_SHA
+            self.rebind_original(td, old, receipt, current)
+            with self.assertRaisesRegex(ValueError, "original current reference policy"):
+                self.validate(td, board, doc, current)
+
+    def test_legacy_reference_cannot_claim_classic_origin_policy(self):
+        with tempfile.TemporaryDirectory() as td:
+            board, doc, old, receipt, current = self.setup_frozen(td, selected=False)
+            board["execution_model"] = {"model": r.CURRENT_MODEL}
+            doc["display_board_sha256"] = doc["canonical_board_sha256"] = o.digest(board)
+            doc["board_contract_sha256"] = o.digest(o.board_contract(board))
+            current = make(board, doc, now="2031-10-25T18:00:00+00:00", previous=old, previous_receipt=receipt)
+            old["policy"] = copy.deepcopy(r.CURRENT_POLICY); old["policy_sha256"] = r.CURRENT_POLICY_SHA
+            self.rebind_original(td, old, receipt, current)
+            with self.assertRaisesRegex(ValueError, "original R0 reference policy"):
+                self.validate(td, board, doc, current)
+
+    def test_changed_original_member_model_source_and_receipt_context_rejected(self):
+        for mutation in ["identity", "model", "source", "board", "overlay"]:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as td:
+                board, doc, old, receipt, current = self.setup_frozen(td, classic=True)
+                item = old["picks"]["over"][0]
+                if mutation == "identity": item["player_id"] = "FICTIONAL_FORGED"
+                elif mutation == "model": item["model_version"] = "f" * 64
+                elif mutation == "source": item["forecast_source"] = "CURRENT_BASELINE"
+                elif mutation == "board": old["display_board_sha256"] = "f" * 64
+                else: old["overlay_sha256"] = "f" * 64
+                self.rebind_original(td, old, receipt, current)
+                with self.assertRaisesRegex(ValueError, "original (membership changed|policy binding)"):
+                    self.validate(td, board, doc, current)
+
+    def test_original_receipt_requires_exact_shape_and_actual_byte_count(self):
+        for mutation in ["bytes", "bool", "extra"]:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as td:
+                board, doc, old, receipt, current = self.setup_frozen(td)
+                changed = dict(receipt)
+                if mutation == "bytes": changed["bytes"] += 100
+                elif mutation == "bool": changed["bytes"] = True
+                else: changed["unexpected"] = "FICTIONAL"
+                atomic_json(Path(td) / ("weekly-selected-rankings/" + o.digest(changed) + ".receipt.json"), changed)
+                for proof in current["frozen_proofs"]: proof["receipt_sha256"] = o.digest(changed)
+                with self.assertRaises(ValueError): self.validate(td, board, doc, current)
+
+    def test_original_side_and_closed_body_cannot_be_rebound(self):
+        for mutation in ["side", "source", "extra"]:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as td:
+                board, doc, old, receipt, current = self.setup_frozen(td)
+                if mutation == "side": old["picks"]["under"].append(old["picks"]["over"].pop())
+                elif mutation == "source": old["website_source_sha"] = "FICTIONAL_FORGED"
+                else: old["unexpected"] = "FICTIONAL"
+                self.rebind_original(td, old, receipt, current)
+                with self.assertRaises(ValueError): self.validate(td, board, doc, current)
+
+    def test_current_source_must_match_current_overlay(self):
+        with tempfile.TemporaryDirectory() as td:
+            board, doc, old, receipt, current = self.setup_frozen(td)
+            current["website_source_sha"] = "c" * 40
+            self.assertNotEqual(current["website_source_sha"], doc["website_source_sha"])
+            with self.assertRaises(ValueError): self.validate(td, board, doc, current)
+
+
 if __name__ == "__main__":
     unittest.main()
