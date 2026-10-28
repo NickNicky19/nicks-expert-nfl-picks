@@ -48,10 +48,10 @@ def check_current_port(root, pins, candidate_bodies=None):
         sys.path.insert(0, str(root / 'tools')); sys.dont_write_bytecode = True
         spec = importlib.util.spec_from_file_location('current_port_reviewed_helper', root / paths['helper'])
         helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
-        if policy.get("schema_version")==getattr(helper,"POLICY_V3",None):
-            helper.policy_check_v3(policy,root=root)
+        if policy.get('schema_version') == helper.POLICY_V3:
+            helper.policy_check_v3(policy, root=root)
         else:
-            helper.policy_check_v2(policy)  # Trusted exact historical helper.
+            helper.policy_check_v2(policy)  # Trusted exact helper; no writer/fetch/export call.
         require(Path(helper.overlay().__file__).resolve() == (root / 'tools/weekly_adaptive_overlay.py').resolve(), 'EXACT_OVERLAY_READER')
         require(policy['publication_authority']['source_sha'] == pins['new_lab_source_sha'], 'NEW_SOURCE')
         require(policy['producer_policy_sha256'] == pins['new_producer_policy_sha256'], 'NEW_PRODUCER')
@@ -59,7 +59,7 @@ def check_current_port(root, pins, candidate_bodies=None):
         require(policy['publication_authority']['catalog_freezer_sha256'] == pins['new_catalog_freezer_sha256'], 'NEW_CATALOG')
         require(policy['procedures'] == pins['new_procedures'], 'NEW_RECIPES')
         require(policy['website_code_sha256']['output/app.js'] == pins['new_app_sha256'], 'NEW_UI')
-        actual = {name: sha(body(name)) for name in (helper.CURRENT_CODE_FILES if policy.get("schema_version")==getattr(helper,"POLICY_V3",None) else helper.CODE_FILES)}
+        actual = {name: sha(body(name)) for name in policy['website_code_sha256']}
         require(actual == policy['website_code_sha256'], 'CURRENT_WEBSITE_CODE_INVENTORY')
         require(schema['$id'] == schema['properties']['schema_version']['const'] == helper.VERSION_V2, 'V2_SCHEMA')
         require(set(schema['properties']['rows']['items']['required']) == set(helper.overlay().ROW_FIELDS), 'PUBLIC_ROWS')
@@ -76,6 +76,8 @@ def check_current_port(root, pins, candidate_bodies=None):
             'candidate_override_roles': sorted(candidate_bodies), 'installed_port_acceptance': not bool(candidate_bodies),
             'physical_sha256': hashes,
             'website_code_inventory_checks': len(actual), 'new_lab_source_sha': pins['new_lab_source_sha'],
+            'current_reference_model': policy.get('current_execution', {}).get('model'),
+            'historical_policy_sha256': policy.get('historical_policy_sha256'),
             'historical_reports_used': False, 'HTTP': 0, 'model_or_data_reads': 0,
             'hosted_publication_or_deployment_acceptance': False}
 

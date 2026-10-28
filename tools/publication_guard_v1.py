@@ -151,7 +151,58 @@ def sealed(root,receipt,env):
     return dict(state="PUBLISHED_SOURCE_AND_ASSETS_BOUND",published_head_sha=head,**result["output"])
 
 
-def check(root,receipt,env,stage):
+def _pages_location(path,env):
+    """One private, run-local Pages copy; never a caller-selected public root."""
+    supplied=Path(path)
+    temporary=Path(env.get("RUNNER_TEMP", ""))
+    require(temporary.is_absolute() and supplied.is_absolute(),"ABSOLUTE_PAGES_NAMESPACE_REQUIRED")
+    require(not any(parent.is_symlink() for parent in (supplied,*supplied.parents)),"PAGES_NAMESPACE_SYMLINK")
+    require(supplied==temporary/"nfl-pages" and supplied.resolve()==temporary.resolve()/"nfl-pages",
+            "EXACT_RUNNER_PAGES_NAMESPACE_REQUIRED")
+    require(supplied.is_dir(),"PAGES_ROOT_REQUIRED")
+    return supplied
+
+
+def _pages_inventory(path,env):
+    path=_pages_location(path,env)
+    files=[];total=0;directories=0
+    for item in path.rglob("*"):
+        require(not item.is_symlink(),"PAGES_ASSET_SYMLINK")
+        if item.is_dir():
+            directories+=1
+            require(directories<=MAX_FILES,"FINITE_PAGES_DIRECTORY_BOUND")
+            continue
+        require(item.is_file(),"PAGES_ASSET_NOT_REGULAR")
+        size=item.stat().st_size;total+=size
+        require(len(files)<MAX_FILES and total<=MAX_BYTES,"FINITE_PAGES_OUTPUT_BOUND")
+        hashed=hashlib.sha256();read_bytes=0
+        with item.open("rb") as stream:
+            for block in iter(lambda:stream.read(1<<20),b""):
+                read_bytes+=len(block)
+                require(read_bytes<=size,"PAGES_ASSET_CHANGED_WHILE_HASHING")
+                hashed.update(block)
+        require(read_bytes==size==item.stat().st_size,"PAGES_ASSET_CHANGED_WHILE_HASHING")
+        files.append(dict(path=item.relative_to(path).as_posix(),bytes=size,sha256=hashed.hexdigest()))
+    require(bool(files),"EMPTY_PAGES_PROJECTION")
+    files.sort(key=lambda item:item["path"])
+    return dict(files=len(files),bytes=total,manifest_sha256=sha(canonical(files)))
+
+
+def bind_pages(root,receipt,env,pages_root):
+    """Seal the completed producer-validated projection without changing it.
+
+    This is a private execution receipt, not publication/evidence qualification.
+    The existing stage_pages producer still validates the complete generation.
+    """
+    bound=check(root,receipt,env,"upload",pages_root=pages_root,_binding=True)
+    pages=_pages_inventory(pages_root,env)
+    identity=context(root,env)
+    create(receipt.with_suffix(".pages.json"),dict(schema_version=VERSION+"-pages",**identity,
+        published_head_sha=bound["published_head_sha"],pages_root=str(Path(pages_root)),pages=pages))
+    return dict(state="STAGED_PAGES_BYTES_BOUND",**pages)
+
+
+def check(root,receipt,env,stage,*,pages_root=None,_binding=False):
     original=read(receipt);identity=context(root,env)
     require(original==dict(schema_version=VERSION+"-begin",**identity),"EXACT_ORIGINAL_FENCE_REQUIRED")
     bound=read(receipt.with_suffix(".published.json"))
@@ -160,18 +211,35 @@ def check(root,receipt,env,stage):
         and all(bound[k]==v for k,v in identity.items()),"EXACT_PUBLISHED_FENCE_REQUIRED")
     require(git(root,"rev-parse","HEAD").decode().strip()==bound["published_head_sha"]==current_main(root),"SUPERSEDED_BEFORE_"+stage.upper())
     require(inventory(root)==bound["output"],"ASSETS_CHANGED_AFTER_PUBLICATION")
+    pages_receipt=receipt.with_suffix(".pages.json")
+    if not _binding and (pages_root is not None or pages_receipt.exists()):
+        require(pages_root is not None,"BOUND_PAGES_ROOT_REQUIRED")
+        _pages_location(pages_root,env)
+        saved=read(pages_receipt)
+        require(set(saved)==set(identity)|{"schema_version","published_head_sha","pages_root","pages"}
+            and saved["schema_version"]==VERSION+"-pages"
+            and all(saved[k]==v for k,v in identity.items())
+            and saved["published_head_sha"]==bound["published_head_sha"]
+            and saved["pages_root"]==str(Path(pages_root)),"EXACT_STAGED_PAGES_FENCE_REQUIRED")
+        require(_pages_inventory(pages_root,env)==saved["pages"],"STAGED_PAGES_CHANGED_AFTER_BINDING")
     return dict(state="PUBLICATION_FENCE_PASSED",stage=stage,published_head_sha=bound["published_head_sha"],**bound["output"])
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation",choices=["begin","sealed","check"])
+    parser.add_argument("operation",choices=["begin","sealed","bind-pages","check"])
     parser.add_argument("--root",type=Path,default=ROOT)
     parser.add_argument("--receipt",type=Path,required=True)
+    parser.add_argument("--pages-root",type=Path)
     parser.add_argument("--stage",choices=["upload","deploy","retry","postdeploy"],default="deploy")
     args=parser.parse_args()
     try:
-        result=begin(args.root,args.receipt,os.environ) if args.operation=="begin" else sealed(args.root,args.receipt,os.environ) if args.operation=="sealed" else check(args.root,args.receipt,os.environ,args.stage)
+        if args.operation=="begin":result=begin(args.root,args.receipt,os.environ)
+        elif args.operation=="sealed":result=sealed(args.root,args.receipt,os.environ)
+        elif args.operation=="bind-pages":
+            require(args.pages_root is not None,"BOUND_PAGES_ROOT_REQUIRED")
+            result=bind_pages(args.root,args.receipt,os.environ,args.pages_root)
+        else:result=check(args.root,args.receipt,os.environ,args.stage,pages_root=args.pages_root)
         print(json.dumps(result,sort_keys=True));return 0
     except Exception as error:
         reason=str(error) if isinstance(error,FenceError) else "PUBLICATION_FENCE_FAILED"

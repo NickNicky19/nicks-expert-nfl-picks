@@ -44,7 +44,7 @@ def utc(value: str | datetime) -> datetime:
 
 
 def stamp(value: datetime) -> str:
-    return utc(value).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return utc(value).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def canonical(value) -> bytes:
@@ -77,7 +77,17 @@ def finite(value, label, optional=True):
         raise IntegrityError(f"{label} is not a finite number")
 
 
-def engine_hashes(root: Path) -> dict[str, str]:
+V2_HELPER_SHA256 = '06e39ddb2f1a0ae7033d98915e340ca158dbb53f8bdd28beabe72c00c7f82f43'
+
+
+def engine_hashes(root: Path, *, version="original_sleeper_matchup_baseline") -> dict[str, str]:
+    if version in ("sleeper-matchup-data-integrity-v2", "sleeper-matchup-classic-data-integrity-v2"):
+        import data_integrity_v2
+        if hashlib.sha256(Path(data_integrity_v2.__file__).read_bytes()).hexdigest() != V2_HELPER_SHA256:
+            raise IntegrityError("Corrected source dispatcher changed")
+        return data_integrity_v2.engine_files(root, model=version)
+    if version != "original_sleeper_matchup_baseline":
+        raise IntegrityError("Unknown explicit engine contract")
     # Missing source files are a hard error in real runs. Tests may pass explicit hashes.
     hashes = {}
     for name in ENGINE_PATHS:
@@ -181,7 +191,7 @@ def validate(data: dict, meta: dict, observed_at: datetime, max_age_minutes=MAX_
             "profitability": "NOT_ESTABLISHED"}
 
 
-def make_payload(data: dict, observed_at: datetime, hashes: dict, mode: str) -> dict:
+def make_payload(data: dict, observed_at: datetime, hashes: dict, mode: str, *, model="original_sleeper_matchup_baseline") -> dict:
     if mode not in ("live", "replay"):
         raise IntegrityError("mode must be live or replay")
     games = {g["id"]: g for g in data["games"]}
@@ -213,13 +223,20 @@ def make_payload(data: dict, observed_at: datetime, hashes: dict, mode: str) -> 
                 row["sleeper_observation"] = prop["sleeper"]
             rows.append(row)
     rows.sort(key=lambda r: (r["game_id"], r["player_id"], r["category"]))
-    return {"schema_version": SCHEMA_VERSION, "mode": mode,
+    result = {"schema_version": SCHEMA_VERSION, "mode": mode,
             "evidence_label": "LOCAL_PRE_GAME_CAPTURE_PUBLICATION_NOT_VERIFIED" if mode == "live" else "REPLAY_TEST_NOT_PROSPECTIVE",
             "captured_at": stamp(observed_at), "forecast_generated_at": data["generated_at"],
             "input_sha256": digest(data), "engine_sha256": digest(hashes), "engine_files": hashes,
             "code_commit": os.environ.get("GITHUB_SHA"),
             "model": "original_sleeper_matchup_baseline", "rows": rows,
             "excluded_started_or_late_games": sorted(skipped)}
+    if model != "original_sleeper_matchup_baseline":
+        import data_integrity_v2 as corrected
+        if model not in corrected.PRESENCE_MODELS or hashes != corrected.source_hashes(model) or not hashes:
+            raise IntegrityError("Unsupported corrected capture source")
+        result.update(schema_version=corrected.NATIVE, model=model, presence_contract=corrected.PRESENCE,
+                      code_commit=corrected.recording_source(model=model))
+    return result
 
 
 def immutable_write(path: Path, payload: dict) -> bool:
@@ -256,10 +273,11 @@ def immutable_write(path: Path, payload: dict) -> bool:
     return True
 
 
-def capture(data: dict, meta: dict, root: Path, observed_at: datetime, hashes: dict, mode="replay", max_age_minutes=MAX_BUILD_AGE_MINUTES):
+def capture(data: dict, meta: dict, root: Path, observed_at: datetime, hashes: dict, mode="replay", max_age_minutes=MAX_BUILD_AGE_MINUTES,
+            *, model="original_sleeper_matchup_baseline"):
     observed_at = utc(observed_at)
     health = validate(data, meta, observed_at, max_age_minutes)
-    payload = make_payload(data, observed_at, hashes, mode)
+    payload = make_payload(data, observed_at, hashes, mode, model=model)
     identity = digest({"data": digest(data), "engine": digest(hashes), "mode": mode})
     lane = "forward" if mode == "live" else "replay"
     path = root / "data" / lane / str(data["season"]) / f"w{data['week']:02d}" / (identity + ".json.gz")
@@ -285,6 +303,9 @@ def atomic_json(path: Path, value):
 
 def capture_profile(data, meta, root, observed_at, *, model, mode="replay"):
     """Explicit production dispatcher; unknown/crossed profiles never fall back."""
+    import data_integrity_v2 as corrected
+    if model in corrected.PRESENCE_MODELS:
+        return capture(data, meta, root, observed_at, engine_hashes(root, version=model), mode=mode, model=model)
     from classic_model_v1 import MODEL, ORIGINAL_MODEL, CAPTURE, contract
     if model == ORIGINAL_MODEL:
         return capture(data, meta, root, observed_at, engine_hashes(root), mode=mode)
@@ -335,8 +356,13 @@ def main():
         parser.error("Live capture cannot use a supplied clock")
     now = utc(args.replay_at) if args.replay_at else datetime.now(timezone.utc)
     root = args.root.resolve()
-    path, health = capture_profile(load_json(root / "output/data/week.json"), load_json(root / "output/data/meta.json"),
-                                  root, now, model=args.model, mode=args.mode)
+    data, meta = load_json(root / "output/data/week.json"), load_json(root / "output/data/meta.json")
+    if args.model == ORIGINAL_MODEL:
+        # Preserve the original/default recovery route without requiring the
+        # corrected-model helper merely to select the original engine.
+        path, health = capture(data, meta, root, now, engine_hashes(root), mode=args.mode)
+    else:
+        path, health = capture_profile(data, meta, root, now, model=args.model, mode=args.mode)
     if args.mode == "live":
         atomic_json(root / "output/data/health.json", health)
     print(json.dumps(health, indent=2))

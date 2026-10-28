@@ -17,11 +17,11 @@ from test_weekly_adaptive_overlay import fixture
 class PublicFeedInputChecks(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
-        for name in f.CODE_FILES:
+        for name in f.LEGACY_CODE_FILES:
             path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(('FICTIONAL '+name).encode())
         self.git('init','-q');self.git('add','.');self.git('-c','user.name=F','-c','user.email=f@example.invalid','commit','-qm','fixture')
         self.head=self.git('rev-parse','HEAD');self.board,selected,_=fixture();self.now='2026-10-24T10:10:00Z'
-        pins={k:f.sha((self.root/k).read_bytes()) for k in f.CODE_FILES};self.policy=dict(schema_version=f.POLICY,registration_id='weekly-adaptive-release-v1',producer_policy_sha256='a'*64,source_policy_sha256='d'*64,
+        pins={k:f.sha((self.root/k).read_bytes()) for k in f.LEGACY_CODE_FILES};self.policy=dict(schema_version=f.POLICY,registration_id='weekly-adaptive-release-v1',producer_policy_sha256='a'*64,source_policy_sha256='d'*64,
             public_fields=list(f.overlay().ROW_FIELDS),procedures={},public_roles={},rights_authorities=['b'*64],r0_identities=['c'*64],engine_sha256={k:pins[k] for k in f.ENGINE_FILES},website_code_sha256=pins,public_ref='lab-state')
         rows=[]
         for row in selected['rows']:

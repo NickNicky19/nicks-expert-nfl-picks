@@ -1,60 +1,113 @@
-# Restore the original without losing your evidence
+# Recover working Phase 1 or the original code
 
-## What "original" means
+## Verified backups
 
-Nick's working edition **before Phase 1**, not Joshua's older published data.
-Pinned source commit: `6c33224b90d32ac2e005fff140662f114f97eb14`.
-Original deployed snapshot: `2026-10-10T19:01:53Z` (October 10, 2:01:53 p.m. America/Chicago).
+Before Phase 2 edits, both remote references and trees were read back:
 
-GitHub refused the attempted backup-branch creation during preparation (`403: Resource not accessible by integration`).
-**No remote backup branch, code update, workflow change, or deployment was created by this session.**
-The delivered backup is a local/downloadable deployed-site snapshot plus exact copies of the original modified source files.
-It is not a full repository-history export, and does not contain external Worker secrets or browser-local settings.
+| Backup | Commit | Tree |
+| --- | --- | --- |
+| Original before Phase 1: backup/pre-phase1-20261013-210e34329d6e | 210e34329d6e5b42b4e8f1af768b63db75ec10c5 | 4c2349e3a37905ad8043437b9f661227be488a2c |
+| Working Phase 1: backup/pre-phase2-20261014-3149663447b2 | 3149663447b29f95f06c7259b84da3bd4a21cab0 | 880aa7e3b980be3bf55cb27cb735bf9a3d9a74f3 |
+| Phase 2 before timing/handoff: backup/pre-timing-extension-20261014-8fc1fb2f530a | 8fc1fb2f530adaf17ee2bf88516d22f613023903 | c4b878bf4d0183dcb8cfae137402bbb6fad2e303 |
 
-## Before installing
+The original backup's app, grader and seven baseline engine files match the
+original pinned source at 6c33224b90d32ac2e005fff140662f114f97eb14. Both backups
+retain repository history and all tracked data at their respective checkpoints.
+They do not contain browser-local settings or external Worker secrets.
 
-Use the package's `apply_upgrade.py` against the existing repository. It checks the origin, clean worktree,
-original file hashes, original model-file hashes, and patch applicability. With `--apply`, it creates a
-local backup branch and full tracked-tree ZIP before creating an upgrade branch. It does not push or deploy.
-Push the reported backup branch to GitHub before merging the upgrade. Do not force-push or reset main.
-Keep the original downloaded snapshot and the repository-tree backup outside the repository.
+Phase 2 is unmerged. To stop at review, leave main and Pages alone; no recovery
+mutation is required. Keep the review branch and its new evidence.
 
-## Recovery from your phone — available only after installation
+## Recover working Phase 1 after Phase 2 is merged
 
-1. Open the repository's **Actions** page and select **Restore original code**.
-2. Choose **Run workflow**, branch **main**, and confirmation **RESTORE_ORIGINAL**.
-3. Run it. It saves the pre-restore head to a backup branch, restores the original app and grader, switches a release-mode JSON file, commits normally,
-   then requests an **Hourly update** rebuild using the restored original code.
-4. Check that the rebuild and Pages deployment succeeded. A completed recovery commit alone is not proof of deployment.
+From a phone: Actions → **Restore working Phase 1** → Run workflow → main →
+**RESTORE_PHASE1**. The workflow verifies the pinned Phase 1 backup, creates and
+pushes a fresh pre-restore backup, restores allowlisted Phase 1 app/grader/verifier
+files and its original capture helper, disables Phase 2 capture, commits normally and requests an Hourly update.
+It retains the recovery-aware runner and all new evidence. Confirm that the
+following build and Pages deployment both succeed.
 
-The Actions route restores `pull/grade.py`, `output/app.js`, and `output/index.html`, then sets `config/release-mode.json` to `original`.
-It deliberately retains the recovery-aware workflow runner, which skips Phase 1 tests/capture in original mode; the token does not need to edit workflow definitions.
-The local full-restoration command additionally restores `.github/workflows/hourly.yml` exactly, but publishing that workflow change requires the appropriate workflow-write permission.
-No `data/forward`, `data/history`, caches, original prediction archives, browser storage, or Git history is deleted.
-New helper files and recovery documentation may remain in the repository, but the original application no longer uses them and the recovery-mode runner does not execute new capture/grading checks.
-This restores original behavior while retaining current data; it does not deliberately make data four days old.
-
-Recovery needs repository-content and workflow permissions. It does not bypass branch protection.
-The recovery and hourly jobs share a concurrency group. A genuinely stuck earlier run may need to be cancelled
-in Actions before recovery can proceed; do not circumvent an environment approval requirement.
-
-## Recovery from an existing local checkout
-
-Start with a clean `main` branch, fetch/pull the latest main, then run:
+From an existing local checkout, fetch/pull a clean main branch, then:
 
 ```sh
-python tools/restore_original.py --confirm RESTORE_ORIGINAL
+git fetch origin backup/pre-phase2-20261014-3149663447b2
+# Verify FETCH_HEAD is 3149663447b29f95f06c7259b84da3bd4a21cab0.
+python tools/restore_phase1.py --confirm RESTORE_PHASE1
 git diff --cached
 ```
 
-The default local script creates a pre-restore backup and stages the four original files, including the workflow. Add `--application-only` for the same workflow-preserving route used by Actions. After reviewing the result,
-push the backup branch, commit normally, and push the recovery commit. Run the restored Hourly update workflow.
-No hard reset, forced push, blanket checkout, or deletion of evidence is necessary.
-An ordinary revert of a code-only upgrade commit is also possible; do not revert intervening data-capture commits.
+The command prints its new backup branch. Push that branch first, inspect the
+staged code/mode changes, commit normally and push main. Request Hourly update
+and check the deployment. It never commits or pushes by itself. The old Phase 1
+population diagnostic may report its known discrepancies again; that does not
+silently enable a different forecast model or rewrite evidence.
 
-## Exact visual snapshot recovery
+## Recover the original edition before Phase 1
 
-The supplied `nicks-nfl-original-pages-20261010.zip` is the untouched GitHub Pages artifact, containing `artifact.tar`.
-Its SHA-256 is `80ecb82ff130d501eed874fcb9a762379c24d8b398918437afc0eba3ecf9e322`.
-It contains the original static website and published data, not the Python collector or complete Git history.
-Redeploying it would restore an old visual/data snapshot only. The snapshots' lines are not current offers.
+Pinned target: 6c33224b90d32ac2e005fff140662f114f97eb14, Nick's edition, not Joshua's
+older published data. The original deployed snapshot was 2026-10-10T19:01:53Z.
+
+From a phone: Actions → **Restore original code** → Run workflow → main →
+**RESTORE_ORIGINAL**. It saves a remote pre-restore backup, restores the original
+app, page shell, grader and verifier, selects original mode, and requests a
+rebuild. The retained runner skips Phase 1/2 capture and upgraded grading checks.
+Check the following build and Pages deployment; a recovery commit alone is not
+proof that the website was restored.
+
+From a clean, fetched main checkout:
+
+```sh
+python tools/restore_original.py --confirm RESTORE_ORIGINAL --application-only
+git diff --cached
+```
+
+Push the reported pre-restore backup before committing/publishing recovery.
+Without --application-only the local command also restores the original hourly
+workflow; publishing workflow changes requires normal workflow-write permission.
+
+## What every recovery retains
+
+All data/forward, data/verification, data/shadow, data/offers, data/outcomes,
+data/history, replay lanes, caches, prediction archives and Git history remain.
+Current data can be rebuilt; recovery does not deliberately deploy stale lines.
+New helper files may remain but recovered modes do not execute Phase 2 capture.
+The coordination/phase2-writer metadata branch/history and timing/handoff
+registries are also retained. Automatic implementation remains disabled; do
+not reset its ownership record during recovery or assume an old lease expired.
+The recovery routes share the hourly concurrency group, refuse dirty worktrees,
+verify allowlisted source hashes before staging, and never reset or force-push.
+Repository/environment protections remain in effect.
+
+An ordinary code-only revert is also possible. Review it carefully; retain new
+immutable evidence and do not revert intervening hourly data commits. The
+original backup's untouched Pages artifact SHA-256 remains
+80ecb82ff130d501eed874fcb9a762379c24d8b398918437afc0eba3ecf9e322. Redeploying
+that old artifact is visual-snapshot recovery, not current offers.
+
+Offline tests cover both recovery modes, backup/history retention, wrong hashes,
+uncommitted files and refusal of a production-model switch. A disposable
+repository rollback rehearsal is part of the Phase 2 integration validation;
+production recovery is not run while preparing this unmerged PR.
+
+
+## Current report-format and source-check recovery
+
+Public-v6/shared-gzip reports and ranked-selection evidence require a compatible
+reader and publisher. Preserve all prior/current report assets, original inputs,
+receipts and My Picks; a blind restore of an older reader is not complete report
+recovery. Before release, retain a current pre-release backup containing PR #2
+and the actual production data. Use normal forward commits and the existing
+serialized updater; verify subsequent updates and public results, not merely
+file survival. A limited Phase 1 fallback must state the loss of Phase 2 report
+capability and honest reporting status.
+
+The Phase 2 source gate also applies to recovered code. Exactly restored,
+previously tested source may reuse its actual matching CI evidence only after
+fresh input and installed-runtime checks and valid ancestry. Changed source,
+missing CI logs, different dependencies or incompatible workflows require new
+complete source CI before that route can run. This does not make old receipts
+newly qualified or allow a restored PASS flag to override current data checks.
+Existing explicit Phase 1/original recovery routes retain their checks and
+evidence preservation. The historical operating misses and unchanged 960-second
+target/1,200-second updater timeout remain visible; recovery capability must be
+measured against its actual source and workload.

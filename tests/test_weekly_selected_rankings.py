@@ -1,5 +1,9 @@
 """Fictional software fixtures only; no NFL evidence or provider calls."""
 import copy
+import gzip
+import os
+from datetime import datetime
+from unittest.mock import patch
 import json
 from pathlib import Path
 import subprocess
@@ -202,18 +206,132 @@ class SelectedRankingsTests(unittest.TestCase):
                 with self.assertRaises(ValueError): r.validate_document(bad, pointer, board, o.digest(board), doc)
 
 
-    def test_valid_over_cannot_be_rehomed_into_under_container(self):
-        board, doc = fixture(); good = make(board, doc)
-        with tempfile.TemporaryDirectory() as td:
-            pointer = r.write_public(good, td, atomic_json, clock=lambda: PERSIST)
-            r.validate_document(good, pointer, board, o.digest(board), doc, root=td)
-            bad = copy.deepcopy(good)
-            bad["picks"]["under"].append(bad["picks"]["over"].pop(0))
-            bad["picks"]["under"].sort(key=r.order)
-            pointer = r.write_public(bad, td, atomic_json, clock=lambda: PERSIST)
-            with self.assertRaisesRegex(ValueError, "ranking side mismatch"):
-                r.validate_document(bad, pointer, board, o.digest(board), doc, root=td)
+class RankedPublicGraphBoundaryTests(unittest.TestCase):
+    def published(self, root):
+        board, doc = fixture(); data = root / "output/data"
+        atomic_json(data / "week.json", board)
+        overlay_pointer = o.write_public(doc, data, atomic_json)
+        ranked = make(board, doc)
+        pointer = r.write_public(ranked, data, atomic_json, clock=lambda: PERSIST)
+        paths = r.validate_document(ranked, pointer, board, o.digest(board), doc, root=data)
+        bodies = {"data/" + name: (data / name).read_bytes() for name in paths}
+        return board, doc, ranked, pointer, bodies, data
 
+    def test_public_role_limits_and_retained_classification(self):
+        self.assertEqual(r.public_role("data/weekly-selected-rankings.json"), ("ranking_pointer", 4096))
+        self.assertEqual(r.public_role("data/weekly-selected-rankings/"+H+".json"), ("ranking_body", 262144))
+        self.assertEqual(r.public_role("data/weekly-selected-rankings/"+H+".receipt.json"), ("ranking_receipt", 4096))
+        for name in ("data/weekly-selected-rankings/x.json", "data/weekly-selected-rankings/../private.json", "data/weekly-selected-rankings/"+H+".json.gz"):
+            self.assertIsNone(r.public_role(name)); self.assertIsNone(o.public_asset_limit(name)); self.assertFalse(o.retained_public_asset(name))
+        self.assertTrue(o.retained_public_asset("data/weekly-selected-rankings/"+H+".receipt.json"))
+        self.assertFalse(o.retained_public_asset("data/weekly-selected-rankings.json"))
+
+    def test_actual_complete_graph_source_and_context_then_missing_dependency(self):
+        with tempfile.TemporaryDirectory() as directory:
+            board, doc, ranked, pointer, bodies, data = self.published(Path(directory))
+            self.assertEqual(r.validate_public_graph(bodies, board, o.digest(board), doc, website_source_sha="b"*40),set(bodies))
+            with self.assertRaisesRegex(ValueError,"executed source"):
+                r.validate_public_graph(bodies, board, o.digest(board), doc, website_source_sha="c"*40)
+            for name in bodies:
+                if name == "data/weekly-selected-rankings.json": continue
+                with self.subTest(missing=name),self.assertRaises(ValueError):
+                    r.validate_public_graph({k:v for k,v in bodies.items() if k!=name},board,o.digest(board),doc)
+            changed=copy.deepcopy(doc);changed["website_source_sha"]="c"*40
+            with self.assertRaises(ValueError):r.validate_public_graph(bodies,board,o.digest(board),changed)
+
+    def test_plain_json_physical_hash_privacy_and_encoding_are_strict(self):
+        with tempfile.TemporaryDirectory() as directory:
+            board, doc, ranked, pointer, bodies, data = self.published(Path(directory));name="data/"+pointer["path"];body=bodies[name]
+            with self.assertRaisesRegex(ValueError,"plain JSON"):r.validate_public_asset(name,gzip.compress(body,mtime=0))
+            with self.assertRaises(ValueError):r.validate_public_asset(name,body+b" ")
+            private=copy.deepcopy(ranked);private["fallback_counts"]["token"]="FICTIONAL_PRIVATE"
+            raw=o.canonical(private);changed="data/weekly-selected-rankings/"+o.sha(raw)+".json"
+            with self.assertRaisesRegex(ValueError,"private field"):r.validate_public_asset(changed,raw)
+            with self.assertRaisesRegex(ValueError,"duplicate"):r.validate_public_asset(name,b'{"x":1,"x":2}')
+            with self.assertRaisesRegex(ValueError,"nonfinite"):r.validate_public_asset(name,b'{"x":NaN}')
+
+    def test_actual_oversize_stops_before_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, _, _, pointer, _, data = self.published(Path(directory));path=data/pointer["path"];os.truncate(path,r.LIMIT+1)
+            with patch.object(r.os,"open",side_effect=AssertionError("Oversize body must not open")) as opening:
+                with self.assertRaisesRegex(ValueError,"byte bound"):r._read_asset(data,pointer["path"])
+            opening.assert_not_called()
+
+    def test_actual_growth_is_bounded_during_body_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, _, _, pointer, _, data = self.published(Path(directory));path=data/pointer["path"];real=r.os.fdopen;reads=[]
+            class Growing:
+                def __init__(self,stream):self.stream=stream
+                def __enter__(self):return self
+                def __exit__(self,*unused):self.stream.close()
+                def fileno(self):return self.stream.fileno()
+                def read(self,size):reads.append(size);os.truncate(path,r.LIMIT+1);return self.stream.read(size)
+            with patch.object(r.os,"fdopen",side_effect=lambda fd,mode:Growing(real(fd,mode))):
+                with self.assertRaisesRegex(ValueError,"byte bound"):r._read_asset(data,pointer["path"])
+            self.assertEqual(reads,[r.LIMIT+1])
+
+    def test_no_second_unbounded_body_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, _, _, pointer, _, data = self.published(Path(directory))
+            with patch.object(Path,"read_bytes",side_effect=AssertionError("No second unbounded read")):
+                saved,value=r.read_public(data)
+            self.assertEqual(saved,pointer)
+
+    def test_frozen_original_receipt_body_and_period_bindings(self):
+        board, selected = fixture()
+        original = make(board, selected)
+        def pointer(body, at):
+            return dict(schema_version=r.POINTER, path="weekly-selected-rankings/"+o.digest(body)+".json",
+                        sha256=o.digest(body), bytes=len(o.canonical(body)), display_board_sha256=body["display_board_sha256"],
+                        overlay_sha256=body["overlay_sha256"], published_at=at)
+        receipt = pointer(original, PERSIST)
+        board["games"][0]["state"] = "in"; at = "2031-10-25T17:01:00+00:00"
+        selected = o.prepare_overlay(board, o.digest(board), {}, {}, website_source_sha="c"*40, prepared_at=at, previous=selected)
+        current = r.prepare(board, o.digest(board), selected, o.digest(selected), now=at,
+                            website_source_sha="c"*40, previous=original, previous_receipt=receipt)
+        def graph(body, rec):
+            doc = copy.deepcopy(current)
+            for proof in doc["frozen_proofs"]: proof["receipt_sha256"] = o.digest(rec)
+            p = pointer(doc, at)
+            return {"data/weekly-selected-rankings.json": o.canonical(p), "data/"+p["path"]: o.canonical(doc),
+                    "data/weekly-selected-rankings/"+o.digest(p)+".receipt.json": o.canonical(p),
+                    "data/"+rec["path"]: o.canonical(body),
+                    "data/weekly-selected-rankings/"+o.digest(rec)+".receipt.json": o.canonical(rec)}
+        # The original publisher remains b while the current generation is c.
+        valid = graph(original, receipt)
+        self.assertEqual(r.validate_public_graph(valid, board, o.digest(board), selected, website_source_sha="c"*40), set(valid))
+        for change in ("season", "week", "bytes", "board", "overlay", "late_preparation"):
+            body = copy.deepcopy(original); rec = copy.deepcopy(receipt)
+            if change in {"season", "week"}:
+                body[change] += 1; rec = pointer(body, PERSIST)
+            elif change == "bytes": rec["bytes"] += 1
+            elif change == "board": rec["display_board_sha256"] = "d"*64
+            elif change == "overlay": rec["overlay_sha256"] = "d"*64
+            else:
+                body["prepared_at"] = "2031-10-24T12:00:02+00:00"; rec = pointer(body, PERSIST)
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "original body binding"):
+                r.validate_public_graph(graph(body, rec), board, o.digest(board), selected, website_source_sha="c"*40)
+
+    def test_failed_complete_dependency_validation_cannot_advance_pointer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            board, doc, ranked, pointer, _, data = self.published(Path(directory))
+            old_pointer=(data/"weekly-selected-rankings.json").read_bytes()
+            original_receipt=data/("weekly-selected-rankings/"+o.digest(pointer)+".receipt.json")
+            receipt_bytes=original_receipt.read_bytes();original_receipt.unlink()
+            board["games"][0]["state"]="in"
+            at="2031-10-25T17:01:00+00:00"
+            frozen=o.prepare_overlay(board,o.digest(board),{}, {},website_source_sha="b"*40,prepared_at=at,previous=doc)
+            class Clock(datetime):
+                @classmethod
+                def now(cls,tz=None):return datetime.fromisoformat(at)
+            with patch.object(r,"datetime",Clock),self.assertRaises((OSError,ValueError)):
+                r.prepare_writer(Path(directory),board,o.digest(board),frozen,website_source_sha="b"*40,atomic_json=atomic_json)
+            self.assertEqual((data/"weekly-selected-rankings.json").read_bytes(),old_pointer)
+            original_receipt.write_bytes(receipt_bytes)
+            with patch.object(r,"datetime",Clock):
+                current=r.prepare_writer(Path(directory),board,o.digest(board),frozen,website_source_sha="b"*40,atomic_json=atomic_json)
+            self.assertNotEqual(current,pointer)
+            self.assertEqual(original_receipt.read_bytes(),receipt_bytes)
 
 
 if __name__ == "__main__":

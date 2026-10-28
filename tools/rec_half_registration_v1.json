@@ -1,0 +1,70 @@
+{
+  "candidate_id": "rec-half-adjustment-v1",
+  "code_frozen_at": "2026-10-16T19:36:46.224755Z",
+  "engine_sha256": "e8e8823f460e074485ee91a0dc1c1cfc43877146c4498ef074d15d2b5a735d07",
+  "expected_engine_files": {
+    "pull/books.py": "0b89744960136a4f2e594b61e6df754d357706d8c66a8ae359d8eb02bbfa53f8",
+    "pull/build.py": "75bf99c55b5f2561a60a120c82db368ad3b996a8a64e9ab08828b586a9314419",
+    "pull/gamemodel.py": "2a2519a12ad4993da02ae6bdcdb6c86f2b5a6554ce93a702b550ecde17fb7d1f",
+    "pull/matchup.py": "15b1739b203e1757b0ebaefa3a6994034d56bb4a92a9e07572527ef1a90e914c",
+    "pull/news.py": "17ce1b3b6b72694e6b543bd767e287c26a9d1f6dd5dba2de6c873543036842e9",
+    "pull/scoring.py": "31672c10d526d591db8951157b0ecd669b4d02b412a75deec337618bff18dab2",
+    "pull/sources.py": "36555cdbc55d73ba632d5adae1130288f4f532073857c642ac3ebc7e626b0061"
+  },
+  "model_code_sha256": "52620fb9fcf6a3fe8ac82057c5caf1a0947ae726ef4bdb64c46f8ad91179d635",
+  "production_enabled": false,
+  "protocol": {
+    "baseline_model": "original_sleeper_matchup_baseline",
+    "candidate_id": "rec-half-adjustment-v1",
+    "fitting": false,
+    "formula": "raw + 0.5 * (unchanged_adjusted - raw)",
+    "production_promotion": false,
+    "publication": "LOCAL_OBSERVATION_NOT_VERIFIED_PUBLICATION",
+    "recording": "OFFLINE_ONLY_NO_UPDATER_HOOK",
+    "same_original_receipt": true,
+    "selection": "earliest_eligible_common_triple_by_capture_then_completion_then_digest",
+    "target": "rec",
+    "tuning_budget": 0,
+    "version": "rec-half-protocol-v1",
+    "weight": 0.5,
+    "window": {
+      "first_kickoff": "2026-10-23T00:15:00Z",
+      "first_kickoffs_by_week": {
+        "10": "2026-11-13T01:15:00Z",
+        "11": "2026-11-20T01:15:00Z",
+        "12": "2026-11-26T01:00:00Z",
+        "13": "2026-12-04T01:15:00Z",
+        "14": "2026-12-11T01:15:00Z",
+        "7": "2026-10-23T00:15:00Z",
+        "8": "2026-10-30T00:15:00Z",
+        "9": "2026-11-06T01:15:00Z"
+      },
+      "schedule_changes": "retain_original_membership_and_kickoffs; flag_changes; never_shift_window",
+      "schedule_reference": {
+        "file_sha256": "84a85e361cb0d2f01a1e5f0be8e2072d854b386d4753e29e4b1fff496a23ea7e",
+        "generated_at": "2026-10-14T01:10:09Z",
+        "path": "output/data/teams.json",
+        "purpose": "EXISTING_PLANNING_SCHEDULE_NOT_INDEPENDENT_FULL_WEEK_PROOF",
+        "source_commit": "52d068326045c010c9e3bb89f23188f9153ab151"
+      },
+      "season": 2026,
+      "shift_or_extension_allowed": false,
+      "weeks": [
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14
+      ]
+    }
+  },
+  "protocol_sha256": "9877a43b85f0ff35e98c2866a7b82195a1387f5757e4df370d218a40f06bf7dd",
+  "protocol_version": "rec-half-protocol-v1",
+  "recording_status": "OFFLINE_NOT_ACTIVATED",
+  "registered_at": "2026-10-16T19:36:46.224755Z",
+  "schema_version": "point-candidate-registration-v1",
+  "source_commit": "52d068326045c010c9e3bb89f23188f9153ab151"
+}

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 // Actual existing site on loopback; every external request is mocked. No provider collection.
-// --baseline-root compares unchanged production; --evidence-dir retains local screenshots.
+// --baseline-root compares versioned production; --evidence-dir retains local screenshots.
+// Phase 1 and Phase 2 intentionally have different final-evidence/status contracts.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -13,6 +14,10 @@ const arg = key => args.includes(key) ? args[args.indexOf(key) + 1] : null;
 const repo = path.resolve(__dirname, '..');
 const roots = { after: path.resolve(arg('--root') || path.join(repo, 'output')) };
 if (arg('--baseline-root')) roots.before = path.resolve(arg('--baseline-root'));
+const contracts = Object.fromEntries(Object.entries(roots).map(([lane, root]) => {
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  return [lane, { authoritativeFinals: app.includes('function finalIdentity('), leanFirst: app.includes('function displayedProps('), selectedForecasts: app.includes('function selectedPropForecast('), archiveHeading: app.includes('<h2>Reference-policy archive') ? 'Reference-policy archive' : 'Track record' }];
+}));
 const evidence = arg('--evidence-dir') && path.resolve(arg('--evidence-dir'));
 if (evidence) fs.mkdirSync(path.join(evidence, 'screenshots'), { recursive: true });
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -74,9 +79,9 @@ async function open(browser, origin, lane, width, hash = 'props') {
   page.on('pageerror', e => errors.push(e.message));
   page.on('request', req => { if (!req.url().startsWith(origin + '/') && !mocked.some(x => x.host === new URL(req.url()).hostname)) unexpected.push(req.url()); });
   await page.goto(`${origin}/${lane}/#/${hash}`);
-  await page.waitForFunction(tab => S.data && !ticking && (tab === 'record'
-    ? document.querySelector('#main h2')?.textContent.trim().startsWith('Track record')
-    : document.querySelector('#f-sort')), hash);
+  await page.waitForFunction(({tab,archiveHeading}) => S.data && !ticking && (tab === 'record'
+    ? [...document.querySelectorAll('#main h2')].some(el => el.textContent.trim().startsWith(S.track?.weeks?.length ? archiveHeading : 'Track record'))
+    : document.querySelector('#f-sort')), {tab:hash,archiveHeading:contracts[lane].archiveHeading});
   return { page, context, errors, mocked, unexpected };
 }
 async function order(page, id, panels = false) {
@@ -121,17 +126,17 @@ async function realDataChecks(browser, origin, lane, width) {
     equal(scenes.length, 2, 'two real leading props outside customary first category');
     for (const scene of scenes) {
       await page.evaluate(id => { S.f.q = S.byId[id].name; S.open.clear(); render(); }, scene.id);
-      equal(await order(page, scene.id), lane === 'before' ? scene.props : scene.ordered, 'saved real collapsed chip order');
+      equal(await order(page, scene.id), contracts[lane].leanFirst ? scene.ordered : scene.props, 'saved real collapsed chip order');
       equal(await page.locator(`[data-player="${scene.id}"] .pbody`).count(), 0, 'real card stays collapsed');
       await screenshot(page, `${scene.id}-${lane}-${width}-collapsed`, `[data-player="${scene.id}"]`);
       await page.locator(`[data-toggle="${scene.id}"]`).click();
-      equal(await order(page, scene.id, true), lane === 'before' ? scene.props : scene.ordered, 'real expanded panel order matches chips');
+      equal(await order(page, scene.id, true), contracts[lane].leanFirst ? scene.ordered : scene.props, 'real expanded panel order matches chips');
       await screenshot(page, `${scene.id}-${lane}-${width}-expanded`, `[data-player="${scene.id}"] .pbody > .cat`);
     }
     equal(await page.evaluate(() => JSON.stringify(S.data)), baseline.data, 'saved frozen data and source arrays unchanged');
     equal(await page.evaluate(() => JSON.stringify(S.data.picks)), baseline.top, 'saved Top picks unchanged');
     equal(errors, [], 'real-data browser has no page errors');
-    return { lane, width, scenes, invariant_sha256: sha(JSON.stringify(baseline)), mocked_requests: mocked.length };
+    return { lane, width, scenes, invariant_sha256: sha(JSON.stringify({ data: baseline.data, top: baseline.top, ranks: baseline.ranks })), grades_sha256: sha(JSON.stringify(baseline.grades)), mocked_requests: mocked.length };
   } finally { await context.close(); }
 }
 
@@ -139,10 +144,10 @@ async function controlChecks(browser, origin, lane, width) {
   const { page, context, errors } = await open(browser, origin, lane, width);
   const normal = ['rec', 'rec_yd', 'rush_rec_yd', 'anytime_td', 'fpts'];
   const sorted = ['rec_yd', 'rush_rec_yd', 'fpts', 'rec', 'anytime_td'];
-  const expected = lane === 'before' ? normal : sorted;
+  const expected = contracts[lane].leanFirst ? sorted : normal;
   try {
     await page.waitForSelector('#f-sort');
-    equal(await page.evaluate(() => [S.f.sort, S.open.size]), ['proj', 0], 'default sort and collapsed state unchanged');
+    equal(await page.evaluate(() => [S.f.sort, S.open.size]), [contracts[lane].selectedForecasts ? 'selected_edge' : 'proj', 0], 'versioned default sort and collapsed state unchanged');
     const source = await page.evaluate(() => JSON.stringify(S.data));
     await page.evaluate(() => { S.f.q = 'FICTIONAL lead'; S.f.sort = 'edge'; S.f.hideOut = false; render(); });
     equal(await order(page, 'fictional-0'), expected, 'fictional tie order in collapsed chips');
@@ -180,16 +185,37 @@ async function controlChecks(browser, origin, lane, width) {
       await page.evaluate(state => { S.games['fictional-game'].state = state; renderProps(); }, state);
       equal(await order(page, 'fictional-0'), expected, 'started-game behavior leaves display ordering unchanged');
     }
-    const grades = await page.evaluate(() => {
+    if (contracts[lane].authoritativeFinals) {
+      equal(await page.evaluate(() => propStatus(S.byId['fictional-0'], 'rec_yd', 25, 'over').res), 'unresolved', 'missing final receipt cannot be replaced by live statistics');
+    }
+    const grades = await page.evaluate(authoritative => {
       const p = S.byId['fictional-0']; S.live[p.id] = { gp: 1, rec: 3, rec_yd: 30 };
+      if (authoritative) for (const [category, actual] of [['rec_yd', 30], ['rec', 3]]) {
+        S.finalOutcomes.set(finalIdentity(p, category), { season: S.data.season, week: S.data.week,
+          player_id: p.id, game_id: p.game_id, category, team: p.team, kickoff: S.games[p.game_id].kickoff,
+          status: 'resolved', actual, final_confirmed: true, outcome_conflict: false });
+      }
       return [propStatus(p, 'rec_yd', 25, 'over'), propStatus(p, 'rec_yd', S.mine[0].line, 'over'), propStatus(p, 'rec', 3, 'over')];
-    });
+    }, contracts[lane].authoritativeFinals);
+    equal(grades[2].res, contracts[lane].authoritativeFinals ? 'push' : 'miss', 'integer equality follows the explicit versioned grading contract');
+    if (contracts[lane].authoritativeFinals) {
+      const negatives = await page.evaluate(() => {
+        const p = S.byId['fictional-0'], row = S.finalOutcomes.get(finalIdentity(p, 'rec_yd'));
+        row.team = 'UNRELATED'; const identity = propStatus(p, 'rec_yd', 25, 'over').res;
+        row.team = p.team; row.outcome_conflict = true; const conflict = propStatus(p, 'rec_yd', 25, 'over').res;
+        row.outcome_conflict = false; row.status = 'dnp'; row.actual = null; const dnp = propStatus(p, 'rec_yd', 25, 'over').res;
+        row.status = 'resolved'; row.actual = 30; return [identity, conflict, dnp];
+      });
+      equal(negatives, ['unresolved', 'unresolved', 'dnp'], 'matching identity and nonconflicting final evidence remain required; confirmed DNP is explicit');
+    }
     equal(grades.slice(0, 2).map(x => x.res), ['hit', 'miss'], 'own saved contract remains distinct from board line');
     const gameOrder = await page.evaluate(() => {
       S.gameView = 'fictional-game'; gs(S.gameView).sort = 'lean';
       const box = document.createElement('div'); box.innerHTML = renderGameProps(S.games[S.gameView], { away: { abbr: 'BBB' }, home: { abbr: 'AAA' } });
       const keys = [...box.querySelectorAll('.pbody > .cat')].map(x => x.dataset.cat.split('|')[1]);
-      S.gameView = null; S.games['fictional-game'].state = 'pre'; delete S.live['fictional-0']; return keys;
+      S.gameView = null; S.games['fictional-game'].state = 'pre'; delete S.live['fictional-0'];
+      if (typeof finalIdentity === 'function') for (const key of ['rec', 'rec_yd']) S.finalOutcomes.delete(finalIdentity(S.byId['fictional-0'], key));
+      return keys;
     });
     equal(gameOrder, normal, 'game-page reused cards retain normal order');
     await page.evaluate(() => { S.f.q = 'FICTIONAL No Lean'; S.open.add('fictional-1'); render(); });
@@ -205,9 +231,23 @@ async function controlChecks(browser, origin, lane, width) {
     equal(await page.evaluate(() => JSON.stringify(S.data)), source, 'controls do not mutate original source arrays or forecasts');
     equal(await page.evaluate(() => S.mine), mine, 'controls preserve saved fictional My Picks');
     await page.reload(); await page.waitForFunction(() => S.data && !ticking && document.querySelector('#f-sort'));
-    equal(await page.evaluate(() => [S.f.sort, S.f.q, S.f.cat, S.open.size]), ['proj', '', '', 0], 'full reload preserves existing filter/open reset');
+    equal(await page.evaluate(() => [S.f.sort, S.f.q, S.f.cat, S.open.size]), [contracts[lane].selectedForecasts ? 'selected_edge' : 'proj', '', '', 0], 'full reload preserves versioned default sort and existing filter/open reset');
     equal(await page.evaluate(() => S.mine), mine, 'full reload retains device saved selections');
     equal(await page.evaluate(() => S.lines['fictional-0|rec_yd']), undefined, 'full reload preserves existing temporary-line reset');
+    const finality = await page.evaluate(() => {
+      const id = 'presentation-finality', previous = S.games[id], mine = S.mine, bytes = localStorage.getItem('nflprops.mine');
+      const pick = {kind:'game',gid:id,market:'total',side:'under',line:0,season:S.data.season,week:S.data.week,at:1};
+      const game = {id,home:'AAA',away:'BBB',kickoff:'2026-10-20T17:00:00Z',state:'post',detail:'Final',home_score:0,away_score:0};
+      try {
+        S.games[id] = game; S.mine = [pick]; const push = gameBetStatus(pick); renderMine(); const ownLine = document.querySelector('[data-mline]')?.value;
+        game.away_score = null; const missing = gameBetStatus(pick).res;
+        game.away_score = 0; game.state = 'in'; const live = gameBetStatus(pick); renderMine(); const text = document.querySelector('#main').innerText;
+        game.id = 'other-game'; const wrongGame = gameBetStatus(pick).res;
+        return {push:[push.res,push.final],missing,live:[live.res,live.final],wrongGame,ownLine,
+          noFinalWin:/Final wins\s+0/.test(text),noCombined:!(/All \d+ together|CLEARED|LOST/.test(text)),bytes:localStorage.getItem('nflprops.mine')===bytes};
+      } finally { S.mine = mine; if (previous) S.games[id] = previous; else delete S.games[id]; render(); }
+    });
+    equal(finality, {push:['push',true],missing:'unresolved',live:['equal',false],wrongGame:'unresolved',ownLine:'0',noFinalWin:true,noCombined:true,bytes:true}, 'Main game finality composes with qualified props without changing saved selections');
     equal(errors, [], 'control browser has no page errors');
     return { lane, width, leading_prop: 'rec_yd', score: .4, tie_follows: 'rush_rec_yd', grades };
   } finally { await context.close(); }
@@ -219,23 +259,40 @@ async function controlChecks(browser, origin, lane, width) {
   const browser = await chromium.launch({ executablePath: process.env.NFL_CHROMIUM_PATH || '/usr/bin/chromium', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   const real = [], controls = [], records = [];
   try {
-    for (const width of [1280, 390]) for (const lane of Object.keys(roots)) real.push(await realDataChecks(browser, origin, lane, width));
+    for (const width of [1280, 390, 320]) for (const lane of Object.keys(roots)) real.push(await realDataChecks(browser, origin, lane, width));
     fixture = fictionalWeek();
-    for (const width of [1280, 390]) for (const lane of Object.keys(roots)) controls.push(await controlChecks(browser, origin, lane, width));
+    for (const width of [1280, 390, 320]) for (const lane of Object.keys(roots)) controls.push(await controlChecks(browser, origin, lane, width));
     fixture = null;
-    for (const width of [1280, 390]) for (const lane of Object.keys(roots)) {
+    for (const width of [1280, 390, 320]) for (const lane of Object.keys(roots)) {
       const start = requests.length, item = await open(browser, origin, lane, width, 'record');
-      try { equal(item.errors, [], 'record browser has no page errors'); records.push({ lane, width, text: await item.page.locator('#main').innerText(), paths: [...new Set(requests.slice(start).filter(x => x.lane === lane).map(x => x.path))].sort() }); }
+      try { equal(item.errors, [], 'record browser has no page errors'); records.push({ lane, width, text: await item.page.locator('#main').innerText(), legacy_cards: await item.page.locator('#main .stats .stat').allTextContents(), legacy_weeks: await item.page.locator('#main details.week > summary').allTextContents(), integrated_state: contracts[lane].authoritativeFinals ? await item.page.locator('#selection-grading').innerText() : null, paths: [...new Set(requests.slice(start).filter(x => x.lane === lane).map(x => x.path))].sort() }); }
       finally { await item.context.close(); }
     }
-    if (roots.before) for (const width of [1280, 390]) {
-      equal(real.find(x => x.width === width && x.lane === 'after').invariant_sha256, real.find(x => x.width === width && x.lane === 'before').invariant_sha256, 'all rankings, Top selections, forecast records and baseline grades identical');
-      equal(controls.find(x => x.width === width && x.lane === 'after').grades, controls.find(x => x.width === width && x.lane === 'before').grades, 'baseline grading contract retained, including existing integer-tie behavior');
+    if (roots.before) for (const width of [1280, 390, 320]) {
+      equal(real.find(x => x.width === width && x.lane === 'after').invariant_sha256, real.find(x => x.width === width && x.lane === 'before').invariant_sha256, 'all rankings, Top selections and forecast records identical across versioned grading contracts');
+      if (contracts.after.authoritativeFinals === contracts.before.authoritativeFinals) {
+        equal(controls.find(x => x.width === width && x.lane === 'after').grades, controls.find(x => x.width === width && x.lane === 'before').grades, 'same-version grading contract retained');
+        equal(real.find(x => x.width === width && x.lane === 'after').grades_sha256, real.find(x => x.width === width && x.lane === 'before').grades_sha256, 'same-version original board grades retained');
+      } else equal(controls.find(x => x.width === width && x.lane === 'after').grades[2].res, 'push', 'corrected Phase 2 push must not equal the legacy integer-tie bug');
       const before = records.find(x => x.width === width && x.lane === 'before'), after = records.find(x => x.width === width && x.lane === 'after');
-      equal(after.text, before.text, 'existing Track Record text unchanged'); equal(after.paths, before.paths, 'existing Track Record local request contract unchanged');
+      equal(after.legacy_cards, before.legacy_cards, 'legacy archive summary values retained');
+      equal(after.legacy_weeks, before.legacy_weeks, 'legacy archive weekly membership retained');
+      if (contracts.after.authoritativeFinals === contracts.before.authoritativeFinals) {
+        equal(after.text, before.text, 'same-version Track Record text unchanged');
+        equal(after.paths, before.paths, 'same-version Track Record request contract unchanged');
+      } else {
+        equal(after.paths.filter(p => !p.startsWith('/data/selection-grading/') && p !== '/data/forecast-scorecard.json'), before.paths, 'only the documented grading pointer and public forecast scorecard extend legacy asset requests');
+        equal(after.integrated_state.includes('report is unavailable'), true, 'missing public report is explicit rather than zero outcomes');
+      }
     }
-    equal(requests.filter(x => /selection-grading|forecast-scorecard|offer-capture|matchup-proof|point-challenger/.test(x.path)), [], 'presentation subset requests no new Phase2 assets');
-    const result = { status: 'PASS', checks, provider_requests_sent: 0, external_requests: 'ALL MOCKED', phone: '390x844 Chromium emulation, not physical iPhone/Safari or public-site acceptance', data_sha256: sha(fs.readFileSync(path.join(roots.after, 'data/week.json'))), app_sha256: Object.fromEntries(Object.entries(roots).map(([lane, root]) => [lane, sha(fs.readFileSync(path.join(root, 'app.js')))])), real, controls, record: records.map(({ text, ...x }) => ({ ...x, text_sha256: sha(text) })) };
+    equal(requests.filter(x => /offer-capture|matchup-proof|point-challenger/.test(x.path)), [], 'browser requests no private evidence or unsupported Phase2 assets');
+    for (const lane of Object.keys(roots)) {
+      const gradingPaths = [...new Set(requests.filter(x => x.lane === lane && x.path.startsWith('/data/selection-grading/')).map(x => x.path))];
+      equal(gradingPaths, contracts[lane].authoritativeFinals ? ['/data/selection-grading/latest.json'] : [], 'versioned optional public pointer request contract');
+      const scorecardPaths = [...new Set(requests.filter(x => x.lane === lane && x.path.includes('forecast-scorecard')).map(x => x.path))];
+      equal(scorecardPaths, contracts[lane].authoritativeFinals ? ['/data/forecast-scorecard.json'] : [], 'only the exact supported public forecast scorecard may be requested');
+    }
+    const result = { status: 'PASS', contracts, checks, provider_requests_sent: 0, external_requests: 'ALL MOCKED', phone: '320/390px Chromium emulation, not physical iPhone/Safari or public-site acceptance', data_sha256: sha(fs.readFileSync(path.join(roots.after, 'data/week.json'))), app_sha256: Object.fromEntries(Object.entries(roots).map(([lane, root]) => [lane, sha(fs.readFileSync(path.join(root, 'app.js')))])), real, controls, record: records.map(({ text, ...x }) => ({ ...x, text_sha256: sha(text) })) };
     if (evidence) fs.writeFileSync(path.join(evidence, 'browser-results.json'), JSON.stringify(result, null, 2) + '\n');
     console.log(JSON.stringify(result, null, 2));
   } finally { await browser.close(); }

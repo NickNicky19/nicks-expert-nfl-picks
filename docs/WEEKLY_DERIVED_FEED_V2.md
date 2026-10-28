@@ -7,9 +7,11 @@ available. There is no new scheduler or credential requirement.
 
 The selected forecast is the primary visible category projection, with its mean,
 median or genuine touchdown event-probability label and a provisional status.
-The canonical R0 board and its calculations remain available as the explicitly
-labeled reference. Lines, Top Picks, leans, rankings, pacing, fantasy and grading
-keep their existing R0 inputs. Point forecasts supply no bet-win probability.
+The canonical reference board and its calculations remain available separately.
+The later selected-ranking integration uses the issued forecasts for provisional
+Top Picks and selected-gap sorts. Saved reference grading, registered strategies,
+accuracy, pacing and fantasy retain their own inputs and model/source identities.
+Point forecasts supply no bet-win probability.
 Exact website PPR remains unsupported. Invalid, missing or expired optional
 inputs use R0; valid started rows retain their original frozen forecasts.
 
@@ -48,7 +50,7 @@ hosted attempts and all registrations remain retained under their own identities
 
 `tools/check_weekly_consumer_v3_static.py` accepts separately root-approved new pins
 and checks the current physical policy/helper/schema/workflow bytes, source and
-recipes, all thirteen actual website code files and the exact workflow policy
+recipes, the actual registered website code inventory and exact workflow policy
 hash. It opens no forecast, source-data or model files, makes no HTTP calls and
 uses no old report as acceptance. Its result is static source evidence only.
 A separately recorded current receipt must identify the exact checked bytes.
@@ -84,10 +86,41 @@ This is consumer software acceptance; no final release policy, hosted export or
 deployment is accepted by these tests. Both historical V2 receipts remain byte
 exact. The UI app/index and their prior browser receipts remain unchanged.
 
-## Selected-ranking integration v1
+## Phase 2 coexistence transition — 2026-10-24
 
-The new selected-ranking module is the fourteenth closed code-inventory member.
-The current app, overlay producer and portable feed helper require new exact
-physical policy bindings together. Original historical receipts remain evidence
-for their original bytes. They do not certify this later integration. See
-[Selected-ranking contract](WEEKLY_SELECTED_RANKINGS.md).
+The earlier V2 registrations and receipts above remain historical records. A
+website-only `weekly-derived-selected-policy-v3` adds explicit current execution
+bindings for the corrected reference engine while retaining the original R0
+engine/freeze, catalog authority, lab source and procedure identities unchanged.
+The original physical V2 policy is freshly checked before its historical fields
+can support feed qualification. Current website code and the closed corrected
+engine are independently checked; a recognized model name alone grants no trust.
+The exported feed stays V2 and the public overlay stays V1. Lab export does not
+accept the website-only V3 registration as a replacement historical experiment.
+
+The protected policy and workflow hash must agree exactly. Changed policy,
+source/helper, schema, engine or website-code dependencies invalidate acceptance.
+Invalid modern inputs cannot select a permissive V2 route. Optional rejection
+keeps the coherent current reference display or an explicit unavailable state.
+It does not fabricate a selected feed or qualify an original input/native bundle.
+
+The expanded accuracy report evaluates its own saved reference model/engine
+cohorts, not provisional display forecasts. New-source CI, actual optional feed
+acceptance and public deployment verification remain distinct checks. The
+ordinary integration candidate does not install its protected registration or
+claim those later checks passed.
+
+## Selected-ranking coexistence — 2026-10-25
+
+The original thirteen-path V2 registration is read from its exact retained Git
+commit, tree and blob. The later fourteen-path active V2 registration additionally
+binds `weekly_selected_rankings.py`. Neither replaces the other's source identity.
+Current corrected execution uses an explicit V3 registration with both historical
+registrations and the actual fourteen current code hashes. Current code never
+wears a historical engine or registration label.
+
+The public selected-ranking pointer, body, completion and required original
+frozen-selection dependencies form a separate complete graph. Their bounded
+readers and fresh source/destination validation do not qualify native forecasts
+or add selected observations to reference accuracy or registered strategies.
+The original model catalog, procedures, experiment and timing rules remain fixed.

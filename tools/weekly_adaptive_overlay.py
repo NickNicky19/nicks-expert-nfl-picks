@@ -1,7 +1,10 @@
-"""Portable provisional display overlay. Never changes the canonical R0 board.
+"""Portable provisional display overlay. Never changes the reference board.
 
 The same bytes are proposed as the website's tools/weekly_adaptive_overlay.py.
 Only selected derived fields are public; source panels/models stay private.
+Legacy R0 field/state names are retained as encoding identifiers. Policy V3
+separates the corrected current reference from the immutable historical R0
+freeze; an overlay producer identity is not current-source qualification.
 """
 from __future__ import annotations
 
@@ -70,7 +73,7 @@ def board_offers(board):
 
 def board_contract(board):
     offers = board_offers(board)
-    # Only fields retained by both normal and public-stage R0 boards. This is a
+    # Only fields retained by both normal and public-stage reference boards. This is a
     # packaging equivalence check, not a substitute for either physical hash.
     return dict(season=board["season"], week=board["week"], offers=[dict(
         player_id=k[1], game_id=k[0], category=k[2], kickoff=v[1]["kickoff"],
@@ -211,8 +214,10 @@ def repackage(doc, canonical_board, canonical_sha, display_board, display_sha, *
 
 def read_bound(path, expected=None, *, limit=MAX_BYTES):
     path = Path(path)
-    if path.is_symlink() or path.stat().st_size > limit: raise ValueError("bounded plain file required")
-    body = path.read_bytes()
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > limit: raise ValueError("bounded plain file required")
+    with path.open("rb") as stream:
+        body = stream.read(limit + 1)
+    if len(body) > limit: raise ValueError("bounded plain file required")
     if expected is not None and sha(body) != expected: raise ValueError("input hash changed")
     return json.loads(body), sha(body)
 
@@ -231,11 +236,32 @@ def read_public(root):
     return pointer, doc
 
 
+def public_asset_limit(name):
+    """Exact weekly Pages roles; legacy overlay bounds retain their meaning."""
+    import re
+    if name in {"weekly-adaptive-overlay.js", "data/weekly-adaptive-overlay.json"} or (isinstance(name, str) and re.fullmatch(r"data/weekly-adaptive/[a-f0-9]{64}\.json", name)):
+        return MAX_BYTES
+    from weekly_selected_rankings import public_role
+    role = public_role(name)
+    return role[1] if role is not None else None
+
+
+def retained_public_asset(name):
+    """Only immutable classified older bodies/receipts may remain unstaged."""
+    import re
+    if isinstance(name, str) and re.fullmatch(r"data/weekly-adaptive/[a-f0-9]{64}\.json", name): return True
+    from weekly_selected_rankings import public_role
+    role = public_role(name)
+    return role is not None and role[0] in {"ranking_body", "ranking_receipt"}
+
+
 def validate_public_root(output):
     """Validate the new public graph freshly, including after the actual copy."""
     output = Path(output)
     allowed = {"weekly-adaptive-overlay.js"}
-    if not (output / "data/weekly-adaptive-overlay.json").exists(): return allowed
+    if not (output / "data/weekly-adaptive-overlay.json").exists():
+        if (output / "data/weekly-selected-rankings.json").exists(): raise ValueError("ranking graph has no overlay")
+        return allowed
     pointer, doc = read_public(output)
     board, board_sha = read_bound(output / "data/week.json", limit=16 * 1024 * 1024)
     validate_overlay(doc, board, board_sha)
@@ -316,7 +342,7 @@ def main():
     doc = prepare_overlay(board, board_sha, selected, review, website_source_sha=args.website_source_sha,
                           prepared_at=now, previous=previous)
     write_public(doc, root / "output/data", atomic_json)
-    # A separate, versioned selection stream; original R0 board/picks stay intact.
+    # A separate selection stream; reference/native histories stay untouched.
     from weekly_selected_rankings import prepare_writer as prepare_rankings
     ranking_pointer = prepare_rankings(root, board, board_sha, doc,
         website_source_sha=args.website_source_sha, atomic_json=atomic_json)

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,21 +16,66 @@ sys.path.insert(0,str(ROOT/'tools'))
 import classic_build_pair_v1 as pair
 import classic_model_v1 as model
 
+
+def retained_classic_source(target):
+    """Real closed Classic1 source, not today's code wearing its old label."""
+    target = Path(target)
+    repository = Path(os.environ.get('NFL_ORIGINAL_REPOSITORY', ROOT))
+    source = model.SCORING_SOURCE
+    command = ['git', '--no-replace-objects', '--no-lazy-fetch', '-C', str(repository)]
+    entries = subprocess.check_output([*command, 'ls-tree', '-r', '-z', source,
+                                       '--', 'pull', 'tools', 'config', 'schemas']).split(b'\0')
+    count = 0
+    for entry in entries:
+        if not entry:
+            continue
+        metadata, name = entry.split(b'\t', 1)
+        mode, kind, oid = metadata.decode().split()
+        name = name.decode()
+        if mode != '100644' or kind != 'blob' or '..' in Path(name).parts:
+            raise AssertionError('Unexpected retained source entry')
+        raw = subprocess.check_output([*command, 'cat-file', 'blob', oid])
+        if len(raw) > 2 << 20 or hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest() != oid:
+            raise AssertionError('Retained source blob identity')
+        path = target / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        count += 1
+    if not count:
+        raise AssertionError('Retained Classic1 source required')
+    if model.contract(target) != model.execution_contract():
+        raise AssertionError('Retained Classic1 contract changed')
+    return target
+
+
 class ActualBuildPairTests(unittest.TestCase):
-    def test_workflow_installs_pair_before_current_policy_and_publishes_both_lanes(self):
+    def test_workflow_separates_current_capture_from_retained_legacy_pair(self):
         import re
         workflow=(ROOT/'.github/workflows/hourly.yml').read_text()
-        commands=[line.strip()for line in workflow.splitlines()if 'run:'in line]
-        stage=next(i for i,line in enumerate(commands)if 'classic_build_pair_v1.py'in line and '--install-staged-output'not in line)
-        install=next(i for i,line in enumerate(commands)if '--install-staged-output'in line)
-        capture=next(i for i,line in enumerate(commands)if 'tools/reliability.py'in line)
-        feed=next(i for i,line in enumerate(commands)if 'tools/weekly_adaptive_overlay.py'in line)
+        starts=list(re.finditer(r'(?m)^      - (?:name:|uses:)',workflow))
+        blocks=[workflow[start.start():starts[i+1].start()if i+1<len(starts)else len(workflow)]for i,start in enumerate(starts)]
+        def block(name):
+            return next((i,value)for i,value in enumerate(blocks)if value.startswith('      - name: '+name+'\n'))
+        stage,build=block('Build accepted versioned production engine')
+        install,installed=block('Install validated data without changing source or old R0 caches')
+        capture,captured=block('Required integrity checks and pregame capture')
+        feed,overlay=block('Prepare isolated provisional overlay (default R0)')
         self.assertLess(stage,install);self.assertLess(install,capture);self.assertLess(capture,feed)
-        self.assertEqual(commands[capture].count('--model '),1)
-        self.assertIn('--model '+model.MODEL,commands[capture])
-        self.assertIn('--mode live',commands[stage]);self.assertNotIn('--refresh',commands[stage])
-        policy=(ROOT/'config/weekly-derived-selected-policy-v3.json').read_bytes()
-        self.assertIn('--feed-policy config/weekly-derived-selected-policy-v3.json --feed-policy-sha256 '+hashlib.sha256(policy).hexdigest(),commands[feed])
+        self.assertIn("if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then",build)
+        self.assertLess(build.index('python tools/phase2_capture.py --mode live --build-and-capture'),build.index('elif '))
+        self.assertGreater(build.index('python tools/classic_build_pair_v1.py'),build.index('elif '))
+        self.assertIn('--mode live',build);self.assertNotIn('--refresh',build)
+        self.assertIn('python tools/phase2_capture.py --mode live --validate-generation',installed)
+        self.assertIn('--install-staged-output',installed)
+        self.assertIn('python tools/phase2_capture.py --mode live --validate-generation',captured)
+        self.assertEqual(captured.count('--model '),1)
+        self.assertIn('--model '+model.MODEL,captured)
+        self.assertIn("steps.mode.outputs.phase2_enabled != 'true'",overlay)
+        # This separate recovery branch retains its old policy/source binding;
+        # current Phase2 publication is validated inside the coherent stage.
+        policy=subprocess.check_output(['git','--no-replace-objects','--no-lazy-fetch','-C',str(ROOT),'show',
+            model.SCORING_SOURCE+':config/weekly-derived-selected-policy-v3.json'])
+        self.assertIn('--feed-policy config/weekly-derived-selected-policy-v3.json --feed-policy-sha256 '+hashlib.sha256(policy).hexdigest(),overlay)
         self.assertIn('data/current-classic data/classic-r0-shadow',workflow)
         for operation in ['begin','sealed','check --stage upload','check --stage deploy','check --stage retry','check --stage postdeploy']:
             self.assertIn('tools/publication_guard_v1.py '+operation,workflow)
@@ -47,9 +93,7 @@ class ActualBuildPairTests(unittest.TestCase):
         self.assertTrue(all(not call.args and not call.keywords for call in calls))
 
     def source(self,root):
-        source=root/'source';source.mkdir()
-        for name in ['pull','tools','config','schemas']:
-            shutil.copytree(ROOT/name,source/name,ignore=shutil.ignore_patterns('__pycache__'))
+        source=retained_classic_source(root/'source')
         (source/'output/data').mkdir(parents=True)
         (source/'data/cache').mkdir(parents=True)
         from classic_fixture_transport import ROWS
@@ -70,6 +114,9 @@ class ActualBuildPairTests(unittest.TestCase):
         def fixture_state(repository,target):
             for lane in ['output/data','data/cache']:pair.copy_tree(source/lane,target/lane)
         with patch.dict(os.environ,environment),patch.object(pair,'export_original_state',side_effect=fixture_state):
+            # Replay uses retained engine/helper bytes. Do not carry the CI
+            # runner's current-source SHA into this historical test capture.
+            os.environ.pop('GITHUB_SHA',None)
             return pair.run_pair(source,run,repository,mode='replay')
 
     def test_bootstrap_state_uses_exact_git_objects(self):

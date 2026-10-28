@@ -55,8 +55,11 @@ The public graph validator checks the active ranking body and completion
 receipt, and the original receipts/bodies supporting frozen selections. Its
 staging allowlist includes these assets. Reloading a new process revalidates
 physical hashes, board/overlay compatibility, original lines and membership.
-Canonical R0 history/grades remain separate. The Record page labels those old
-totals as R0. New Top cards display final pushes explicitly; live results remain
+Canonical reference history/grades remain separate, within their actual saved
+model/engine cohorts. Original R0 identities stay historical. The Record page
+does not score the provisional selected stream as reference history or as the
+registered Biggest-lean/Projected-points strategies. New Top cards display final
+pushes explicitly; live results remain
 provisional because signed yardage and corrections can move down.
 
 ## Checks and recovery
@@ -81,3 +84,16 @@ reviewed workflow. Preserve all ranking snapshots and receipts. Reverting only
 the display to R0 is a fallback, not deletion of the selected stream's evidence.
 The scientific model catalog, private models, source policies, odds acquisition,
 existing scheduler and exact-PPR label status are not changed by this integration.
+
+## Phase 2 integration boundary
+
+The selected stream preserves the stricter Phase 2 outcome identity/finality
+checks and unknown-TD handling. My Picks, personal lines, paper tickets and saved
+reference forecasts retain their original bytes and settlement rules. Complete
+Pages validation includes the current ranking body/receipt and every required
+original frozen body/receipt, using role-specific streamed size caps. An invalid
+or missing dependency fails without substituting another generation.
+
+The integrated source still requires fresh source CI, operating acceptance,
+production-rooted artifact review and actual deployment verification. Prior
+rankings deployment does not certify the expanded Phase 2 release.

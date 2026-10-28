@@ -63,7 +63,12 @@ class FailedAttemptTests(unittest.TestCase):
                 path, _ = reliability.capture(data, meta, base, now, failure.ORIGINAL_ENGINE, mode="live")
         else:
             for name in model.ENGINE:
-                path = base / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes((ROOT / name).read_bytes())
+                # Current source is the new presence engine. Preserve the old
+                # fixture's actual closed Main bytes instead of relabeling it.
+                raw = subprocess.check_output(["git", "--no-replace-objects", "--no-lazy-fetch", "-C", str(ROOT),
+                    "cat-file", "blob", model.SCORING_SOURCE + ":" + name])
+                self.assertEqual(failure.sha(raw), model.ENGINE[name])
+                path = base / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(raw)
             data["execution_model"] = meta["execution_model"] = model.contract(base)
             for player in data["players"]:
                 player["reference_model"] = model.MODEL
@@ -387,6 +392,223 @@ class FailedAttemptTests(unittest.TestCase):
         self.assertFalse((self.root / "data").exists())
         self.env.update(PAIR_OUTCOME="", RUN_OUTCOME="failure")
         self.assertEqual(self.record()["outcomes"]["PAIR"], "unknown")
+
+
+class Phase2FailedAttemptTests(unittest.TestCase):
+    """Fictional typed failure evidence; no capture or source-qualified PASS."""
+    def setUp(self):
+        import data_integrity_v2 as corrected
+        self.corrected = corrected
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name); self.root = self.base / "repo"; self.root.mkdir()
+        self.engine = corrected.source_hashes(corrected.CLASSIC_MODEL)
+        for name, expected in self.engine.items():
+            path = self.root / name; path.parent.mkdir(parents=True, exist_ok=True)
+            raw = (ROOT / name).read_bytes(); self.assertEqual(failure.sha(raw), expected); path.write_bytes(raw)
+        self.old = self.root / "data/forward/2026/w07" / ("0" * 64 + ".json.gz")
+        self.old.parent.mkdir(parents=True); self.old.write_bytes(b"unchanged fictional baseline, not parsed")
+        self.git("init", "-q"); self.git("add", ".")
+        self.git("-c", "user.name=Fictional test", "-c", "user.email=fictional@example.invalid", "commit", "-qm", "fictional closed source")
+        self.source = self.git("rev-parse", "HEAD").decode().strip()
+        runner = self.base / "runner"; runner.mkdir(); self.transaction = runner / "nfl-current-updater-123-1"; self.transaction.mkdir()
+        self.env = dict(GITHUB_ACTIONS="true", GITHUB_REPOSITORY=guard.REPOSITORY, GITHUB_REF="refs/heads/main",
+                        GITHUB_EVENT_NAME="workflow_dispatch", GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="1",
+                        GITHUB_SHA=self.source, GITHUB_WORKFLOW_SHA=self.source, RUN_OUTCOME="failure",
+                        RUNNER_TEMP=str(runner), TMPDIR=str(self.transaction))
+        self.fence = self.base / "fence.json"
+        guard.create(self.fence, dict(schema_version=guard.VERSION + "-begin", **guard.context(self.root, self.env)))
+        self.target = self.root / "data/classic-failures/123-1"
+        self.at = datetime.now(timezone.utc)
+        self.board, _ = fixture(); self.board.update(season=2026, week=7, generated_at=self.clock(-150))
+        self.board["games"][0]["kickoff"] = self.clock(86400)
+
+    def git(self, *args):
+        return subprocess.check_output(["git", "--no-replace-objects", "-C", str(self.root), *args], stderr=subprocess.DEVNULL)
+
+    def clock(self, seconds):
+        return reliability.stamp(self.at + timedelta(seconds=seconds))
+
+    def put(self, kind, payload, base=None):
+        base = base or self.root
+        if kind == "NATIVE":
+            name = failure.sha(failure.canonical(dict(data=payload["input_sha256"], engine=payload["engine_sha256"], mode="live")))
+            lane = "data/forward/2026/w07"
+        else:
+            name = failure.sha(failure.canonical(payload)); lane = {"INPUTS":"data/verification/2026/w07",
+                "SCOPE":"data/verification/partial-scopes/2026/w07", "COMPLETION":"data/verification/partial-completions/2026/w07",
+                "FAILURE":"data/verification/partial-failures/2026/w07"}[kind]
+        path = base / lane / (name + ".json.gz"); path.parent.mkdir(parents=True, exist_ok=True)
+        raw = gzip.compress(failure.canonical(dict(payload=payload, payload_sha256=failure.sha(failure.canonical(payload)))),mtime=0)
+        path.write_bytes(raw); return path, raw
+
+    def native(self, base=None):
+        # Actual row-construction routine; this test supplies a fictional V2
+        # envelope for a preservation-only decoder, not an issued observation.
+        payload = reliability.make_payload(self.board, self.at + timedelta(seconds=-90), self.engine, "live")
+        payload.update(schema_version=self.corrected.NATIVE, model=self.corrected.CLASSIC_MODEL,
+                       presence_contract=self.corrected.PRESENCE, code_commit=self.source)
+        return self.put("NATIVE", payload, base)
+
+    def inputs(self, base=None):
+        from source_evidence import record_scoreboard
+        games = self.board["games"]
+        response = {"season":{"year":2026,"type":2},"week":{"number":7},
+                    "events":[dict(id=g["id"],date=g["kickoff"],competitions=[{"status":{"type":{"state":"pre","completed":False,"shortDetail":"Scheduled"}}}]) for g in games]}
+        status = record_scoreboard(response,dict(dates=2026,week=7,seasontype=2),self.at+timedelta(seconds=-170))
+        request=dict(url="https://api.sleeper.app/projections/nfl/2026/7",params=[["season_type","regular"]],
+                     collected_at=self.clock(-170),response_sha256="a"*64,response_hash_format=self.corrected.MODEL_INPUT_HASH)
+        payload=dict(schema_version=self.corrected.INPUTS,mode="live",code_commit=self.source,build_started_at=self.clock(-180),
+            recorded_at=self.clock(-100),season=2026,week=7,output_sha256=reliability.digest(self.board),engine_files=self.engine,
+            positions={p["id"]:p["pos"] for p in self.board["players"]},weeks={},inputs_observed_at=self.clock(-160),week_data=self.board,
+            offer_observation={},projection_metadata={},game_status={"2026_07":status},source_requests=[request],
+            model=self.corrected.CLASSIC_MODEL,presence_contract=self.corrected.PRESENCE,projection_input_components={})
+        return self.put("INPUTS",payload,base)
+
+    def failure(self, base=None):
+        return self.put("FAILURE",dict(schema_version="generation-failure-v1",season=2026,week=7,
+            failed_at=self.clock(-10),output_sha256=reliability.digest(self.board),error_type="ValueError"),base)
+
+    def record(self):
+        return failure.record_phase2(self.root,self.transaction,self.fence,self.env)
+
+    def test_normal_failure_retains_exact_inputs_native_and_marker_without_old_history(self):
+        sources=[self.inputs(),self.native(),self.failure()]; old=self.old.read_bytes()
+        result=self.record(); self.assertEqual(len(result["files"]),3)
+        self.assertEqual(result["retained_forecast_rows"],len(self.board["players"][0]["props"]))
+        for path,raw in sources:
+            row=next(r for r in result["files"] if r["source"]==path.relative_to(self.root).as_posix())
+            self.assertEqual(row["status"],"RETAINED_UNQUALIFIED_EVIDENCE")
+            self.assertEqual((self.target/row["saved_path"]).read_bytes(),raw)
+        self.assertEqual(self.old.read_bytes(),old)
+        self.assertFalse(result["successful_forecast"]); self.assertFalse(result["failure_record_publishes_forecasts"])
+        self.assertTrue(failure.verify_retained(self.target)["collection_complete"])
+
+    def test_leftover_generation_and_quarantined_native_are_retained_without_claiming_sigkill_test(self):
+        stage=self.transaction/"phase2-coherent-generation-fixture/generation"
+        for name in self.engine:
+            target=stage/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes((self.root/name).read_bytes())
+        shutil.copytree(self.root/"data",stage/"data")
+        path,raw=self.native(stage); relative=path.relative_to(stage/"data/forward")
+        quarantine=stage/"data/verification/partial-unqualified-native"/relative.parent/failure.sha(raw)/path.name
+        quarantine.parent.mkdir(parents=True);path.rename(quarantine)
+        result=self.record(); row=next(r for r in result["files"] if r["kind"]=="NATIVE")
+        self.assertEqual(row["stage"],"transaction-000");self.assertEqual((self.target/row["saved_path"]).read_bytes(),raw)
+        self.assertFalse(result["successful_forecast"])
+
+    def test_private_unknown_truncated_and_wrong_model_records_are_metadata_only(self):
+        path,_=self.inputs(); value=json.loads(gzip.decompress(path.read_bytes()))["payload"]
+        for mutate in [lambda p:p.update(model="unknown"),lambda p:p.update(credentials="PRIVATE_CANARY"),
+                       lambda p:p["week_data"].update(raw_provider_corpus="PRIVATE_CANARY")]:
+            bad=deepcopy(value);mutate(bad);self.put("INPUTS",bad)
+        partial=self.root/"data/verification/2026/w07"/("b"*64+".json.gz");partial.write_bytes(b"\x1f\x8b\x08\x00")
+        self.record();raw=b"".join(p.read_bytes() for p in self.target.rglob("*") if p.is_file())
+        self.assertNotIn(b"PRIVATE_CANARY",raw)
+        self.assertTrue(any(r["status"]=="INVALID_DERIVED_BYTES_NOT_COPIED" for r in failure.document((self.target/"FAILED.json").read_bytes())["files"]))
+
+    def test_first_retry_restore_and_same_size_restored_mtime_corruption(self):
+        self.native();first=self.record();manifest=(self.target/"FAILED.json").read_bytes()
+        self.failure();self.assertEqual(self.record(),first);self.assertEqual((self.target/"FAILED.json").read_bytes(),manifest)
+        restored=self.base/"restored";shutil.copytree(self.target,restored)
+        self.assertEqual(failure.verify_retained(restored)["manifest_sha256"],failure.sha(manifest))
+        saved=next((restored/"evidence").glob("*"));stat=saved.stat();body=saved.read_bytes();saved.write_bytes(body[:-1]+bytes([body[-1]^1]));os.utime(saved,ns=(stat.st_atime_ns,stat.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError,"SAVED_BYTES"):failure.verify_retained(restored)
+
+    def test_tracked_mutation_is_not_exported_and_434_existing_natives_do_not_consume_scan(self):
+        for i in range(433):
+            (self.old.parent/(failure.sha(str(i).encode())+".json.gz")).write_bytes(b"fictional baseline")
+        self.git("add","data");self.git("-c","user.name=Fictional test","-c","user.email=fictional@example.invalid","commit","-qm","fictional retained history")
+        self.source=self.git("rev-parse","HEAD").decode().strip();self.env.update(GITHUB_SHA=self.source,GITHUB_WORKFLOW_SHA=self.source)
+        self.fence.unlink();guard.create(self.fence,dict(schema_version=guard.VERSION+"-begin",**guard.context(self.root,self.env)))
+        self.old.write_bytes(b"changed PRIVATE_CANARY");self.native()
+        result=self.record();self.assertEqual(len(result["files"]),2)
+        self.assertEqual(sum(r["status"]=="RETAINED_UNQUALIFIED_EVIDENCE" for r in result["files"]),1)
+        self.assertNotIn(b"PRIVATE_CANARY",b"".join(p.read_bytes() for p in self.target.rglob("*") if p.is_file()))
+
+    def test_fence_trigger_source_tmpdir_and_output_graph_fail_closed(self):
+        self.native()
+        bad=dict(self.env,TMPDIR=str(self.base))
+        with self.assertRaisesRegex(ValueError,"TRANSACTION_BINDING"):failure.record_phase2(self.root,self.transaction,self.fence,bad)
+        original=(self.root/"pull/scoring.py").read_bytes();(self.root/"pull/scoring.py").write_bytes(original+b"\n")
+        with self.assertRaisesRegex(ValueError,"CHANGED_SOURCE"):self.record()
+        (self.root/"pull/scoring.py").write_bytes(original);self.record()
+        (self.target/"unexpected.log").write_bytes(b"PRIVATE_CANARY")
+        with self.assertRaisesRegex(ValueError,"STORED_GRAPH"):failure.verify_retained(self.target)
+
+    def test_cli_fresh_process_and_store_failure_preserve_originals(self):
+        path,raw=self.native();actual=failure.immutable
+        def interrupted(destination,body):
+            if destination.name=="FAILED.json":raise OSError("controlled interruption")
+            return actual(destination,body)
+        with patch.object(failure,"immutable",side_effect=interrupted):
+            with self.assertRaises(OSError):self.record()
+        self.assertEqual(path.read_bytes(),raw)
+        value=self.record();before=(self.target/"FAILED.json").read_bytes()
+        result=subprocess.run([sys.executable,"-B",str(ROOT/"tools/classic_failure_v1.py"),"--verify-retained-root",str(self.target)],capture_output=True,text=True,check=True)
+        self.assertEqual(json.loads(result.stdout)["retained_forecast_rows"],value["retained_forecast_rows"])
+        self.assertEqual((self.target/"FAILED.json").read_bytes(),before)
+
+    def test_scope_completion_bytes_and_native_decode_cap_remain_closed(self):
+        inputs,_=self.inputs();native,native_raw=self.native();validator=self.corrected.code_sha256();board_hash=reliability.digest(self.board)
+        proof=dict(schema_version=self.corrected.PROOF,output_sha256=board_hash,latest_inputs=inputs.relative_to(self.root).as_posix(),game_origins={})
+        scope=dict(schema_version="partial-scope-data-integrity-v2",season=2026,week=7,validator_contract=self.corrected.VALIDATOR,
+            validator_sha256=validator,model=self.corrected.CLASSIC_MODEL,engine_files=self.engine,output_sha256=board_hash,proof=proof,
+            plan_sha256="a"*64,registration_receipt="data/verification/partial-registrations/2026/w07/"+"a"*64+".json.gz",
+            latest_inputs_sha256=inputs.stem.split('.')[0],completion_status={},verified_at=self.clock(-70),checked_factors=0,
+            game_population=[],full_board_verified=False,complete_week_qualified=False,
+            claim="RETAINED_ORIGINAL_MODEL_INPUT_REPRODUCTION_NOT_PROVIDER_TIME_OR_ACCURACY")
+        scope_path,scope_raw=self.put("SCOPE",scope)
+        completion=dict(schema_version="partial-completion-data-integrity-v2",season=2026,week=7,validator_sha256=validator,
+            plan_sha256="a"*64,output_sha256=board_hash,scope_receipt=scope_path.relative_to(self.root).as_posix(),scope_payload_sha256=reliability.digest(scope),
+            baseline_receipt=native.relative_to(self.root).as_posix(),baseline_payload_sha256=failure.phase2_decode(native_raw)and failure.sha(failure.canonical(failure.phase2_decode(native_raw))),
+            evidence_completed_at=self.clock(-60))
+        _,completion_raw=self.put("COMPLETION",completion)
+        result=self.record();self.assertEqual({r["kind"] for r in result["files"] if r["status"]=="RETAINED_UNQUALIFIED_EVIDENCE"},{"INPUTS","NATIVE","SCOPE","COMPLETION"})
+        self.assertTrue(any((self.target/r["saved_path"]).read_bytes()==scope_raw for r in result["files"] if r["saved_path"]))
+        self.assertTrue(any((self.target/r["saved_path"]).read_bytes()==completion_raw for r in result["files"] if r["saved_path"]))
+        with patch.object(failure,"MAX_DECODE",32):
+            with self.assertRaisesRegex(ValueError,"DECODE_BOUND"):failure.phase2_decode(native_raw)
+
+    def test_native_and_global_scan_caps_are_explicit_without_history_padding(self):
+        self.native();self.board["players"][0]["name"]="Fictional other observation";self.native()
+        for i in range(256):
+            path=self.root/"data/verification"/str(i);path.parent.mkdir(exist_ok=True);path.write_bytes(b"excluded transcript PRIVATE_CANARY")
+        with patch.object(failure,"MAX_NATIVE_FILES",1):result=self.record()
+        self.assertEqual(len(result["files"]),failure.MAX_SCAN_ENTRIES)
+        self.assertEqual(sum(r["status"]=="RETAINED_UNQUALIFIED_EVIDENCE" for r in result["files"]),1)
+        self.assertFalse(failure.verify_retained(self.target)["collection_complete"])
+        self.assertNotIn(b"PRIVATE_CANARY",b"".join(p.read_bytes() for p in self.target.rglob("*") if p.is_file()))
+
+    def test_bounded_git_name_stream_and_later_origin_error_preserve_accepted_checkout(self):
+        self.native()
+        for i in range(40):
+            path=self.root/"data/verification"/("excluded-private-name-"+str(i));path.parent.mkdir(exist_ok=True);path.write_bytes(b"excluded")
+        body,truncated=failure.phase2_git(self.root,"ls-files","--others","-z","--",*failure.PHASE2_NAMESPACES,bound=128,partial=True)
+        self.assertTrue(truncated);self.assertTrue(body.endswith(b"\0"));self.assertLessEqual(len(body),129)
+        body,truncated=failure.phase2_git(self.root,"ls-files","--others","-z","--",*failure.PHASE2_NAMESPACES,bound=1,partial=True)
+        self.assertTrue(truncated);self.assertEqual(body,b"", "a cut filename must not become an invented evidence locator")
+        stage=self.transaction/"phase2-coherent-generation-broken/generation";stage.mkdir(parents=True)
+        actual=failure.phase2_paths
+        def unavailable(root,base,source):
+            if base==stage:raise OSError("controlled unavailable leftover")
+            return actual(root,base,source)
+        with patch.object(failure,"phase2_paths",side_effect=unavailable):result=self.record()
+        self.assertEqual(sum(r["kind"]=="NATIVE" and r["status"]=="RETAINED_UNQUALIFIED_EVIDENCE" for r in result["files"]),1)
+        self.assertEqual(result["collection"]["transaction-000"]["status"],"READ_ERROR_NOT_COMPLETE")
+        self.assertFalse(failure.verify_retained(self.target)["collection_complete"])
+
+    def test_retry_manifest_and_saved_reads_are_bounded_and_symlink_safe(self):
+        self.native();self.record();manifest=self.target/"FAILED.json";original=manifest.read_bytes();read_bytes=Path.read_bytes
+        def no_unbounded(path):
+            if path==manifest or path.parent==self.target/"evidence":raise AssertionError("unbounded retained-graph read")
+            return read_bytes(path)
+        with patch.object(Path,"read_bytes",no_unbounded):
+            self.record();failure.verify_retained(self.target)
+        manifest.write_bytes(b" "*(failure.MAX_MANIFEST+1))
+        with self.assertRaisesRegex(ValueError,"BOUNDED_FAILURE_RECEIPT"):self.record()
+        manifest.write_bytes(original);manifest.unlink();outside=self.base/"private.json";outside.write_bytes(b"PRIVATE_CANARY");manifest.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError,"SYMLINK_OR_ESCAPE"):self.record()
+        with self.assertRaisesRegex(ValueError,"SYMLINK_OR_ESCAPE"):failure.verify_retained(self.target)
+        self.assertEqual(outside.read_bytes(),b"PRIVATE_CANARY")
 
 
 if __name__ == "__main__":

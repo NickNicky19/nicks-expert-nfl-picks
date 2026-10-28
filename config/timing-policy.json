@@ -1,0 +1,60 @@
+{
+  "schema_version": "selection-timing-policy-v1",
+  "version": "phase2-timing-v1",
+  "implementation_status": "REGISTERED_NOT_IMPLEMENTED",
+  "registered_at": "2026-10-14T02:22:31.717455Z",
+  "primary_experiment": "UNCHANGED_config/evaluation-policy.json",
+  "timezone": "America/Chicago",
+  "production_changes": false,
+  "model": "original_sleeper_matchup_baseline",
+  "categories": ["pass_yd", "pass_td", "pass_cmp", "pass_att", "pass_int", "rush_yd", "rush_att", "rec", "rec_yd", "rush_rec_yd"],
+  "cohorts": ["top_picks", "all_qualifying_leans"],
+  "checkpoints": [
+    {"id": "24h", "seconds_before_kickoff": 86400},
+    {"id": "6h", "seconds_before_kickoff": 21600},
+    {"id": "90m", "seconds_before_kickoff": 5400}
+  ],
+  "maximum_snapshot_age_seconds": 3600,
+  "checkpoint_rule": "latest_snapshot_recorded_at_or_before_checkpoint_within_60_minutes; never_use_later_data_or_backfill_missing_decisions",
+  "registration_rule": "checkpoint_and_observation_strictly_after_registration",
+  "universe": "union_of_player_game_categories_observed_before_checkpoint; missing_rows_are_NO_ACTION; entirely_unobserved_universes_are_unknown",
+  "schedule_changes": "retain_original_checkpoint; report_schedule_conflicts_and_do_not_reschedule_historical_decisions",
+  "top_picks": "recorded_top_over_or_top_under_membership_only; never_rerank",
+  "all_qualifying_leans": "recorded_nonnull_over_under_lean_on_real_dk_or_sleeper_line; includes_Top_Picks_but_never_pools_cohorts",
+  "descriptive_history": "first_recorded_selected_decision_per_opportunity_per_cohort; if_never_selected_keep_first_NO_ACTION; all_original_receipts_retained; not_checkpoint_policy_evidence",
+  "opportunity": ["season", "week", "game_id", "player_id", "category"],
+  "matched_checkpoints": "common_observed_universe_then_selected_in_both_with_same_venue_and_model; retain_each_line_direction_and_NO_ACTION; audit_line_changes",
+  "attribution": "saved_selection_decision_at_and_saved_kickoff_in_America/Chicago_separately; UTC_retained; never_grading_day",
+  "lead_time_buckets": [
+    {"id": "under_2h", "minimum_seconds": 0, "maximum_seconds": 7200},
+    {"id": "2h_to_12h", "minimum_seconds": 7200, "maximum_seconds": 43200},
+    {"id": "12h_to_36h", "minimum_seconds": 43200, "maximum_seconds": 129600},
+    {"id": "36h_plus", "minimum_seconds": 129600, "maximum_seconds": null}
+  ],
+  "breakdowns": ["category", "venue", "model_version", "selection_weekday", "kickoff_weekday", "lead_time_bucket"],
+  "grading": "statistical_win_loss_push_only_after_confirmed_final_and_sourced_participation; confirmed_DNP_separate; unresolved_never_loss_or_zero",
+  "hit_rate": "wins_divided_by_wins_plus_losses; pushes_DNP_and_unresolved_excluded",
+  "economics": "unavailable_without_complete_checkpoint_price_or_ticket_payout_and_source_bound_verified_venue_settlement; Sleeper_leg_multipliers_are_not_odds; never_allocate_multileg_payout_to_individual_legs",
+  "uncertainty": {
+    "cluster": "season_week",
+    "bootstrap_replicates": 10000,
+    "seed": 1919,
+    "minimum_completed_weeks": 8,
+    "minimum_unique_games": 20,
+    "minimum_decided_per_side": 30,
+    "family_wise_alpha": 0.05,
+    "registered_over_under_and_matched_checkpoint_contrasts": 14,
+    "subgroups": "exploratory_descriptive_only_no_significance_or_confirmed_leader_labels"
+  },
+  "leader_display": {"minimum_decided": 10, "minimum_unique_games": 5},
+  "confirmation": {
+    "maximum_registered_hypotheses": 10,
+    "family_wise_alpha": 0.05,
+    "bootstrap_replicates": 20000,
+    "minimum_completed_weeks": 8,
+    "minimum_unique_games": 20,
+    "minimum_decided_per_group": 100,
+    "holdout": "new_games_and_decisions_strictly_after_registration_and_discovery_cutoff; plan_hash_must_already_be_in_observation_receipt",
+    "method": "fixed_group_minus_fixed_comparator_hit_rate; season_week_cluster_bootstrap; Bonferroni_for_all_10_slots; exploratory_leaders_are_never_confirmation"
+  }
+}

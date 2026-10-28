@@ -1,7 +1,9 @@
 """Real local Git races, fictional website bytes/context; no provider or GitHub I/O."""
+import ast
 import importlib.util
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -122,6 +124,54 @@ class PublicationFenceTests(unittest.TestCase):
                 with self.subTest(name=name,status=status),patch.object(f,'git',return_value=(status+'\0'+name+'\0').encode()),self.assertRaises(f.FenceError):
                     f.classic_generated(self.root,'source','head')
 
+    def pages_copy(self):
+        runner=self.base/'runner';runner.mkdir()
+        pages=runner/'nfl-pages';shutil.copytree(self.root/'output',pages)
+        env=dict(self.env,RUNNER_TEMP=str(runner))
+        f.begin(self.root,self.receipt,env);f.sealed(self.root,self.receipt,env)
+        return pages,env
+
+    def test_fresh_pages_copy_is_bound_and_checked_at_every_boundary(self):
+        pages,env=self.pages_copy()
+        result=f.bind_pages(self.root,self.receipt,env,pages)
+        self.assertEqual(result['files'],2)
+        before=self.receipt.with_suffix('.pages.json').read_bytes()
+        for stage in ('upload','deploy','retry','postdeploy'):
+            self.assertEqual(f.check(self.root,self.receipt,env,stage,pages_root=pages)['files'],2)
+        f.bind_pages(self.root,self.receipt,env,pages)
+        self.assertEqual(self.receipt.with_suffix('.pages.json').read_bytes(),before)
+        with self.assertRaisesRegex(f.FenceError,'BOUND_PAGES_ROOT_REQUIRED'):
+            f.check(self.root,self.receipt,env,'retry')
+
+    def test_same_size_staged_change_with_restored_mtime_is_not_trusted(self):
+        pages,env=self.pages_copy();f.bind_pages(self.root,self.receipt,env,pages)
+        asset=pages/'app.js';before=asset.stat();raw=asset.read_bytes()
+        asset.write_bytes(raw.replace(b'fictional',b'fictionAl'));os.utime(asset,ns=(before.st_atime_ns,before.st_mtime_ns))
+        for stage in ('upload','deploy','retry','postdeploy'):
+            with self.subTest(stage=stage),self.assertRaisesRegex(f.FenceError,'STAGED_PAGES_CHANGED_AFTER_BINDING'):
+                f.check(self.root,self.receipt,env,stage,pages_root=pages)
+        self.assertEqual((self.root/'output/app.js').read_bytes(),raw)
+
+    def test_new_missing_and_symlink_staged_assets_are_rejected(self):
+        pages,env=self.pages_copy();f.bind_pages(self.root,self.receipt,env,pages)
+        added=pages/'extra.json';added.write_text('{}')
+        with self.assertRaisesRegex(f.FenceError,'STAGED_PAGES_CHANGED_AFTER_BINDING'):
+            f.check(self.root,self.receipt,env,'upload',pages_root=pages)
+        added.unlink();raw=(pages/'app.js').read_bytes();(pages/'app.js').unlink()
+        with self.assertRaisesRegex(f.FenceError,'STAGED_PAGES_CHANGED_AFTER_BINDING'):
+            f.check(self.root,self.receipt,env,'upload',pages_root=pages)
+        (pages/'app.js').write_bytes(raw);(pages/'alias').symlink_to('app.js')
+        with self.assertRaisesRegex(f.FenceError,'PAGES_ASSET_SYMLINK'):
+            f.check(self.root,self.receipt,env,'upload',pages_root=pages)
+
+    def test_staged_namespace_and_genuine_main_advance_remain_checked(self):
+        pages,env=self.pages_copy()
+        with self.assertRaisesRegex(f.FenceError,'EXACT_RUNNER_PAGES_NAMESPACE_REQUIRED'):
+            f.bind_pages(self.root,self.receipt,env,self.root/'output')
+        f.bind_pages(self.root,self.receipt,env,pages);self.advance_elsewhere()
+        with self.assertRaisesRegex(f.FenceError,'SUPERSEDED_BEFORE_RETRY'):
+            f.check(self.root,self.receipt,env,'retry',pages_root=pages)
+
 
 class FailurePublicationTests(unittest.TestCase):
     """Exercise the real failure-step shell against a local bare Git remote."""
@@ -185,6 +235,55 @@ class FailurePublicationTests(unittest.TestCase):
         result=self.execute_failure()
         self.assertEqual(result.returncode,0,result.stderr+result.stdout)
         self.verify_only_failure_was_published(main)
+
+
+class PublicBrowserUpdaterBindingTests(unittest.TestCase):
+    """Execute the actual consumer's guard on current workflow step metadata."""
+    def setUp(self):
+        root=Path(__file__).resolve().parents[1]
+        workflow=(root/'.github/workflows/prepare-diagnostic-seed.yml').read_text()
+        public=workflow.split('  public-browser-acceptance:\n',1)[1]
+        assignment=next(line.strip() for line in public.splitlines() if line.strip().startswith('required=['))
+        assertion=next(line.strip() for line in public.splitlines() if "'MANDATORY_HOURLY_STEPS'" in line)
+        self.required=ast.literal_eval(assignment.split('=',1)[1])
+        self.guard=compile(assignment+'\n'+assertion,'actual-public-browser-step-guard','exec')
+        hourly=(root/'.github/workflows/hourly.yml').read_text()
+        self.names=re.findall(r'^      - name: ([^\n]+)$',hourly,re.M)
+        self.steps=[{'name':name,'conclusion':'success'} for name in self.names]
+
+    def validate(self,steps):
+        def need(value,reason):
+            if not value:raise ValueError(reason)
+        exec(self.guard,{'need':need,'steps':steps,'names':[step['name']for step in steps]})
+
+    def test_current_actual_updater_steps_satisfy_public_guard(self):
+        self.validate(self.steps)
+        for name in ('Verify qualified Phase 2 source CI before provider build',
+                     'Build accepted versioned production engine',
+                     'Install validated data without changing source or old R0 caches',
+                     'Required integrity checks and pregame capture',
+                     'Commit validated data and immutable receipts',
+                     'Stage approved Pages fields without altering retained originals'):
+            self.assertIn(name,self.required)
+
+    def test_each_missing_or_unsuccessful_mandatory_stage_rejects(self):
+        for name in self.required:
+            with self.subTest(name=name,mutation='missing'):
+                with self.assertRaisesRegex(ValueError,'MANDATORY_HOURLY_STEPS'):
+                    self.validate([step for step in self.steps if step['name']!=name])
+            for state in ('failure','skipped','cancelled'):
+                with self.subTest(name=name,mutation=state):
+                    steps=[{**step,'conclusion':state if step['name']==name else 'success'}for step in self.steps]
+                    with self.assertRaisesRegex(ValueError,'MANDATORY_HOURLY_STEPS'):self.validate(steps)
+
+    def test_duplicate_reordered_and_old_stage_names_reject(self):
+        cases=[self.steps+[dict(self.steps[0])],list(reversed(self.steps))]
+        old={'Build accepted versioned production engine':'Build unchanged projection engine',
+             'Required integrity checks and pregame capture':'Required explicit-route source and coherent-generation verification'}
+        cases.append([{**step,'name':old.get(step['name'],step['name'])}for step in self.steps])
+        for steps in cases:
+            with self.subTest(names=[step['name']for step in steps]):
+                with self.assertRaisesRegex(ValueError,'MANDATORY_HOURLY_STEPS'):self.validate(steps)
 
 
 if __name__=='__main__':unittest.main()

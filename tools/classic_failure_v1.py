@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import subprocess
 import tempfile
 import zlib
 
@@ -394,8 +395,13 @@ def verify_retained(target):
     confined(manifest, target)
     require(manifest.is_file() and not manifest.is_symlink() and manifest.stat().st_size <= MAX_MANIFEST,
             "BOUNDED_FAILURE_RECEIPT")
-    raw = manifest.read_bytes(); value = document(raw)
+    with manifest.open("rb") as stream:
+        raw = stream.read(MAX_MANIFEST + 1)
+    require(len(raw) <= MAX_MANIFEST, "BOUNDED_FAILURE_RECEIPT")
+    value = document(raw)
     require(type(value) is dict and "identity" in value and "outcomes" in value, "CLOSED_FAILURE_RECEIPT")
+    if value.get("schema_version") == PHASE2_VERSION:
+        return phase2_retained(target, value, raw)
     validate_manifest(value, raw, target, value["identity"], value["outcomes"])
     files = [dict(path="FAILED.json", bytes=len(raw), sha256=sha(raw))]
     files += [dict(path=r["saved_path"], bytes=r["bytes"], sha256=r["sha256"]) for r in value["files"]
@@ -494,21 +500,407 @@ def record(root, run, fence, env):
     return result
 
 
+PHASE2_VERSION = "phase2-failed-attempt-v1"
+PHASE2_NAMESPACES = ("data/forward", "data/verification")
+PHASE2_SCHEMAS = {
+    "INPUTS": ("matchup-inputs-v3", set("schema_version mode code_commit build_started_at recorded_at season week output_sha256 engine_files positions weeks inputs_observed_at week_data offer_observation projection_metadata game_status source_requests model presence_contract projection_input_components".split())),
+    "SCOPE": ("partial-scope-data-integrity-v2", set("schema_version season week validator_contract validator_sha256 model engine_files output_sha256 proof plan_sha256 registration_receipt latest_inputs_sha256 completion_status verified_at checked_factors game_population full_board_verified complete_week_qualified claim".split())),
+    "COMPLETION": ("partial-completion-data-integrity-v2", set("schema_version season week validator_sha256 plan_sha256 output_sha256 scope_receipt scope_payload_sha256 baseline_receipt baseline_payload_sha256 evidence_completed_at".split())),
+    "REGISTRATION": ("partial-registration-data-integrity-v2", set("schema_version season week plan plan_sha256 validator_sha256 source_sha registered_at owner_authorization initial_board schedule_status_receipt".split())),
+}
+PHASE2_FAILURE_FIELDS = {
+    "generation-failure-v1": set("schema_version season week failed_at output_sha256 error_type".split()),
+    "completion-failure-data-integrity-v2": set("schema_version season week completion_sha256 failed_at reason".split()),
+    "unqualified-native-preservation-v1": set("schema_version season week original_forward_name retained_name native_file_sha256 failed_at qualification".split()),
+}
+
+
+def phase2_role(name):
+    if re.fullmatch(r"data/forward/[0-9]{4}/w[0-9]{2}/[a-f0-9]{64}\.json\.gz", name):
+        return "NATIVE"
+    if re.fullmatch(r"data/verification/partial-unqualified-native/[0-9]{4}/w[0-9]{2}/[a-f0-9]{64}/[a-f0-9]{64}\.json\.gz", name):
+        return "NATIVE"
+    if re.fullmatch(r"data/verification/[0-9]{4}/w[0-9]{2}/[a-f0-9]{64}\.json\.gz", name):
+        return "INPUTS"
+    for lane, kind in (("partial-scopes", "SCOPE"), ("partial-completions", "COMPLETION"),
+                       ("partial-registrations", "REGISTRATION"), ("partial-failures", "FAILURE")):
+        if re.fullmatch(r"data/verification/" + lane + r"/[0-9]{4}/w[0-9]{2}/[a-f0-9]{64}\.json\.gz", name):
+            return kind
+    return None
+
+
+def phase2_decode(raw):
+    require(raw[:8] == b"\x1f\x8b\x08\x00\x00\x00\x00\x00", "PHASE2_FAILURE_GZIP_HEADER")
+    stream = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    body = stream.decompress(raw, MAX_DECODE + 1)
+    require(len(body) <= MAX_DECODE and stream.eof and not stream.unused_data and not stream.unconsumed_tail,
+            "PHASE2_FAILURE_DECODE_BOUND")
+    envelope = document(body)
+    require(type(envelope) is dict and set(envelope) == {"payload", "payload_sha256"}
+            and type(envelope["payload"]) is dict and digest(envelope["payload_sha256"])
+            and sha(canonical(envelope["payload"])) == envelope["payload_sha256"]
+            and canonical(envelope) == body, "PHASE2_FAILURE_ENVELOPE")
+    import genuine_case_recovery as safe
+    safe.privacy(envelope, body.decode("utf-8"))
+    require(not re.search(r"(?:/workspace/|/Users/|file://|[A-Za-z]:\\\\Users\\\\)", body.decode("utf-8")),
+            "PHASE2_FAILURE_PRIVATE_PATH")
+    def private(item):
+        if isinstance(item, dict):
+            require(not set(item) & {"raw_provider_corpus", "raw_response_transcript", "optional_raw_response_tape",
+                                     "worker_logs", "private_metadata", "private_path"}, "PHASE2_FAILURE_PRIVATE_FIELD")
+            for value in item.values(): private(value)
+        elif isinstance(item, list):
+            for value in item: private(value)
+    private(envelope)
+    return envelope["payload"]
+
+
+def phase2_validate(raw, kind, name, identity, profile, recorded_at):
+    """Complete typed bytes for preservation only, never bundle qualification."""
+    p = phase2_decode(raw)
+    import data_integrity_v2 as corrected
+    engine = corrected.source_hashes(corrected.CLASSIC_MODEL)
+    require(profile["model"] == corrected.CLASSIC_MODEL and profile["engine_files"] == engine
+            and profile["engine_sha256"] == sha(canonical(engine)) and digest(profile["validator_sha256"]),
+            "PHASE2_FAILURE_CLOSED_PROFILE")
+    require(type(p.get("season")) is int and 2000 <= p["season"] <= 2200
+            and type(p.get("week")) is int and 1 <= p["week"] <= 18, "PHASE2_FAILURE_PERIOD") if kind != "NATIVE" else None
+    if kind == "NATIVE":
+        require(set(p) == PAYLOAD_FIELDS | {"presence_contract"} and p.get("schema_version") == corrected.NATIVE
+                and p.get("model") == corrected.CLASSIC_MODEL and p.get("presence_contract") == corrected.PRESENCE
+                and p.get("engine_files") == engine and p.get("engine_sha256") == profile["engine_sha256"]
+                and p.get("code_commit") == identity["trigger_source_sha"] and p.get("mode") == "live"
+                and p.get("evidence_label") == "LOCAL_PRE_GAME_CAPTURE_PUBLICATION_NOT_VERIFIED"
+                and digest(p.get("input_sha256")), "PHASE2_FAILURE_NATIVE_PROFILE")
+        at = utc(p["captured_at"])
+        require(utc(p["forecast_generated_at"]) <= at <= utc(recorded_at), "PHASE2_FAILURE_NATIVE_CLOCK")
+        native_id = sha(canonical(dict(data=p["input_sha256"], engine=p["engine_sha256"], mode="live")))
+        period = re.search(r"/([0-9]{4})/w([0-9]{2})/", name)
+        require(period is not None and 2000 <= int(period[1]) <= 2200 and 1 <= int(period[2]) <= 18
+                and name.endswith("/" + native_id + ".json.gz"), "PHASE2_FAILURE_NATIVE_NAME")
+        if "/partial-unqualified-native/" in name:
+            require(name.split("/")[-2] == sha(raw), "PHASE2_FAILURE_QUARANTINE_HASH")
+        excluded, rows = p["excluded_started_or_late_games"], p["rows"]
+        require(type(excluded) is list and all(identifier(x) for x in excluded) and excluded == sorted(set(excluded))
+                and type(rows) is list, "PHASE2_FAILURE_NATIVE_POPULATION")
+        keys = []
+        for row in rows:
+            require(type(row) is dict and set(row) in (NATIVE_ROW_FIELDS, NATIVE_ROW_FIELDS | {"sleeper_observation"}), "PHASE2_FAILURE_NATIVE_FIELDS")
+            require(type(row["season"]) is int and row["season"] == int(period[1]) and type(row["week"]) is int
+                    and row["week"] == int(period[2]) and 1 <= row["week"] <= 18
+                    and identifier(row["game_id"]) and identifier(row["player_id"]) and text(row["name"], 160)
+                    and re.fullmatch(r"[A-Z]{2,4}", row["team"]) and row["position"] in {"QB", "RB", "WR", "TE", "K", "DEF"}
+                    and row["category"] in CATEGORIES and utc(row["kickoff"]) > at and row["game_id"] not in excluded,
+                    "PHASE2_FAILURE_NATIVE_IDENTITY")
+            require(all(number(row[k]) for k in ("raw_projection", "adjusted_projection", "line", "matchup_factor"))
+                    and (row["raw_projection"] is not None or row["adjusted_projection"] is not None)
+                    and row["line_from"] in {"ours", "dk", "sleeper"} and row["lean"] in {None, "over", "under"}
+                    and (row["injury_at_capture"] is None or text(row["injury_at_capture"], 80))
+                    and type(row["top_over"]) is bool and type(row["top_under"]) is bool
+                    and not (row["top_over"] and row["top_under"]) and all(row[k] is None for k in ("probability", "expected_value", "price"))
+                    and row["settlement_status"] == "NOT_VERIFIED" and row["source_timestamps_verified"] is False,
+                    "PHASE2_FAILURE_NATIVE_VALUES")
+            if "sleeper_observation" in row:
+                value = row["sleeper_observation"]
+                require(type(value) is dict and set(value) == {"line", "over", "under"}
+                        and all(number(value[k]) for k in value), "PHASE2_FAILURE_NATIVE_BOOK")
+            keys.append((row["game_id"], row["player_id"], row["category"]))
+        require(keys == sorted(set(keys)), "PHASE2_FAILURE_NATIVE_DUPLICATES")
+        return len(rows)
+    require(name.endswith("/" + sha(canonical(p)) + ".json.gz")
+            and f"/{p['season']}/w{p['week']:02d}/" in name, "PHASE2_FAILURE_RECEIPT_NAME")
+    if kind == "FAILURE":
+        require(p.get("schema_version") in PHASE2_FAILURE_FIELDS
+                and set(p) == PHASE2_FAILURE_FIELDS[p["schema_version"]]
+                and utc(p["failed_at"]) <= utc(recorded_at), "PHASE2_FAILURE_MARKER")
+        require(all(digest(value) for key, value in p.items() if key.endswith("sha256")), "PHASE2_FAILURE_MARKER_DIGEST")
+        if "error_type" in p: require(identifier(p["error_type"]), "PHASE2_FAILURE_ERROR_TYPE")
+        if "reason" in p: require(p["reason"] == "FINAL_COMPLETION_BOUNDARY_FAILED", "PHASE2_FAILURE_REASON")
+        if "qualification" in p:
+            require(p["qualification"] == "NO_COMPLETED_PARTIAL_BUNDLE_NOT_A_PREGAME_OBSERVATION"
+                    and phase2_role(p["original_forward_name"]) == "NATIVE"
+                    and phase2_role(p["retained_name"]) == "NATIVE", "PHASE2_FAILURE_QUARANTINE_REFERENCE")
+        return 0
+    schema, fields = PHASE2_SCHEMAS[kind]
+    require(set(p) == fields and p["schema_version"] == schema, "PHASE2_FAILURE_TYPED_FIELDS")
+    require(all(digest(value) for key, value in p.items() if key.endswith("sha256")), "PHASE2_FAILURE_TYPED_DIGEST")
+    if kind == "INPUTS":
+        require(p["model"] == corrected.CLASSIC_MODEL and p["presence_contract"] == corrected.PRESENCE
+                and p["code_commit"] == identity["trigger_source_sha"] and p["engine_files"] == engine and p["mode"] == "live"
+                and type(p["week_data"]) is dict and sha(canonical(p["week_data"])) == p["output_sha256"]
+                and (p["week_data"].get("season"), p["week_data"].get("week")) == (p["season"], p["week"])
+                and utc(p["build_started_at"]) <= utc(p["inputs_observed_at"]) <= utc(p["recorded_at"]) <= utc(recorded_at)
+                and utc(p["week_data"]["generated_at"]) <= utc(p["recorded_at"])
+                and type(p["positions"]) is dict and p["positions"] and all(identifier(k) and v in {"QB", "RB", "WR", "TE"} for k, v in p["positions"].items())
+                and all(type(p[k]) is dict for k in ("weeks", "offer_observation", "projection_metadata", "game_status", "projection_input_components"))
+                and type(p["source_requests"]) is list, "PHASE2_FAILURE_INPUT_PROFILE")
+        require(type(p["week_data"].get("players")) is list and type(p["week_data"].get("games")) is list,
+                "PHASE2_FAILURE_INPUT_BOARD")
+        for request in p["source_requests"]:
+            require(type(request) is dict and set(request) == {"url", "params", "collected_at", "response_sha256", "response_hash_format"}
+                    and request["response_hash_format"] == corrected.MODEL_INPUT_HASH and digest(request["response_sha256"])
+                    and isinstance(request["url"], str) and re.fullmatch(r"https://api\.sleeper\.app/(?:v1/players/nfl|(?:stats|projections)/nfl/[0-9]{4}/[0-9]{1,2})", request["url"])
+                    and utc(p["build_started_at"]) <= utc(request["collected_at"]) <= utc(p["recorded_at"]), "PHASE2_FAILURE_INPUT_REQUEST")
+            params = request["params"]
+            require(params is None or type(params) is list and all(type(pair) is list and len(pair) == 2 and
+                    (pair[0] == "season_type" and pair[1] == "regular" or pair[0] == "position[]" and pair[1] in {"QB", "RB", "WR", "TE", "K", "DEF"}
+                     or pair[0] == "order_by" and pair[1] == "pts_ppr") for pair in params), "PHASE2_FAILURE_INPUT_PARAMS")
+        import source_evidence
+        status = p["game_status"].get(f"{p['season']}_{p['week']:02d}")
+        games = source_evidence.verified_status(status, p["season"], p["week"], "live", utc(p["recorded_at"]))
+        require(set(games) == {g["id"] for g in p["week_data"]["games"]}, "PHASE2_FAILURE_INPUT_STATUS")
+        for component in p["projection_input_components"].values():
+            require(type(component) is dict and set(component) == {"stats", "collected_at", "source", "source_response_sha256", "claim"}
+                    and type(component["stats"]) is dict
+                    and component["claim"] == "RETAINED_MODEL_INPUT_COMPONENTS_NOT_INDEPENDENT_PROVIDER_AUTHENTICATION"
+                    and any(r["url"] == component["source"] and r["response_sha256"] == component["source_response_sha256"]
+                            and r["collected_at"] == component["collected_at"] for r in p["source_requests"]), "PHASE2_FAILURE_COMPONENT_SOURCE")
+        return 0
+    require(p["validator_sha256"] == profile["validator_sha256"], "PHASE2_FAILURE_HELPER_VERSION")
+    if kind == "SCOPE":
+        require(p["model"] == corrected.CLASSIC_MODEL and p["engine_files"] == engine and p["validator_contract"] == corrected.VALIDATOR
+                and p["full_board_verified"] is False and p["complete_week_qualified"] is False
+                and p["claim"] == "RETAINED_ORIGINAL_MODEL_INPUT_REPRODUCTION_NOT_PROVIDER_TIME_OR_ACCURACY"
+                and utc(p["verified_at"]) <= utc(recorded_at) and type(p["proof"]) is dict
+                and type(p["game_population"]) is list and type(p["checked_factors"]) is int,
+                "PHASE2_FAILURE_SCOPE")
+    elif kind == "COMPLETION":
+        require(utc(p["evidence_completed_at"]) <= utc(recorded_at) and phase2_role(p["scope_receipt"]) == "SCOPE"
+                and phase2_role(p["baseline_receipt"]) == "NATIVE", "PHASE2_FAILURE_COMPLETION")
+    else:
+        require(type(p["plan"]) is dict and p["plan"].get("model") == corrected.CLASSIC_MODEL
+                and sha(canonical(p["plan"])) == p["plan_sha256"] and p["source_sha"] == identity["trigger_source_sha"]
+                and utc(p["registered_at"]) <= utc(recorded_at) and text(p["owner_authorization"], 4096)
+                and type(p["initial_board"]) is dict and p["plan"].get("schema_version") == corrected.PLAN
+                and p["plan"].get("validator_contract") == corrected.VALIDATOR and p["plan"].get("engine_files") == engine
+                and p["plan"].get("experimental_recording_enabled") is False and p["plan"].get("full_board_verified") is False
+                and p["plan"].get("complete_week_qualified") is False and type(p["plan"].get("games")) is list
+                and type(p["plan"].get("legacy_exemptions")) is list, "PHASE2_FAILURE_REGISTRATION")
+    return 0
+
+
+def phase2_git(root, *args, worktree=None, bound=MAX_MANIFEST, partial=False):
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    command = ["git", "--no-replace-objects", "--no-lazy-fetch", "-C", str(root), "-c", "core.hooksPath=/dev/null"]
+    if worktree is not None: command += ["--work-tree=" + str(worktree)]
+    process = subprocess.Popen(command + list(args), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+    try:
+        body = process.stdout.read(bound + 1)
+        if len(body) > bound:
+            process.kill(); process.wait(timeout=5)
+            if partial:
+                prefix = body[:bound]
+                return prefix[:prefix.rfind(b"\0") + 1], True
+            raise ValueError("PHASE2_FAILURE_GIT_BOUND")
+        require(process.wait(timeout=60) == 0, "PHASE2_FAILURE_GIT_READ")
+        return (body, False) if partial else body
+    finally:
+        process.stdout.close()
+        if process.poll() is None:
+            process.kill(); process.wait(timeout=5)
+
+
+def phase2_source(root, identity):
+    import data_integrity_v2 as corrected
+    source = identity["trigger_source_sha"]
+    commit = phase2_git(root, "cat-file", "commit", source, bound=65536)
+    require(hashlib.sha1(b"commit " + str(len(commit)).encode() + b"\0" + commit).hexdigest() == source,
+            "PHASE2_FAILURE_TRIGGER_OBJECT")
+    engine = corrected.source_hashes(corrected.CLASSIC_MODEL)
+    for name, expected in engine.items():
+        entry = phase2_git(root, "ls-tree", source, "--", name).decode().strip().split()
+        require(len(entry) == 4 and entry[0] == "100644" and entry[1] == "blob" and entry[3] == name,
+                "PHASE2_FAILURE_SOURCE_ROLE")
+        raw = phase2_git(root, "cat-file", "blob", source + ":" + name, bound=MAX_FILE)
+        require(sha(raw) == expected and hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() == entry[2],
+                "PHASE2_FAILURE_SOURCE_BYTES")
+        status, _, checksum, _ = inspect(root / name, root)
+        require(status == "INSPECTED" and checksum == expected, "PHASE2_FAILURE_CHANGED_SOURCE")
+    return dict(model=corrected.CLASSIC_MODEL, engine_files=engine, engine_sha256=sha(canonical(engine)),
+                validator_sha256=corrected.code_sha256(), trigger_tree=commit.splitlines()[0].decode().removeprefix("tree "))
+
+
+def phase2_paths(root, base, source):
+    changed, overflow = phase2_git(root, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--no-renames", source, "--", *PHASE2_NAMESPACES, worktree=base, partial=True)
+    untracked, more = phase2_git(root, "ls-files", "--others", "-z", "--", *PHASE2_NAMESPACES, worktree=base, partial=True)
+    names = sorted(set(os.fsdecode(name) for name in (changed + untracked).split(b"\0") if name))
+    incomplete = overflow or more or len(names) > MAX_SCAN_ENTRIES
+    return names[:MAX_SCAN_ENTRIES], "ENTRY_LIMIT_NOT_COMPLETE" if incomplete else "COMPLETE"
+
+
+def phase2_retained(target, value, raw, *, include_manifest=True):
+    fields = set("schema_version state identity recorded_at outcomes profile files collection retained_bytes retained_forecast_rows successful_forecast failure_record_publishes_forecasts raw_provider_corpus_copied new_scheduler retention_scope".split())
+    require(type(value) is dict and set(value) == fields and value["schema_version"] == PHASE2_VERSION
+            and canonical(value) == raw and len(raw) <= MAX_MANIFEST and value["state"] == "FAILED_ATTEMPT_RETAINED"
+            and all(value[k] is False for k in ("successful_forecast", "failure_record_publishes_forecasts", "raw_provider_corpus_copied", "new_scheduler"))
+            and value["retention_scope"] == "LOCAL_CHECKOUT_ONLY", "PHASE2_FAILURE_MANIFEST")
+    validate_identity(value["identity"], value["outcomes"])
+    import data_integrity_v2 as corrected
+    profile = value["profile"]; engine = corrected.source_hashes(corrected.CLASSIC_MODEL)
+    require(type(profile) is dict and set(profile) == {"model", "engine_files", "engine_sha256", "validator_sha256", "trigger_tree"}
+            and profile["model"] == corrected.CLASSIC_MODEL and profile["engine_files"] == engine
+            and profile["engine_sha256"] == sha(canonical(engine)) and digest(profile["validator_sha256"])
+            and isinstance(profile["trigger_tree"], str) and re.fullmatch(r"[a-f0-9]{40}", profile["trigger_tree"]), "PHASE2_FAILURE_CLOSED_PROFILE")
+    require(utc(value["recorded_at"]) <= datetime.now(timezone.utc) and type(value["files"]) is list
+            and len(value["files"]) <= MAX_SCAN_ENTRIES and type(value["collection"]) is dict, "PHASE2_FAILURE_MANIFEST_BOUND")
+    expected = {"FAILED.json"} if include_manifest else set(); total = rows = 0; seen = set()
+    files = [dict(path="FAILED.json", bytes=len(raw), sha256=sha(raw))]
+    for row in value["files"]:
+        require(type(row) is dict and set(row) == ROW_FIELDS and identifier(row["stage"])
+                and (row["stage"] == "checkout" or re.fullmatch(r"transaction-[0-9]{3}", row["stage"]))
+                and type(row["source"]) is str and row["kind"] in {"NATIVE", "INPUTS", "SCOPE", "COMPLETION", "REGISTRATION", "FAILURE", "UNCLASSIFIED"}
+                and (row["stage"], row["source"]) not in seen, "PHASE2_FAILURE_ROW")
+        seen.add((row["stage"], row["source"]))
+        require(phase2_role(row["source"]) == row["kind"] if row["kind"] != "UNCLASSIFIED"
+                else re.fullmatch(r"unqualified:[a-f0-9]{64}", row["source"]), "PHASE2_FAILURE_LOGICAL_ROLE")
+        require(row["origin"] in {"NOT_IN_BASELINE", "TRACKED_BASELINE"} and (row["bytes"] is None or type(row["bytes"]) is int and row["bytes"] >= 0)
+                and (row["sha256"] is None or digest(row["sha256"])) and (row["native_rows"] is None or type(row["native_rows"]) is int and row["native_rows"] >= 0), "PHASE2_FAILURE_ROW_TYPES")
+        if row["status"] == "RETAINED_UNQUALIFIED_EVIDENCE":
+            require(row["origin"] == "NOT_IN_BASELINE" and phase2_role(row["source"]) == row["kind"]
+                    and re.fullmatch(r"evidence/[0-9]{3}-[a-f0-9]{64}\.json\.gz", row["saved_path"])
+                    and row["saved_path"].endswith("-" + row["sha256"] + ".json.gz")
+                    and row["bytes"] <= MAX_FILE and digest(row["sha256"]), "PHASE2_FAILURE_SAVED_PATH")
+            path = target / row["saved_path"]; confined(path, target)
+            require(path.is_file() and path.stat().st_size == row["bytes"], "PHASE2_FAILURE_SAVED_BYTES")
+            with path.open("rb") as stream:
+                saved = stream.read(MAX_FILE + 1)
+            require(len(saved) == row["bytes"] <= MAX_FILE and sha(saved) == row["sha256"], "PHASE2_FAILURE_SAVED_BYTES")
+            count = phase2_validate(saved, row["kind"], row["source"], value["identity"], value["profile"], value["recorded_at"])
+            require(count == row["native_rows"], "PHASE2_FAILURE_SAVED_ROWS")
+            expected.add(row["saved_path"]); total += len(saved); rows += count
+            files.append(dict(path=row["saved_path"], bytes=len(saved), sha256=sha(saved)))
+        else:
+            require(row["status"] in {"ABSENT", "SYMLINK_NOT_COPIED", "READ_ERROR_NOT_COPIED", "FILE_SIZE_LIMIT_NOT_COPIED", "INVALID_DERIVED_BYTES_NOT_COPIED", "UNQUALIFIED_PATH_METADATA_ONLY", "TRACKED_BASELINE_METADATA_ONLY", "CAPACITY_NOT_RETAINED", "STORE_ERROR_NOT_RETAINED", "NATIVE_LIMIT_METADATA_ONLY"}
+                    and row["saved_path"] is None, "PHASE2_FAILURE_METADATA_ROW")
+    require(type(value["retained_bytes"]) is int and type(value["retained_forecast_rows"]) is int
+            and total == value["retained_bytes"] <= MAX_TOTAL and rows == value["retained_forecast_rows"], "PHASE2_FAILURE_ACCOUNTING")
+    for stage, summary in value["collection"].items():
+        require((stage in {"checkout", "transactions"} or re.fullmatch(r"transaction-[0-9]{3}", stage))
+                and type(summary) is dict and set(summary) == {"status", "entries"}
+                and summary["status"] in SCAN_STATES and type(summary["entries"]) is int
+                and 0 <= summary["entries"] <= MAX_SCAN_ENTRIES, "PHASE2_FAILURE_COLLECTION")
+        if stage != "transactions":
+            require(summary["entries"] == sum(r["stage"] == stage for r in value["files"]), "PHASE2_FAILURE_COLLECTION_ROWS")
+    require("checkout" in value["collection"] and all(r["stage"] in value["collection"] for r in value["files"])
+            and sum(r["kind"] == "NATIVE" and r["status"] != "NATIVE_LIMIT_METADATA_ONLY" for r in value["files"]) <= MAX_NATIVE_FILES,
+            "PHASE2_FAILURE_NATIVE_BOUND")
+    actual = set(); entries = 0
+    for directory, folders, names in os.walk(target, followlinks=False):
+        for name in folders + names:
+            entries += 1; require(entries <= MAX_TARGET_ENTRIES, "FAILURE_STORED_GRAPH_BOUND")
+            path = Path(directory) / name; confined(path, target)
+            if path.is_file(): actual.add(path.relative_to(target).as_posix())
+    require(actual == expected, "PHASE2_FAILURE_STORED_GRAPH")
+    return dict(schema_version=PHASE2_VERSION, state="CLOSED_RETAINED_GRAPH_VERIFIED", identity=value["identity"],
+                manifest_sha256=sha(raw), file_graph_sha256=sha(canonical(sorted(files, key=lambda x: x["path"]))),
+                files=len(files), retained_bytes=total, retained_forecast_rows=rows,
+                collection_complete=all(v["status"] == "COMPLETE" for v in value["collection"].values()),
+                native_retention_complete=all(r["status"] == "RETAINED_UNQUALIFIED_EVIDENCE" for r in value["files"] if r["kind"] == "NATIVE"),
+                retention_scope="LOCAL_CHECKOUT_ONLY", successful_forecast=False, failure_record_publishes_forecasts=False,
+                raw_provider_corpus_copied=False, new_scheduler=False, source_context_verified_externally=False)
+
+
+def record_phase2(root, transaction, fence, env):
+    import publication_guard_v1 as guard
+    import genuine_case_recovery as safe
+    from reliability import IntegrityError
+    root = Path(root).resolve(); transaction = Path(transaction).absolute()
+    identity = guard.context(root, env)
+    require(guard.read(Path(fence)) == dict(schema_version=guard.VERSION + "-begin", **identity), "ORIGINAL_PUBLICATION_FENCE_REQUIRED")
+    expected = Path(env.get("RUNNER_TEMP", "")) / ("nfl-current-updater-" + identity["run_id"] + "-" + identity["run_attempt"])
+    require(env.get("RUNNER_TEMP") and env.get("TMPDIR") and transaction == expected.absolute()
+            and transaction == Path(env["TMPDIR"]).absolute() and not transaction.is_relative_to(root), "PHASE2_FAILURE_TRANSACTION_BINDING")
+    confined(transaction, transaction.parent)
+    outcomes = {name: env.get(name + "_OUTCOME") or "unknown" for name in STAGES}; validate_identity(identity, outcomes)
+    profile = phase2_source(root, identity)
+    target = root / "data/classic-failures" / (identity["run_id"] + "-" + identity["run_attempt"]); confined(target, root)
+    manifest = target / "FAILED.json"
+    confined(manifest, target)
+    if manifest.exists():
+        require(manifest.is_file() and manifest.stat().st_size <= MAX_MANIFEST, "BOUNDED_FAILURE_RECEIPT")
+        with manifest.open("rb") as stream:
+            raw = stream.read(MAX_MANIFEST + 1)
+        require(len(raw) <= MAX_MANIFEST, "BOUNDED_FAILURE_RECEIPT")
+        previous = document(raw)
+        require(previous.get("identity") == identity and previous.get("outcomes") == outcomes, "PHASE2_FAILURE_RETRY_IDENTITY")
+        phase2_retained(target, previous, raw); return previous
+    origins = [("checkout", root)]; collection = {}
+    if transaction.exists():
+        extra, issues = safe.transaction_roots(transaction)
+        require(len(extra) + len(issues) <= MAX_SCAN_ENTRIES, "PHASE2_FAILURE_TRANSACTION_COUNT")
+        origins += [("transaction-" + str(i).zfill(3), path) for i, (_, path) in enumerate(extra)]
+        collection["transactions"] = dict(status="COMPLETE" if not issues else "ENTRY_LIMIT_NOT_COMPLETE", entries=len(extra) + len(issues))
+    recorded_at = datetime.now(timezone.utc).isoformat(); rows = []; selected = []; total = native_count = 0
+    for stage, base in origins:
+        try:
+            names, scan_status = phase2_paths(root, base, identity["trigger_source_sha"])
+        except (ValueError, OSError, subprocess.SubprocessError):
+            collection[stage] = dict(status="READ_ERROR_NOT_COMPLETE", entries=0)
+            continue
+        collection[stage] = dict(status=scan_status, entries=0)
+        source_ok = all(inspect(base / name, base)[:3:2] == ("INSPECTED", expected)
+                        for name, expected in profile["engine_files"].items())
+        if not source_ok: collection[stage]["status"] = "READ_ERROR_NOT_COMPLETE"
+        for name in names:
+            if len(rows) >= MAX_SCAN_ENTRIES:
+                collection[stage]["status"] = "ENTRY_LIMIT_NOT_COMPLETE"; break
+            collection[stage]["entries"] += 1
+            kind = phase2_role(name); source = name if kind else "unqualified:" + sha(os.fsencode(name))
+            tracked = bool(phase2_git(root, "ls-tree", identity["trigger_source_sha"], "--", name))
+            status, size, checksum, raw = inspect(base / name, base)
+            row = dict(stage=stage, source=source, kind=kind or "UNCLASSIFIED", status=status,
+                       origin="TRACKED_BASELINE" if tracked else "NOT_IN_BASELINE", bytes=size, sha256=checksum, saved_path=None, native_rows=None)
+            native_overflow = kind == "NATIVE" and native_count >= MAX_NATIVE_FILES
+            if kind == "NATIVE" and not native_overflow: native_count += 1
+            if native_overflow:
+                row["status"] = "NATIVE_LIMIT_METADATA_ONLY"; collection[stage]["status"] = "FILE_LIMIT_NOT_COMPLETE"
+            elif raw is not None:
+                if tracked: row["status"] = "TRACKED_BASELINE_METADATA_ONLY"
+                elif kind is None: row["status"] = "UNQUALIFIED_PATH_METADATA_ONLY"
+                elif not source_ok: row["status"] = "INVALID_DERIVED_BYTES_NOT_COPIED"
+                else:
+                    try:
+                        row["native_rows"] = phase2_validate(raw, kind, name, identity, profile, recorded_at)
+                        if total + len(raw) > MAX_TOTAL: row["status"] = "CAPACITY_NOT_RETAINED"
+                        else:
+                            row.update(status="RETAINED_UNQUALIFIED_EVIDENCE", saved_path="evidence/" + str(len(rows)).zfill(3) + "-" + checksum + ".json.gz")
+                            total += len(raw); selected.append((row, raw))
+                    except BAD_PRODUCT + (KeyError, IndexError, IntegrityError):
+                        row["status"] = "INVALID_DERIVED_BYTES_NOT_COPIED"; row["native_rows"] = None
+            rows.append(row)
+    for row, raw in selected:
+        path = target / row["saved_path"]; confined(path, target)
+        try: immutable(path, raw)
+        except OSError: row.update(status="STORE_ERROR_NOT_RETAINED", saved_path=None)
+    result = dict(schema_version=PHASE2_VERSION, state="FAILED_ATTEMPT_RETAINED", identity=identity, recorded_at=recorded_at,
+                  outcomes=outcomes, profile=profile, files=rows, collection=collection,
+                  retained_bytes=sum(r["bytes"] for r in rows if r["status"] == "RETAINED_UNQUALIFIED_EVIDENCE"),
+                  retained_forecast_rows=sum(r["native_rows"] for r in rows if r["status"] == "RETAINED_UNQUALIFIED_EVIDENCE"),
+                  successful_forecast=False, failure_record_publishes_forecasts=False, raw_provider_corpus_copied=False,
+                  new_scheduler=False, retention_scope="LOCAL_CHECKOUT_ONLY")
+    raw = canonical(result); phase2_retained(target, result, raw, include_manifest=False)
+    require(phase2_source(root, identity) == profile, "PHASE2_FAILURE_SOURCE_CHANGED")
+    immutable(manifest, raw)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--private-run-dir", type=Path)
+    parser.add_argument("--phase2-transaction-dir", type=Path)
     parser.add_argument("--fence", type=Path)
     parser.add_argument("--verify-retained-root", type=Path)
     args = parser.parse_args()
     if args.verify_retained_root:
-        if args.private_run_dir or args.fence:
+        if args.private_run_dir or args.phase2_transaction_dir or args.fence:
             parser.error("Verification cannot be combined with recording")
         print(json.dumps(verify_retained(args.verify_retained_root), sort_keys=True))
     else:
-        if not args.private_run_dir or not args.fence:
-            parser.error("Recording requires private-run-dir and fence")
-        value = record(args.root, args.private_run_dir, args.fence, os.environ)
+        if not args.fence or bool(args.private_run_dir) == bool(args.phase2_transaction_dir):
+            parser.error("Recording requires fence and exactly one recording route")
+        value = (record_phase2(args.root, args.phase2_transaction_dir, args.fence, os.environ)
+                 if args.phase2_transaction_dir else record(args.root, args.private_run_dir, args.fence, os.environ))
         print(json.dumps({k: value[k] for k in ("schema_version", "state", "retained_bytes", "retained_forecast_rows", "retention_scope",
                                                "successful_forecast", "failure_record_publishes_forecasts", "raw_provider_corpus_copied")}))
 

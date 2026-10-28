@@ -2,10 +2,12 @@
 import ast
 import copy
 import importlib.util
+import io
 import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +55,47 @@ def atomic(path,value):
 
 
 class OverlayTests(unittest.TestCase):
+    def test_first_read_growth_is_bounded_before_json_or_hash(self):
+        reads = []
+        class Reader(io.BytesIO):
+            def read(self, size=-1):
+                reads.append(size)
+                if size < 0: raise AssertionError("unbounded read")
+                return super().read(size)
+        path = mock.Mock()
+        path.is_symlink.return_value = False
+        path.is_file.return_value = True
+        path.stat.return_value.st_size = 1
+        path.open.return_value = Reader(b'{"valid":true}')
+        with mock.patch.object(w, "Path", return_value=path), self.assertRaisesRegex(ValueError, "bounded plain file required"):
+            w.read_bound("fictional-growing.json", limit=4)
+        self.assertEqual(reads, [5])
+        path.read_bytes.assert_not_called()
+
+    def test_bounded_reader_preserves_exact_hash_and_known_json(self):
+        raw = b'{"v":0}'
+        def path_for():
+            path = mock.Mock()
+            path.is_symlink.return_value = False
+            path.is_file.return_value = True
+            path.stat.return_value.st_size = len(raw)
+            path.open.return_value = io.BytesIO(raw)
+            return path
+        with mock.patch.object(w, "Path", return_value=path_for()):
+            self.assertEqual(w.read_bound("fictional.json", w.sha(raw), limit=len(raw)), ({"v": 0}, w.sha(raw)))
+        with mock.patch.object(w, "Path", return_value=path_for()), self.assertRaisesRegex(ValueError, "input hash changed"):
+            w.read_bound("fictional.json", "0" * 64, limit=len(raw))
+
+    def test_oversized_symlink_or_nonregular_reader_stops_before_open(self):
+        for symlink, size, regular in ((False, 5, True), (True, 1, True), (False, 1, False)):
+            path = mock.Mock()
+            path.is_symlink.return_value = symlink
+            path.is_file.return_value = regular
+            path.stat.return_value.st_size = size
+            with mock.patch.object(w, "Path", return_value=path), self.assertRaisesRegex(ValueError, "bounded plain file required"):
+                w.read_bound("fictional.json", limit=4)
+            path.open.assert_not_called()
+
     def test_typed_projection_preserves_r0_and_excludes_private_fields(self):
         board,selected,review=fixture();original=w.canonical(board)
         doc=compile_fixture(board,selected,review)
@@ -108,6 +151,24 @@ class OverlayTests(unittest.TestCase):
         self.assertEqual(staged["rows"],doc["rows"]);self.assertEqual(doc["display_board_sha256"],w.digest(board))
         visible["players"][0]["props"][0]["line"]=4
         with self.assertRaises(ValueError):w.repackage(doc,board,w.digest(board),visible,w.digest(visible),packaged_at="2026-10-24T10:03:00Z")
+
+    def test_retained_producer_identity_is_not_relabelled_by_packaging(self):
+        board,selected,review=fixture();doc=compile_fixture(board,selected,review)
+        visible=copy.deepcopy(board);visible['public_only']=True
+        staged=w.repackage(doc,board,w.digest(board),visible,w.digest(visible),packaged_at='2026-10-24T10:03:00Z')
+        self.assertEqual(staged['website_source_sha'],'f'*40)
+        self.assertEqual(staged['rows'],doc['rows'])
+        self.assertEqual(staged['prepared_at'],doc['prepared_at'])
+        self.assertNotEqual(staged['packaged_at'],doc['packaged_at'])
+        self.assertEqual(staged['canonical_board_sha256'],w.digest(board))
+        self.assertEqual(staged['display_board_sha256'],w.digest(visible))
+
+    def test_retained_overlay_cannot_qualify_a_changed_current_contract(self):
+        board,selected,review=fixture();doc=compile_fixture(board,selected,review)
+        changed=copy.deepcopy(board);changed['players'][0]['props'][0]['adj']=9.
+        forged=copy.deepcopy(doc);forged['display_board_sha256']=w.digest(changed)
+        with self.assertRaisesRegex(ValueError,'changed board offers'):
+            w.validate_overlay(forged,changed,w.digest(changed))
 
     def test_publication_hash_readback_stage_allowlist_and_corruption(self):
         board,selected,review=fixture();doc=compile_fixture(board,selected,review)

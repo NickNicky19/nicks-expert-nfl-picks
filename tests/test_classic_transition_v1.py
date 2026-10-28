@@ -24,13 +24,14 @@ import reliability as r
 import weekly_public_feed as f
 from test_reliability import fixture as board_fixture
 from test_weekly_publication_authority_v2 import fixture,transport,NOW,SOURCE
+from test_classic_build_pair_v1 import retained_classic_source
 
 def policy():
-    old=f.historical_policy_v2(ROOT)
+    old=f.active_policy_v2(ROOT)
     value=deepcopy(old)
-    value.update(schema_version=f.POLICY_V3,historical_policy_sha256=f.HISTORICAL_POLICY_SHA256,
+    value.update(schema_version=f.POLICY_V3,historical_policy_sha256=f.ACTIVE_POLICY_SHA256,
         current_execution=f.current_execution_contract(ROOT),
-        website_code_sha256={name:f.sha((ROOT/name).read_bytes())for name in f.CURRENT_CODE_FILES})
+        website_code_sha256={name:f.sha((ROOT/name).read_bytes())for name in f.PIPELINE_CODE_FILES})
     return value
 
 class ClassicProfileTests(unittest.TestCase):
@@ -49,30 +50,37 @@ class ClassicProfileTests(unittest.TestCase):
             r.engine_hashes(ROOT)
 
     def test_current_model_closes_all_eight_actual_files(self):
-        contract=model.contract(ROOT)
-        self.assertEqual(set(contract['engine_sha256']),set(model.ENGINE))
-        self.assertEqual(contract['model'],'sleeper-matchup-classic-fg-identity-v1')
-        self.assertIn('pull/grade.py',contract['engine_sha256'])
+        with tempfile.TemporaryDirectory()as d:
+            legacy=retained_classic_source(Path(d))
+            contract=model.contract(legacy)
+            self.assertEqual(set(contract['engine_sha256']),set(model.ENGINE))
+            self.assertEqual(contract['model'],'sleeper-matchup-classic-fg-identity-v1')
+            self.assertIn('pull/grade.py',contract['engine_sha256'])
+        current=f.current_execution_contract(ROOT)
+        self.assertEqual(current['model'],'sleeper-matchup-classic-data-integrity-v2')
+        self.assertEqual(set(current['engine_sha256']),set(model.ENGINE))
+        self.assertNotEqual(current['engine_sha256'],contract['engine_sha256'])
+        with self.assertRaisesRegex(ValueError,'UNRECOGNIZED_CLASSIC_CURRENT_SOURCE'):
+            model.contract(ROOT)
 
     def test_same_size_engine_or_grader_corruption_is_rejected(self):
         for changed in ['pull/scoring.py','pull/grade.py']:
             with self.subTest(changed=changed),tempfile.TemporaryDirectory()as d:
-                root=Path(d)
-                for name in model.ENGINE:
-                    p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes((ROOT/name).read_bytes())
+                root=retained_classic_source(Path(d))
+                self.assertEqual(model.contract(root),model.execution_contract())
                 p=root/changed;raw=p.read_bytes();old=p.stat();p.write_bytes(b'!'+raw[1:]);os.utime(p,ns=(old.st_atime_ns,old.st_mtime_ns))
-                with self.assertRaisesRegex(ValueError,'UNRECOGNIZED_CLASSIC_CURRENT_SOURCE'):model.contract(root)
+                with self.assertRaisesRegex(ValueError,'UNRECOGNIZED_CLASSIC_CURRENT_SOURCE: '+changed):model.contract(root)
 
     def test_current_native_has_its_own_model_schema_and_clock(self):
         board,meta=board_fixture();now=datetime.now(timezone.utc);board['generated_at']=r.stamp(now);meta['generated_at']=board['generated_at']
         board['games'][0]['kickoff']='2099-10-25T17:00:00Z'
         with tempfile.TemporaryDirectory()as d:
-            root=Path(d)
-            for name in model.ENGINE:
-                p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes((ROOT/name).read_bytes())
+            root=retained_classic_source(Path(d))
             board['execution_model']=meta['execution_model']=model.contract(root)
             for player in board['players']:player['reference_model']=model.MODEL
-            path,health=r.capture_profile(board,meta,root,datetime.now(timezone.utc),model=model.MODEL,mode='replay')
+            with patch.dict(os.environ):
+                os.environ.pop('GITHUB_SHA',None)
+                path,health=r.capture_profile(board,meta,root,datetime.now(timezone.utc),model=model.MODEL,mode='replay')
             payload=json.loads(gzip.decompress(path.read_bytes()))['payload']
             self.assertEqual(payload['model'],model.MODEL);self.assertEqual(payload['schema_version'],model.CAPTURE)
             self.assertEqual(payload['engine_files'],model.ENGINE)
@@ -86,11 +94,19 @@ class ClassicProfileTests(unittest.TestCase):
                 r.capture_profile(board,meta,root,datetime.now(timezone.utc),model=model.MODEL,mode='replay')
 
     def test_unknown_and_crossed_profiles_fail_without_fallback(self):
-        for value in ['unknown','sleeper-matchup-data-integrity-v2']:
+        for value in ['unknown','sleeper-matchup-unregistered-v99']:
             with self.subTest(value=value),self.assertRaisesRegex(r.IntegrityError,'UNKNOWN_CAPTURE_PROFILE'):
                 r.capture_profile({}, {}, ROOT, datetime.now(timezone.utc), model=value)
-        with self.assertRaisesRegex(r.IntegrityError,'CURRENT_BOARD_EXECUTION_BINDING'):
+        # The earlier corrected model is supported only with its actual source;
+        # recognizing that name never permits today's different engine bytes.
+        with self.assertRaisesRegex(r.IntegrityError,'Installed source differs from explicit presence model'):
+            r.capture_profile({}, {}, ROOT, datetime.now(timezone.utc), model='sleeper-matchup-data-integrity-v2')
+        with self.assertRaisesRegex(ValueError,'UNRECOGNIZED_CLASSIC_CURRENT_SOURCE'):
             r.capture_profile({}, {}, ROOT, datetime.now(timezone.utc), model=model.MODEL)
+        with tempfile.TemporaryDirectory()as d:
+            legacy=retained_classic_source(Path(d))
+            with self.assertRaisesRegex(r.IntegrityError,'CURRENT_BOARD_EXECUTION_BINDING'):
+                r.capture_profile({}, {}, legacy, datetime.now(timezone.utc), model=model.MODEL)
         with self.assertRaisesRegex(r.IntegrityError,'Original engine changed'):
             r.capture_profile({}, {}, ROOT, datetime.now(timezone.utc), model=model.ORIGINAL_MODEL)
 
@@ -98,18 +114,57 @@ class ClassicProfileTests(unittest.TestCase):
         result=subprocess.run([sys.executable,'-B',str(ROOT/'tools/reliability.py'),'--mode','live','--model',model.MODEL,'--replay-at','2000-01-01T00:00:00Z'],capture_output=True,text=True)
         self.assertNotEqual(result.returncode,0);self.assertIn('Live capture cannot use a supplied clock',result.stderr)
 
+    def test_legacy_cli_reaches_actual_closed_capture_and_rejects_unknown_model(self):
+        board,meta=board_fixture();now=datetime.now(timezone.utc)
+        board['generated_at']=meta['generated_at']=r.stamp(now)
+        board['games'][0]['kickoff']='2099-10-25T17:00:00Z'
+        with tempfile.TemporaryDirectory()as d:
+            root=retained_classic_source(Path(d))
+            board['execution_model']=meta['execution_model']=model.contract(root)
+            for player in board['players']:player['reference_model']=model.MODEL
+            (root/'output/data').mkdir(parents=True)
+            for name,value in [('week',board),('meta',meta)]:
+                (root/'output/data'/ (name+'.json')).write_text(json.dumps(value))
+            environment=dict(os.environ);environment.pop('GITHUB_SHA',None)
+            command=[sys.executable,'-B',str(ROOT/'tools/reliability.py'),'--root',str(root),'--mode','replay']
+            result=subprocess.run([*command,'--model',model.MODEL],env=environment,capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            health=json.loads(result.stdout)
+            self.assertEqual(health['capture_model'],model.MODEL)
+            payload=json.loads(gzip.decompress((root/health['receipt']).read_bytes()))['payload']
+            self.assertEqual(payload['engine_files'],model.ENGINE)
+            self.assertIsNone(payload['code_commit'])
+            before={p.relative_to(root).as_posix():p.read_bytes()for p in (root/'data').rglob('*')if p.is_file()}
+            rejected=subprocess.run([*command,'--model','unknown'],env=environment,capture_output=True,text=True)
+            self.assertNotEqual(rejected.returncode,0)
+            self.assertIn('invalid choice',rejected.stderr)
+            self.assertEqual({p.relative_to(root).as_posix():p.read_bytes()for p in (root/'data').rglob('*')if p.is_file()},before)
+
+    def test_default_cli_preserves_original_capture_route(self):
+        expected=({'original':'board'},{'original':'meta'})
+        with patch.object(sys,'argv',['reliability.py','--mode','replay']),\
+             patch.object(r,'load_json',side_effect=expected),\
+             patch.object(r,'engine_hashes',return_value={'actual':'original'})as hashes,\
+             patch.object(r,'capture',return_value=(Path('fictional.json.gz'),{'capture_model':model.ORIGINAL_MODEL}))as capture,\
+             patch.object(r,'capture_profile',side_effect=AssertionError('legacy default switched dispatcher')),\
+             patch('builtins.print'):
+            r.main()
+        hashes.assert_called_once_with(r.ROOT.resolve())
+        self.assertEqual(capture.call_args.args[:2],expected)
+        self.assertEqual(capture.call_args.kwargs,{'mode':'replay'})
+
 class ClassicPolicyTests(unittest.TestCase):
     def test_current_reference_rankings_carry_current_model_not_original_R0(self):
         import weekly_selected_rankings as ranking,weekly_adaptive_overlay as overlay
         from test_weekly_selected_rankings import fixture as ranking_fixture,make
-        board,doc=ranking_fixture();board['execution_model']=model.contract(ROOT)
-        for player in board['players']:player['reference_model']=model.MODEL
+        board,doc=ranking_fixture();execution=f.current_execution_contract(ROOT);board['execution_model']=execution
+        for player in board['players']:player['reference_model']=execution['model']
         doc['rows']=[];doc['display_board_sha256']=doc['canonical_board_sha256']=overlay.digest(board)
         result=make(board,doc)
         self.assertEqual(result['policy'],ranking.CURRENT_POLICY)
         items=[item for rows in result['picks'].values()for item in rows]
         self.assertTrue(items)
-        self.assertTrue(all(item['forecast_source']=='CURRENT_BASELINE'and item['model_version']==model.MODEL for item in items))
+        self.assertTrue(all(item['forecast_source']=='CURRENT_BASELINE'and item['model_version']==execution['model'] for item in items))
         offers=overlay.board_offers(board)
         bad=deepcopy(items[0]);bad.update(forecast_source='R0_FALLBACK',model_version=None)
         with self.assertRaisesRegex(ValueError,'ranking reference model'):ranking.validate_item(bad,offers,{})
@@ -121,6 +176,13 @@ class ClassicPolicyTests(unittest.TestCase):
         self.assertEqual(value['engine_sha256'],json.loads(body)['engine_sha256'])
         self.assertNotEqual(value['engine_sha256']['pull/build.py'],value['current_execution']['engine_sha256']['pull/build.py'])
         self.assertEqual((ROOT/f.HISTORICAL_POLICY_PATH).read_bytes(),body)
+        # The earlier315 registration is separately retained under its own
+        # original14/13-path contract; it is never repinned to current source.
+        historical=f.historical_policy_v2(ROOT)
+        historical_bytes=f._registration_object(ROOT,f.HISTORICAL_POLICY_BLOB,'blob',1<<20)
+        self.assertEqual(f.sha(historical_bytes),f.HISTORICAL_POLICY_SHA256)
+        self.assertEqual(json.loads(historical_bytes),historical)
+        self.assertNotEqual(historical['website_code_sha256'],value['website_code_sha256'])
 
     def test_historical_fields_and_current_model_cannot_be_repinned(self):
         for change in [lambda p:p['engine_sha256'].update(p['current_execution']['engine_sha256']),
@@ -134,16 +196,16 @@ class ClassicPolicyTests(unittest.TestCase):
         historical,feed,board,run,jobs=fixture();before=deepcopy(feed)
         actual=policy();execution=actual['current_execution']
         value=deepcopy(historical)
-        value.update(schema_version=f.POLICY_V3,historical_policy_sha256=f.HISTORICAL_POLICY_SHA256,
+        value.update(schema_version=f.POLICY_V3,historical_policy_sha256=f.ACTIVE_POLICY_SHA256,
             current_execution=execution,website_code_sha256=actual['website_code_sha256'])
         board['execution_model']=execution
         calls=[]
-        with patch.object(f,'historical_policy_v2',return_value=deepcopy(historical)),\
+        with patch.object(f,'active_policy_v2',return_value=deepcopy(historical)),\
              patch.object(f,'current_execution_contract',return_value=execution),\
              patch.object(f,'code_review',return_value='a'*64):
             selected,review,receipt=f.writer_input(ROOT,value,board,website_source_sha=SOURCE,now=NOW,feed=feed,fetch=transport(run,jobs,calls))
         self.assertEqual(receipt['state'],'AUTOMATED_POLICY_ACCEPTED');self.assertEqual(len(selected['rows']),1)
-        self.assertEqual(receipt['current_reference_model'],model.MODEL);self.assertEqual(feed,before);self.assertEqual(len(calls),2)
+        self.assertEqual(receipt['current_reference_model'],execution['model']);self.assertEqual(feed,before);self.assertEqual(len(calls),2)
 
     def test_bad_V3_never_retries_V2_or_fetches(self):
         value=policy();value['current_execution']['model']='unknown'

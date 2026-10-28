@@ -15,6 +15,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: read
   pages: write
   id-token: write
 
@@ -23,56 +24,112 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url || steps.deployment-retry.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Initialize isolated Python bytecode path
+        run: |
+          set -euo pipefail
+          task_pycache_prefix="$(mktemp -d "$RUNNER_TEMP/nfl-update-job-pyc.XXXXXX")"
+          printf 'PYTHONPYCACHEPREFIX=%s\n' "$task_pycache_prefix" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: Bind the trigger workflow and checkout to current main
         id: fence
         run: python tools/publication_guard_v1.py begin --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
       - name: Read release mode
         id: mode
         run: python tools/release_mode.py >> "$GITHUB_OUTPUT"
       - name: Install existing dependencies
-        run: pip install -r requirements.txt
+        run: PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-pip-pyc.XXXXXX")" pip install --no-compile -r requirements.txt
+      - name: Verify qualified Phase 2 source CI before provider build
+        id: source_ci
+        if: steps.mode.outputs.phase2_enabled == 'true'
+        run: |
+          set -euo pipefail
+          GH_TOKEN="${{ github.token }}" \
+            PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-source-ci-first-pyc.XXXXXX")" \
+            python tools/source_ci.py verify > "$RUNNER_TEMP/source-ci-verification.json"
+          PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-source-ci-output-pyc.XXXXXX")" \
+            python - "$RUNNER_TEMP/source-ci-verification.json" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding='utf-8') as stream:
+              result = json.load(stream)
+          run_id = result.get('run_id') if isinstance(result, dict) else None
+          if result.get('schema_version') != 'source-ci-verification-v1' or type(run_id) is not int or run_id < 1:
+              raise RuntimeError('Source CI verification did not return a supported integer run identity')
+          print('run_id=' + str(run_id))
+          PY
       - name: Required offline regression tests
         id: checks
         if: steps.mode.outputs.mode == 'phase1'
         run: |
-          python -m unittest discover -s tests -v
+          set -euo pipefail
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            # Complete source checks are bound by the mandatory source-CI seal.
+            # Every generation below still runs its full current-data validation.
+            PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-compile-pyc.XXXXXX")" python -m compileall -q pull tools
+          else
+            python -m unittest discover -s tests -v
+          fi
           node --check output/app.js
+          node --check output/reliability-ui.js
           node --check output/weekly-adaptive-overlay.js
-          python -m unittest discover -s tests -p test_weekly_adaptive_overlay.py -v
+          node tests/test-ui.cjs
           node tests/test-weekly-overlay.cjs
           node tests/test-selected-rankings.cjs
           node tests/test-classic-ranking-model.cjs
-          node --check output/reliability-ui.js
-          node tests/test-ui.cjs
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then node tests/test-about.cjs; fi
       - name: Preserve original grading output
         if: steps.mode.outputs.mode == 'phase1'
         run: python tools/preserve_legacy.py
-      - name: Run default original R0 then current model with qualified history acquisition
+      - name: Build accepted versioned production engine
         id: pair
-        run: python tools/classic_build_pair_v1.py --root . --original-repository . --private-run-dir "$RUNNER_TEMP/classic-pair-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --mode live
+        run: |
+          set -euo pipefail
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            # The begin fence bound this actual checkout to the event source.
+            # No alternate GITHUB_SHA or old model identity is injected.
+            transaction_root="$RUNNER_TEMP/nfl-current-updater-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            mkdir -m 700 "$transaction_root"
+            TMPDIR="$transaction_root" python tools/phase2_capture.py --mode live --build-and-capture
+          elif [ '${{ steps.mode.outputs.mode }}' = 'phase1' ]; then
+            python tools/classic_build_pair_v1.py --root . --original-repository . --private-run-dir "$RUNNER_TEMP/classic-pair-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --mode live
+          else
+            # The existing original-code recovery route does not qualify a
+            # current-model or Phase 2 report and creates no current native.
+            python pull/build.py
+          fi
       - name: Install validated data without changing source or old R0 caches
         id: install
-        run: python tools/classic_build_pair_v1.py --root . --original-repository . --private-run-dir "$RUNNER_TEMP/classic-pair-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --mode live --install-staged-output
+        if: steps.mode.outputs.mode == 'phase1'
+        run: |
+          set -euo pipefail
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            python tools/phase2_capture.py --mode live --validate-generation
+          else
+            python tools/classic_build_pair_v1.py --root . --original-repository . --private-run-dir "$RUNNER_TEMP/classic-pair-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --mode live --install-staged-output
+          fi
       - name: Required integrity checks and pregame capture
         id: capture
         if: steps.mode.outputs.mode == 'phase1'
-        run: GITHUB_SHA="$(git rev-parse HEAD)" python tools/reliability.py --mode live --model sleeper-matchup-classic-fg-identity-v1
-
-      # The old verifier mixes network availability, diagnostics, and model warnings.
-      # Required deterministic invariants are enforced above, not bypassed here.
+        run: |
+          set -euo pipefail
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            python tools/phase2_capture.py --mode live --validate-generation
+          else
+            python tools/reliability.py --mode live --model sleeper-matchup-classic-fg-identity-v1
+          fi
       - name: Legacy diagnostic verification (advisory)
         id: legacy
         run: timeout --signal=KILL 75s python tools/verify.py
@@ -112,6 +169,7 @@ jobs:
           PY
       - name: Prepare isolated provisional overlay (default R0)
         id: overlay
+        if: steps.mode.outputs.mode == 'phase1' && steps.mode.outputs.phase2_enabled != 'true'
         run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v3.json --feed-policy-sha256 b1e9bcdf99acf3cfd65a7bf08f10839026bd9009077f6808531745541380c9b3
       - name: Commit validated data and immutable receipts
         id: commit
@@ -120,9 +178,28 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || { echo "Main changed during build; refusing to merge generated evidence. Re-run on new main."; exit 1; }
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            GH_TOKEN="${{ github.token }}" \
+              PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-source-ci-commit-pyc.XXXXXX")" \
+              python tools/source_ci.py verify --run-id '${{ steps.source_ci.outputs.run_id }}' > "$RUNNER_TEMP/source-ci-before-data-commit.json"
+          fi
           git add output/data data/cache
-          if [ -d data/weekly-adaptive-audit ]; then git add data/weekly-adaptive-audit; fi
-          for dir in data/forward data/history data/current-classic data/classic-r0-shadow; do
+          if [ -d data/weekly-adaptive-audit ]; then
+            python - <<'PY_AUDIT'
+          from pathlib import Path
+          import re
+          from tools.genuine_case_recovery import encoded, weekly_json
+          # The existing source-CI-bound reader enforces this exact public audit role.
+          for path in sorted(Path('data/weekly-adaptive-audit').iterdir()):
+              name = path.as_posix()
+              if re.fullmatch(r'data/weekly-adaptive-audit/[0-9a-f]{64}\.json', name) is None:
+                  raise RuntimeError('Unclassified weekly audit path')
+              _, body = encoded(path, retain=True, limit=4 * 1024 * 1024)
+              weekly_json(name, body)
+          PY_AUDIT
+            git add data/weekly-adaptive-audit
+          fi
+          for dir in data/forward data/history data/verification data/shadow data/offers data/outcomes data/current-classic data/classic-r0-shadow; do
             if [ -d "$dir" ]; then git add "$dir"; fi
           done
           if ! git diff --cached --quiet; then
@@ -132,35 +209,62 @@ jobs:
       - name: Bind the published data head and complete output inventory
         run: python tools/publication_guard_v1.py sealed --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
       - uses: actions/configure-pages@v5
+      - name: Stage approved Pages fields without altering retained originals
+        run: |
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            python tools/phase2_capture.py --mode live --stage-pages "$RUNNER_TEMP/nfl-pages"
+          else
+            cp -a output "$RUNNER_TEMP/nfl-pages"
+          fi
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            GH_TOKEN="${{ github.token }}" \
+              PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-source-ci-stage-pyc.XXXXXX")" \
+              python tools/source_ci.py verify --run-id '${{ steps.source_ci.outputs.run_id }}' > "$RUNNER_TEMP/source-ci-after-pages-stage.json"
+          fi
+          python tools/publication_guard_v1.py bind-pages --pages-root "$RUNNER_TEMP/nfl-pages" --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
       - name: Refuse superseded or changed output before upload
-        run: python tools/publication_guard_v1.py check --stage upload --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+        run: python tools/publication_guard_v1.py check --stage upload --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" --pages-root "$RUNNER_TEMP/nfl-pages"
       - uses: actions/upload-pages-artifact@v3
         id: artifact
         with:
-          path: output
+          path: ${{ runner.temp }}/nfl-pages
       - name: Refuse superseded or changed output before deployment
-        run: python tools/publication_guard_v1.py check --stage deploy --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+        run: |
+          set -euo pipefail
+          python tools/publication_guard_v1.py check --stage deploy --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" --pages-root "$RUNNER_TEMP/nfl-pages"
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            GH_TOKEN="${{ github.token }}" \
+              PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-source-ci-deploy-pyc.XXXXXX")" \
+              python tools/source_ci.py verify --run-id '${{ steps.source_ci.outputs.run_id }}' > "$RUNNER_TEMP/source-ci-before-deploy.json"
+          fi
       - name: Deploy validated output
         id: deployment
         uses: actions/deploy-pages@v4
         continue-on-error: true
       - name: Verify the successful deployment still has current source and assets
         if: ${{ !cancelled() && steps.deployment.outcome == 'success' }}
-        run: python tools/publication_guard_v1.py check --stage postdeploy --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+        run: python tools/publication_guard_v1.py check --stage postdeploy --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" --pages-root "$RUNNER_TEMP/nfl-pages"
       - name: Wait before deployment retry
         if: ${{ !cancelled() && steps.commit.outcome == 'success' && steps.artifact.outcome == 'success' && steps.deployment.outcome == 'failure' }}
         run: sleep 20
       - name: Refuse a superseded deployment retry
         id: retry-fence
         if: ${{ !cancelled() && steps.commit.outcome == 'success' && steps.artifact.outcome == 'success' && steps.deployment.outcome == 'failure' }}
-        run: python tools/publication_guard_v1.py check --stage retry --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+        run: |
+          set -euo pipefail
+          python tools/publication_guard_v1.py check --stage retry --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" --pages-root "$RUNNER_TEMP/nfl-pages"
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            GH_TOKEN="${{ github.token }}" \
+              PYTHONPYCACHEPREFIX="$(mktemp -d "$RUNNER_TEMP/nfl-source-ci-deploy-pyc.XXXXXX")" \
+              python tools/source_ci.py verify --run-id '${{ steps.source_ci.outputs.run_id }}' > "$RUNNER_TEMP/source-ci-before-retry.json"
+          fi
       - name: Deploy validated output (retry)
         id: deployment-retry
         if: ${{ !cancelled() && steps.commit.outcome == 'success' && steps.artifact.outcome == 'success' && steps.deployment.outcome == 'failure' && steps.retry-fence.outcome == 'success' }}
         uses: actions/deploy-pages@v4
       - name: Verify successful retry still has current source and assets
         if: ${{ !cancelled() && steps.deployment-retry.outcome == 'success' }}
-        run: python tools/publication_guard_v1.py check --stage postdeploy --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+        run: python tools/publication_guard_v1.py check --stage postdeploy --receipt "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" --pages-root "$RUNNER_TEMP/nfl-pages"
       - name: Preserve terminal failures without publishing a partial forecast
         if: ${{ failure() && steps.fence.outcome == 'success' }}
         env:
@@ -174,7 +278,11 @@ jobs:
           DEPLOY_OUTCOME: ${{ steps.deployment.outcome }}
           RETRY_OUTCOME: ${{ steps.deployment-retry.outcome }}
         run: |
-          python tools/classic_failure_v1.py --root . --private-run-dir "$RUNNER_TEMP/classic-pair-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --fence "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+          if [ '${{ steps.mode.outputs.phase2_enabled }}' = 'true' ]; then
+            TMPDIR="$RUNNER_TEMP/nfl-current-updater-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" python tools/classic_failure_v1.py --root . --phase2-transaction-dir "$RUNNER_TEMP/nfl-current-updater-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --fence "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+          else
+            python tools/classic_failure_v1.py --root . --private-run-dir "$RUNNER_TEMP/classic-pair-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --fence "$RUNNER_TEMP/publication-fence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           export GIT_INDEX_FILE="$RUNNER_TEMP/classic-failure-index-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"

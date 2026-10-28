@@ -1,0 +1,39 @@
+{
+  "schema_version": "rule-provenance-v1",
+  "documents": [
+    {
+      "id": "picks_rules",
+      "title": "Sleeper Player Picks Rules",
+      "url": "https://support.sleeper.com/en/articles/9047931-sleeper-player-picks-rules",
+      "retrieved_at": "2026-10-14T00:24:04Z",
+      "content_sha256": "c13fc6d362e93987e1b96ea783b1956d7b58d9722197c5d51aad3dcfc9f7474f",
+      "http_status": 200,
+      "available_publication_date": "2026-02-13",
+      "scope": "Sleeper_Player_Picks_NFL_not_NFL_SZN",
+      "binding_to_a_specific_entry": "NOT_VERIFIED"
+    },
+    {
+      "id": "nfl_injury_insurance",
+      "title": "NFL Injury Insurance",
+      "url": "https://support.sleeper.com/en/articles/9869560-nfl-injury-insurance",
+      "retrieved_at": "2026-10-14T00:24:09Z",
+      "content_sha256": "9f70abc9648089e2ecddd34361f3ccb86379a2ecd3031c79711b755b3042d772",
+      "http_status": 200,
+      "available_publication_date": "2026-03-06",
+      "scope": "Sleeper_Player_Picks_NFL_not_NFL_SZN",
+      "binding_to_a_specific_entry": "NOT_VERIFIED"
+    },
+    {
+      "id": "picks_stats",
+      "title": "Sleeper Player Picks Stats Explained",
+      "url": "https://support.sleeper.com/en/articles/6262990-sleeper-player-picks-stats-explained",
+      "retrieved_at": "2026-10-14T00:24:21Z",
+      "content_sha256": "818e59f8782cd68a6acdb890858217476770e249798a226684adccd4322c670d",
+      "http_status": 200,
+      "available_publication_date": null,
+      "scope": "Sleeper_Player_Picks_NFL_not_NFL_SZN",
+      "binding_to_a_specific_entry": "NOT_VERIFIED"
+    }
+  ],
+  "settlement_status": "PROVENANCE_RECORDED_ENTRY_APPLICABILITY_NOT_VERIFIED"
+}
