@@ -78,11 +78,12 @@ def template(root=ROOT):
 
 
 def policy_check(p, *, root=ROOT, now=None):
-    old.require(type(p) is dict and set(p) == KEYS and p["schema_version"] == POLICY
+    old.require(type(p) is dict and set(p) in (KEYS, KEYS | {WITNESS_FIELD}) and p["schema_version"] == POLICY
         and p["state"] == "ROOT_REGISTERED" and p["authority_kind"] == "AUTOMATED_REGISTERED_POLICY"
         and p["human_approval"] is p["public_raw_or_model_weights"] is False,
         "V4_ROOT_REGISTRATION_REQUIRED")
     old.require(len(old.canonical(p)) <= 1 << 20, "V4_POLICY_BOUND")
+    if WITNESS_FIELD in p:witness_descriptors(p)
     base = old.historical_policy_v2(root)
     old.require(p["static_registration_sha256"] == old.digest(base)
         and all(p[k] == base[k] for k in STATIC), "V4_ORIGINAL_STATIC_SCOPE_CHANGED")
@@ -230,6 +231,150 @@ def verify_execution(feed, p, *, now, fetch):
     return proof
 
 
+WITNESS_FIELD = "identity_scope_witnesses"
+WITNESS_SCHEMA = "weekly-identity-scope-git-witness-v1"
+WITNESS_KEYS = {"schema_version", "commit", "path", "git_blob_sha1", "bytes", "sha256"}
+WITNESS_CAP = 4 << 20
+
+
+def witness_descriptors(p):
+    witnesses = p.get(WITNESS_FIELD)
+    old.require(type(witnesses) is list and 1 <= len(witnesses) <= 4, "V4_WITNESS_LIST_BOUND")
+    seen = set()
+    for d in witnesses:
+        old.require(type(d) is dict and set(d) == WITNESS_KEYS
+            and d["schema_version"] == WITNESS_SCHEMA and d["path"] == "output/data/week.json"
+            and all(type(d[k]) is str and re.fullmatch(r"[a-f0-9]{40}", d[k]) for k in ("commit", "git_blob_sha1"))
+            and type(d["bytes"]) is int and 0 < d["bytes"] <= WITNESS_CAP and old.h(d["sha256"]),
+            "V4_WITNESS_DESCRIPTOR")
+        key = (d["commit"], d["path"])
+        old.require(key not in seen, "V4_DUPLICATE_WITNESS"); seen.add(key)
+    return sorted(witnesses, key=lambda d:(d["commit"], d["path"], d["sha256"]))
+
+
+def read_scope_witness(root, descriptor):
+    """An identity preimage witness, never a forecast/capture-time substitute."""
+    import hashlib
+    import subprocess
+    command = ["git", "--no-replace-objects", "--no-lazy-fetch", "-C", str(Path(root).resolve())]
+    def metadata(*args):
+        result = subprocess.run(command + list(args), capture_output=True, timeout=1)
+        old.require(result.returncode == 0 and len(result.stdout) <= 4096, "V4_WITNESS_GIT_METADATA")
+        return result.stdout
+    source = descriptor["commit"]
+    old.require(metadata("rev-parse", "--verify", source + "^{commit}").decode().strip() == source,
+                "V4_WITNESS_ACTUAL_COMMIT")
+    metadata("merge-base", "--is-ancestor", source, "HEAD")
+    tree = metadata("ls-tree", source, "--", descriptor["path"])
+    expected = "100644 blob " + descriptor["git_blob_sha1"] + "\t" + descriptor["path"] + "\n"
+    old.require(tree == expected.encode(), "V4_WITNESS_REGULAR_TRACKED_BLOB")
+    oid = descriptor["git_blob_sha1"]
+    old.require(metadata("cat-file", "-s", oid).decode().strip() == str(descriptor["bytes"]),
+                "V4_WITNESS_ENCODED_BOUND")
+    process = subprocess.Popen(command + ["cat-file", "blob", oid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        body = process.stdout.read(descriptor["bytes"] + 1)
+        old.require(len(body) == descriptor["bytes"], "V4_WITNESS_BYTES")
+        old.require(process.wait(timeout=1) == 0, "V4_WITNESS_READ")
+    finally:
+        if process.poll() is None:
+            process.kill(); process.wait(timeout=1)
+        process.stdout.close()
+    old.require(old.sha(body) == descriptor["sha256"]
+        and hashlib.sha1(b"blob " + str(len(body)).encode() + b"\0" + body).hexdigest() == oid,
+        "V4_WITNESS_CONTENT_IDENTITIES")
+    board = old.strict_public_json(body)
+    old.require(type(board) is dict, "V4_WITNESS_BOARD_TYPE")
+    return board
+
+
+def board_members(board):
+    old.require(type(board.get("games")) is list and type(board.get("players")) is list,
+                "V4_BOARD_MEMBERSHIP_TYPE")
+    games = {g["id"]:g for g in board["games"]}
+    players = {(p["game_id"],p["id"]):p for p in board["players"]}
+    old.require(len(games) == len(board["games"]) and len(players) == len(board["players"])
+        and all(type(g["id"]) is str for g in board["games"])
+        and all(type(p["id"]) is str and type(p["game_id"]) is str and p["game_id"] in games for p in board["players"]),
+        "V4_UNIQUE_BOARD_MEMBERSHIP")
+    return games, players, old.overlay().board_offers(board)
+
+
+def complete_scope(rows, games, players):
+    if any(r["game_id"] not in games or (r["game_id"],r["player_id"]) not in players for r in rows):
+        return None
+    return old.digest([dict(player_id=r["player_id"],game_id=r["game_id"],category=r["category"],
+        kickoff=games[r["game_id"]]["kickoff"],team=players[(r["game_id"],r["player_id"])]["team"],
+        opponent=players[(r["game_id"],r["player_id"])]["opp"])
+        for r in sorted(rows,key=old.overlay().key)])
+
+
+def validate_witness_scoped_rows(feed, p, board, *, now, root, proof, allowed):
+    games, players, offers = board_members(board)
+    candidates = []
+    # Every registered dependency is freshly checked; malformed witnesses never
+    # become permission to keep looking for a convenient alternative.
+    for descriptor in witness_descriptors(p):
+        witness = read_scope_witness(root, descriptor)
+        old.require(type(witness.get("season")) is int and type(witness.get("week")) is int
+            and witness.get("execution_model") == p["current_execution"], "V4_WITNESS_PERIOD_OR_ENGINE")
+        wg, wp, wo = board_members(witness)
+        if (witness["season"],witness["week"]) != (board["season"],board["week"]):
+            continue
+        if complete_scope(feed["rows"], wg, wp) == feed["identity_scope_sha256"]:
+            candidates.append((descriptor,wg,wp,wo))
+    if not candidates and complete_scope(feed["rows"], games, players) == feed["identity_scope_sha256"]:
+        candidates.append((None,games,players,offers))
+    old.require(candidates, "CURRENT_BOARD_SCOPE_CHANGED")
+    contexts = []
+    for descriptor, wg, wp, wo in candidates:
+        seen = set()
+        for r in feed["rows"]:
+            key = old.overlay().key(r)
+            old.require(key not in seen, "CLOSED_UNIQUE_PUBLIC_ROWS"); seen.add(key)
+            old.require((r["category"],r["method_id"],r["procedure_version"],r["model_version"]) in allowed,
+                        "V4_ROW_NOT_IN_DECLARED_CATALOG")
+            old.require(r["source_policy_sha256"] == p["source_policy_sha256"]
+                and old.utc(p["lab_recipe_registered_at_utc"]) <= old.utc(r["issued_at"]), "V4_ROW_POLICY_AND_REGISTRATION")
+            player, game = wp[(r["game_id"],r["player_id"])], wg[r["game_id"]]
+            active = game.get("state") == "pre" and old.utc(r["valid_until_utc"]) > old.utc(now)
+            old.require(not active or key in wo, "V4_ACTIVE_OFFER_MISSING")
+            old.overlay().validate_row(dict(r, first_prepared_at=feed["created_at"]),
+                                      wo if key in wo else {key:(player,game,{})})
+            old.require(player.get("pos",player.get("position")) in p["public_roles"][r["category"]],
+                        "V4_REGISTERED_PLAYER_ROLE")
+        contexts.append(old.digest([dict(key=old.overlay().key(r),role=wp[(r["game_id"],r["player_id"])].get("pos",
+            wp[(r["game_id"],r["player_id"])].get("position"))) for r in sorted(feed["rows"],key=old.overlay().key)]))
+    old.require(len(set(contexts)) == 1, "V4_AMBIGUOUS_WITNESS_ROLES")
+    descriptor, wg, wp, wo = candidates[0]
+    rows, unavailable = [], {}
+    def skip(reason):unavailable[reason] = unavailable.get(reason,0) + 1
+    for r in feed["rows"]:
+        key = old.overlay().key(r)
+        game = games.get(r["game_id"]); player = players.get((r["game_id"],r["player_id"]))
+        original = wp[(r["game_id"],r["player_id"])]
+        if game is None:skip("current_game_missing"); continue
+        if player is None:skip("current_player_missing"); continue
+        if (player.get("team"),player.get("opp")) != (original["team"],original["opp"]):
+            skip("current_team_or_opponent_changed"); continue
+        if old.utc(game["kickoff"]) != old.utc(wg[r["game_id"]]["kickoff"]):
+            skip("current_kickoff_changed"); continue
+        role = player.get("pos",player.get("position"))
+        if role not in p["public_roles"][r["category"]] or role != original.get("pos",original.get("position")):
+            skip("current_role_changed"); continue
+        if game.get("state") != "pre" or old.utc(r["valid_until_utc"]) <= old.utc(now):
+            skip("current_started_or_expired"); continue
+        if key not in offers:skip("current_offer_missing"); continue
+        old.overlay().validate_row(dict(r,first_prepared_at=feed["created_at"]),offers)
+        rows.append(dict(r,season=board["season"],week=board["week"],team=player["team"],opponent=player["opp"],
+                         evidence_lane="original_pregame",operational_eligible=True))
+    proof = dict(proof,identity_scope_resolution=dict(schema_version=WITNESS_SCHEMA,
+        purpose="IDENTITY_PREIMAGE_ONLY_NOT_CAPTURE_TIME_OR_FORECAST_PROOF",witness=descriptor,
+        complete_original_scope_sha256=feed["identity_scope_sha256"],original_validated_rows=len(feed["rows"]),
+        current_eligible_rows=len(rows),current_unavailable_counts=unavailable))
+    return dict(rows=rows), proof
+
+
 def validate_feed(feed, p, board, *, now, fetch, root=ROOT):
     policy_check(p, root=root, now=now)
     old.require(type(feed) is dict and set(feed) == old.META_FIELDS | {"publication", "publication_sha256"}
@@ -255,6 +400,8 @@ def validate_feed(feed, p, board, *, now, fetch, root=ROOT):
         and c["private_selected_rows"] == c["public_rows"] + sum(c["fallback_counts"].values()), "CLOSED_PUBLIC_COVERAGE")
     proof = verify_execution(feed, p, now=now, fetch=fetch)
     allowed = declared_catalog(feed["publication"]["version_catalog"], p)
+    if WITNESS_FIELD in p:
+        return validate_witness_scoped_rows(feed,p,board,now=now,root=root,proof=proof,allowed=allowed)
     offers = old.overlay().board_offers(board)
     games = {game["id"]:game for game in board["games"]}
     players = {(player["game_id"],player["id"]):player for player in board["players"]}

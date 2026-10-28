@@ -1,5 +1,6 @@
 """Fictional V2-wire/new-authority cases against actual V4 and old consumers."""
 from copy import deepcopy
+from contextlib import contextmanager
 import ast
 import gzip
 import json
@@ -351,5 +352,176 @@ class V4ConsumerTests(unittest.TestCase):
         with self.assertRaises(f.FeedError):f.policy_check_v2(p)
         self.assertEqual(f.CURRENT_CODE_FILES|{'tools/weekly_public_feed_v4.py'},v4.CURRENT_CODE_FILES)
         self.assertEqual(len(v4.CURRENT_CODE_FILES),len(f.CURRENT_CODE_FILES)+1)
+
+class V4ScopeWitnessTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.network=patch.object(socket.socket,'connect',side_effect=AssertionError('REAL_NETWORK_FORBIDDEN'))
+        cls.network.start()
+
+    @classmethod
+    def tearDownClass(cls):cls.network.stop()
+
+    @contextmanager
+    def case(self, *, witness_change=None):
+        p,feed,board,run,jobs=fixture()
+        witness=deepcopy(board)
+        if witness_change:witness_change(witness)
+        with tempfile.TemporaryDirectory()as d:
+            root=Path(d)
+            for name in v4.CURRENT_CODE_FILES|{f.HISTORICAL_POLICY_PATH}:
+                target=root/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes((ROOT/name).read_bytes())
+            path=root/'output/data/week.json';path.parent.mkdir(parents=True);path.write_bytes(f.canonical(witness))
+            def git(*args):return subprocess.check_output(['git','-C',d,*args],stderr=subprocess.DEVNULL)
+            git('init','-q');git('add','--all')
+            git('-c','user.name=Fictional test','-c','user.email=fictional@example.invalid','commit','-qm','Fictional immutable identity witness')
+            commit=git('rev-parse','HEAD').decode().strip();blob=git('rev-parse','HEAD:output/data/week.json').decode().strip()
+            raw=path.read_bytes()
+            descriptor=dict(schema_version=v4.WITNESS_SCHEMA,commit=commit,path='output/data/week.json',git_blob_sha1=blob,bytes=len(raw),sha256=f.sha(raw))
+            p[v4.WITNESS_FIELD]=[descriptor]
+            yield root,p,feed,board,run,jobs,git
+
+    def validate(self,root,p,feed,board,run,jobs,**kwargs):
+        return v4.validate_feed(feed,p,board,root=root,now=kwargs.pop('now',NOW),fetch=transport(run,jobs,[],**kwargs))
+
+    def test_actual_git_witness_validates_full_feed_before_current_missing_player(self):
+        with self.case()as(root,p,feed,board,run,jobs,git):
+            original=f.canonical(feed);missing=board['players'].pop(0)['id']
+            selected,proof=self.validate(root,p,feed,board,run,jobs)
+            self.assertEqual(len(selected['rows']),10);self.assertNotIn(missing,{r['player_id']for r in selected['rows']})
+            self.assertEqual(f.canonical(feed),original)
+            resolution=proof['identity_scope_resolution']
+            self.assertEqual(resolution['original_validated_rows'],11);self.assertEqual(resolution['current_eligible_rows'],10)
+            self.assertEqual(resolution['current_unavailable_counts'],{'current_player_missing':1})
+            self.assertEqual(resolution['complete_original_scope_sha256'],feed['identity_scope_sha256'])
+            self.assertEqual(resolution['witness'],p[v4.WITNESS_FIELD][0])
+            self.assertIn('NOT_CAPTURE_TIME',resolution['purpose'])
+            for row in selected['rows']:
+                self.assertEqual({k:row[k]for k in f.overlay().ROW_FIELDS},next(r for r in feed['rows']if f.overlay().key(r)==f.overlay().key(row)))
+
+    def test_each_current_drift_only_excludes_affected_opportunities(self):
+        for kind in ('player','game','offer','team','opponent','kickoff','role','allowed_role','started','expired'):
+            with self.subTest(kind=kind),self.case()as(root,p,feed,board,run,jobs,git):
+                player=board['players'][0];pid=player['id'];game=board['games'][0]
+                now=NOW
+                if kind=='player':board['players'].pop(0)
+                elif kind=='game':board['games']=[];board['players']=[]
+                elif kind=='offer':player['props']=[]
+                elif kind=='team':player['team']='OTHER'
+                elif kind=='opponent':player['opp']='OTHER'
+                elif kind=='kickoff':game['kickoff']='2026-10-26T18:00:00Z'
+                elif kind=='role':player['pos']='K'
+                elif kind=='allowed_role':player['pos']='WR'
+                elif kind=='started':game['state']='in'
+                elif kind=='expired':feed['rows'][0]['valid_until_utc']='2026-10-25T12:00:20Z'
+                selected,proof=self.validate(root,p,feed,board,run,jobs,now=now)
+                self.assertEqual(len(selected['rows']),0 if kind in ('game','kickoff','started')else 10)
+                self.assertNotIn(pid,{r['player_id']for r in selected['rows']})
+                self.assertEqual(len(feed['rows']),11)
+                self.assertEqual(sum(proof['identity_scope_resolution']['current_unavailable_counts'].values())+len(selected['rows']),11)
+
+    def test_invalid_original_values_role_identity_and_clocks_cannot_be_hidden_by_absence(self):
+        for kind in ('negative','null','bool','late','catalog','source','scope'):
+            with self.subTest(kind=kind),self.case()as(root,p,feed,board,run,jobs,git):
+                board['players'].pop(0);row=feed['rows'][0]
+                if kind=='negative':row['forecast_value']=-1
+                elif kind=='null':row['forecast_value']=None
+                elif kind=='bool':row['forecast_value']=True
+                elif kind=='late':row['persistence_completed_at']='2026-10-26T18:00:00Z'
+                elif kind=='catalog':row['model_version']='0'*64
+                elif kind=='source':row['source_policy_sha256']='0'*64
+                else:feed['identity_scope_sha256']='0'*64
+                with self.assertRaises((ValueError,KeyError)):self.validate(root,p,feed,board,run,jobs)
+        for kind in ('role','team','period','duplicate'):
+            def change(w):
+                if kind=='role':w['players'][0]['pos']='K'
+                elif kind=='team':w['players'][0]['team']='OTHER'
+                elif kind=='period':w['week']=6
+                else:w['players'].append(deepcopy(w['players'][0]))
+            with self.subTest(witness=kind),self.case(witness_change=change)as(root,p,feed,board,run,jobs,git):
+                board['players'].pop(0)
+                with self.assertRaises((ValueError,KeyError)):self.validate(root,p,feed,board,run,jobs)
+
+    def test_descriptor_closed_types_and_duplicate_or_oversize_list_reject(self):
+        mutations=[lambda d:d.update(path='../week.json'),lambda d:d.update(bytes=True),lambda d:d.update(bytes=(4<<20)+1),
+            lambda d:d.update(schema_version='unknown'),lambda d:d.update(commit='main'),lambda d:d.update(sha256='0'*64),
+            lambda d:d.update(git_blob_sha1='0'*40),lambda d:d.update(extra='unapproved')]
+        for mutation in mutations:
+            with self.case()as(root,p,feed,board,run,jobs,git):
+                mutation(p[v4.WITNESS_FIELD][0])
+                with self.assertRaises(ValueError):self.validate(root,p,feed,board,run,jobs)
+        for count in (0,2,5):
+            with self.case()as(root,p,feed,board,run,jobs,git):
+                p[v4.WITNESS_FIELD]*=count
+                with self.assertRaises(ValueError):self.validate(root,p,feed,board,run,jobs)
+
+    def test_missing_wrong_size_nonancestor_or_symlink_git_witness_rejects(self):
+        for kind in ('missing','size','nonancestor','symlink'):
+            with self.subTest(kind=kind),self.case()as(root,p,feed,board,run,jobs,git):
+                d=p[v4.WITNESS_FIELD][0]
+                if kind=='missing':d['commit']='0'*40
+                elif kind=='size':d['bytes']+=1
+                elif kind=='nonancestor':
+                    tree=git('rev-parse','HEAD^{tree}').decode().strip()
+                    d['commit']=git('-c','user.name=Fictional test','-c','user.email=fictional@example.invalid','commit-tree',tree,'-m','Unrelated witness').decode().strip()
+                else:
+                    git('update-index','--cacheinfo','120000',d['git_blob_sha1'],d['path'])
+                    git('-c','user.name=Fictional test','-c','user.email=fictional@example.invalid','commit','-qm','Symlink control')
+                    d['commit']=git('rev-parse','HEAD').decode().strip()
+                with self.assertRaises(ValueError):self.validate(root,p,feed,board,run,jobs)
+
+    def test_bad_second_witness_cannot_be_skipped_for_convenient_valid_one(self):
+        with self.case()as(root,p,feed,board,run,jobs,git):
+            bad=deepcopy(p[v4.WITNESS_FIELD][0]);bad['commit']='0'*40;p[v4.WITNESS_FIELD].append(bad)
+            board['players'].pop(0)
+            with self.assertRaises(ValueError):self.validate(root,p,feed,board,run,jobs)
+
+    def test_distinct_roots_and_new_process_freshly_reject_missing_or_corrupt_dependencies(self):
+        with self.case()as(root,p,feed,board,run,jobs,git):
+            d=p[v4.WITNESS_FIELD][0];self.assertEqual(v4.read_scope_witness(root,d)['season'],2026)
+            with tempfile.TemporaryDirectory()as other:
+                with self.assertRaises(ValueError):v4.read_scope_witness(Path(other),d)
+            blob=root/'.git/objects'/d['git_blob_sha1'][:2]/d['git_blob_sha1'][2:]
+            raw=blob.read_bytes();blob.chmod(0o600);blob.write_bytes(raw[:-1]+bytes([raw[-1]^1]))
+            with self.assertRaises(ValueError):v4.read_scope_witness(root,d)
+            script='import sys,json;sys.path.insert(0,sys.argv[1]);import weekly_public_feed_v4 as v;v.read_scope_witness(sys.argv[2],json.loads(sys.argv[3]))'
+            child=subprocess.run([sys.executable,'-c',script,str(ROOT/'tools'),str(root),json.dumps(d)],capture_output=True)
+            self.assertNotEqual(child.returncode,0)
+
+    def test_two_valid_witnesses_are_deterministic_and_role_ambiguity_rejects(self):
+        for changed_role in (False,True):
+            with self.subTest(changed_role=changed_role),self.case()as(root,p,feed,board,run,jobs,git):
+                path=root/'output/data/week.json';witness=json.loads(path.read_bytes())
+                witness['generated_at']='fictional-later-witness-not-forecast-proof'
+                if changed_role:witness['players'][0]['pos']='WR'
+                raw=f.canonical(witness);path.write_bytes(raw);git('add','--','output/data/week.json')
+                git('-c','user.name=Fictional test','-c','user.email=fictional@example.invalid','commit','-qm','Second fictional identity witness')
+                d=dict(schema_version=v4.WITNESS_SCHEMA,commit=git('rev-parse','HEAD').decode().strip(),
+                    path='output/data/week.json',git_blob_sha1=git('rev-parse','HEAD:output/data/week.json').decode().strip(),bytes=len(raw),sha256=f.sha(raw))
+                p[v4.WITNESS_FIELD].append(d);board['players'].pop(0)
+                if changed_role:
+                    with self.assertRaisesRegex(ValueError,'V4_AMBIGUOUS_WITNESS_ROLES'):self.validate(root,p,feed,board,run,jobs)
+                else:
+                    selected,proof=self.validate(root,p,feed,board,run,jobs)
+                    self.assertEqual(len(selected['rows']),10)
+                    self.assertEqual(proof['identity_scope_resolution']['witness'],v4.witness_descriptors(p)[0])
+
+    def test_valid_other_week_witness_does_not_block_complete_current_scope(self):
+        with self.case(witness_change=lambda w:w.update(week=6))as(root,p,feed,board,run,jobs,git):
+            selected,proof=self.validate(root,p,feed,board,run,jobs)
+            self.assertEqual(len(selected['rows']),11)
+            self.assertIsNone(proof['identity_scope_resolution']['witness'])
+            self.assertEqual(proof['identity_scope_resolution']['current_unavailable_counts'],{})
+
+    def test_duplicates_fatal_and_legacy_no_witness_keeps_strict_full_scope(self):
+        for kind in ('game','player','offer'):
+            with self.subTest(kind=kind),self.case()as(root,p,feed,board,run,jobs,git):
+                if kind=='game':board['games'].append(deepcopy(board['games'][0]))
+                elif kind=='player':board['players'].append(deepcopy(board['players'][0]))
+                else:board['players'][0]['props'].append(deepcopy(board['players'][0]['props'][0]))
+                with self.assertRaises(ValueError):self.validate(root,p,feed,board,run,jobs)
+        p,feed,board,run,jobs=fixture();board['players'].pop(0)
+        with self.assertRaisesRegex(ValueError,'CURRENT_BOARD_SCOPE_CHANGED'):
+            v4.validate_feed(feed,p,board,root=ROOT,now=NOW,fetch=transport(run,jobs,[]))
 
 if __name__=='__main__':unittest.main(verbosity=2)
