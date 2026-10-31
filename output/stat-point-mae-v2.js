@@ -1,0 +1,77 @@
+"use strict";
+(function(root,factory){const api=factory();if(typeof module!=="undefined"&&module.exports)module.exports=api;root.StatPointMaeV2=api;})(globalThis,function(){
+const ENTRY_KEYS=["target","scoring_target","method_id","base_learner_id","model_version","artifact_sha256","model_bytes_sha256","procedure_version","base_procedure_version","point_profile_sha256","source_policy_sha256","source_contract_sha256","forecast_product","prediction_functional","public_roles","original_contract_version"].sort(),SOURCE_KEYS=["identity_bridge_sha256","target","model_version","procedure_version","point_profile_sha256","source_policy_sha256","source_contract_sha256","source_receipt_sha256","feature_capture_receipt_sha256","feature_binding_sha256","query_projection_sha256","query_source_sha256","information_cutoff_utc","feature_capture_completed_at","public_roles"].sort(),CAT_KEYS=["schema_version","selection_product","selection_metric","registered_at","owner_admission_receipt_sha256","entries"].sort(),REG_KEYS=["schema_version","registered_at","owner_admission_receipt_sha256","records"].sort(),ROW_KEYS=["website_game_id","sleeper_id","identity_bridge_sha256","identity_binding_sha256","team","opponent","retained_capture","schema_version","selection_product","selection_metric","consumer_contract_version","season","week","game_id","player_id","target","scoring_target","position","horizon","conditional_on","method_id","base_learner_id","model_version","artifact_sha256","model_bytes_sha256","procedure_version","base_procedure_version","point_profile_sha256","selection_sha256","source_policy_sha256","source_contract_sha256","source_registry_sha256","source_receipt_sha256","feature_capture_receipt_sha256","feature_binding_sha256","query_projection_sha256","query_source_sha256","candidate_sha256","capture_receipt_sha256","capture_body_sha256","information_cutoff_utc","feature_capture_completed_at","feature_max_source_available_utc","issued_at","persistence_completed_at","readback_completed_at","issue_deadline_utc","kickoff_utc","selected_projection","projection_label","forecast_product","prediction_functional","expected_mean","expected_mean_kind","functional_proof","mean_eligible","trained_prior_only","fallback","fallback_reason","original_contract_version","public_roles"].sort(),FEED_KEYS=["season","week","schema_version","selection_product","selection_metric","created_at","catalog","catalog_sha256","source_registry","source_registry_sha256","rows","owner_export_receipt_sha256"].sort(),RECEIPT_KEYS=["website_game_id","sleeper_id","identity_bridge_sha256","identity_binding_sha256","team","opponent","schema_version","state","horizon","candidate_sha256","capture_receipt_sha256","capture_body_sha256","selection_sha256","identity","model_version","procedure_version","point_profile_sha256","source_policy_sha256","source_registry_sha256","query_projection_sha256","information_cutoff_utc","issued_at","persistence_completed_at","readback_completed_at","issue_deadline_utc","kickoff_utc"].sort();
+const FEED="stat-point-mae-public-feed-v2-draft2",CATALOG="stat-point-mae-public-catalog-v2-draft2",REGISTRY="stat-point-mae-source-registry-v2-draft2",PRODUCT="stat_point_mae_v2",METRIC="MAE",FUNCTIONAL="full-law-lower-median-view-v2";
+const NUMERIC=new Set(["pass_yd","pass_td","pass_cmp","pass_att","pass_int","rush_yd","rush_att","rec","rec_yd","rush_rec_yd"]),COUNTS=new Set(["pass_td","pass_cmp","pass_att","pass_int","rush_att","rec"]),HASH=/^[a-f0-9]{64}$/,states=new WeakMap();
+function require(ok,message){if(!ok)throw Error(message);}
+function object(x){return x!==null&&typeof x==="object"&&!Array.isArray(x)&&(Object.getPrototypeOf(x)===Object.prototype||Object.getPrototypeOf(x)===null);}
+function closed(x,keys){return object(x)&&JSON.stringify(Object.keys(x).sort())===JSON.stringify(keys);}
+function finite(x){return typeof x==="number"&&Number.isFinite(x);}
+function ident(x){return typeof x==="string"&&x.length>0&&x.length<=128&&x.trim()===x&&!/^(nan|nat|none|null|undefined)$/i.test(x)&&![...x].some(c=>c.codePointAt(0)<33||c.codePointAt(0)===127);}
+function roles(x){return Array.isArray(x)&&x.length>0&&x.length<=6&&new Set(x).size===x.length&&x.every(ident);}
+function hashes(x){return Object.entries(x).every(([k,v])=>!(k.endsWith("sha256")||["model_version","procedure_version","base_procedure_version"].includes(k))||(typeof v==="string"&&HASH.test(v)));}
+function canonical(x){if(Array.isArray(x))return "["+x.map(canonical).join(",")+"]";if(object(x))return "{"+Object.keys(x).sort().map(k=>JSON.stringify(k)+":"+canonical(x[k])).join(",")+"}";return JSON.stringify(x);}
+function same(a,b){return canonical(a)===canonical(b);}
+// Synchronous SHA-256 is used only for the closed catalog/source-registry JSON.
+// These documents contain strings/arrays/objects; cross-language float formatting
+// is deliberately excluded from their canonical hash domain.
+function sha256(text){
+ const K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+ const input=new TextEncoder().encode(text),length=Math.ceil((input.length+9)/64)*64,bytes=new Uint8Array(length);bytes.set(input);bytes[input.length]=128;
+ const dv=new DataView(bytes.buffer);dv.setUint32(length-4,input.length*8,false);const H=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19],w=new Uint32Array(64),r=(v,n)=>(v>>>n)|(v<<(32-n));
+ for(let offset=0;offset<length;offset+=64){for(let i=0;i<16;i++)w[i]=dv.getUint32(offset+i*4,false);for(let i=16;i<64;i++){const a=w[i-15],b=w[i-2];w[i]=(w[i-16]+(r(a,7)^r(a,18)^(a>>>3))+w[i-7]+(r(b,17)^r(b,19)^(b>>>10)))>>>0;}
+ let [a,b,c,d,e,f,g,h]=H;for(let i=0;i<64;i++){const t1=(h+(r(e,6)^r(e,11)^r(e,25))+((e&f)^(~e&g))+K[i]+w[i])>>>0,t2=((r(a,2)^r(a,13)^r(a,22))+((a&b)^(a&c)^(b&c)))>>>0;h=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;}
+ [a,b,c,d,e,f,g,h].forEach((v,i)=>H[i]=(H[i]+v)>>>0);}
+ return H.map(v=>v.toString(16).padStart(8,"0")).join("");
+}
+function clock(x){
+ require(typeof x==="string","EXACT_UTC_CLOCK_REQUIRED");const m=/^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,6}))?(?:Z|\+00:00)$/.exec(x);require(m,"EXACT_UTC_CLOCK_REQUIRED");
+ const [y,mo,d,h,mi,s]=m.slice(1,7).map(Number),ms=Date.UTC(y,mo-1,d,h,mi,s),date=new Date(ms);require(y>=1900&&y<=2200&&date.getUTCFullYear()===y&&date.getUTCMonth()+1===mo&&date.getUTCDate()===d&&date.getUTCHours()===h&&date.getUTCMinutes()===mi&&date.getUTCSeconds()===s,"VALID_UTC_CALENDAR_REQUIRED");
+ return BigInt(ms)*1000n+BigInt((m[7]||"").padEnd(6,"0"));
+}
+const entryKey=x=>canonical([x.target,x.method_id,x.model_version,x.procedure_version,x.forecast_product,x.prediction_functional]);
+const identity=x=>canonical([x.website_game_id,x.sleeper_id,x.target]);
+function catalog(c){
+ require(closed(c,CAT_KEYS)&&c.schema_version===CATALOG&&c.selection_product===PRODUCT&&c.selection_metric===METRIC&&HASH.test(c.owner_admission_receipt_sha256),"CLOSED_MAE_CATALOG_REQUIRED");clock(c.registered_at);
+ require(Array.isArray(c.entries)&&c.entries.length>0&&c.entries.length<=64,"BOUNDED_CATEGORY_SUBSET_CATALOG_REQUIRED");const seen=new Set();
+ for(const e of c.entries){require(closed(e,ENTRY_KEYS)&&hashes(e)&&NUMERIC.has(e.target)&&e.scoring_target===e.target&&e.artifact_sha256===e.model_version&&roles(e.public_roles)&&[e.method_id,e.base_learner_id,e.original_contract_version].every(ident)&&((e.forecast_product==="point_median"&&e.prediction_functional==="full_cdf_lower_median")||(e.forecast_product==="point_mean"&&e.prediction_functional==="expected_mean")),"CLOSED_NUMERIC_TYPED_CATALOG_ENTRY_REQUIRED");const k=entryKey(e);require(!seen.has(k),"DUPLICATE_CATALOG_ENTRY");seen.add(k);}
+}
+function registry(r){
+ require(closed(r,REG_KEYS)&&r.schema_version===REGISTRY&&HASH.test(r.owner_admission_receipt_sha256),"CLOSED_SOURCE_REGISTRY_REQUIRED");clock(r.registered_at);require(Array.isArray(r.records)&&r.records.length>0&&r.records.length<=128,"BOUNDED_SOURCE_REGISTRY_REQUIRED");const seen=new Set();
+ for(const s of r.records){require(closed(s,SOURCE_KEYS)&&hashes(s)&&NUMERIC.has(s.target)&&roles(s.public_roles),"CLOSED_SAFE_SOURCE_BINDING_REQUIRED");require(clock(s.information_cutoff_utc)<=clock(s.feature_capture_completed_at),"SOURCE_FEATURE_CLOCK_ORDER");const k=canonical(s);require(!seen.has(k),"DUPLICATE_SOURCE_BINDING");seen.add(k);}
+}
+function label(row){return row.fallback?(row.forecast_product==="point_mean"?"Mean fallback":"Median fallback"):(row.forecast_product==="point_mean"?"Selected mean projection":"Selected median");}
+function rowCheck(x,f){
+ require(closed(x,ROW_KEYS)&&hashes(x),"CLOSED_PUBLIC_POINT_ROW_REQUIRED");require(x.schema_version==="stat-point-mae-v2"&&x.consumer_contract_version===x.schema_version&&x.selection_product===PRODUCT&&x.selection_metric===METRIC&&NUMERIC.has(x.target)&&x.scoring_target===x.target&&x.horizon==="player_game"&&x.conditional_on==="played"&&x.artifact_sha256===x.model_version&&Number.isInteger(x.season)&&x.season>=1900&&x.season<=2200&&Number.isInteger(x.week)&&x.week>=1&&x.week<=22&&[x.game_id,x.player_id,x.position,x.website_game_id,x.sleeper_id,x.team,x.opponent].every(ident)&&roles(x.public_roles)&&x.public_roles.includes(x.position),"TYPED_POINT_IDENTITY_ROLE_REQUIRED");
+ const matches=f.catalog.entries.filter(e=>entryKey(e)===entryKey(x));require(matches.length===1&&ENTRY_KEYS.every(k=>same(x[k],matches[0][k])),"ROW_OUTSIDE_ADMITTED_CATALOG");require(x.source_registry_sha256===f.source_registry_sha256&&f.source_registry.records.some(s=>SOURCE_KEYS.every(k=>same(x[k],s[k]))),"ROW_OUTSIDE_ADMITTED_SOURCE_REGISTRY");
+ require(finite(x.selected_projection)&&finite(x.expected_mean)&&x.expected_mean_kind==="full_law_expected_mean"&&(!COUNTS.has(x.target)||Math.min(x.selected_projection,x.expected_mean)>=0),"FINITE_SUPPORTED_POINT_AND_SEPARATE_LAW_MEAN_REQUIRED");
+ require([x.mean_eligible,x.trained_prior_only,x.fallback,x.retained_capture].every(v=>typeof v==="boolean")&&typeof x.fallback_reason==="string"&&x.fallback_reason.length<=500&&(x.fallback?!!x.fallback_reason:x.fallback_reason==="")&&(!x.trained_prior_only||x.fallback),"EXACT_FALLBACK_CONTRACT_REQUIRED");
+ const info=clock(x.information_cutoff_utc),captured=clock(x.feature_capture_completed_at),issued=clock(x.issued_at),persisted=clock(x.persistence_completed_at),readback=clock(x.readback_completed_at),deadline=clock(x.issue_deadline_utc),kickoff=clock(x.kickoff_utc),created=clock(f.created_at);
+ require(clock(f.catalog.registered_at)<=issued&&clock(f.source_registry.registered_at)<=issued&&info<=captured&&captured<=issued&&issued<=persisted&&persisted<deadline&&deadline<kickoff&&persisted<=readback&&readback<=created&&(created<kickoff||x.retained_capture),"EXACT_ISSUE_PERSISTENCE_READBACK_CLOCKS_REQUIRED");
+ if(x.feature_max_source_available_utc===null)require(x.trained_prior_only,"UNKNOWN_WARM_FEATURE_CLOCK");else require(clock(x.feature_max_source_available_utc)<=info,"FEATURE_AFTER_INFORMATION_CUTOFF");
+ if(x.forecast_product==="point_mean")require(x.prediction_functional==="expected_mean"&&x.mean_eligible&&x.selected_projection===x.expected_mean&&x.functional_proof===null,"MEAN_MUST_REMAIN_ACTUAL_LAW_MEAN");else{const p=x.functional_proof;require(closed(p,["cdf_at","cdf_below","extractor_version"])&&p.extractor_version===FUNCTIONAL&&finite(p.cdf_below)&&finite(p.cdf_at)&&0<=p.cdf_below&&p.cdf_below<.5&&.5<=p.cdf_at&&p.cdf_at<=1&&Number.isInteger(x.selected_projection),"FULL_LAW_LOWER_MEDIAN_BRACKET_REQUIRED");}
+ require(x.projection_label===label(x),"COMMON_CONSUMER_VALUE_OR_LABEL_CHANGED");
+}
+function freeze(x){if(x&&typeof x==="object"){Object.values(x).forEach(freeze);Object.freeze(x);}return x;}
+function validate(feed){
+ require(closed(feed,FEED_KEYS)&&feed.schema_version===FEED&&feed.selection_product===PRODUCT&&feed.selection_metric===METRIC&&typeof feed.owner_export_receipt_sha256==="string"&&HASH.test(feed.owner_export_receipt_sha256),"CLOSED_NEW_MAE_FEED_REQUIRED");require(new TextEncoder().encode(canonical(feed)).length<=4*1024*1024,"BOUNDED_FEED_REQUIRED");
+ catalog(feed.catalog);registry(feed.source_registry);require(feed.catalog_sha256===sha256(canonical(feed.catalog))&&feed.source_registry_sha256===sha256(canonical(feed.source_registry)),"EXACT_CATALOG_SOURCE_REGISTRY_DIGEST_REQUIRED");require(Array.isArray(feed.rows)&&feed.rows.length>0&&feed.rows.length<=5000,"BOUNDED_PUBLIC_ROWS_REQUIRED");
+ const map=new Map(),copies=[],canonicalKeys=new Set();for(const row of feed.rows){rowCheck(row,feed);require(row.season===feed.season&&row.week===feed.week,"EXACT_FEED_ROW_SEASON_WEEK");const k=identity(row),canonicalKey=canonical([row.game_id,row.player_id,row.target]);require(!map.has(k)&&!canonicalKeys.has(canonicalKey),"DUPLICATE_CANONICAL_OR_WEBSITE_OPPORTUNITY");canonicalKeys.add(canonicalKey);const copy=freeze(JSON.parse(JSON.stringify(row)));map.set(k,copy);copies.push(copy);}const result=Object.freeze({schemaVersion:FEED,rows:Object.freeze(copies)});states.set(result,map);return result;
+}
+function forPlayer(validated,player,target,board,now=Date.now()){
+ const map=states.get(validated);if(!map||!player||!board)return null;
+ const routeId=x=>typeof x==="string"&&ident(x)?x:Number.isSafeInteger(x)&&x>=0?String(x):null;
+ const gameId=routeId(player.game_id),sleeperId=routeId(player.id);if(gameId===null||sleeperId===null)return null;
+ const row=map.get(canonical([gameId,sleeperId,target]));if(!row)return null;
+ if(board.season!==row.season||board.week!==row.week||player.team!==row.team||player.opp!==row.opponent||player.pos!==row.position)return null;
+ if(player.gsis_id!==undefined&&player.gsis_id!==row.player_id)return null;
+ if(!Array.isArray(board.games))return null;
+ const games=board.games.filter(g=>g&&routeId(g.id)===row.website_game_id);if(games.length!==1)return null;
+ const game=games[0];if(game.home===game.away||!((game.home===row.team&&game.away===row.opponent)||(game.away===row.team&&game.home===row.opponent)))return null;
+ try{if(clock(game.kickoff)!==clock(row.kickoff_utc))return null;}catch(_){return null;}
+ const at=typeof now==="string"?clock(now):BigInt(Math.trunc(now))*1000n;return Object.freeze({value:row.selected_projection,label:row.projection_label,expectedMean:row.expected_mean,fallback:row.fallback,frozen:at>=clock(row.kickoff_utc),row});
+}
+const esc=x=>String(x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function cardPoint(validated,player,target,board,now=Date.now()){const p=forPlayer(validated,player,target,board,now);return p?`<div data-stat-point-mae-v2><b>${p.frozen?"Frozen ":""}${esc(p.label)}: ${p.value.toFixed(2)}</b><span>Expected mean: ${p.expectedMean.toFixed(2)}</span>${p.fallback?`<span>${esc(p.row.fallback_reason)}</span>`:""}</div>`:"";}
+return Object.freeze({validate,forPlayer,cardPoint});
+});

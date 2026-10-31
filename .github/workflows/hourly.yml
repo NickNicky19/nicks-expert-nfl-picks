@@ -43,12 +43,21 @@ jobs:
         id: mode
         run: python tools/release_mode.py >> "$GITHUB_OUTPUT"
       - name: Install existing dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          python -m pip install pytest==9.1.1 iniconfig==2.3.1 packaging==26.3 pluggy==1.7.0 Pygments==2.21.0
+          MAE_TEST_NODE_DIR="$RUNNER_TEMP/mae-web-test-node"
+          npm install --prefix "$MAE_TEST_NODE_DIR" --no-save --package-lock=false --ignore-scripts playwright@1.62.1
+          echo "NODE_PATH=$MAE_TEST_NODE_DIR/node_modules" >> "$GITHUB_ENV"
+          MAE_TEST_CHROME=$(command -v chromium || command -v google-chrome || command -v google-chrome-stable)
+          test -x "$MAE_TEST_CHROME"
+          echo "NFL_CHROMIUM_PATH=$MAE_TEST_CHROME" >> "$GITHUB_ENV"
       - name: Required offline regression tests
         id: checks
         if: steps.mode.outputs.mode == 'phase1'
         run: |
           python -m unittest discover -s tests -v
+          python -m pytest -q tests/test_weekly_mae_display_v2.py -k 'not TypedPointWireChecks'
           node --check output/app.js
           node --check output/weekly-adaptive-overlay.js
           python -m unittest discover -s tests -p test_weekly_adaptive_overlay.py -v
@@ -57,6 +66,9 @@ jobs:
           node tests/test-classic-ranking-model.cjs
           node --check output/reliability-ui.js
           node tests/test-ui.cjs
+          node --check output/stat-point-mae-v2.js
+          node tests/test-mae-display.cjs
+          node tests/test-weekly-primary-forecast.cjs
       - name: Preserve original grading output
         if: steps.mode.outputs.mode == 'phase1'
         run: python tools/preserve_legacy.py
@@ -112,7 +124,10 @@ jobs:
           PY
       - name: Prepare isolated provisional overlay (default R0)
         id: overlay
-        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v4.json --feed-policy-sha256 aa0f3a28c41da2de5e580e4f335e6d708a2fdfe615a158182c9c5b4f20cb84d4
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v5.json --feed-policy-sha256 67e9edc94fd0bb79d438f45394ccdddb2cd671be5431cea59d754de985b07003
+      - name: Prepare independently typed MAE point display
+        id: mae-display
+        run: python tools/weekly_mae_display_v2.py --root . --website-source-sha "$(git rev-parse HEAD)" --policy config/weekly-mae-display-source-policy-v2.UNREGISTERED.json --policy-sha256 35fa0c0f2d8c58c6be363b9d69205e23197a7a8bdfba2247f64bc704d3eb17e8
       - name: Commit validated data and immutable receipts
         id: commit
         run: |
@@ -122,6 +137,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || { echo "Main changed during build; refusing to merge generated evidence. Re-run on new main."; exit 1; }
           git add output/data data/cache
           if [ -d data/weekly-adaptive-audit ]; then git add data/weekly-adaptive-audit; fi
+          if [ -d data/weekly-mae-display-audit ]; then git add data/weekly-mae-display-audit; fi
           for dir in data/forward data/history data/current-classic data/classic-r0-shadow; do
             if [ -d "$dir" ]; then git add "$dir"; fi
           done

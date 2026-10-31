@@ -5,7 +5,7 @@ const { chromium } = require("playwright");
 const root = path.resolve(__dirname, ".."), source = fs.readFileSync(path.join(root, "output/app.js"), "utf8");
 new vm.Script(source); // Parse the complete changed application without booting it.
 const extract = name => { const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`)); assert(match, name); return match[0]; };
-const functions = ["selectedRankingPolicy", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "selectedPropForecast", "propChip", "catCard", "displayedProps", "filteredPlayers", "renderProps"].map(extract).join("\n");
+const functions = ["selectedRankingPolicy", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "topPicksSourceCaption", "maeDisplayForecast", "maeDisplayDetails", "selectedPropForecast", "propChip", "catCard", "displayedProps", "filteredPlayers", "renderProps"].map(extract).join("\n");
 const helper = fs.readFileSync(path.join(root, "output/weekly-adaptive-overlay.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "output/style.css"), "utf8");
 const widths = process.env.WEEKLY_PRIMARY_CUSTOM_LINE_ONLY === "1" ? [390] : [320, 390, 1280];

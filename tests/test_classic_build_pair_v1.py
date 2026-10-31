@@ -24,7 +24,8 @@ class ActualBuildPairTests(unittest.TestCase):
         command=commands[0]
         path=command[command.index('--feed-policy')+1]
         schemas={'config/weekly-derived-selected-policy-v3.json':'weekly-derived-selected-policy-v3',
-                 'config/weekly-derived-selected-policy-v4.json':'weekly-derived-selected-policy-v4'}
+                 'config/weekly-derived-selected-policy-v4.json':'weekly-derived-selected-policy-v4',
+                 'config/weekly-derived-selected-policy-v5.json':'weekly-derived-selected-policy-v4'}
         self.assertIn(path,schemas)
         body=(ROOT/path).read_bytes()if candidate_policy is None else candidate_policy
         self.assertEqual(command[command.index('--feed-policy-sha256')+1],hashlib.sha256(body).hexdigest())

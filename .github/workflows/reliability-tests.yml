@@ -19,13 +19,29 @@ jobs:
         with:
           node-version: '22'
       - name: Install declared application dependencies
-        run: python -m pip install -r requirements.txt
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install pytest==9.1.1 iniconfig==2.3.1 packaging==26.3 pluggy==1.7.0 Pygments==2.21.0
+          MAE_TEST_NODE_DIR="$RUNNER_TEMP/mae-web-test-node"
+          npm install --prefix "$MAE_TEST_NODE_DIR" --no-save --package-lock=false --ignore-scripts playwright@1.62.1
+          echo "NODE_PATH=$MAE_TEST_NODE_DIR/node_modules" >> "$GITHUB_ENV"
+          MAE_TEST_CHROME=$(command -v chromium || command -v google-chrome || command -v google-chrome-stable)
+          test -x "$MAE_TEST_CHROME"
+          echo "NFL_CHROMIUM_PATH=$MAE_TEST_CHROME" >> "$GITHUB_ENV"
       - name: Select explicit release mode
         id: mode
         run: python tools/release_mode.py >> "$GITHUB_OUTPUT"
       - name: Phase 1 regression suite
         if: steps.mode.outputs.mode == 'phase1'
         run: python -m unittest discover -s tests -v
+      - name: MAE publisher regression cases
+        if: steps.mode.outputs.mode == 'phase1'
+        run: python -m pytest -q tests/test_weekly_mae_display_v2.py -k 'not TypedPointWireChecks'
       - name: Python syntax
         run: python -m compileall -q pull tools
       - run: node --check output/app.js && node --check output/reliability-ui.js && node --check output/weekly-adaptive-overlay.js && node tests/test-ui.cjs && node tests/test-weekly-overlay.cjs && node tests/test-selected-rankings.cjs && node tests/test-classic-ranking-model.cjs
+      - name: MAE display syntax and DOM regressions
+        run: |
+          node --check output/stat-point-mae-v2.js
+          node tests/test-mae-display.cjs
+          node tests/test-weekly-primary-forecast.cjs
