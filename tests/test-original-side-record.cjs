@@ -1,0 +1,70 @@
+"use strict";
+// Fictional software fixtures only: no original forecasts, outcomes or websites.
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const path = require("node:path");
+const file = path.join(__dirname, "../output/original-side-record.js");
+const api = require(file);
+const side = (hit = 2, miss = 1) => ({ hit, miss, decided: hit + miss, hit_rate: hit + miss ? hit / (hit + miss) : null, push: 1, void: 0, dnp: 1, pending: 2, unresolved: 3, excluded: 4 });
+const row = (extra = {}) => Object.assign({ category: "pass_att", cohort: "ALL_RECORDED_LEANS", season: 2099, week: null, model_version: null, selection_policy_version: null, provenance: "LEGACY_UNATTRIBUTED", evidence_tier: "FICTIONAL_SOFTWARE_ONLY", over: side(), under: side(1, 2), unique_games: 3, weeks: [7, 8], partial_weeks: [8] }, extra);
+const fixture = () => ({ schema_version: api.SCHEMA, source: { snapshot_commit: "FICTIONAL_COMMIT", grading_version: "FICTIONAL_GRADER" }, tables: { cumulative: [row(), row({ category: "rec", cohort: "ORIGINAL_TOP_PICKS", model_version: "fictional-model", selection_policy_version: "fictional-policy", provenance: "FICTIONAL_ONLY" })], weekly: [row({ week: 7, weeks: [7], partial_weeks: [] }), row({ week: 8, weeks: [8] })], by_version: [row(), row({ model_version: "fictional-model" })] }, reconciliation: {}, limitations: ["Fictional data: no live integration, capture or football accuracy claim."] });
+let checks = 0;
+function check(name, fn) { fn(); checks++; process.stdout.write("PASS " + name + "\n"); }
+check("defined decided denominator and percentage", () => assert.match(api.render(fixture()), /66\.7%/));
+check("zero-decided rate stays unavailable", () => { const f = fixture(); f.tables.cumulative[0].over = side(0, 0); assert.match(api.render(f), /<td>—<\/td>/); });
+check("wrong rate rejected", () => { const f = fixture(); f.tables.cumulative[0].over.hit_rate = 0.99; assert.throws(() => api.render(f), /hit rate/); });
+check("wrong decided denominator rejected", () => { const f = fixture(); f.tables.cumulative[0].over.decided = 9; assert.throws(() => api.validate(f), /decided denominator/); });
+check("pending and unresolved stay separate", () => assert.match(api.render(fixture()), /<th>Pending<\/th><th>Unresolved<\/th>/));
+check("uncovered partial week rejected", () => { const f = fixture(); f.tables.cumulative[0].partial_weeks = [9]; assert.throws(() => api.validate(f), /partial week/); });
+check("partial weeks and sample counts visible", () => { const s = api.render(fixture()); assert.match(s, /Partial: 8/); assert.match(s, /Decided sample/); assert.match(s, /<td>3<\/td>/); });
+check("category filter does not pool categories", () => { const r = api.filteredRows(fixture(), { category: "rec" }); assert.equal(r.length, 1); assert.equal(r[0].category, "rec"); });
+check("Top Picks population kept separate", () => { const r = api.filteredRows(fixture(), { cohort: "ORIGINAL_TOP_PICKS" }); assert.equal(r.length, 1); assert.equal(r[0].cohort, "ORIGINAL_TOP_PICKS"); });
+check("unknown model remains explicit and filterable", () => { const r = api.filteredRows(fixture(), { model: "__UNKNOWN_MODEL__" }); assert.equal(r.length, 1); assert.equal(r[0].model_version, null); assert.match(api.render(fixture()), /Unknown \/ not retained/); });
+check("known model filter preserves original identity", () => assert.equal(api.filteredRows(fixture(), { model: "fictional-model" })[0].model_version, "fictional-model"));
+check("side filter selects one side without equal quotas", () => { const s = api.render(fixture(), { side: "under" }); assert.match(s, /<td>Under<\/td>/); assert.doesNotMatch(s, /<td>Over<\/td>/); });
+check("weekly filter uses original week", () => { const r = api.filteredRows(fixture(), { view: "weekly", week: "7" }); assert.equal(r.length, 1); assert.equal(r[0].week, 7); });
+check("HTML values escaped", () => { const f = fixture(); f.tables.cumulative[0].model_version = '<img src=x onerror="evil()">'; f.limitations.push("<script>evil()</script>"); const s = api.render(f); assert.doesNotMatch(s, /<img|<script/); assert.match(s, /&lt;img/); });
+check("historical rate not a player probability", () => assert.match(api.render(fixture()), /not an individual player’s estimated win probability/));
+check("no price or probability fabricated", () => { const s = api.render(fixture()); assert.doesNotMatch(s, /\+EV|confidence:|estimated win probability:|American odds:/); });
+check("invalid version and negative counts rejected", () => { const f = fixture(); f.schema_version = "unsupported"; assert.throws(() => api.validate(f), /version/); const g = fixture(); g.tables.cumulative[0].over.hit = -1; assert.throws(() => api.validate(g), /count/); });
+check("report never mutated", () => { const f = fixture(), before = JSON.stringify(f); api.render(f); api.options(f); api.filteredRows(f, { side: "over" }); assert.equal(JSON.stringify(f), before); });
+check("empty filtered population not a zero result", () => assert.match(api.render(fixture(), { category: "not-present" }), /Missing records are not zero-error/));
+check("browser global module load", () => { const ctx = { globalThis: {} }; vm.runInNewContext(fs.readFileSync(file, "utf8"), ctx); assert.equal(ctx.globalThis.NflOriginalSideRecord.VERSION, api.VERSION); });
+check("combined uses the actual sum of decided observations", () => { const f = fixture(), v = api.combined(f.tables.cumulative[0]); assert.equal(v.hit, 3); assert.equal(v.miss, 3); assert.equal(v.hit_rate, .5); assert.equal(v.pending, 4); assert.equal(v.excluded, 8); const html = api.render(f, {side:"combined"}); assert.match(html, /<td>Combined<\/td>/); assert.doesNotMatch(html, /<td>Over<\/td>|<td>Under<\/td>/); });
+check("combined does not average separate side percentages", () => { const f = fixture(); f.tables.cumulative[0].over = side(9,1); f.tables.cumulative[0].under = side(1,1); assert.equal(api.combined(f.tables.cumulative[0]).hit_rate,10/12); });
+check("excluded late remains visible and out of decided", () => assert.match(api.render(fixture()), /Excluded late/));
+check("unsupported forecast categories stay unavailable", () => assert.match(api.render(fixture(), {category:"fpts"}), /No supported original/));
+check("unavailable category history is distinct from observed zero", () => { const f=fixture(); f.tables.cumulative[0].unsupported_reason="TARGET_OFFER_UNAVAILABLE"; assert.match(api.render(f), /Unavailable: TARGET_OFFER_UNAVAILABLE/); });
+check("all-status game coverage is explicitly both-side", () => assert.match(api.render(fixture()), /All-status games \(both sides\)/));
+check("mounted controls update and clean up", () => { let handler, removed = false; const element = { innerHTML: "", addEventListener(type, fn) { assert.equal(type, "change"); handler = fn; }, removeEventListener(type, fn) { removed = type === "change" && fn === handler; } }; const dispose = api.mount(element, fixture()); assert.match(element.innerHTML, /Original history filters/); handler({ target: { getAttribute() { return "category"; }, value: "rec" } }); assert.match(element.innerHTML, /<td class="l">rec<\/td>/); assert.doesNotMatch(element.innerHTML, /<td class="l">pass_att<\/td>/); dispose(); assert.equal(removed, true); });
+process.stdout.write(JSON.stringify({ state: "PASS_FICTIONAL_RENDERER_FIXTURES", checks, NFL_fits_forecasts_capture_deployments: 0 }) + "\n");
+
+// The HTTP responder and DOM are fictional; actual app functions, bounded reader,
+// public aggregate bytes, integrity checks and async load order execute unchanged.
+(async () => {
+  const source = fs.readFileSync(path.join(__dirname, "../output/app.js"), "utf8");
+  const start = source.match(/^function startOriginalSideRecord\([^]*?^\}/m)[0];
+  const S = {tab:"props"};
+  const ctx = {S, Promise, renderRecord(){throw Error("wrong tab render");}, NflOriginalSideRecord:{load:async()=>({fictional:true})}};
+  vm.createContext(ctx); vm.runInContext(start,ctx);
+  ctx.startOriginalSideRecord(); assert.equal(S.originalSideRecordRequest,undefined);
+  ctx.WeeklyAdaptiveOverlay={bound(){}};
+  ctx.startOriginalSideRecord(); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(S.originalSideRecordRequest,true); assert.equal(S.originalSideRecord.fictional,true);
+  assert.match(source,/weekly-adaptive-overlay-ready[^\n]*startOriginalSideRecord\(\)/);
+  let apiCalls=0;
+  ctx.NflOriginalSideRecord.load=async()=>{apiCalls++;};ctx.startOriginalSideRecord();assert.equal(apiCalls,0);
+  const reader = require("../output/weekly-adaptive-overlay.js");
+  const raw = fs.readFileSync(path.join(__dirname,"../output/data/original_recorded_leans_report.json"));
+  const saved = globalThis.WeeklyAdaptiveOverlay;
+  const respond=bytes=>async()=>new Response(bytes,{status:200,headers:{"content-length":String(bytes.length)}});
+  globalThis.WeeklyAdaptiveOverlay={bound:(url,cap)=>reader.bound(url,cap,respond(raw))};
+  const actual=await api.load(); assert.equal(actual.schema_version,api.SCHEMA);
+  globalThis.WeeklyAdaptiveOverlay={bound:(url,cap)=>reader.bound(url,cap,respond(Buffer.concat([raw,Buffer.from(" ")])))};
+  await assert.rejects(()=>api.load(),/identity mismatch/);
+  globalThis.WeeklyAdaptiveOverlay={bound:(url,cap)=>reader.bound(url,cap,respond(Buffer.alloc(524289)))};
+  await assert.rejects(()=>api.load(),/Missing bounded overlay asset|bound/);
+  globalThis.WeeklyAdaptiveOverlay=saved;
+  console.log("8 actual integration/load-order/integrity controls passed; HTTP/DOM mocked.");
+})().catch(error=>{console.error(error);process.exitCode=1;});

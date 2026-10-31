@@ -73,7 +73,9 @@ if(appSource.includes("function startWeeklyOverlay()")){
       load:async()=>{state.data=board;state.weeklyOverlay=null;state.weeklyOverlayReady=false;state.weeklyOverlayBoardHash=H;},
       takeYahooTokens:()=>{},applyHash:()=>{},currentLeague:()=>true,$:()=>({textContent:""}),scoringName:()=>"fictional",setTopHeight:()=>{},
       render:()=>order.push("R0"),renderProps:()=>order.push("enhance"),renderGame:()=>order.push("game"),syncHash:()=>{},liveTick:()=>{},setInterval:()=>{}};
-    vm.createContext(context);vm.runInContext(bridge,context);
+    vm.createContext(context);
+    vm.runInContext(appSource.match(/^function startOriginalSideRecord\([^]*?^\}/m)[0],context);
+    vm.runInContext(bridge,context);
     await vm.runInContext(startup,context);
     assert.equal(order[0],"R0");return {context,state,order,listeners};
   }
