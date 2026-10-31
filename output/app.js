@@ -23,6 +23,7 @@ const INJ_SHORT = { Questionable: "Q", Doubtful: "D", Out: "OUT", IR: "IR", PUP:
 
 const S = {
   data: null, track: null, generatedAt: null,
+  maeDisplay: null, maeBodyHash: null, maeRequestBoard: null, maeTargets: new Set(),
   byId: {}, byKey: {},
   games: {},           // game id -> schedule merged with the latest ESPN scoreboard
   propEvents: {},      // Exact ESPN event/athlete evidence; separate from fantasy live stats.
@@ -722,12 +723,69 @@ function startWeeklyOverlay() {
     if (overlay) startSelectedRankings(board, overlay, api);
   }).catch(() => { /* Original R0 remains usable even if the helper fails. */ });
 }
-globalThis.addEventListener("weekly-adaptive-overlay-ready", () => { startWeeklyOverlay(); startOriginalSideRecord(); });
+// An independently typed display product. Existing selection and probability
+// readers below retain their own values, policies and immutable saved rows.
+async function startMaeDisplay() {
+  const board = S.data, transport = globalThis.WeeklyAdaptiveOverlay, api = globalThis.StatPointMaeV2;
+  if (!S.weeklyOverlayReady || !board || !api || typeof transport?.bound !== "function" || S.maeRequestBoard === board) return;
+  S.maeRequestBoard = board;
+  try {
+    const pointer = (await transport.bound("data/weekly-mae-display.json", 16384, fetch, 2000)).value;
+    const fields = ["schema_version", "path", "sha256", "bytes", "display_board_sha256", "published_at"].sort();
+    if (!pointer || JSON.stringify(Object.keys(pointer).sort()) !== JSON.stringify(fields)
+        || pointer.schema_version !== "weekly-mae-display-pointer-v2" || !/^[a-f0-9]{64}$/.test(pointer.sha256)
+        || !/^[a-f0-9]{64}$/.test(pointer.display_board_sha256) || pointer.path !== `data/weekly-mae-display/${pointer.sha256}.json`
+        || !Number.isInteger(pointer.bytes) || pointer.bytes < 1 || pointer.bytes > 4 * 1024 * 1024 || !Number.isFinite(Date.parse(pointer.published_at))) return;
+    const current = await transport.bound("data/week.json", 16 * 1024 * 1024, fetch, 2000);
+    if (current.hash !== pointer.display_board_sha256 || JSON.stringify(current.value) !== JSON.stringify(board)) return;
+    const saved = await transport.bound(pointer.path, 4 * 1024 * 1024, fetch, 2000);
+    if (saved.hash !== pointer.sha256 || saved.bytes !== pointer.bytes || S.data !== board || S.maeRequestBoard !== board || !S.weeklyOverlayReady) return;
+    const admitted = api.validate(saved.value);
+    // Validate every joined opportunity against the actual board. The helper
+    // owns the explicit canonical-to-website identity bridge, never a name join.
+    for (const row of admitted.rows) {
+      if (row.season !== board.season || row.week !== board.week) throw Error("MAE board period");
+      const p = board.players.find(p => String(p.id) === row.sleeper_id && String(p.game_id) === row.website_game_id);
+      if (p && !api.forPlayer(admitted, p, row.target, board)) throw Error("MAE board identity");
+    }
+    if (S.data !== board || S.maeRequestBoard !== board) return;
+    S.maeDisplay = admitted; S.maeBodyHash = saved.hash;
+    S.maeTargets = new Set(admitted.rows.map(row => row.target));
+    if (S.gameView) renderGame(); else if (S.tab === "props") renderProps();
+  } catch (_) { /* An unavailable new point never invalidates the incumbent. */ }
+}
+
+function maeDisplayForecast(p, key, now = Date.now()) {
+  try {
+    const value = globalThis.StatPointMaeV2?.forPlayer(S.maeDisplay, p, key, S.data, now);
+    return value ? { ...value, text: value.value.toFixed(2), meanText: value.expectedMean.toFixed(2) } : null;
+  } catch (_) { return null; }
+}
+
+function maeDisplayDetails(value) {
+  if (!value) return "";
+  const row = value.row;
+  const stamp = raw => {
+    try { return new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(new Date(raw)); }
+    catch (_) { return "Unavailable"; }
+  };
+  const clocks = [["Information cutoff", row.information_cutoff_utc], ["Issued", row.issued_at], ["Persisted", row.persistence_completed_at], ["Registered deadline", row.issue_deadline_utc], ["Kickoff", row.kickoff_utc]];
+  return `<details data-mae-display-details><summary>MAE display identity and original clocks</summary>
+    <div class="small">${esc(row.method_id)} · ${esc(row.forecast_product)} · ${esc(row.prediction_functional)}${value.frozen ? " · frozen original forecast" : " · provisional"}</div>
+    <div class="small">Model <span title="${esc(row.model_version)}">${esc(row.model_version.slice(0, 12))}</span> · Procedure <span title="${esc(row.procedure_version)}">${esc(row.procedure_version.slice(0, 12))}</span></div>
+    ${clocks.map(([label, raw]) => `<div class="small" title="${esc(raw)}">${label}: ${esc(stamp(raw))}</div>`).join("")}
+    <div class="small">The separate mean is from this same model's predictive law; it is not an independently selected lowest-MSE model. Top Picks, ranking leans and probabilities retain their identified selection procedure. The input cutoff is the recorded source snapshot cutoff; upstream publication times are not independently authenticated.</div>
+    ${value.fallback ? `<div class="small">Fallback: ${esc(row.fallback_reason)}</div>` : ""}
+  </details>`;
+}
+
+globalThis.addEventListener("weekly-adaptive-overlay-ready", () => { startWeeklyOverlay(); startOriginalSideRecord(); startMaeDisplay(); });
 
 async function load() {
   S.data = await getJSON(`data/week.json?t=${Date.now()}`);
   S.weeklyOverlay = null; S.weeklyOverlayReady = false;
   S.selectedRankings = null;
+  S.maeDisplay = null; S.maeBodyHash = null; S.maeRequestBoard = null; S.maeTargets = new Set();
   S.weeklyOverlayBoardHash = null;
   S.rosKey = null; S.gradeKey = null;
   S.future = null; S.futureLoading = null; S.ideas = null; S.teamWeeksMap = null; S.teamOppsMap = null;
@@ -1193,6 +1251,7 @@ function propChip(p, raw) {
   const prop = pv(p, raw);
   if (prop.scoring_missing) return `<span class="pchip"><span>FPts</span><span class="muted">Half PPR unavailable</span></span>`;
   const selected = selectedPropForecast(p, prop.key);
+  const mae = maeDisplayForecast(p, prop.key);
   const effectiveGap = selected ? selectedPropGap(p, prop, true) : null;
   const lean = selected ? effectiveGap?.lean : prop.lean;
   const customLine = S.lines[`${p.id}|${prop.key}`];
@@ -1205,6 +1264,7 @@ function propChip(p, raw) {
   const cls = [lean ? `lean-${lean}` : "", st && lean && (st.res === "hit" || st.res === "miss") ? st.res : ""].join(" ");
   const lineText = prop.key === "anytime_td" ? "" : `<b>${line}</b><span class="src ${selected && edited ? "" : prop.line_from || "ours"}">${selected && edited ? "custom" : LINE_TAG[prop.line_from] || "est"}</span>`;
   const cur = st && st.v != null ? `<span class="cur">${fmtStat(prop.key, st.v)}${prop.key === "fpts" ? `<span class="src">provisional</span>` : ""}</span>` : "";
+  if (mae) return `<span class="pchip ${cls}" data-stat-point-mae-v2 title="MAE display point; ranking lean and Top Picks retain the existing selection forecast">${SHORT[prop.key]}<b>${mae.text}</b><span class="src">${mae.frozen ? "frozen" : "provisional"} ${esc(mae.label)}</span>${lineText ? `<span class="muted"> · ${edited ? "Your line" : "book/reference line"}</span>${lineText}` : ""}${arrow ? `<span class="muted"> ranking lean</span>${arrow}` : ""}${cur}</span>`;
   if (selected) return `<span class="pchip ${cls}" data-weekly-primary title="Selected forecast assumes participation; lean is a projection gap, not a win probability">${SHORT[prop.key]}<b>${selected.text}</b><span class="src">${selected.frozen ? "frozen" : "provisional"} ${selected.label}</span>${lineText ? `<span class="muted"> · ${edited ? "Your line" : prop.line_from === "ours" || !prop.line_from ? ((p.reference_model || S.data.execution_model?.model) === "sleeper-matchup-classic-fg-identity-v1" ? "Baseline line" : "R0 line") : "book line"}</span>${lineText}` : ""}${arrow ? `<span class="muted"> selected lean</span>${arrow}` : ""}${cur}</span>`;
   return `<span class="pchip ${cls}">${SHORT[prop.key]}${lineText}${arrow}${cur}</span>`;
 }
@@ -1213,6 +1273,7 @@ function catCard(p, raw) {
   const prop = pv(p, raw);
   if (prop.scoring_missing) return `<div class="card"><h3>Fantasy Points · Half PPR</h3><p class="muted">Half PPR projection and line unavailable.</p></div>`;
   const selected = selectedPropForecast(p, prop.key);
+  const mae = maeDisplayForecast(p, prop.key);
   const from = prop.line_from || "ours";
   const ref = (p.reference_model || S.data.execution_model?.model) === "sleeper-matchup-classic-fg-identity-v1" ? "Current baseline" : "R0";
   const cat = S.data.categories[prop.key];
@@ -1238,7 +1299,7 @@ function catCard(p, raw) {
       : `<span class="lean ${prop.lean ? "over" : "none"}">${Math.round(100 * (prop.td_chance || 0))}% TD chance</span>`
     : from === "ours"
       ? `<span class="lean none" title="Leans are only called against real sportsbook lines">No book line</span>`
-      : `<span class="lean ${lean || "none"}">${selected ? "Selected: " : ((p.reference_model || S.data.execution_model?.model) === "sleeper-matchup-classic-fg-identity-v1" ? "Current baseline: " : "R0: ")}${lean ? `Lean ${lean}` : "No lean"}</span>`;
+      : `<span class="lean ${lean || "none"}">${mae ? "Ranking forecast: " : selected ? "Selected: " : ((p.reference_model || S.data.execution_model?.model) === "sleeper-matchup-classic-fg-identity-v1" ? "Current baseline: " : "R0: ")}${lean ? `Lean ${lean}` : "No lean"}</span>`;
 
   const bars = vals.map((x) => `<div class="b ${x.v > line ? "o" : ""}" title="${x.s} week ${x.w} vs ${x.opp}: ${x.v}"><span>${fmtStat(prop.key, x.v)}</span><i style="height:${(100 * x.v) / top}%"></i></div>`).join("")
     + (nowV != null ? `<div class="b now" title="This week"><span>${fmtStat(prop.key, nowV)}</span><i style="height:${(100 * nowV) / top}%"></i></div>` : "");
@@ -1273,7 +1334,8 @@ function catCard(p, raw) {
       return `<button class="add ${d} ${on ? "on" : ""}" data-add="${p.id}|${prop.key}|${d}|${line}" title="${on ? "Remove from" : "Add to"} My Picks">${on ? "\u2713" : "+"} ${d === "over" ? "Over" : "Under"} ${line}</button>`;
     }).join("")}</div>` : ""}
     <div class="cat-nums">
-      ${selected ? `<div data-weekly-primary><b>${selected.frozen ? "Frozen provisional" : "Provisional"} ${selected.label}${selected.binary ? "" : " forecast"}</b><span class="n">${selected.text}</span></div>` : ""}
+      ${mae ? `<div data-stat-point-mae-v2><b>${mae.frozen ? "Frozen original" : "Provisional"} ${esc(mae.label)}</b><span class="n">${mae.text}</span></div><div title="Expected value of the same predictive law; separate from the selected median">Same-model expected mean<span class="n">${mae.meanText}</span></div>` : ""}
+      ${selected ? `<div data-weekly-primary><b>${mae ? "Selection/ranking forecast · " : ""}${selected.frozen ? "Frozen provisional" : "Provisional"} ${selected.label}${selected.binary ? "" : " forecast"}</b><span class="n">${selected.text}</span></div>` : ""}
       ${lineCell}
       ${prop.adj != null && prop.key !== "anytime_td" ? `<div title="Sleeper's projection x the matchup adjustment, made before kickoff">${selected ? `${ref} reference forecast` : `${ref} reference forecast (fallback)`}<span class="n">${prop.key === "fpts" ? fmtPts(prop.adj) : fmt(prop.adj)}</span></div>` : ""}
       ${selected?.binary ? `<div>${ref} reference probability<span class="n">${(100 * (prop.td_chance || 0)).toFixed(1)}%</span></div>` : ""}
@@ -1283,7 +1345,8 @@ function catCard(p, raw) {
       ${st ? `<div>${prop.key === "fpts" ? "Provisional" : st.final ? "Final" : "Now"}<span class="n" style="color:var(--cyan)">${st.res === "dnp" ? "DNP" : st.v == null ? "Unavailable" : fmtStat(prop.key, st.v)}</span></div>` : ""}
     </div>
     ${vals.length ? `<div class="bars">${bars}<div class="lineat" style="bottom:${(100 * line) / top}%"></div></div><div class="bars-x">${xs}</div>` : ""}
-    <div class="foot-n">${note}${selectedNote}${fantasyNote}</div>
+    <div class="foot-n">${note}${selectedNote}${mae ? " The MAE point is an independent display projection. Ranking leans and saved Top Picks retain the selection forecast shown separately; no probability or EV policy changed." : S.maeTargets?.has(prop.key) ? " MAE display unavailable for this opportunity; the identified incumbent remains in use." : ""}${fantasyNote}</div>
+    ${maeDisplayDetails(mae)}
     ${selected ? globalThis.WeeklyAdaptiveOverlay?.detailsFor?.(S.weeklyOverlay, p, prop.key) || "" : ""}
   </div>`;
 }
@@ -1347,7 +1410,7 @@ function filteredPlayers() {
       .map((x) => Math.abs(x.adj - x.line) / Math.max(1, x.line))),
     selected_edge: (p) => -selectedPlayerGap(p),
     selected_value: (p) => {
-      const selected = f.cat ? selectedPropForecast(p, f.cat) : null;
+      const selected = f.cat ? (maeDisplayForecast(p, f.cat) || selectedPropForecast(p, f.cat)) : null;
       return selected ? -selected.value : Infinity;
     },
   }[f.sort];
@@ -1377,6 +1440,7 @@ function renderProps() {
     <p class="note">Top Picks use saved selected forecasts where available, with individually labeled ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "current baseline" : "R0"} fallbacks. They rank forecast-minus-sportsbook-line gaps using fixed category scales, for eligible players with established roles. Selections and lines are saved before kickoff and frozen afterward. These gaps are not win probabilities or expected returns. Without a validated new selection snapshot, the lists explicitly fall back to ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "the current baseline picks" : "the original R0 picks"}. <a href="#" data-goto="about">How it works</a></p>
 
     <p class="note">Selected forecasts are provisional and assume participation. Original forecast issue times remain visible; a website refresh is not new model inference. Use <b>New forecasts: biggest gap</b>, or choose a prop and use <b>New forecast: highest</b>. Anytime TD sorts by its actual probability. Missing new values sort last in highest-forecast mode; fantasy points, on-pace estimates, game forecasts and the historical Record ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "remain separate from selected forecasts. Current baseline projections use the corrected classic engine; historical results are not its performance record" : "remain explicitly on R0"}.</p>
+    ${S.maeDisplay ? `<p class="note" data-mae-display-status>MAE display points are available for ${[...S.maeTargets].map(key => S.data.categories[key]?.label || key).map(esc).join(", ")}. Their separate same-model means are shown in player details. Highest-forecast display sorting uses these points where available; Biggest gap, Top Picks and probabilities keep the existing selection procedure and forecast. Display sorting is not a recorded selection strategy.</p>` : ""}
     <h2>Players <small>${list.length} shown</small></h2>
     <div class="filters">
       <div class="chips">${withFlex(["ALL", "QB", "RB", "WR", "TE"]).map((x) => `<button class="chip ${f.pos === x ? "on" : ""}" data-pos="${x}">${x === "ALL" ? "All" : x}</button>`).join("")}</div>
@@ -4630,7 +4694,7 @@ function minePick(pid, key, dir) {
   return S.mine.find((m) => m.pid === pid && m.key === key && m.dir === dir && propPickBound(m, p, g));
 }
 
-function toggleMine(pid, key, dir, line) {
+function toggleMine(pid, key, dir, line, displayPoint = null) {
   const have = minePick(pid, key, dir);
   if (have) S.mine = S.mine.filter((m) => m !== have);
   else {
@@ -4640,7 +4704,8 @@ function toggleMine(pid, key, dir, line) {
     S.mine = S.mine.filter((m) => !(m.pid === pid && m.key === key && propPickBound(m, p, g)));
     S.mine.push({ pid, key, dir, line: +line, season: S.data.season, week: S.data.week, at: Date.now(),
       schema_version: "mypicks-player-game-v1", gid: String(p.game_id), team: p.team, espn_id: p.espn_id ?? null,
-      kickoff: g.kickoff, period: "full_game_including_overtime", stat_source: "ESPN_EVENT_BOXSCORE" });
+      kickoff: g.kickoff, period: "full_game_including_overtime", stat_source: "ESPN_EVENT_BOXSCORE",
+      ...(() => { const point = displayPoint; return point ? { display_forecast_snapshot: { schema_version: "stat-point-mae-display-snapshot-v2", public_feed_sha256: S.maeBodyHash, row: JSON.parse(JSON.stringify(point.row)), meaning: "DISPLAY_ONLY_NOT_SELECTION_OR_PROBABILITY_POLICY" } } : {}; })() });
   }
   persistMine();
   updateMineBadge();
@@ -5068,7 +5133,10 @@ document.addEventListener("click", (e) => {
   if (add) {
     e.stopPropagation();
     const [pid, key, dir, line] = add.dataset.add.split("|");
-    toggleMine(pid, key, dir, line);
+    // A Top card saves its recorded selection; only a player detail that
+    // actually showed the MAE display receives that separate display snapshot.
+    const displayPoint = t.closest(".pick") ? null : maeDisplayForecast(S.byId[pid], key);
+    toggleMine(pid, key, dir, line, displayPoint);
     if (S.gameView) renderGame();
     else if (S.tab === "props") {
       const card = $(`[data-player="${pid}"]`);
@@ -5264,7 +5332,7 @@ $("#reload").addEventListener("click", async () => {
   $("#banner").hidden = true;
   await load();
   render();
-  S.weeklyOverlayReady = true; startWeeklyOverlay();
+  S.weeklyOverlayReady = true; startWeeklyOverlay(); startMaeDisplay();
   liveTick();
 });
 
@@ -5290,7 +5358,7 @@ $("#reload").addEventListener("click", async () => {
   $("#sc-btn").textContent = `${scoringName()} \u25be`;
   setTopHeight();
   render();
-  S.weeklyOverlayReady = true; startWeeklyOverlay();
+  S.weeklyOverlayReady = true; startWeeklyOverlay(); startMaeDisplay();
   syncHash(false);
   liveTick();
   setInterval(() => { if (!document.hidden) checkMeta(); }, META_MS);

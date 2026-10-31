@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory() as d:
  print(json.dumps(dict(board=board,overlay=overlay,ranking=ranking,pointer=pointer,frozen=frozen,frozen_pointer=frozen_pointer)))`;
 const fixture = JSON.parse(execFileSync(process.env.PYTHON || "python3", ["-c", python], { cwd: root, timeout: 10000 }));
 const helper = require("../output/weekly-adaptive-overlay.js");
-const names = ["selectedRankingPolicy", "rankingCanonical", "selectedPropForecast", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "topPicksSourceCaption", "compareSelectedRankingItems", "validateSelectedRankings", "startSelectedRankings", "displayedProps", "filteredPlayers", "propFinal", "propPickBound", "propValue", "recordPropEvidence", "propStatus"];
+const names = ["selectedRankingPolicy", "rankingCanonical", "maeDisplayForecast", "maeDisplayDetails", "selectedPropForecast", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "topPicksSourceCaption", "compareSelectedRankingItems", "validateSelectedRankings", "startSelectedRankings", "displayedProps", "filteredPlayers", "propFinal", "propPickBound", "propValue", "recordPropEvidence", "propStatus"];
 const functions = names.map(extract).join("\n");
 let checks = 0;
 const eq = (a, b, why) => { assert.deepEqual(a, b, why); checks++; };
