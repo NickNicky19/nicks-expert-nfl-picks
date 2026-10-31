@@ -722,7 +722,7 @@ function startWeeklyOverlay() {
     if (overlay) startSelectedRankings(board, overlay, api);
   }).catch(() => { /* Original R0 remains usable even if the helper fails. */ });
 }
-globalThis.addEventListener("weekly-adaptive-overlay-ready", () => startWeeklyOverlay());
+globalThis.addEventListener("weekly-adaptive-overlay-ready", () => { startWeeklyOverlay(); startOriginalSideRecord(); });
 
 async function load() {
   S.data = await getJSON(`data/week.json?t=${Date.now()}`);
@@ -733,6 +733,7 @@ async function load() {
   S.future = null; S.futureLoading = null; S.ideas = null; S.teamWeeksMap = null; S.teamOppsMap = null;
   S.propEvents = {}; S.propSleeper = null;
   S.generatedAt = S.data.generated_at;
+  startOriginalSideRecord();
   try { S.track = await getJSON(`data/track_record.json?t=${Date.now()}`); } catch { S.track = null; }
   try { S.dk = await getJSON(`data/dk_backtest.json?t=${Date.now()}`); } catch { S.dk = null; }
   S.byId = {};
@@ -2942,10 +2943,32 @@ function dkSection(c) {
     <p class="note">DraftKings' closing lines, via ESPN, for every finished game this season, compared with each player's average so far this season adjusted for the matchup, using only earlier games (tools/compare_lines.py). Players need 2+ earlier games, so week 1 and 2 have few props. Sleeper's projections can't be tested on past weeks (Sleeper revises them after the games), so this tests the matchup adjustment on its own.</p>` : ""}`;
 }
 
+function startOriginalSideRecord() {
+  const api = globalThis.NflOriginalSideRecord;
+  if (typeof api?.load !== "function" || typeof globalThis.WeeklyAdaptiveOverlay?.bound !== "function" || S.originalSideRecordRequest) return;
+  S.originalSideRecordRequest = true;
+  Promise.resolve().then(() => api.load()).then(report => {
+    S.originalSideRecord = report;
+    if (S.tab === "record" && !S.gameView) renderRecord();
+  }).catch(() => { S.originalSideRecord = null; });
+}
+
+function mountOriginalSideRecord() {
+  S.originalSideRecordDispose?.(); S.originalSideRecordDispose = null;
+  const host = document.createElement("div");
+  host.id = "original-recorded-side-history";
+  $("#main").append(host);
+  if (S.originalSideRecord && globalThis.NflOriginalSideRecord) {
+    try { S.originalSideRecordDispose = globalThis.NflOriginalSideRecord.mount(host, S.originalSideRecord); }
+    catch { host.textContent = "Original category-by-side history is unavailable: its reporting contract did not validate."; }
+  } else host.textContent = "Original category-by-side archive history is unavailable. Existing recorded results retain their original labels.";
+}
+
 function renderRecord() {
   const t = S.track;
   if (!t || !t.weeks.length) {
     $("#main").innerHTML = `<h2>Track record</h2><div class="card note">Nothing graded yet.</div>`;
+    mountOriginalSideRecord();
     return;
   }
   const c = t.cumulative;
@@ -2966,8 +2989,8 @@ function renderRecord() {
   }).join("");
   const nothing = graded(c.top_over) + graded(c.top_under) + graded(c.leans) === 0;
   $("#main").innerHTML = `
-    <h2>${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "Classic track record" : "R0 track record"} <small>${c.weeks} week${c.weeks === 1 ? "" : "s"}</small></h2><p class="note">${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "Historical classic forecasts are regraded under the recorded grading version, with original issued reports preserved. These results do not establish current-baseline or selected-forecast accuracy." : "This is the original reference policy record. New selected Top Picks have separate pregame snapshots; these old results are not their track record."}</p>
-    <p class="note">${t.grading_version ? "Statistical grading v2: unresolved data and pushes are excluded from hit-rate denominators. Historical regrading is not new prospective evidence." : "Legacy grading snapshot: these totals have not yet been rebuilt by the upgraded grader."} This is not a sportsbook-settled profit record.</p>
+    <h2>Earlier recorded forecasts <small>${c.weeks} week${c.weeks === 1 ? "" : "s"}</small></h2><p class="note">Earlier saved forecasts are graded under their recorded statistical contract, with original issued reports preserved. Historical attribution comes from each saved record; missing model or policy identities remain unknown. These totals are not the performance record of the current baseline or newly selected methods.</p>
+    <p class="note">${t.grading_version ? `Statistical grading ${esc(t.grading_version)}: unresolved data and pushes are excluded from hit-rate denominators. Historical regrading is not new prospective evidence.` : "Legacy grading snapshot: these totals have not yet been rebuilt by the upgraded grader."} This is not a sportsbook-settled profit record.</p>
     <p class="note">Historical picks and results from before this edition was created came from <a href="https://github.com/joshuam0y/joshua-moy-expert-nfl-picks" target="_blank" rel="noopener">Joshua Moy's original project</a>. The forecasting code is retained as the original benchmark; statistical grading is versioned separately. Inherited historical picks are not new prospective forecasts from this edition.</p>
     ${nothing ? `<div class="card note" style="margin-bottom:10px">Grading started with week ${t.weeks[t.weeks.length - 1].week} of ${t.weeks[t.weeks.length - 1].season}. Only picks and leans saved before kickoff count, so this fills in as games go final. There's no backfill: Sleeper updates past weeks' projections after the games, so grading old weeks would look far better than it really is.</div>` : ""}
     <div class="stats">
@@ -2985,7 +3008,8 @@ function renderRecord() {
     </div>` : ""}
     ${dkSection(c)}
     <h2>By week</h2>${weeks}
-    <p class="note">A hit requires a result strictly over or under the saved line. In statistical grading v2, equality is a push; a missing participation record is unresolved, not confirmed DNP. Actual venue void, injury, and payout rules still require verification. Lines first built after kickoff are excluded. My Picks and live progress retain their original tracking behavior; they are not venue settlement.</p>`;
+    <p class="note">A hit requires a result strictly over or under the saved line. In the recorded statistical grading contract, equality is a push; a missing participation record is unresolved, not confirmed DNP. Actual venue void, injury, and payout rules still require verification. Lines first built after kickoff are excluded. My Picks and live progress retain their original tracking behavior; they are not venue settlement.</p>`;
+  mountOriginalSideRecord();
 }
 
 // ---------------------------------------------------------------- how it works tab
