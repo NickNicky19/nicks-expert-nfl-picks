@@ -112,7 +112,7 @@ jobs:
           PY
       - name: Prepare isolated provisional overlay (default R0)
         id: overlay
-        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v4.json --feed-policy-sha256 ab6cb09bcc7ee58364d12fe5f72a55433a44d03a0b6265452ef8c571c8869716
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v4.json --feed-policy-sha256 aa0f3a28c41da2de5e580e4f335e6d708a2fdfe615a158182c9c5b4f20cb84d4
       - name: Commit validated data and immutable receipts
         id: commit
         run: |

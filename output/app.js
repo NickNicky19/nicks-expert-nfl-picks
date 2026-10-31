@@ -1158,12 +1158,13 @@ function pickCard(pick) {
   const label = S.data.categories[pick.key].label;
   const st = propStatus(p, pick.key, pick.line, pick.direction);
   const adj = pick.adj ?? null;
+  const originalIssue = globalThis.WeeklyAdaptiveOverlay?.issueForPick?.(pick) || "";
   return `<div class="pick" data-open="${p.id}">
     ${avatar(p)}
     <div>
       <div><b>${esc(p.name)}</b> <span class="pos ${p.pos}">${p.pos}</span>${injBadge(p)}</div>
       <div class="what">${pick.direction === "over" ? "Over" : "Under"} <b class="num">${pick.line}</b> ${label} <span class="muted">${oppText(p)}</span></div>
-      <div class="small">${LINE_FROM[pick.line_from] || "Our"} saved pregame line · ${adj != null ? `${pick.forecast_source === "SELECTED" ? `Selected ${pick.product === "point_mean" ? "mean" : "median"}` : pick.forecast_source === "CURRENT_BASELINE" || pick.reference_model === "sleeper-matchup-classic-fg-identity-v1" ? "Current baseline fallback" : "R0 reference"} <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}</div>
+      <div class="small">${LINE_FROM[pick.line_from] || "Our"} saved pregame line · ${adj != null ? `${pick.forecast_source === "SELECTED" ? `Selected ${pick.product === "point_mean" ? "mean" : "median"}` : pick.forecast_source === "CURRENT_BASELINE" || pick.reference_model === "sleeper-matchup-classic-fg-identity-v1" ? "Current baseline fallback" : "R0 reference"} <b class="num">${fmt(adj)}</b> · ` : ""}over in ${pick.over} of ${pick.n} this season${liveLineText(p, pick.key, pick.line)}${originalIssue ? ` · ${esc(originalIssue)}` : ""}</div>
       ${progress(st, pick.line, pick.direction, pick.key)}
     </div>
     <div class="side">
@@ -1283,6 +1284,7 @@ function catCard(p, raw) {
     </div>
     ${vals.length ? `<div class="bars">${bars}<div class="lineat" style="bottom:${(100 * line) / top}%"></div></div><div class="bars-x">${xs}</div>` : ""}
     <div class="foot-n">${note}${selectedNote}${fantasyNote}</div>
+    ${selected ? globalThis.WeeklyAdaptiveOverlay?.detailsFor?.(S.weeklyOverlay, p, prop.key) || "" : ""}
   </div>`;
 }
 
@@ -1374,7 +1376,7 @@ function renderProps() {
     </div>
     <p class="note">Top Picks use saved selected forecasts where available, with individually labeled ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "current baseline" : "R0"} fallbacks. They rank forecast-minus-sportsbook-line gaps using fixed category scales, for eligible players with established roles. Selections and lines are saved before kickoff and frozen afterward. These gaps are not win probabilities or expected returns. Without a validated new selection snapshot, the lists explicitly fall back to ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "the current baseline picks" : "the original R0 picks"}. <a href="#" data-goto="about">How it works</a></p>
 
-    <p class="note">New forecasts are provisional and assume participation. Use <b>New forecasts: biggest gap</b>, or choose a prop and use <b>New forecast: highest</b>. Anytime TD sorts by its actual probability. Missing new values sort last in highest-forecast mode; fantasy points, on-pace estimates, game forecasts and the historical Record ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "remain separate from selected forecasts. Current baseline projections use the corrected classic engine; historical results are not its performance record" : "remain explicitly on R0"}.</p>
+    <p class="note">Selected forecasts are provisional and assume participation. Original forecast issue times remain visible; a website refresh is not new model inference. Use <b>New forecasts: biggest gap</b>, or choose a prop and use <b>New forecast: highest</b>. Anytime TD sorts by its actual probability. Missing new values sort last in highest-forecast mode; fantasy points, on-pace estimates, game forecasts and the historical Record ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "remain separate from selected forecasts. Current baseline projections use the corrected classic engine; historical results are not its performance record" : "remain explicitly on R0"}.</p>
     <h2>Players <small>${list.length} shown</small></h2>
     <div class="filters">
       <div class="chips">${withFlex(["ALL", "QB", "RB", "WR", "TE"]).map((x) => `<button class="chip ${f.pos === x ? "on" : ""}" data-pos="${x}">${x === "ALL" ? "All" : x}</button>`).join("")}</div>

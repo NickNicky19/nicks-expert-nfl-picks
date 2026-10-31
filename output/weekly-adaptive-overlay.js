@@ -95,6 +95,27 @@
       }, milliseconds);
     } catch (_) { return null; } // R0 board and normal consumer remain untouched.
   }
+  function issuedLabel(row) {
+    try {
+      return "Issued " + new Intl.DateTimeFormat("en-US", {timeZone:"America/Chicago", month:"short", day:"numeric", hour:"numeric", minute:"2-digit", timeZoneName:"short"}).format(new Date(clock(row.issued_at)));
+    } catch (_) { return "Original forecast issue time unavailable"; }
+  }
+  function issueForPick(pick) {
+    if (pick?.forecast_source !== "SELECTED") return "";
+    try {
+      if (typeof pick.selected_row_canonical !== "string" || pick.selected_row_canonical.length > 16384) return "Original forecast issue time unavailable";
+      const row = JSON.parse(pick.selected_row_canonical);
+      if (JSON.stringify(Object.keys(row).sort()) !== JSON.stringify(rowFields) || row.game_id !== pick.game_id || row.player_id !== pick.player_id || row.category !== pick.key || row.model_version !== pick.model_version || row.forecast_value !== pick.adj || row.product !== pick.product) return "Original forecast issue time unavailable";
+      return issuedLabel(row);
+    } catch (_) { return "Original forecast issue time unavailable"; }
+  }
+  function details(row) {
+    return `<div data-forecast-clocks class="foot-n">${esc(issuedLabel(row))}. Website build time is separate from forecast issue time.<details><summary>Forecast identity and clocks</summary><div style="overflow-wrap:anywhere">Product: ${esc(row.product)} / ${esc(row.prediction_functional)}<br>Method: ${esc(row.method_id)}<br>Model: ${esc(row.model_version)}<br>Procedure: ${esc(row.procedure_version)}<br>Actual issue: ${esc(row.issued_at)}<br>Persistence completed: ${esc(row.persistence_completed_at)}<br>Registered issue deadline: ${esc(row.source_cutoff_utc)}<br>Kickoff: ${esc(row.kickoff_utc)}<br>The legacy public field source_cutoff_utc denotes the registered issue deadline. An independent information-cutoff timestamp is not supplied in this public contract. Republishing preserves these original clocks.</div></details></div>`;
+  }
+  function detailsFor(overlay, player, category, now=Date.now()) {
+    if (!card(overlay, player, category, now)) return "";
+    return details(overlay.rows.get(identity({game_id:player.game_id,player_id:player.id,category})));
+  }
   function card(overlay, player, category, now=Date.now()) {
     const row=overlay?.rows.get(identity({game_id:player.game_id,player_id:player.id,category}));
     if(!row)return "";
@@ -102,7 +123,7 @@
     if(now<kickoff&&now>=expiry || now>=kickoff&&expiry<kickoff)return "";
     const binary=row.product==="binary_probability", value=binary?`${(100*row.forecast_value).toFixed(1)}%`:row.forecast_value.toFixed(2);
     const label=binary?"Rushing or receiving TD probability":row.product==="point_mean"?"Mean forecast":"Median forecast";
-    return `<div class="card note" data-weekly-provisional><b>${now>=kickoff?"Frozen provisional forecast":"Provisional selected forecast"}: ${esc(value)}</b> · ${esc(label)}<div>Assumes the player participates. Accuracy is still being evaluated. Reference forecast and recorded lines are shown separately.${binary?"":" Point forecasts do not give a bet-win probability."}</div></div>`;
+    return `<div class="card note" data-weekly-provisional><b>${now>=kickoff?"Frozen provisional forecast":"Provisional selected forecast"}: ${esc(value)}</b> · ${esc(label)}<div>Assumes the player participates. Accuracy is still being evaluated. Reference forecast and recorded lines are shown separately. ${esc(issuedLabel(row))}. Website build time is separate from forecast issue time.${binary?"":" Point forecasts do not give a bet-win probability."}</div>${details(row)}</div>`;
   }
-  return Object.freeze({validate,load,card,bound,DEADLINE_MS});
+  return Object.freeze({validate,load,card,bound,DEADLINE_MS,issuedLabel,issueForPick,detailsFor});
 });
