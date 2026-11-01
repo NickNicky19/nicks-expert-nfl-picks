@@ -124,10 +124,10 @@ jobs:
           PY
       - name: Prepare isolated provisional overlay (default R0)
         id: overlay
-        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v5.json --feed-policy-sha256 67e9edc94fd0bb79d438f45394ccdddb2cd671be5431cea59d754de985b07003
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v6.json --feed-policy-sha256 95897915ae033c73b90d90b19ca92e508ec18025653b144637473b85565cefb9
       - name: Prepare independently typed MAE point display
         id: mae-display
-        run: python tools/weekly_mae_display_v2.py --root . --website-source-sha "$(git rev-parse HEAD)" --policy config/weekly-mae-display-source-policy-v2.UNREGISTERED.json --policy-sha256 35fa0c0f2d8c58c6be363b9d69205e23197a7a8bdfba2247f64bc704d3eb17e8
+        run: python tools/weekly_mae_display_v2.py --root . --website-source-sha "$(git rev-parse HEAD)" --policy config/weekly-mae-display-source-policy-v2.json --policy-sha256 6827dbd7f112659e35056bf8802be2f0325cfd9dc39fa3a84cf090fc6cae3435
       - name: Commit validated data and immutable receipts
         id: commit
         run: |
