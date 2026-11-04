@@ -1075,12 +1075,15 @@ function rankingCanonical(value) {
   return JSON.stringify(value);
 }
 
+function baselineTdProbability(prop) {
+  return Number.isFinite(prop.proj) && prop.proj >= 0 && Number.isFinite(prop.td_chance)
+    && prop.td_chance >= 0 && prop.td_chance <= 1 ? prop.td_chance : null;
+}
+
 function effectivePropForecast(p, prop, now = Date.now()) {
   const selected = selectedPropForecast(p, prop.key, now);
   if (selected) return { ...selected, source: 'SELECTED' };
-  if (prop.key === 'anytime_td' && (!Number.isFinite(prop.proj) || prop.proj < 0
-      || !Number.isFinite(prop.td_chance) || prop.td_chance < 0 || prop.td_chance > 1)) return null;
-  const value = prop.key === 'anytime_td' ? prop.td_chance : prop.adj;
+  const value = prop.key === 'anytime_td' ? baselineTdProbability(prop) : prop.adj;
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   return { value, source: p.reference_model === 'sleeper-matchup-classic-fg-identity-v1' ? 'CURRENT_BASELINE' : 'R0_FALLBACK', label: prop.key === 'anytime_td' ? 'TD probability' : 'reference', binary: prop.key === 'anytime_td', text: prop.key === 'anytime_td' ? (100 * value).toFixed(1) + '%' : value.toFixed(2) };
 }
@@ -1252,8 +1255,7 @@ function selectedPropForecast(p, key, now = Date.now()) {
 function propChip(p, raw) {
   const prop = pv(p, raw);
   if (prop.scoring_missing) return `<span class="pchip"><span>FPts</span><span class="muted">Half PPR unavailable</span></span>`;
-  const referenceTD = Number.isFinite(prop.proj) && prop.proj >= 0 && Number.isFinite(prop.td_chance)
-    && prop.td_chance >= 0 && prop.td_chance <= 1 ? prop.td_chance : null;
+  const referenceTD = baselineTdProbability(prop);
   const selected = selectedPropForecast(p, prop.key);
   const mae = maeDisplayForecast(p, prop.key);
   const effectiveGap = selected ? selectedPropGap(p, prop, true) : null;
@@ -1275,8 +1277,7 @@ function propChip(p, raw) {
 
 function catCard(p, raw) {
   const prop = pv(p, raw);
-  const referenceTD = Number.isFinite(prop.proj) && prop.proj >= 0 && Number.isFinite(prop.td_chance)
-    && prop.td_chance >= 0 && prop.td_chance <= 1 ? prop.td_chance : null;
+  const referenceTD = baselineTdProbability(prop);
   if (prop.scoring_missing) return `<div class="card"><h3>Fantasy Points · Half PPR</h3><p class="muted">Half PPR projection and line unavailable.</p></div>`;
   const selected = selectedPropForecast(p, prop.key);
   const mae = maeDisplayForecast(p, prop.key);
@@ -1435,7 +1436,9 @@ function renderProps() {
   const catOpts = Object.entries(d.categories).map(([k, v]) => `<option value="${k}" ${f.cat === k ? "selected" : ""}>${v.label}</option>`).join("");
   const list = filteredPlayers();
   const reference = d.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "Current baseline" : "R0";
-  const hasSelection = d.players.some(p => p.props.some(prop => selectedPropForecast(p, prop.key)));
+  const hasSelection = list.some(p => p.props.some(prop => (!f.cat || prop.key === f.cat) && selectedPropForecast(p, prop.key)));
+  const hasGapValues = list.some(p => p.props.some(prop => (!f.cat || prop.key === f.cat) && selectedPropGap(p, prop)));
+  const hasSelectedGaps = list.some(p => p.props.some(prop => (!f.cat || prop.key === f.cat) && selectedPropGap(p, prop)?.source === 'SELECTED'));
   const hasDisplayValues = f.cat && f.cat !== "fpts"
     && list.some(p => maeDisplayForecast(p, f.cat) || selectedPropForecast(p, f.cat));
   const picksFor = (side) => visibleTopPicks(side).filter((x) => (!f.game || x.game_id === f.game) && (!f.cat || x.key === f.cat));
@@ -1452,7 +1455,7 @@ function renderProps() {
     </div>
     <p class="note">Top Picks use saved selected forecasts where available, with individually labeled ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "current baseline" : "R0"} fallbacks. They rank forecast-minus-sportsbook-line gaps using fixed category scales, for eligible players with established roles. Selections and lines are saved before kickoff and frozen afterward. These gaps are not win probabilities or expected returns. Without a validated new selection snapshot, the lists explicitly fall back to ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "the current baseline picks" : "the original R0 picks"}. <a href="#" data-goto="about">How it works</a></p>
 
-    <p class="note" data-selected-product-status>${hasSelection ? "Selected forecasts are provisional and assume participation. Original forecast issue times remain visible; a website refresh is not new model inference. Selected forecast gaps are descriptive, not win probabilities. Highest-forecast mode uses available selected or independently typed display values; anytime TD uses its selected probability." : `No approved selected forecasts are available for this board. Player leans and Top Picks use the individually identified ${reference} forecasts. Gap sorting uses those same baseline values; it is not a research-model or probability ranking. Selected-value sorting is unavailable without compatible values.`} Fantasy points, on-pace estimates, game forecasts and the historical Record ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "remain separate from selected forecasts. Current baseline projections use the corrected classic engine; historical results are not its performance record" : "remain explicitly on R0"}.</p>
+    <p class="note" data-selected-product-status>${hasSelection ? "Selected forecasts are provisional and assume participation. Original forecast issue times remain visible; a website refresh is not new model inference. Selected forecast gaps are descriptive, not win probabilities. Highest-forecast mode uses available selected or independently typed display values; anytime TD uses its selected probability." : `No approved selected forecasts are available for the filtered players. Player leans use the individually identified ${reference} forecasts. Top Picks retain the sources labeled on each card. Gap sorting uses those same baseline values; it is not a research-model or probability ranking. Selected-value sorting is unavailable without compatible values.`} Fantasy points, on-pace estimates, game forecasts and the historical Record ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "remain separate from selected forecasts. Current baseline projections use the corrected classic engine; historical results are not its performance record" : "remain explicitly on R0"}.</p>
     ${S.maeDisplay ? `<p class="note" data-mae-display-status>MAE display points are available for ${[...S.maeTargets].map(key => S.data.categories[key]?.label || key).map(esc).join(", ")}. Their separate same-model means are shown in player details. Highest-forecast display sorting uses these points where available; Biggest gap, Top Picks and probabilities keep the existing selection procedure and forecast. Display sorting is not a recorded selection strategy.</p>` : ""}
     <h2>Players <small>${list.length} shown</small></h2>
     <div class="filters">
@@ -1460,7 +1463,7 @@ function renderProps() {
       <select id="f-game" aria-label="Game"><option value="">All games</option>${gameOpts}</select>
       <select id="f-cat" aria-label="Prop"><option value="">All props</option>${catOpts}</select>
       <select id="f-sort" aria-label="Sort">
-        <option value="selected_edge" ${f.sort === "selected_edge" ? "selected" : ""}>Sort: ${hasSelection ? "Selected forecasts: biggest gap" : `${reference}: forecast gap`}</option>
+        <option value="selected_edge" ${f.sort === "selected_edge" ? "selected" : ""} ${!hasGapValues ? "disabled" : ""}>Sort: ${!hasGapValues ? "Forecast gap unavailable" : hasSelectedGaps ? "Selected forecasts with labeled fallbacks: biggest gap" : `${reference}: forecast gap`}</option>
         <option value="selected_value" ${f.sort === "selected_value" ? "selected" : ""} ${!hasDisplayValues ? "disabled" : ""}>${!f.cat ? "Sort: Selected/display forecast: highest (choose prop)" : !hasDisplayValues ? "Sort: Selected/display forecast unavailable" : f.cat === "anytime_td" ? "Sort: Selected TD probability: highest" : "Sort: Selected/display forecast: highest"}</option>
         <option value="proj" ${f.sort === "proj" ? "selected" : ""}>Sort: ${S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "Current baseline" : "R0"} projected points</option>
         <option value="live" ${f.sort === "live" ? "selected" : ""}>Sort: Live points</option>
@@ -3825,7 +3828,7 @@ function renderGameProps(g, teams) {
   return `<div class="gtool">
       ${teamSeg(teams, st.team)}
       ${seg("data-gpos", st.pos, withFlex(["ALL", "QB", "RB", "WR", "TE"]).map((x) => [x, x === "ALL" ? "All" : x]), "Position")}
-      ${seg("data-gsort", st.sort, [["proj", S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "Current baseline points" : "R0 points"], ["live", "Live pts"], ["lean", "New forecast gap"]], "Sort")}
+      ${seg("data-gsort", st.sort, [["proj", S.data.execution_model?.model === "sleeper-matchup-classic-fg-identity-v1" ? "Current baseline points" : "R0 points"], ["live", "Live pts"], ["lean", "Forecast gap"]], "Sort")}
       <button class="tbtn ${st.leans ? "on" : ""}" data-gleans aria-pressed="${st.leans}">Leans only</button>
     </div>
     ${picks.length ? `<div class="picks game-picks"><h3>Top picks in this game</h3>${picks.map(pickCard).join("")}</div>` : ""}
@@ -4627,7 +4630,7 @@ function renderCompare() {
   const keys = [...new Set([...a.props, ...b.props].map((x) => x.key))].filter((k) => k !== "fpts");
   const propRow = (k) => {
     const xa = a.props.find((x) => x.key === k), xb = b.props.find((x) => x.key === k);
-    const cell = (x) => !x ? "-" : k === "anytime_td" ? `${Math.round(100 * (x.td_chance || 0))}% TD chance`
+    const cell = (x) => !x ? "-" : k === "anytime_td" ? baselineTdProbability(x) == null ? "TD probability unavailable" : `${Math.round(100 * baselineTdProbability(x))}% TD chance`
       : `${x.line} <span class="src ${x.line_from || "ours"}">${LINE_TAG[x.line_from] || "est"}</span> · proj ${fmtStat(k, x.adj)}${x.lean ? ` <span class="arrow ${x.lean}">${x.lean === "over" ? "▲" : "▼"}</span>` : ""}<div class="muted">over in ${x.over} of ${x.n}</div>`;
     return `<tr><td>${cell(xa)}</td><th>${S.data.categories[k].label}</th><td>${cell(xb)}</td></tr>`;
   };

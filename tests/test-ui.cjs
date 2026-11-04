@@ -22,7 +22,7 @@ const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8')
   const text = source.match(/function effectivePropForecast\([^]*?\n\}/)?.[0];
   assert.ok(text);
   const context = { selectedPropForecast: () => null };
-  vm.createContext(context); vm.runInContext(text, context);
+  vm.createContext(context); vm.runInContext(source.match(/function baselineTdProbability\([^]*?\n\}/)[0] + '\n' + text, context);
   const player = Object.freeze({reference_model:'sleeper-matchup-classic-fg-identity-v1'});
   for (const raw of [
     {proj:null,td_chance:0}, {td_chance:0}, {proj:NaN,td_chance:0},
@@ -669,6 +669,20 @@ console.log(JSON.stringify({suite:'v2-downstream-legacy-preservation',cases:case
   const strict={pass_yd:0,pass_td:0,pass_cmp:0,pass_att:0,pass_int:0,rush_yd:10,rush_att:1,rec:4,rec_yd:40,rush_rec_yd:50,anytime_td:1};
   for(const [key,value]of Object.entries(strict))check(()=>{const st=h.box.propStatus(h.p,key,value,'over',{...saved,key,line:value});assert.equal(st.v,value,key);assert.equal(st.res,'push',key);assert.equal(st.final,true,key);});
   check(()=>{const st=h.box.propStatus(h.p,'fpts',14.5,'over',saved);assert.equal(st.res,'unresolved');assert.equal(st.final,false);});
+  {
+    const c=setupFantasy(),other={...c.p,id:'fictional-known-zero',name:'Fictional known zero'};
+    const unknown={key:'anytime_td',line:.5,proj:null,td_chance:0,lean:null,values:[],over:0,n:0};
+    c.p.props.push(unknown);other.props=c.p.props.map(x=>x.key==='anytime_td'?{...x,proj:0}:x);
+    c.state.data.categories.anytime_td={label:'Anytime TD'};
+    c.state.data.players=[c.p,other];c.state.byId[other.id]=other;c.state.cmp=[c.p.id,other.id];
+    c.box.renderCompare();
+    check(()=>assert.match(c.node('#main').innerHTML,/TD probability unavailable/));
+    check(()=>assert.match(c.node('#main').innerHTML,/0% TD chance/));
+    other.props=other.props.map(x=>x.key==='anytime_td'?{...x,proj:.3,td_chance:.25}:x);
+    c.box.renderCompare();
+    check(()=>assert.match(c.node('#main').innerHTML,/25% TD chance/));
+    check(()=>assert.match(c.node('#main').innerHTML,/TD probability unavailable/));
+  }
   console.log(JSON.stringify({suite:'fpts-provisional-display-preservation',cases:checks,failures:0,
     strict_categories:Object.keys(strict).length,saved_fpts_settlement:'UNAVAILABLE',
     legacy_gp_only_zero_and_missing_defense_allowance_debt:'PRESERVED_UNCERTIFIED',network:'forbidden',browser:'Node VM only'}));
