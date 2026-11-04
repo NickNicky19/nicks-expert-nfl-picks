@@ -5,7 +5,7 @@ const { chromium } = require("playwright");
 const root = path.resolve(__dirname, ".."), source = fs.readFileSync(path.join(root, "output/app.js"), "utf8");
 new vm.Script(source); // Parse the complete changed application without booting it.
 const extract = name => { const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`)); assert(match, name); return match[0]; };
-const functions = ["selectedRankingPolicy", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "topPicksSourceCaption", "maeDisplayForecast", "maeDisplayDetails", "selectedPropForecast", "propChip", "catCard", "displayedProps", "filteredPlayers", "renderProps"].map(extract).join("\n");
+const functions = ["selectedRankingPolicy", "baselineTdProbability", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "topPicksSourceCaption", "maeDisplayForecast", "maeDisplayDetails", "selectedPropForecast", "propChip", "catCard", "displayedProps", "filteredPlayers", "renderProps"].map(extract).join("\n");
 const helper = fs.readFileSync(path.join(root, "output/weekly-adaptive-overlay.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "output/style.css"), "utf8");
 const widths = process.env.WEEKLY_PRIMARY_CUSTOM_LINE_ONLY === "1" ? [390] : [320, 390, 1280];
@@ -61,6 +61,31 @@ ${functions}
 ` });
       const result = await page.evaluate(() => {
         const { S, board, candidate, overlayRows } = fixture, p = board.players[0], before = JSON.stringify(board);
+        const availability = {};
+        S.f.sort='selected_edge'; renderProps();
+        availability.baselineLabel=document.querySelector('#f-sort option[value="selected_edge"]').textContent.includes('R0: forecast gap');
+        availability.baselineStatus=document.querySelector('[data-selected-product-status]').textContent.includes('No approved selected forecasts');
+        S.f.cat='rush_att'; S.f.sort='selected_value'; renderProps();
+        availability.unavailableHighestDisabled=document.querySelector('#f-sort option[value="selected_value"]').disabled;
+        const missingTD={...p.props[2],proj:null,td_chance:0};
+        availability.unknownTDChip=propChip(p,missingTD).includes('Probability unavailable')&&!propChip(p,missingTD).includes('0%');
+        availability.unknownTDCard=catCard(p,missingTD).includes('TD probability unavailable')&&!catCard(p,missingTD).includes('0% TD chance');
+        availability.knownTDZero=catCard(p,{...missingTD,proj:0}).includes('0% TD chance');
+        S.weeklyOverlay=overlayRows([candidate('anytime_td',.35,'binary_probability','event_probability')]);
+        availability.selectedWithUnknownReference=catCard(p,missingTD).includes('35.0%')&&catCard(p,missingTD).includes('reference probability<span class="n">Unavailable');
+        S.f.cat='rush_att'; renderProps();
+        availability.tdOnlyCannotLabelNumericGap=document.querySelector('#f-sort option[value="selected_edge"]').textContent.includes('R0: forecast gap');
+        availability.tdOnlyCannotEnableNumericHighest=document.querySelector('#f-sort option[value="selected_value"]').disabled;
+        S.f.cat='anytime_td'; renderProps();
+        availability.selectedHighestEnabled=!document.querySelector('#f-sort option[value="selected_value"]').disabled;
+        availability.selectedHighestLabel=document.querySelector('#f-sort option[value="selected_value"]').textContent.includes('Selected TD probability');
+        availability.tdGapIsUnavailable=document.querySelector('#f-sort option[value="selected_edge"]').disabled;
+        S.selectedRankings={picks:{over:[{...board.picks.over[0],player_id:p.id,key:'anytime_td',forecast_source:'SELECTED'}],under:[]}};
+        S.f.cat='';S.f.q='no-filtered-player';renderProps();
+        availability.topSourceIndependentOfPlayerFilter=document.querySelector('[data-selected-product-status]').textContent.includes('Top Picks retain the sources labeled on each card')&&document.querySelector('.picks .small').textContent.includes('Selected forecasts');
+        S.selectedRankings=null;S.f.q='';
+
+        S.weeklyOverlay=null; S.f.sort='edge'; S.f.cat='';
         const baselineOrder = displayedProps(p).map(x => x.key), baselineRank = filteredPlayers().map(x => x.id);
         const baseCards = p.props.map(x => catCard(p, x)), baseChips = p.props.map(x => propChip(p, x));
         S.weeklyOverlay = overlayRows([candidate("rush_att",3.25,"point_mean","expected_mean"), candidate("rush_yd",-2.5,"point_median","intended_median"), candidate("anytime_td",.35,"binary_probability","event_probability")]);
@@ -101,12 +126,13 @@ ${functions}
         S.weeklyOverlay={rows:new Map([[JSON.stringify([p.game_id,p.id,'rush_att']),{}]])};
         snapshots.malformedFallback=selectedPropForecast(p,'rush_att')===null;
         snapshots.boardUnchanged=JSON.stringify(board)===before;
-        return snapshots;
+        return {...snapshots,availability};
       });
       check(result.selected.rush_att,"Provisional mean forecast3.25","selected count is primary");
       check(result.selected.rush_yd,"Provisional median forecast-2.50","signed median is primary");
       check(result.selected.anytime_td,"Provisional TD probability35.0%","selected TD probability is primary");
       check(result.selected.fpts,null,"exact PPR is unchanged");
+      for (const [key,value] of Object.entries(result.availability)) check(value,true,key+' at width '+width);
       for (const key of ["meansFirst","reference","negative","r0TD","primaryTD","tdHasNoDirectionalLean","pointWarning","r0Controls","r0Sort","orderUnchanged","rankUnchanged","noPageOverflow","customStillSelected","customBookLabel","customR0Label","frozen","expired","expiredCannotBecomeFrozen","absentSameCards","absentSameChips","fantasyNoSelection","malformedFallback","boardUnchanged"]) check(result[key],true,key+" at width "+width);
       check(result.line,"4","market line unchanged"); check(result.customLine,"6","personal line unchanged");
       check(result.chips.length,3,"all supported selected chips are primary");
