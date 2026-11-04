@@ -16,6 +16,27 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8');
 
+// Unknown baseline projections cannot authenticate a zero TD probability.
+// A valid selected product is independent of an unavailable baseline.
+{
+  const text = source.match(/function effectivePropForecast\([^]*?\n\}/)?.[0];
+  assert.ok(text);
+  const context = { selectedPropForecast: () => null };
+  vm.createContext(context); vm.runInContext(text, context);
+  const player = Object.freeze({reference_model:'sleeper-matchup-classic-fg-identity-v1'});
+  for (const raw of [
+    {proj:null,td_chance:0}, {td_chance:0}, {proj:NaN,td_chance:0},
+    {proj:-1,td_chance:0}, {proj:1,td_chance:null}, {proj:1,td_chance:NaN},
+    {proj:1,td_chance:-.1}, {proj:1,td_chance:1.1}, {proj:'1',td_chance:.5},
+  ]) assert.equal(context.effectivePropForecast(player,Object.freeze({key:'anytime_td',...raw})),null);
+  assert.equal(context.effectivePropForecast(player,{key:'anytime_td',proj:0,td_chance:0}).value,0);
+  assert.equal(context.effectivePropForecast(player,{key:'anytime_td',proj:1,td_chance:.55}).value,.55);
+  context.selectedPropForecast = () => ({value:.35,binary:true,text:'35.0%'});
+  const selected = context.effectivePropForecast(player,{key:'anytime_td',proj:null,td_chance:0});
+  assert.equal(selected.value,.35);assert.equal(selected.source,'SELECTED');
+  console.log('13 baseline TD missingness/zero/selected-isolation assertions passed.');
+}
+
 // Presentation uses saved-board values and the existing ranking eligibility.
 // Frozen inputs catch accidental mutation; arbitrary units are fictional.
 {

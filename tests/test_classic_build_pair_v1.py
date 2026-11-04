@@ -26,7 +26,8 @@ class ActualBuildPairTests(unittest.TestCase):
         schemas={'config/weekly-derived-selected-policy-v3.json':'weekly-derived-selected-policy-v3',
                  'config/weekly-derived-selected-policy-v4.json':'weekly-derived-selected-policy-v4',
                  'config/weekly-derived-selected-policy-v5.json':'weekly-derived-selected-policy-v4',
-                 'config/weekly-derived-selected-policy-v6.json':'weekly-derived-selected-policy-v4'}
+                 'config/weekly-derived-selected-policy-v6.json':'weekly-derived-selected-policy-v4',
+                 'config/weekly-derived-selected-policy-v7.json':'weekly-derived-selected-policy-v4'}
         self.assertIn(path,schemas)
         body=(ROOT/path).read_bytes()if candidate_policy is None else candidate_policy
         self.assertEqual(command[command.index('--feed-policy-sha256')+1],hashlib.sha256(body).hexdigest())
@@ -41,6 +42,23 @@ class ActualBuildPairTests(unittest.TestCase):
             feed.policy_check(value,root=ROOT)
             self.assertIn('tools/weekly_public_feed_v4.py',value['website_code_sha256'])
         self.assertEqual(value['current_execution'],model.contract(ROOT))
+
+    def test_consumer_only_rebinding_preserves_old_policy_and_rejects_stale_code(self):
+        import weekly_public_feed_v4 as feed
+        old=json.loads((ROOT/'config/weekly-derived-selected-policy-v6.json').read_bytes())
+        new=json.loads((ROOT/'config/weekly-derived-selected-policy-v7.json').read_bytes())
+        changed={key for key in old if old[key]!=new[key]}
+        self.assertEqual(changed,{'registered_at_utc','website_code_sha256'})
+        self.assertEqual({name for name in old['website_code_sha256']
+                          if old['website_code_sha256'][name]!=new['website_code_sha256'][name]},
+                         {'output/app.js','output/index.html'})
+        feed.policy_check(new,root=ROOT)
+        with self.assertRaisesRegex(ValueError,'V4_CURRENT_EXECUTION_OR_INVENTORY'):
+            feed.policy_check(old,root=ROOT)
+        broken=json.loads(json.dumps(new))
+        broken['website_code_sha256']['output/app.js']=old['website_code_sha256']['output/app.js']
+        with self.assertRaisesRegex(ValueError,'V4_CURRENT_EXECUTION_OR_INVENTORY'):
+            feed.policy_check(broken,root=ROOT)
 
     def test_workflow_installs_pair_before_current_policy_and_publishes_both_lanes(self):
         import re
