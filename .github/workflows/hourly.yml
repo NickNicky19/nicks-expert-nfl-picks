@@ -21,7 +21,7 @@ permissions:
 jobs:
   update:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment:
       name: github-pages
@@ -49,8 +49,11 @@ jobs:
           MAE_TEST_NODE_DIR="$RUNNER_TEMP/mae-web-test-node"
           npm install --prefix "$MAE_TEST_NODE_DIR" --no-save --package-lock=false --ignore-scripts playwright@1.62.1
           echo "NODE_PATH=$MAE_TEST_NODE_DIR/node_modules" >> "$GITHUB_ENV"
-          MAE_TEST_CHROME=$(command -v chromium || command -v google-chrome || command -v google-chrome-stable)
+          export PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/mae-web-test-browsers"
+          node "$MAE_TEST_NODE_DIR/node_modules/playwright/cli.js" install chromium --no-shell
+          MAE_TEST_CHROME=$(node -e 'console.log(require(process.argv[1]).chromium.executablePath())' "$MAE_TEST_NODE_DIR/node_modules/playwright")
           test -x "$MAE_TEST_CHROME"
+          echo "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH" >> "$GITHUB_ENV"
           echo "NFL_CHROMIUM_PATH=$MAE_TEST_CHROME" >> "$GITHUB_ENV"
       - name: Required offline regression tests
         id: checks
