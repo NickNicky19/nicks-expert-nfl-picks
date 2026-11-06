@@ -26,6 +26,30 @@ import sources  # noqa: E402
 problems = []
 
 
+def current_profile_status(data, root=None):
+    """Do not run a legacy reconstruction against a different source recipe.
+
+    Its flat cache and board-only roster cannot reproduce the current builder's
+    qualified input tape and complete roster. Mandatory source/capture checks
+    run separately. NOT_EVALUATED is deliberately not a numerical-parity PASS.
+    """
+    if 'execution_model' not in data:
+        return None
+    import classic_model_v1 as classic
+    import classic_model_v2 as presence
+    declared = data['execution_model']
+    profile = {classic.MODEL: classic, presence.MODEL: presence}.get(
+        declared.get('model') if isinstance(declared, dict) else None)
+    if profile is None or declared != profile.contract(ROOT if root is None else root):
+        raise ValueError('ADVISORY_CURRENT_SOURCE_BINDING_REJECTED')
+    return dict(schema_version='legacy-diagnostic-scope-v2',
+        status='NOT_EVALUATED_CURRENT_MODEL_INPUT_CLOSURE_REQUIRED',
+        model=profile.MODEL, normalized_stats_cache=profile.CACHE,
+        numerical_parity_passed=False, provider_requests=0,
+        missing_requirements=['Exact retained builder roster', 'Same observed source-input closure'],
+        required_checks='Mandatory current source/integrity/capture checks are separate; no accuracy claim.')
+
+
 def problem(msg):
     problems.append(msg)
     print("  PROBLEM:", msg)
@@ -247,7 +271,21 @@ def check_live(data):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--json', help='Write a bounded diagnostic-scope receipt, not an accuracy PASS')
+    args = parser.parse_args()
     data = json.loads((ROOT / "output" / "data" / "week.json").read_text())
+    status = current_profile_status(data)
+    if status is not None:
+        raw = json.dumps(status, sort_keys=True, separators=(',', ':'), allow_nan=False)
+        if args.json:
+            path = Path(args.json)
+            if path.is_symlink():
+                raise ValueError('ADVISORY_REPORT_SYMLINK')
+            path.write_text(raw + '\n')
+        print(raw)
+        raise SystemExit(2)
     print(f"Verifying season {data['season']} week {data['week']}")
     check_ppr()
     check_espn_kdef(data)

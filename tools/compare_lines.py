@@ -10,6 +10,7 @@ the matchup adjustment beat the plain average, and whether big gaps between ours
 Sleeper's projections can't be tested this way: its numbers for past weeks were revised after kickoff.
 """
 import json
+import math
 import statistics
 import sys
 from collections import defaultdict
@@ -28,7 +29,8 @@ GAP = 0.5   # a gap counts as a signal when it's at least this many of the categ
 
 def load_weeks():
     weeks = {}
-    for f in sorted((ROOT / "data" / "cache").glob("stats_*.json")):
+    # Never silently use the lossy flat cache or another engine's namespace.
+    for f in sorted((ROOT / "data" / "cache" / build.STATS_CACHE_VERSION).glob("stats_*.json")):
         _, s, w = f.stem.split("_")
         weeks[(int(s), int(w))] = json.loads(f.read_text())
     return weeks
@@ -52,18 +54,24 @@ def rows_for_week(season, week, weeks, all_players):
         past = history.get(pid, [])
         pos = positions.get(pid)
         for key, dk in props.items():
-            values = [scoring.stat_value(key, g["stats"]) for g in past]
+            values = [v for g in past if (v := scoring.stat_value(key, g["stats"])) is not None]
             plain = statistics.mean(values) if len(values) >= 2 else None
             ours = None
             if plain is not None and pos and key in scoring.POSITION_CATEGORIES[pos]:
                 ours = plain * mx.factor(entry.get("opp"), pos, key, plain)[0]
             rows.append({"week": week, "pid": pid, "key": key, "dk": dk["close"], "dk_open": dk["open"], "ours": ours,
-                         "plain": plain, "actual": scoring.stat_value(key, entry["stats"])})
+                         "plain": plain, "actual": scoring.stat_value(key, entry["stats"]),
+                         "known_prior_components": len(values)})
     return rows, len(games), len(lines)
 
 
 def pct(a, b):
     return f"{100 * a / b:5.1f}%" if b else "    -"
+
+
+def scorable(row):
+    return all(type(row.get(key)) in (int, float) and math.isfinite(row[key])
+               for key in ('ours', 'plain', 'actual', 'dk'))
 
 
 def main():
@@ -72,6 +80,9 @@ def main():
     parser.add_argument("--json", help="also write a summary for the site to this path")
     args = parser.parse_args()
     weeks = load_weeks()
+    if not weeks:
+        print('No current typed-cache history; legacy flat-cache fallback is forbidden.')
+        raise SystemExit(2)
     all_players = sources.players()
     season = max(s for s, _ in weeks)
     state = sources.nfl_state()
@@ -84,7 +95,6 @@ def main():
         rows += r
     if not rows:
         print("No DraftKings lines found.")
-        return
 
     by_cat = defaultdict(list)
     for r in rows:
@@ -94,7 +104,7 @@ def main():
     totals = defaultdict(int)
     table = []
     for key in scoring.CATEGORIES:
-        rs = [r for r in by_cat.get(key, []) if r["ours"] is not None]
+        rs = [r for r in by_cat.get(key, []) if scorable(r)]
         if not rs:
             continue
         scale = scoring.CATEGORIES[key]["scale"]
@@ -119,7 +129,7 @@ def main():
         print(f"{key:<13}{len(rs):>5}{statistics.mean(diff):>+9.1f}{statistics.mean(map(abs, diff)):>7.1f}"
               f"{pct(dk_under, dk_decided):>10}{pct(our_under, len(rs)):>11}{pct(dk_closer, len(rs) - ties):>11}"
               f"{pct(hi_hit, len(hi)):>8} /{len(hi):<3}{pct(lo_hit, len(lo)):>9} /{len(lo):<3}")
-    graded = [r for r in rows if r["ours"] is not None]
+    graded = [r for r in rows if scorable(r)]
     mae = lambda f: statistics.mean(abs(f(r) - r["actual"]) for r in graded) if graded else None
     totals["mae_plain"], totals["mae_ours"], totals["mae_dk"] = mae(lambda r: r["plain"]), mae(lambda r: r["ours"]), mae(lambda r: r["dk"])
     # every prop where our number and DraftKings' line disagree: did the result land on our side?
@@ -127,7 +137,8 @@ def main():
     totals["side_n"] = len(sided)
     totals["side_hit"] = sum((r["ours"] > r["dk"]) == (r["actual"] > r["dk"]) for r in sided)
     print(f"When ours and DraftKings disagreed, the result landed on our side {pct(totals['side_hit'], totals['side_n']).strip()} ({totals['side_n']} props).")
-    print(f"\nAverage miss: season average {totals['mae_plain']:.2f}, adjusted for the matchup {totals['mae_ours']:.2f}, DraftKings {totals['mae_dk']:.2f}")
+    shown = lambda x: f'{x:.2f}' if x is not None else 'unavailable'
+    print(f"\nAverage miss: season average {shown(totals['mae_plain'])}, adjusted for the matchup {shown(totals['mae_ours'])}, DraftKings {shown(totals['mae_dk'])}")
     print(f"DraftKings' line was closer to the result {pct(totals['dk_closer'], totals['n'] - totals['ties']).strip()} of the time ({totals['n']} props, ties left out).")
     print(f"When our line was well above DraftKings', the over hit {pct(totals['hi_hit'], totals['hi']).strip()} ({totals['hi']} props).")
     print(f"When our line was well below DraftKings', the under hit {pct(totals['lo_hit'], totals['lo']).strip()} ({totals['lo']} props).")
@@ -135,14 +146,26 @@ def main():
         r1 = lambda a, b: round(100 * a / b, 1) if b else None
         Path(args.json).write_text(json.dumps({
             "season": season, "weeks": done, "props": totals["n"],
+            "schema_version": "historical-average-proxy-v2",
+            "status": "PROXY_ONLY" if graded else "NO_SCORABLE_PROXY_ROWS",
+            "comparison_kind": "RECONSTRUCTED_HISTORICAL_AVERAGE_NOT_CURRENT_OR_ISSUED_FORECASTS",
+            "stats_cache_version": build.STATS_CACHE_VERSION,
+            "source_vintage": "CURRENT_RETAINED_CACHE_NOT_AUTHENTICATED_ORIGINAL_ISSUANCE",
+            "quote_timing_verified": False,
+            "coverage": {"rows": len(rows), "scored": len(graded),
+                         "unresolved_actual": sum(r['actual'] is None for r in rows),
+                         "unavailable_proxy": sum(r['ours'] is None for r in rows),
+                         "non_scorable": len(rows) - len(graded)},
             "dk_closer": r1(totals["dk_closer"], totals["n"] - totals["ties"]),
             "dk_under": r1(totals["dk_under"], totals["dk_decided"]),
             "below_under": r1(totals["lo_hit"], totals["lo"]), "below_n": totals["lo"],
             "above_over": r1(totals["hi_hit"], totals["hi"]), "above_n": totals["hi"],
             "categories": table,
             "our_side": r1(totals["side_hit"], totals["side_n"]), "our_side_n": totals["side_n"],
-            "mae_plain": round(totals["mae_plain"], 2), "mae_ours": round(totals["mae_ours"], 2), "mae_dk": round(totals["mae_dk"], 2),
-        }, separators=(",", ":")))
+            "mae_plain": round(totals["mae_plain"], 2) if totals['mae_plain'] is not None else None,
+            "mae_ours": round(totals["mae_ours"], 2) if totals['mae_ours'] is not None else None,
+            "mae_dk": round(totals["mae_dk"], 2) if totals['mae_dk'] is not None else None,
+        }, separators=(",", ":"), allow_nan=False))
         print("Wrote", args.json)
     no_line = sum(1 for r in rows if r["ours"] is None)
     if no_line:

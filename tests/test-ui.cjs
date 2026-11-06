@@ -16,6 +16,21 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8');
 
+// The actual Record consumer cannot label the average proxy as issued/current
+// model accuracy, including incomplete outcomes in the denominator disclosure.
+{
+  const extract = name => source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`))[0];
+  const box={S:{dk:{season:2099,weeks:[1],props:1,categories:[],coverage:{rows:3,scored:1,unresolved_actual:1}},data:{categories:{}}},fmt:x=>x==null?'-':String(x)};
+  vm.createContext(box);vm.runInContext(['pctText','dkSection'].map(extract).join('\n'),box);
+  const html=box.dkSection({});
+  assert.ok(html.includes('Historical-average proxy vs DraftKings'));
+  assert.ok(html.includes('not the current website forecasts'));
+  assert.ok(html.includes('1 of 3 candidate rows'));
+  assert.ok(html.includes('1 outcomes remain unresolved'));
+  assert.ok(html.includes('Quote timing is unverified'));
+  console.log('5 historical-proxy disclosure assertions passed.');
+}
+
 // New presence-bearing source rows preserve unknowns through actual UI helpers.
 // Legacy provisional live-stat conventions remain separately tested below.
 {

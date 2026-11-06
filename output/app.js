@@ -3035,7 +3035,8 @@ function dkSection(c) {
   const leanStat = (side) => `<div class="card stat"><div class="k">Leans ${side} the real line</div><div class="v">${pctText(dl[side])}</div><div class="d">${dl[side] ? `${dl[side].hit}-${dl[side].miss}` : "0-0"}, DraftKings or Sleeper Picks lines</div></div>`;
   return `<h2>Against real lines</h2>
     <div class="stats">${leanStat("over")}${leanStat("under")}</div>
-    ${b ? `<h2>Our numbers vs DraftKings <small>${b.season} weeks ${b.weeks[0]}-${b.weeks[b.weeks.length - 1]}, ${b.props.toLocaleString()} props</small></h2>
+    ${b ? `<h2>Historical-average proxy vs DraftKings <small>${b.season} weeks ${b.weeks[0]}-${b.weeks[b.weeks.length - 1]}, ${b.props.toLocaleString()} props</small></h2>
+    <p class="note">This reconstructs a historical-average comparison, not the current website forecasts or original issued research selections. Quote timing is unverified. ${b.coverage ? `${b.coverage.scored} of ${b.coverage.rows} candidate rows have supported proxy values and outcomes; ${b.coverage.unresolved_actual} outcomes remain unresolved.` : "This retained legacy report has no complete source/coverage receipt."}</p>
     <div class="stats">
       ${b.our_side != null ? `<div class="card stat"><div class="k">When we disagreed with DraftKings</div><div class="v">${fmt(b.our_side)}%</div><div class="d">of the time the result landed on our side (${b.our_side_n.toLocaleString()} props; 50% is a coin flip)</div></div>` : ""}
       <div class="card stat"><div class="k">DraftKings closer to the result</div><div class="v">${fmt(b.dk_closer)}%</div><div class="d">vs the matchup-adjusted season average</div></div>
@@ -3131,7 +3132,7 @@ function renderAbout() {
   const cats = Object.entries(S.data.categories).filter(([k]) => k !== "anytime_td");
   $("#main").innerHTML = `<div class="about">
     <h2>Reliability foundation · Phase 1</h2>
-    <div class="card note"><p><b>The prediction engine is unchanged.</b> Raw Sleeper projections, matchup adjustments, and top-pick selection rules remain the original benchmark. This release improves statistical grading, publication checks, and future baseline capture; it does not establish greater predictive accuracy or profitability.</p>
+    <div class="card note"><p><b>Correctness repairs do not establish better forecasting accuracy.</b> The baseline uses Sleeper projections and classic matchup arithmetic, with its actual source and presence-handling version identified below. Original benchmark code, forecasts and reports remain preserved separately. Statistical grading, publication and capture have their own versions; these checks establish neither greater predictive accuracy nor profitability.</p>
     <p>Top picks are projection-gap rankings, not calibrated win probabilities or positive-EV recommendations. DraftKings player-prop prices are not captured. A recent build does not verify the age of each quote.</p>
     <p>After installation, the update workflow saves append-only pregame capture receipts with both raw and adjusted projections, input and code hashes, and the local observation time. These are not verified execution receipts. Replay tests are stored separately and never called prospective results.</p>
     <p>Recovery preserves the original code and retains subsequent evidence. <a href="recovery.html">How to restore the original</a>.</p></div>
