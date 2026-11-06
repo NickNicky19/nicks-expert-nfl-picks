@@ -350,8 +350,8 @@ class V4ConsumerTests(unittest.TestCase):
     def test_old_authority_validator_does_not_accept_new_v4_policy(self):
         p,*_=fixture()
         with self.assertRaises(f.FeedError):f.policy_check_v2(p)
-        self.assertEqual(f.CURRENT_CODE_FILES|{'tools/weekly_public_feed_v4.py'},v4.CURRENT_CODE_FILES)
-        self.assertEqual(len(v4.CURRENT_CODE_FILES),len(f.CURRENT_CODE_FILES)+1)
+        self.assertEqual(f.CURRENT_CODE_FILES|{'tools/weekly_public_feed_v4.py','tools/classic_model_v2.py'},v4.CURRENT_CODE_FILES)
+        self.assertEqual(len(v4.CURRENT_CODE_FILES),len(f.CURRENT_CODE_FILES)+2)
 
 class V4ScopeWitnessTests(unittest.TestCase):
     @classmethod

@@ -13,7 +13,7 @@ sys.path[:0] = [str(ROOT / "pull"), str(ROOT / "tools")]
 import build
 import grade
 
-EXPECTED_VERSION = "statistical-v3-identity-20261025"
+EXPECTED_VERSION = "statistical-presence-strict-v5-20261106"
 OLD_VERSION = "statistical-v2"
 
 

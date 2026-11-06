@@ -470,8 +470,20 @@ def historical_policy_v2(root=None):
 
 
 def current_execution_contract(root=None):
-    from classic_model_v1 import contract
-    return contract(Path(root) if root is not None else Path(__file__).resolve().parents[1])
+    import classic_model_v1 as classic
+    import classic_model_v2 as presence
+    root = Path(root) if root is not None else Path(__file__).resolve().parents[1]
+    # Closed source dispatch; neither profile accepts changed bytes under an
+    # older identity. An unknown source must fail both exact manifests.
+    try:
+        return classic.contract(root)
+    except (OSError, ValueError):
+        return presence.contract(root)
+
+
+def current_code_files(root=None):
+    from classic_model_v2 import MODEL
+    return CURRENT_CODE_FILES | {"tools/classic_model_v2.py"} if current_execution_contract(root)["model"] == MODEL else CURRENT_CODE_FILES
 
 
 def policy_check_v3(policy,*,root=None):
@@ -479,7 +491,7 @@ def policy_check_v3(policy,*,root=None):
     historical=historical_policy_v2(root);execution=current_execution_contract(root)
     require(set(policy)==set(historical)|{"historical_policy_sha256","current_execution"},"CLOSED_V3_POLICY_FIELDS")
     code=policy.get("website_code_sha256",{})
-    require(type(code) is dict and set(code)==CURRENT_CODE_FILES and all(h(v)for v in code.values()),"CLOSED_CURRENT_CODE_INVENTORY")
+    require(type(code) is dict and set(code)==current_code_files(root) and all(h(v)for v in code.values()),"CLOSED_CURRENT_CODE_INVENTORY")
     require(all(code[name]==expected for name,expected in execution["engine_sha256"].items()),"CURRENT_ENGINE_CODE_MISMATCH")
     expected=copy.deepcopy(historical)
     expected.update(schema_version=POLICY_V3,historical_policy_sha256=HISTORICAL_POLICY_SHA256,

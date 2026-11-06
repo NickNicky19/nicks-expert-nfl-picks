@@ -11,13 +11,12 @@ import re
 import zlib
 
 import weekly_public_feed as old
-from classic_model_v1 import contract
 
 POLICY = "weekly-derived-selected-policy-v4"
 AUTHORITY = "audit-weekly-publication-authority-v3"
 RULE = "DECLARED_EPOCH_METADATA_PROJECTION_ONLY_NO_VALUES_OR_RESELECTION"
 ROOT = Path(__file__).resolve().parents[1]
-CURRENT_CODE_FILES = old.CURRENT_CODE_FILES | {"tools/weekly_public_feed_v4.py"}
+CURRENT_CODE_FILES = old.CURRENT_CODE_FILES | {"tools/weekly_public_feed_v4.py", "tools/classic_model_v2.py"}
 STATIC = {"registration_id", "source_policy_sha256", "public_fields", "public_roles",
           "rights_authorities", "r0_identities", "engine_sha256", "public_ref"}
 KEYS = STATIC | {"schema_version", "state", "authority_kind", "human_approval",
@@ -40,7 +39,7 @@ RECEIPT_KEYS = {"schema_version", "source_sha", "run_id", "root_go_sha256", "pol
 
 def current(root):
     try:
-        return contract(root)
+        return old.current_execution_contract(root)
     except (OSError, ValueError):
         raise old.FeedError("V4_CURRENT_ENGINE_SOURCE") from None
 
@@ -48,7 +47,7 @@ def current(root):
 def inventory(root):
     root = Path(root).resolve()
     actual = {}
-    for name in sorted(CURRENT_CODE_FILES):
+    for name in sorted(old.current_code_files(root) | {"tools/weekly_public_feed_v4.py"}):
         path = root / name
         old.require(not path.is_symlink() and path.resolve().is_relative_to(root)
                     and path.is_file() and path.stat().st_size <= 2 << 20, "V4_CODE_SCOPE")
@@ -114,7 +113,7 @@ def policy_check(p, *, root=ROOT, now=None):
         and a["recipe_registration_sha256"] == p["recipe_registration_sha256"], "V4_CLOSED_NEW_AUTHORITY")
     execution = current(root)
     old.require(p["current_execution"] == execution and type(p["website_code_sha256"]) is dict
-        and set(p["website_code_sha256"]) == CURRENT_CODE_FILES
+        and set(p["website_code_sha256"]) == set(inventory(root))
         and all(old.h(x) for x in p["website_code_sha256"].values())
         and p["website_code_sha256"] == inventory(root)
         and all(p["website_code_sha256"][k] == v for k,v in execution["engine_sha256"].items()),

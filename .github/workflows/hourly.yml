@@ -84,7 +84,7 @@ jobs:
       - name: Required integrity checks and pregame capture
         id: capture
         if: steps.mode.outputs.mode == 'phase1'
-        run: GITHUB_SHA="$(git rev-parse HEAD)" python tools/reliability.py --mode live --model sleeper-matchup-classic-fg-identity-v1
+        run: GITHUB_SHA="$(git rev-parse HEAD)" python tools/reliability.py --mode live --model sleeper-matchup-classic-presence-strict-v2
 
       # The old verifier mixes network availability, diagnostics, and model warnings.
       # Required deterministic invariants are enforced above, not bypassed here.
@@ -127,7 +127,7 @@ jobs:
           PY
       - name: Prepare isolated provisional overlay (default R0)
         id: overlay
-        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v7.json --feed-policy-sha256 7933152e09d86e9e8a9482f46450b4765825d64f036e58f8f36d874c0cdd6382
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v8.json --feed-policy-sha256 e3cdc393fef8c51f852f25a472328fc1ed87c3ea46e409d3a3544a5849b74b0a
       - name: Prepare independently typed MAE point display
         id: mae-display
         run: python tools/weekly_mae_display_v2.py --root . --website-source-sha "$(git rev-parse HEAD)" --policy config/weekly-mae-display-source-policy-v2.json --policy-sha256 aa5ceb748273e421cf61ad3d9d257df24fd468275344c503b157d1b46c5e616c

@@ -17,7 +17,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / name) for name in ("tools", "pull", "tests")]
 import classic_failure_v1 as failure
-import classic_model_v1 as model
+import classic_model_v2 as model
 import publication_guard_v1 as guard
 import reliability
 from test_reliability import fixture
@@ -270,7 +270,7 @@ class FailedAttemptTests(unittest.TestCase):
         before = {p.relative_to(self.target).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
                   for p in self.target.rglob("*") if p.is_file()}
         isolated = self.base / "verifier"; isolated.mkdir()
-        for name in ["classic_failure_v1.py", "classic_model_v1.py", "publication_guard_v1.py"]:
+        for name in ["classic_failure_v1.py", "classic_model_v1.py", "classic_model_v2.py", "publication_guard_v1.py"]:
             shutil.copyfile(ROOT / "tools" / name, isolated / name)
         environment = dict(os.environ); environment.pop("PYTHONDONTWRITEBYTECODE", None)
         process = subprocess.run([sys.executable, str(isolated / "classic_failure_v1.py"), "--verify-retained-root", str(self.target)],

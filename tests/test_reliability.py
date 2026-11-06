@@ -99,7 +99,7 @@ class GradingTests(unittest.TestCase):
 
     def test_observed_zero_not_missing_player(self):
         data, _ = fixture()
-        record = grade.grade_week(data, {"fictional-1": {"stats": {"gp": 1}}}, {"fictional-game"})
+        record = grade.grade_week(data, {"fictional-1": {"stats": {"gp": 1, "rec": 0}}}, {"fictional-game"})
         self.assertEqual(record["top_over"]["picks"][0]["actual"], 0)
         self.assertEqual(record["top_over"]["miss"], 1)
 

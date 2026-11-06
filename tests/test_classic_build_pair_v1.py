@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,7 +14,7 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tools'))
 import classic_build_pair_v1 as pair
-import classic_model_v1 as model
+import classic_model_v2 as model
 
 class ActualBuildPairTests(unittest.TestCase):
     def assert_workflow_feed_policy(self,workflow,*,candidate_policy=None):
@@ -27,7 +28,8 @@ class ActualBuildPairTests(unittest.TestCase):
                  'config/weekly-derived-selected-policy-v4.json':'weekly-derived-selected-policy-v4',
                  'config/weekly-derived-selected-policy-v5.json':'weekly-derived-selected-policy-v4',
                  'config/weekly-derived-selected-policy-v6.json':'weekly-derived-selected-policy-v4',
-                 'config/weekly-derived-selected-policy-v7.json':'weekly-derived-selected-policy-v4'}
+                 'config/weekly-derived-selected-policy-v7.json':'weekly-derived-selected-policy-v4',
+                 'config/weekly-derived-selected-policy-v8.json':'weekly-derived-selected-policy-v4'}
         self.assertIn(path,schemas)
         body=(ROOT/path).read_bytes()if candidate_policy is None else candidate_policy
         self.assertEqual(command[command.index('--feed-policy-sha256')+1],hashlib.sha256(body).hexdigest())
@@ -52,13 +54,26 @@ class ActualBuildPairTests(unittest.TestCase):
         self.assertEqual({name for name in old['website_code_sha256']
                           if old['website_code_sha256'][name]!=new['website_code_sha256'][name]},
                          {'output/app.js','output/index.html'})
-        feed.policy_check(new,root=ROOT)
+        # V7 remains valid only under its actual old source, never the changed
+        # presence engine. Restore those exact public Git bytes for this check.
+        with tempfile.TemporaryDirectory() as directory:
+            historical=Path(directory)
+            for name in set(new['website_code_sha256'])|{'config/weekly-derived-selected-policy-v2.json'}:
+                raw=subprocess.check_output(['git','-C',str(ROOT),'show','fe369c7462e4e4f290727b2d03b696d28ef5454b:'+name])
+                target=historical/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
+            feed.policy_check(new,root=historical)
+            with self.assertRaisesRegex(ValueError,'V4_CURRENT_EXECUTION_OR_INVENTORY'):
+                feed.policy_check(old,root=historical)
+            broken=json.loads(json.dumps(new))
+            broken['website_code_sha256']['output/app.js']=old['website_code_sha256']['output/app.js']
+            with self.assertRaisesRegex(ValueError,'V4_CURRENT_EXECUTION_OR_INVENTORY'):
+                feed.policy_check(broken,root=historical)
         with self.assertRaisesRegex(ValueError,'V4_CURRENT_EXECUTION_OR_INVENTORY'):
-            feed.policy_check(old,root=ROOT)
-        broken=json.loads(json.dumps(new))
-        broken['website_code_sha256']['output/app.js']=old['website_code_sha256']['output/app.js']
-        with self.assertRaisesRegex(ValueError,'V4_CURRENT_EXECUTION_OR_INVENTORY'):
-            feed.policy_check(broken,root=ROOT)
+            feed.policy_check(new,root=ROOT)
+        successor=json.loads((ROOT/'config/weekly-derived-selected-policy-v8.json').read_bytes())
+        self.assertEqual({key for key in new if new[key]!=successor[key]},
+                         {'current_execution','website_code_sha256','registered_at_utc'})
+        feed.policy_check(successor,root=ROOT)
 
     def test_workflow_installs_pair_before_current_policy_and_publishes_both_lanes(self):
         import re
