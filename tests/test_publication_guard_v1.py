@@ -132,7 +132,7 @@ class FailurePublicationTests(unittest.TestCase):
         PublicationFenceTests.setUp(self)
         self.source_root=Path(__file__).resolve().parents[1]
         (self.root/'tools').mkdir()
-        for name in ['classic_failure_v1.py','classic_model_v1.py','publication_guard_v1.py']:
+        for name in ['classic_failure_v1.py','classic_model_v1.py','classic_model_v2.py','publication_guard_v1.py']:
             shutil.copyfile(self.source_root/'tools'/name,self.root/'tools'/name)
         self.git('add','tools');self.git('commit','-m','fictional failure helper source');self.git('push','origin','main')
         self.source=self.git('rev-parse','HEAD')

@@ -16,7 +16,7 @@ import sys
 import gzip
 import time
 
-from classic_model_v1 import MODEL, ORIGINAL_MODEL, ORIGINAL_SOURCE, ENGINE, SHADOW_PROCEDURE, contract
+from classic_model_v2 import MODEL, ORIGINAL_MODEL, ORIGINAL_SOURCE, ENGINE, SHADOW_PROCEDURE, PREVIOUS_MODEL, CACHE, contract
 from classic_source_replay_v1 import Inputs
 
 PROCEDURE = SHADOW_PROCEDURE
@@ -118,6 +118,7 @@ def seed(source, run, repository, prior_r0=None):
                 shutil.rmtree(stage/lane,ignore_errors=True);copy_tree(bootstrap/lane,stage/lane)
     # Corrected normalized caches are never original R0 inputs.
     shutil.rmtree(original/'data/cache/stat-keys-fgm-v1',ignore_errors=True)
+    shutil.rmtree(original/('data/cache/'+CACHE),ignore_errors=True)
     if prior_r0 is not None:
         # Preserve the original default procedure's own evolving cache/state.
         for lane in ["output/data","data/cache"]:
@@ -234,20 +235,20 @@ def bind_reference_origins(board,previous):
     old_players={p['id']:p for p in previous.get('players',[])}
     old_games={g['id']:g for g in previous.get('games',[])}
     old_default=previous.get('execution_model',{}).get('model',ORIGINAL_MODEL)
-    if old_default not in {MODEL,ORIGINAL_MODEL}:raise ValueError('UNKNOWN_INHERITED_REFERENCE_MODEL')
+    if old_default not in {MODEL,PREVIOUS_MODEL,ORIGINAL_MODEL}:raise ValueError('UNKNOWN_INHERITED_REFERENCE_MODEL')
     def started(game):
         return game['state']!='pre'or datetime.fromisoformat(game['kickoff'].replace('Z','+00:00'))<=generated
     for player in board['players']:
         old=old_players.get(player['id'])
         inherited=old and old.get('game_id')==player['game_id']and started(games[player['game_id']])
         origin=old.get('reference_model',old_default)if inherited else MODEL
-        if origin not in {MODEL,ORIGINAL_MODEL}:raise ValueError('UNKNOWN_INHERITED_REFERENCE_MODEL')
+        if origin not in {MODEL,PREVIOUS_MODEL,ORIGINAL_MODEL}:raise ValueError('UNKNOWN_INHERITED_REFERENCE_MODEL')
         player['reference_model']=origin
     for game in board['games']:
         old=old_games.get(game['id'])
         inherited=old and old.get('ours')and started(game)
         origin=old.get('reference_model',old_default)if inherited else MODEL
-        if origin not in {MODEL,ORIGINAL_MODEL}:raise ValueError('UNKNOWN_INHERITED_REFERENCE_MODEL')
+        if origin not in {MODEL,PREVIOUS_MODEL,ORIGINAL_MODEL}:raise ValueError('UNKNOWN_INHERITED_REFERENCE_MODEL')
         game['reference_model']=origin
     players={p['id']:p for p in board['players']}
     for side in board['picks'].values():
@@ -357,7 +358,7 @@ def install_pair_outputs(source,run):
     current_info=json.loads((run/'current/WORKER.json').read_bytes())
     confined(source/current_info['native_receipt'],source)
     immutable_copy(run/'current'/current_info['native_receipt'],source/current_info['native_receipt'])
-    for lane in ['data/cache/stat-keys-fgm-v1','output/data']:
+    for lane in ['data/cache/'+CACHE,'output/data']:
         root=run/'current'/lane
         for file in sorted(root.rglob('*'))if root.exists()else[]:
             if file.is_symlink():raise ValueError('STAGED_OUTPUT_SYMLINK')

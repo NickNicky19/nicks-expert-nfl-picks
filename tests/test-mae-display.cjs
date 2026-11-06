@@ -31,7 +31,7 @@ const ctx={S,Date:Clock,StatPointMaeV2:wire,WeeklyAdaptiveOverlay:legacy,TextEnc
   localStorage:{getItem:key=>storage.get(key)??null,setItem:(key,value)=>storage.set(key,value)},updateMineBadge:()=>{},
   fetch:()=>{throw Error("unexpected external request");},renderProps:()=>{},renderGame:()=>{}};
 vm.createContext(ctx);
-vm.runInContext(["selectedRankingPolicy","selectedPropForecast","baselineTdProbability", "effectivePropForecast","selectedPropGap","selectedPlayerGap","visibleTopPicks","filteredPlayers","maeDisplayForecast","maeDisplayDetails","propChip","catCard","propPickBound","minePick","persistMine","toggleMine","startMaeDisplay"].map(extract).join("\n"),ctx);
+vm.runInContext(["isClassicBaseline", "selectedRankingPolicy","selectedPropForecast","baselineTdProbability", "effectivePropForecast","selectedPropGap","selectedPlayerGap","visibleTopPicks","filteredPlayers","maeDisplayForecast","maeDisplayDetails","propChip","catCard","propPickBound","minePick","persistMine","toggleMine","startMaeDisplay"].map(extract).join("\n"),ctx);
 (async()=>{
   const before=JSON.stringify(board), picks=JSON.stringify(ctx.visibleTopPicks("over")), gap=JSON.stringify(ctx.selectedPropGap(players[0],props[0]));
   const legacyCard=ctx.catCard(players[0],props[0]), legacyChip=ctx.propChip(players[0],props[0]);

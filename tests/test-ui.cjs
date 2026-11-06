@@ -16,13 +16,51 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8');
 
+// New presence-bearing source rows preserve unknowns through actual UI helpers.
+// Legacy provisional live-stat conventions remain separately tested below.
+{
+  const extract = name => source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`))[0];
+  const box = {S:{data:{scoring:{rec:1,rec_yd:.1},sc:{}},sc:{mode:'sleeper'},games:{}},isDefault:()=>true,projPts:()=>0};
+  vm.createContext(box);
+  vm.runInContext(['observedComponent','ppr','statValue','fantasyPts','skillPts','currentLeague','futureRows','rosPts','rosPerGame','rosText'].map(extract).join('\n'),box);
+  const meta={_presence:{version:'nfl-data-presence-strict-v3',kind:'actual'},gp:1};
+  let checks=0;
+  for (const value of [null,NaN,Infinity,-Infinity,'0',true,false,-1,.5]) {
+    assert.equal(box.statValue('rec',{...meta,rec:value}),null);checks++;
+  }
+  assert.equal(box.statValue('rec',meta),null);checks++;
+  assert.equal(box.statValue('rec',{...meta,rec:0}),0);checks++;
+  assert.equal(box.statValue('rush_rec_yd',{...meta,rush_yd:55,rec_yd:null}),null);checks++;
+  assert.equal(box.statValue('rush_rec_yd',{...meta,rush_yd:-3,rec_yd:0}),-3);checks++;
+  assert.equal(box.statValue('rush_yd',{...meta,rush_yd:3.5}),null);checks++;
+  assert.equal(box.statValue('rush_yd',{...meta,_presence:{...meta._presence,kind:'projection'},rush_yd:3.5}),3.5);checks++;
+  assert.equal(box.ppr({...meta,rec:2,rec_yd:15,idp_fum_rec:0}),3.5);checks++;
+  assert.equal(box.ppr({...meta,rec:2,rec_yd:null,idp_fum_rec:0}),null);checks++;
+  assert.equal(box.statValue('rec',{...meta,_presence:{...meta._presence,kind:'projection'},rec:4.25}),4.25);checks++;
+  const player={id:'fictional-presence',pos:'WR',game_id:'not-started-or-bye'};
+  const row={w:10,pp:12,ph:null,st:{rec:3,rec_yd:20,_presence:{version:'nfl-data-presence-strict-v3',kind:'projection'}}};
+  box.S.future={players:{[player.id]:[row]}};
+  box.S.sc.half=false;
+  assert.equal(box.futureRows(player)[0].pts,12);checks++;
+  box.S.sc.half=true;
+  assert.equal(box.futureRows(player)[0].pts,null);checks++;
+  assert.equal(box.rosPts(player),null);checks++;
+  assert.equal(box.rosPerGame(player),null);checks++;
+  assert.match(box.rosText(player),/projection unavailable/);checks++;
+  row.ph=0;box.S.rosKey=null;
+  assert.equal(box.futureRows(player)[0].pts,0);checks++;
+  assert.equal(box.rosPts(player),0);checks++;
+  assert.equal(box.rosPerGame(player),0);checks++;
+  console.log(JSON.stringify({suite:'audit-presence-consumer',checks,network:'none',NFL_observations:0}));
+}
+
 // Unknown baseline projections cannot authenticate a zero TD probability.
 // A valid selected product is independent of an unavailable baseline.
 {
   const text = source.match(/function effectivePropForecast\([^]*?\n\}/)?.[0];
   assert.ok(text);
   const context = { selectedPropForecast: () => null };
-  vm.createContext(context); vm.runInContext(source.match(/function baselineTdProbability\([^]*?\n\}/)[0] + '\n' + text, context);
+  vm.createContext(context); vm.runInContext(source.match(/function isClassicBaseline\([^]*?\n\}/)[0] + '\n' + source.match(/function baselineTdProbability\([^]*?\n\}/)[0] + '\n' + text, context);
   const player = Object.freeze({reference_model:'sleeper-matchup-classic-fg-identity-v1'});
   for (const raw of [
     {proj:null,td_chance:0}, {td_chance:0}, {proj:NaN,td_chance:0},
@@ -568,7 +606,7 @@ console.log(JSON.stringify({suite:'v2-strict-provider-scope',invalid_cases:inval
 const policy={"scoring":{"pass_yd":0.04,"pass_td":4,"pass_int":-1,"pass_2pt":2,"rush_yd":0.1,"rush_td":6,"rush_2pt":2,"rec":1,"rec_yd":0.1,"rec_td":6,"rec_2pt":2,"fum_lost":-2,"st_td":6,"st_fum_rec":1,"st_ff":1,"fum_rec_td":6,"idp_blk_kick":2},"scoring_k":{"fgm_0_19":3,"fgm_20_29":3,"fgm_30_39":3,"fgm_40_49":4,"fgm_50_59":5,"fgm_60p":6,"xpm":1,"fgmiss":-1},"scoring_def":{"sack":1,"int":2,"fum_rec":2,"def_st_fum_rec":2,"blk_kick":2,"safe":2,"def_td":6,"def_st_td":6},"def_tiers":{"pts":[[0,5],[6,4],[13,3],[17,1],[27,0],[34,-1],[45,-3],[1000000,-5]],"yds":[[99,5],[199,3],[299,2],[349,0],[399,-1],[449,-3],[499,-5],[549,-6],[1000000,-7]]}};
 const cases=[{"name":"missing-player-row","pos":"WR","stats":null,"expected":{"participation":null,"current":{"stats":{},"none":true},"live_points":null,"week_points":0},"fallback":null},{"name":"gp-zero-points-zero-is-not-participation","pos":"WR","stats":{"gp":0,"pts_ppr":0},"expected":{"participation":true,"current":{"stats":{"gp":0,"pts_ppr":0},"none":false},"live_points":0,"week_points":0},"fallback":null},{"name":"points-zero-alone-is-not-participation","pos":"WR","stats":{"pts_ppr":0},"expected":{"participation":true,"current":{"stats":{"pts_ppr":0},"none":false},"live_points":0,"week_points":0},"fallback":null},{"name":"played-skill-zero","pos":"RB","stats":{"rush_att":1,"rush_yd":0,"pts_ppr":0},"expected":{"participation":true,"current":{"stats":{"rush_att":1,"rush_yd":0,"pts_ppr":0},"none":false},"live_points":0,"week_points":0},"fallback":null},{"name":"kicker-positive-field-goal-no-gp","pos":"K","stats":{"fgm":1,"fgm_20_29":1,"pts_ppr":3},"expected":{"participation":true,"current":{"stats":{"fgm":1,"fgm_20_29":1,"pts_ppr":3},"none":false},"live_points":3,"week_points":3},"fallback":null},{"name":"kicker-positive-extra-point-no-gp","pos":"K","stats":{"xpm":1,"pts_ppr":1},"expected":{"participation":true,"current":{"stats":{"xpm":1,"pts_ppr":1},"none":false},"live_points":1,"week_points":1},"fallback":null},{"name":"kicker-played-zero-missed-XP","pos":"K","stats":{"xpmiss":1,"pts_ppr":0},"expected":{"participation":true,"current":{"stats":{"xpmiss":1,"pts_ppr":0},"none":false},"live_points":0,"week_points":0},"fallback":null},{"name":"defense-positive-sack-no-gp","pos":"DEF","stats":{"sack":1,"pts_allow":7,"yds_allow":100,"pts_ppr":7},"expected":{"participation":true,"current":{"stats":{"sack":1,"pts_allow":7,"yds_allow":100,"pts_ppr":7},"none":false},"live_points":7,"week_points":7},"fallback":null},{"name":"defense-played-zero-known-allowances","pos":"DEF","stats":{"pts_allow":20,"yds_allow":320,"pts_ppr":0},"expected":{"participation":true,"current":{"stats":{"pts_allow":20,"yds_allow":320,"pts_ppr":0},"none":false},"live_points":0,"week_points":0},"fallback":null},{"name":"receiving-two-point-only","pos":"TE","stats":{"rec_2pt":1,"pts_ppr":2},"expected":{"participation":true,"current":{"stats":{"rec_2pt":1,"pts_ppr":2},"none":false},"live_points":2,"week_points":2},"fallback":null},{"name":"passing-two-point-only","pos":"QB","stats":{"pass_2pt":1,"pts_ppr":2},"expected":{"participation":true,"current":{"stats":{"pass_2pt":1,"pts_ppr":2},"none":false},"live_points":2,"week_points":2},"fallback":null},{"name":"rushing-two-point-only","pos":"RB","stats":{"rush_2pt":1,"pts_ppr":2},"expected":{"participation":true,"current":{"stats":{"rush_2pt":1,"pts_ppr":2},"none":false},"live_points":2,"week_points":2},"fallback":null},{"name":"special-teams-touchdown-only","pos":"WR","stats":{"st_td":1,"pts_ppr":6},"expected":{"participation":true,"current":{"stats":{"st_td":1,"pts_ppr":6},"none":false},"live_points":6,"week_points":6},"fallback":null},{"name":"offensive-blocked-kick-only","pos":"TE","stats":{"idp_blk_kick":1,"pts_ppr":2},"expected":{"participation":true,"current":{"stats":{"idp_blk_kick":1,"pts_ppr":2},"none":false},"live_points":2,"week_points":2},"fallback":null},{"name":"fumble-negative-only","pos":"WR","stats":{"fum_lost":1,"pts_ppr":-2},"expected":{"participation":true,"current":{"stats":{"fum_lost":1,"pts_ppr":-2},"none":false},"live_points":-2,"week_points":-2},"fallback":null},{"name":"fresh-kicker-row-versus-older-build","pos":"K","stats":{"fgm":1,"fgm_20_29":1,"pts_ppr":3},"expected":{"participation":true,"current":{"stats":{"fgm":1,"fgm_20_29":1,"pts_ppr":3},"none":false},"live_points":3,"week_points":3},"fallback":{"xpm":1,"pts_ppr":1}},{"name":"skill-participation-without-scoring-fields","pos":"WR","stats":{"gp":1},"expected":{"current":{"stats":{"gp":1},"none":false},"live_points":0,"week_points":0},"fallback":null},{"name":"defense-participation-without-allowances","pos":"DEF","stats":{"gp":1},"expected":{"current":{"stats":{"gp":1},"none":false},"live_points":10,"week_points":10},"fallback":null}];
 const extract=(name)=>{const m=source.match(new RegExp('^function '+name+'\\([\\s\\S]*?^\\}', 'm'));assert.ok(m,name);return m[0];};
-const names=['current','slpPlayed','livePPR','ppr','fantasyPts','skillPts','currentLeague','scoreWith','derivedStat','weekPts'];
+const names=['observedComponent','current','slpPlayed','livePPR','ppr','fantasyPts','skillPts','currentLeague','scoreWith','derivedStat','weekPts'];
 for(const row of cases){
   const S={data:{...policy,season:2099,week:2},sc:{mode:'sleeper',half:false},leagues:[],games:{g:{id:'g',state:'post',detail:'Final'}},
     slp:row.stats==null?{}:{p:row.stats},live:{},slpOk:true,boxLoaded:new Set(),boxFinal:new Set()};

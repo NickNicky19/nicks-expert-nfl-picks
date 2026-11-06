@@ -285,11 +285,15 @@ def atomic_json(path: Path, value):
 
 def capture_profile(data, meta, root, observed_at, *, model, mode="replay"):
     """Explicit production dispatcher; unknown/crossed profiles never fall back."""
-    from classic_model_v1 import MODEL, ORIGINAL_MODEL, CAPTURE, contract
+    import classic_model_v1 as classic
+    import classic_model_v2 as presence
+    ORIGINAL_MODEL = classic.ORIGINAL_MODEL
     if model == ORIGINAL_MODEL:
         return capture(data, meta, root, observed_at, engine_hashes(root), mode=mode)
-    if model != MODEL:
+    profile = {classic.MODEL: classic, presence.MODEL: presence}.get(model)
+    if profile is None:
         raise IntegrityError("UNKNOWN_CAPTURE_PROFILE")
+    MODEL, CAPTURE, contract = profile.MODEL, profile.CAPTURE, profile.contract
     current = contract(root)
     if data.get("execution_model") != current or meta.get("execution_model") != current:
         raise IntegrityError("CURRENT_BOARD_EXECUTION_BINDING")
@@ -328,7 +332,8 @@ def main():
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--mode", choices=("live", "replay"), required=True)
     from classic_model_v1 import MODEL, ORIGINAL_MODEL
-    parser.add_argument("--model", choices=(ORIGINAL_MODEL, MODEL), default=ORIGINAL_MODEL)
+    from classic_model_v2 import MODEL as PRESENCE_MODEL
+    parser.add_argument("--model", choices=(ORIGINAL_MODEL, MODEL, PRESENCE_MODEL), default=ORIGINAL_MODEL)
     parser.add_argument("--replay-at", help="An explicit test clock; forbidden in live mode")
     args = parser.parse_args()
     if args.mode == "live" and args.replay_at:

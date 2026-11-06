@@ -19,6 +19,7 @@ import zlib
 
 sys.dont_write_bytecode = True
 import classic_model_v1 as model
+import classic_model_v2 as presence_model
 
 VERSION = "classic-failed-attempt-v2"
 STAGES = ("RUN", "CHECKS", "PAIR", "INSTALL", "CAPTURE", "OVERLAY", "PUBLISH", "DEPLOY", "RETRY")
@@ -123,7 +124,9 @@ def document(raw):
                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError("NONFINITE_FAILURE_JSON")))
 
 
-def execution():
+def execution(profile=model):
+    if profile is presence_model:
+        return presence_model.descriptor()
     return dict(schema_version=model.EXECUTION, model=model.MODEL, capture_schema=model.CAPTURE,
                 normalized_stats_cache=model.CACHE, engine_sha256=model.ENGINE,
                 original_shadow_model=model.ORIGINAL_MODEL, original_shadow_source=model.ORIGINAL_SOURCE,
@@ -155,9 +158,11 @@ def validate_native(raw, stage, name, identity, recorded_at):
     current = stage == "current"
     require(set(p) == PAYLOAD_FIELDS | ({"execution_contract", "execution_contract_sha256"} if current else set()),
             "NATIVE_FAILURE_FIELDS")
-    engine = model.ENGINE if current else ORIGINAL_ENGINE
-    require(p["schema_version"] == (model.CAPTURE if current else "baseline-capture-v1")
-            and p["model"] == (model.MODEL if current else model.ORIGINAL_MODEL)
+    profile = {model.MODEL: model, presence_model.MODEL: presence_model}.get(p.get("model")) if current else model
+    require(profile is not None, "NATIVE_FAILURE_PROFILE")
+    engine = profile.ENGINE if current else ORIGINAL_ENGINE
+    require(p["schema_version"] == (profile.CAPTURE if current else "baseline-capture-v1")
+            and p["model"] == (profile.MODEL if current else model.ORIGINAL_MODEL)
             and p["engine_files"] == engine and p["engine_sha256"] == sha(canonical(engine))
             and p["code_commit"] == (identity["trigger_source_sha"] if current else model.ORIGINAL_SOURCE)
             and p["mode"] == "live" and p["evidence_label"] == "LOCAL_PRE_GAME_CAPTURE_PUBLICATION_NOT_VERIFIED"
@@ -166,7 +171,7 @@ def validate_native(raw, stage, name, identity, recorded_at):
     require(utc(p["forecast_generated_at"]) <= observed <= utc(recorded_at), "NATIVE_FAILURE_CLOCK")
     key = dict(data=p["input_sha256"], mode="live")
     if current:
-        require(p["execution_contract"] == execution() and p["execution_contract_sha256"] == sha(canonical(execution())),
+        require(p["execution_contract"] == execution(profile) and p["execution_contract_sha256"] == sha(canonical(execution(profile))),
                 "NATIVE_FAILURE_EXECUTION")
         key["execution"] = p["execution_contract_sha256"]
     else:

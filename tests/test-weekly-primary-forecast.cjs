@@ -5,7 +5,7 @@ const { chromium } = require("playwright");
 const root = path.resolve(__dirname, ".."), source = fs.readFileSync(path.join(root, "output/app.js"), "utf8");
 new vm.Script(source); // Parse the complete changed application without booting it.
 const extract = name => { const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`)); assert(match, name); return match[0]; };
-const functions = ["selectedRankingPolicy", "baselineTdProbability", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "topPicksSourceCaption", "maeDisplayForecast", "maeDisplayDetails", "selectedPropForecast", "propChip", "catCard", "displayedProps", "filteredPlayers", "renderProps"].map(extract).join("\n");
+const functions = ["observedComponent", "statValue", "ppr", "isClassicBaseline", "selectedRankingPolicy", "baselineTdProbability", "effectivePropForecast", "selectedPropGap", "selectedPlayerGap", "visibleTopPicks", "topPicksSourceCaption", "maeDisplayForecast", "maeDisplayDetails", "selectedPropForecast", "propChip", "catCard", "displayedProps", "filteredPlayers", "renderProps"].map(extract).join("\n");
 const helper = fs.readFileSync(path.join(root, "output/weekly-adaptive-overlay.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "output/style.css"), "utf8");
 const widths = process.env.WEEKLY_PRIMARY_CUSTOM_LINE_ONLY === "1" ? [390] : [320, 390, 1280];
@@ -138,6 +138,29 @@ ${functions}
       check(result.chips.length,3,"all supported selected chips are primary");
       check(result.chips.every(x=>!x.includes('R0 lean')),true,"selected chips do not inherit R0 direction");
       check(result.chips.some(x=>x.includes('35.0%')&&x.includes('provisional TD probability')),true,"chip uses selected TD probability");
+      const presence = await page.evaluate(() => {
+        const {S, board} = fixture;
+        const successor = JSON.parse(JSON.stringify(board));
+        successor.execution_model = {model: 'sleeper-matchup-classic-presence-strict-v2'};
+        for (const p of successor.players) p.reference_model = successor.execution_model.model;
+        S.data = successor; S.weeklyOverlay = null; S.selectedRankings = null;
+        S.f.sort = 'selected_edge'; S.f.cat = ''; S.f.q = '';
+        renderProps();
+        const p = successor.players[0], meta = {_presence:{version:'nfl-data-presence-strict-v3',kind:'actual'},gp:1};
+        const td = {...p.props[2],proj:null,td_chance:null};
+        return {
+          newBaselineLabel:document.querySelector('#f-sort option[value="selected_edge"]').textContent.includes('Current baseline: forecast gap'),
+          newBaselineStatus:document.querySelector('[data-selected-product-status]').textContent.includes('Current baseline'),
+          missingTD:catCard(p,td).includes('TD probability unavailable')&&!catCard(p,td).includes('0% TD chance'),
+          explicitNull:statValue('rec',{...meta,rec:null})===null,
+          absent:statValue('rec',meta)===null,
+          actualZero:statValue('rec',{...meta,rec:0})===0,
+          partialCombined:statValue('rush_rec_yd',{...meta,rush_yd:55,rec_yd:null})===null,
+          invalid:statValue('rec',{...meta,rec:NaN})===null,
+          noOverflow:document.documentElement.scrollWidth<=innerWidth,
+        };
+      });
+      for (const [name, passed] of Object.entries(presence)) check(passed,true,'presence successor '+name+' at '+width);
       check(errors,[],"browser has no errors");
       await context.close();
     }

@@ -44,8 +44,17 @@ CURRENT_MODEL = "sleeper-matchup-classic-fg-identity-v1"
 CURRENT_POLICY = dict(POLICY, version="selected-projection-gap-classic-v1",
     fallback="same-opportunity reference identified by forecast_source and model_version; unavailable is never zero")
 CURRENT_POLICY_SHA = overlay.digest(CURRENT_POLICY)
+PRESENCE_MODEL = "sleeper-matchup-classic-presence-strict-v2"
+PRESENCE_POLICY = dict(CURRENT_POLICY, version="selected-projection-gap-classic-presence-v2")
+PRESENCE_POLICY_SHA = overlay.digest(PRESENCE_POLICY)
+BASELINE_MODELS = {CURRENT_MODEL, PRESENCE_MODEL}
 def policy_for(board):
-    return CURRENT_POLICY if board.get('execution_model',{}).get('model')==CURRENT_MODEL else POLICY
+    model = board.get('execution_model',{}).get('model')
+    return PRESENCE_POLICY if model == PRESENCE_MODEL else CURRENT_POLICY if model == CURRENT_MODEL else POLICY
+
+def origin_policies(board):
+    policy = policy_for(board)
+    return [POLICY, CURRENT_POLICY, PRESENCE_POLICY] if policy == PRESENCE_POLICY else [POLICY, CURRENT_POLICY] if policy == CURRENT_POLICY else [POLICY]
 
 ITEM_FIELDS = {"player_id", "game_id", "key", "direction", "line", "line_from", "adj", "score", "over", "n",
                "forecast_source", "product", "model_version", "selected_row_sha256", "selected_row_canonical", "selected_at", "kickoff_utc"}
@@ -73,7 +82,7 @@ def effective(player, prop, doc, now):
         return row["forecast_value"], "SELECTED", row["product"], row["model_version"], overlay.digest(row), overlay.canonical(row).decode()
     value = prop.get("adj")
     if number(value):
-        return (value,"CURRENT_BASELINE","reference_point",CURRENT_MODEL,None,None) if player.get("reference_model")==CURRENT_MODEL else (value,"R0_FALLBACK","reference_point",None,None,None)
+        return (value,"CURRENT_BASELINE","reference_point",player["reference_model"],None,None) if player.get("reference_model") in BASELINE_MODELS else (value,"R0_FALLBACK","reference_point",None,None,None)
     return None
 
 
@@ -110,10 +119,10 @@ def validate_item(item, offers, selected, *, frozen=False):
                 or overlay.utc(item["selected_at"]) >= overlay.utc(row["valid_until_utc"])):
             raise ValueError("ranking selected identity")
     elif item["forecast_source"] in {"R0_FALLBACK","CURRENT_BASELINE"}:
-        current=player.get("reference_model")==CURRENT_MODEL
+        current=player.get("reference_model") in BASELINE_MODELS
         if item["forecast_source"] != ("CURRENT_BASELINE" if current else "R0_FALLBACK"):raise ValueError("ranking reference model")
         if (item["adj"] != prop.get("adj") or item["product"] != "reference_point"
-                or item["model_version"] != (CURRENT_MODEL if current else None) or item["selected_row_sha256"] is not None or item["selected_row_canonical"] is not None):
+                or item["model_version"] != (player["reference_model"] if current else None) or item["selected_row_sha256"] is not None or item["selected_row_canonical"] is not None):
             raise ValueError("ranking R0 identity")
     else: raise ValueError("ranking forecast source")
     return item
@@ -128,7 +137,7 @@ def prepare(board, board_hash, doc, overlay_hash, *, now, website_source_sha, pr
     started = {g["id"] for g in board["games"] if g.get("state") != "pre" or overlay.utc(g["kickoff"]) <= overlay.utc(now)}
     picks = {"over": [], "under": []}; proofs = []; fallback = {"started_without_selected_record": 0, "unavailable_forecast": 0, "expired_before_kickoff": 0}
     if previous is not None:
-        if (previous["schema_version"] != VERSION or previous["policy"] not in ([POLICY,CURRENT_POLICY]if policy_for(board)==CURRENT_POLICY else [POLICY]) or previous["policy_sha256"] != overlay.digest(previous["policy"])
+        if (previous["schema_version"] != VERSION or previous["policy"] not in origin_policies(board) or previous["policy_sha256"] != overlay.digest(previous["policy"])
                 or (previous["season"], previous["week"]) != (board["season"], board["week"])):
             previous = None
     if previous is not None:
@@ -221,7 +230,7 @@ def validate_origin_policy(original, receipt, item, board):
     exact earlier policy, source, model and content; a policy name alone cannot
     authorize a different reference stream or changed thresholds.
     """
-    allowed = (POLICY, CURRENT_POLICY) if policy_for(board) == CURRENT_POLICY else (POLICY,)
+    allowed = origin_policies(board)
     if (original.get("schema_version") != VERSION
             or (original.get("season"), original.get("week")) != (board["season"], board["week"])
             or not any(overlay.canonical(original.get("policy")) == overlay.canonical(policy)
@@ -232,7 +241,8 @@ def validate_origin_policy(original, receipt, item, board):
         raise ValueError("ranking original policy binding")
     source = item["forecast_source"]
     if source == "CURRENT_BASELINE":
-        if original["policy"] != CURRENT_POLICY or item["model_version"] != CURRENT_MODEL:
+        expected_policy = {CURRENT_MODEL: CURRENT_POLICY, PRESENCE_MODEL: PRESENCE_POLICY}.get(item["model_version"])
+        if expected_policy is None or original["policy"] != expected_policy:
             raise ValueError("ranking original current reference policy")
     elif source == "R0_FALLBACK":
         if original["policy"] != POLICY or item["model_version"] is not None:

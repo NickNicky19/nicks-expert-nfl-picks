@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'tools'),str(ROOT/'pull'),str(ROOT/'tests')]
-import classic_model_v1 as model
+import classic_model_v2 as model
 import classic_source_replay_v1 as sources
 import classic_build_pair_v1 as pair
 import reliability as r
@@ -30,7 +30,7 @@ def policy():
     value=deepcopy(old)
     value.update(schema_version=f.POLICY_V3,historical_policy_sha256=f.HISTORICAL_POLICY_SHA256,
         current_execution=f.current_execution_contract(ROOT),
-        website_code_sha256={name:f.sha((ROOT/name).read_bytes())for name in f.CURRENT_CODE_FILES})
+        website_code_sha256={name:f.sha((ROOT/name).read_bytes())for name in f.current_code_files(ROOT)})
     return value
 
 class ClassicProfileTests(unittest.TestCase):
@@ -51,7 +51,7 @@ class ClassicProfileTests(unittest.TestCase):
     def test_current_model_closes_all_eight_actual_files(self):
         contract=model.contract(ROOT)
         self.assertEqual(set(contract['engine_sha256']),set(model.ENGINE))
-        self.assertEqual(contract['model'],'sleeper-matchup-classic-fg-identity-v1')
+        self.assertEqual(contract['model'],'sleeper-matchup-classic-presence-strict-v2')
         self.assertIn('pull/grade.py',contract['engine_sha256'])
 
     def test_same_size_engine_or_grader_corruption_is_rejected(self):
@@ -106,7 +106,7 @@ class ClassicPolicyTests(unittest.TestCase):
         for player in board['players']:player['reference_model']=model.MODEL
         doc['rows']=[];doc['display_board_sha256']=doc['canonical_board_sha256']=overlay.digest(board)
         result=make(board,doc)
-        self.assertEqual(result['policy'],ranking.CURRENT_POLICY)
+        self.assertEqual(result['policy'],ranking.PRESENCE_POLICY)
         items=[item for rows in result['picks'].values()for item in rows]
         self.assertTrue(items)
         self.assertTrue(all(item['forecast_source']=='CURRENT_BASELINE'and item['model_version']==model.MODEL for item in items))

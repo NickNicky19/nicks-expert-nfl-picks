@@ -4,7 +4,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
 const {execFileSync}=require('node:child_process'),{webcrypto}=require('node:crypto');
 const root=path.resolve(__dirname,'..'),source=fs.readFileSync(path.join(root,'output/app.js'),'utf8');
 const program=`import sys,json,tempfile,runpy,copy
-sys.path[:0]=['tools','tests'];import classic_model_v1 as m,weekly_selected_rankings as r,weekly_adaptive_overlay as o
+sys.path[:0]=['tools','tests'];import classic_model_v2 as m,weekly_selected_rankings as r,weekly_adaptive_overlay as o
 from reliability import atomic_json
 t=runpy.run_path('tests/test_weekly_selected_rankings.py');board,doc=t['fixture']();doc['rows']=[]
 legacy=t['make'](board,doc)
@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory()as directory:
  print(json.dumps(dict(board=board,doc=doc,ranking=current,pointer=pointer,frozen_board=frozen_board,frozen_doc=frozen_doc,frozen=frozen,frozen_pointer=frozen_pointer)))`;
 const fixture=JSON.parse(execFileSync(process.env.PYTHON||'python3',['-B','-c',program],{cwd:root}));
 const helper=require('../output/weekly-adaptive-overlay.js');
-const functions=['selectedRankingPolicy','rankingCanonical','compareSelectedRankingItems','validateSelectedRankings'].map(name=>{
+const functions=['isClassicBaseline','selectedRankingPolicy','rankingCanonical','compareSelectedRankingItems','validateSelectedRankings'].map(name=>{
  const found=source.match(new RegExp('(?:async )?function '+name+'\\([^]*?\\n\\}'));assert(found,name);return found[0];
 }).join('\n');
 const context={S:{data:fixture.board},crypto:webcrypto,TextEncoder};vm.createContext(context);vm.runInContext(functions,context);
@@ -34,7 +34,7 @@ const context={S:{data:fixture.board},crypto:webcrypto,TextEncoder};vm.createCon
  let overlay=helper.validate(fixture.doc,fixture.board,fixture.doc.display_board_sha256);
  await context.validateSelectedRankings(fixture.ranking,fixture.pointer,fixture.board,overlay);checks++;
  const items=Object.values(fixture.ranking.picks).flat();
- assert(items.length>0&&items.every(x=>x.forecast_source==='CURRENT_BASELINE'&&x.model_version==='sleeper-matchup-classic-fg-identity-v1'));checks++;
+ assert(items.length>0&&items.every(x=>x.forecast_source==='CURRENT_BASELINE'&&x.model_version==='sleeper-matchup-classic-presence-strict-v2'));checks++;
  const bad=structuredClone(fixture.ranking);const first=Object.values(bad.picks).flat()[0];first.forecast_source='R0_FALLBACK';first.model_version=null;
  await assert.rejects(()=>context.validateSelectedRankings(bad,fixture.pointer,fixture.board,overlay),/Ranking fallback/);checks++;
  context.S.data=fixture.frozen_board;
