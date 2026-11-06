@@ -90,7 +90,7 @@ jobs:
       # Required deterministic invariants are enforced above, not bypassed here.
       - name: Legacy diagnostic verification (advisory)
         id: legacy
-        run: timeout --signal=KILL 75s python tools/verify.py
+        run: timeout --signal=KILL 75s python tools/verify.py --json "$RUNNER_TEMP/legacy-diagnostic.json"
         continue-on-error: true
       - name: Historical DraftKings comparison (advisory)
         id: comparison
@@ -123,11 +123,19 @@ jobs:
           d = json.loads(p.read_text())
           d['legacy_verifier'] = os.environ['LEGACY_OUTCOME']
           d['historical_comparison'] = os.environ['COMPARISON_OUTCOME']
+          report = pathlib.Path(os.environ['RUNNER_TEMP']) / 'legacy-diagnostic.json'
+          if report.exists():
+              raw = report.read_bytes()
+              if len(raw) > 8192: raise ValueError('BOUNDED_LEGACY_DIAGNOSTIC_REQUIRED')
+              detail = json.loads(raw)
+              if detail.get('schema_version') != 'legacy-diagnostic-scope-v2' or detail.get('numerical_parity_passed') is not False:
+                  raise ValueError('EXPLICIT_UNEVALUATED_DIAGNOSTIC_REQUIRED')
+              d['legacy_verifier_detail'] = detail
           p.write_text(json.dumps(d, separators=(',', ':'), allow_nan=False))
           PY
       - name: Prepare isolated provisional overlay (default R0)
         id: overlay
-        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v8.json --feed-policy-sha256 e3cdc393fef8c51f852f25a472328fc1ed87c3ea46e409d3a3544a5849b74b0a
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v9.json --feed-policy-sha256 6aeb74c6ecafc80684eb5b1711a2a120862d3d996e5a6b41d9ef8419d8cb7145
       - name: Prepare independently typed MAE point display
         id: mae-display
         run: python tools/weekly_mae_display_v2.py --root . --website-source-sha "$(git rev-parse HEAD)" --policy config/weekly-mae-display-source-policy-v2.json --policy-sha256 aa5ceb748273e421cf61ad3d9d257df24fd468275344c503b157d1b46c5e616c
