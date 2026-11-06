@@ -16,6 +16,26 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../output/app.js'), 'utf8');
 
+// Exact per-category unknown/push/DNP disclosure; this is a UI fixture, not a
+// synthetic football result or hand-inserted production reporting group.
+{
+  const extract = name => source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`))[0];
+  const zero={hit:0,miss:0,push:0,dnp:0,unresolved:0,pct:null};
+  const leans={...zero,hit:1,miss:1,unresolved:3,pct:50,by_category:{rec:{...zero,hit:1,unresolved:2,pct:100},pass_int:{...zero,miss:1,unresolved:1,push:1,dnp:1,pct:0}}};
+  const week={season:2099,week:1,top_over:{...zero,picks:[]},top_under:{...zero,picks:[]},leans,ppr:{n:0}};
+  const host={innerHTML:''};
+  const box={S:{track:{grading_version:'statistical-presence-strict-v5-20261106',weeks:[week],cumulative:{weeks:1,top_over:zero,top_under:zero,leans,ppr:{n:0}}},dk:null,data:{categories:{rec:{label:'Receptions'},pass_int:{label:'Interceptions'}}}},
+    NflReliability:require('../output/reliability-ui.js'),fmt:x=>String(x),esc:x=>String(x),$:()=>host,mountOriginalSideRecord:()=>{}};
+  vm.createContext(box);vm.runInContext(['pctText','dkSection','renderRecord'].map(extract).join('\n'),box);box.renderRecord();
+  assert.ok(host.innerHTML.includes('1-0 · 100% · 1 decided · 2 unresolved'));
+  assert.ok(host.innerHTML.includes('0-1 · 0% · 1 decided · 1 push · 1 confirmed DNP · 1 unresolved'));
+  assert.ok(host.innerHTML.includes('Older compacted source rows cannot prove'));
+  const crypto=require('node:crypto'),index=fs.readFileSync(path.join(__dirname,'../output/index.html'),'utf8');
+  const appHash=crypto.createHash('sha256').update(source).digest('hex');
+  assert.ok(index.includes('app.js?v='+appHash),'fresh-page app URL matches actual consumer bytes');
+  console.log('4 per-category-coverage/cache identity assertions passed.');
+}
+
 // The actual Record consumer cannot label the average proxy as issued/current
 // model accuracy, including incomplete outcomes in the denominator disclosure.
 {

@@ -3109,7 +3109,7 @@ function renderRecord() {
     </div>
     <p class="note">Other lean outcomes: ${esc(extras(c.leans) || "none recorded")}</p>
     ${c.by_venue ? `<h2>Statistical results by line source</h2><div class="glist">${Object.entries(c.by_venue).map(([key, tally]) => `<div class="g"><span>${esc(LINE_FROM[key] || key)}</span><span>${tally.hit}-${tally.miss} · ${pctText(tally)} · ${esc(extras(tally))}</span></div>`).join("")}</div>` : ""}
-    ${cats.length ? `<h2>Leans by category</h2><div class="glist">${cats.map(([k, v]) => `<div class="g"><span>${S.data.categories[k].label}</span><span class="num">${v.hit}-${v.miss} · ${pctText(v)}</span></div>`).join("")}</div>` : ""}
+    ${cats.length ? `<h2>Leans by category</h2><div class="glist">${cats.map(([k, v]) => `<div class="g"><span>${S.data.categories[k].label}</span><span class="num">${v.hit}-${v.miss} · ${pctText(v)} · ${graded(v)} decided${extras(v) ? ` · ${esc(extras(v))}` : ""}</span></div>`).join("")}</div>` : ""}
     ${c.games ? `<h2>Game leans vs DraftKings</h2><div class="stats">
       <div class="card stat"><div class="k">Against the spread</div><div class="v">${pctText(c.games.spread)}</div><div class="d">${c.games.spread.hit}-${c.games.spread.miss}, when our spread is 2+ points off DraftKings'</div></div>
       <div class="card stat"><div class="k">Totals</div><div class="v">${pctText(c.games.total)}</div><div class="d">${c.games.total.hit}-${c.games.total.miss}, when our total is 3+ points off DraftKings'</div></div>
