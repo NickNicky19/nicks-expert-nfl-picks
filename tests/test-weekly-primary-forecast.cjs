@@ -161,6 +161,31 @@ ${functions}
         };
       });
       for (const [name, passed] of Object.entries(presence)) check(passed,true,'presence successor '+name+' at '+width);
+      const customBaseline = await page.evaluate(() => {
+        const p = S.data.players[0], prop = p.props[0], key = p.id+'|'+prop.key;
+        const savedBoard = JSON.stringify(S.data), savedChip = propChip(p, prop);
+        const source = prop.line_from, originalLine = prop.line, originalLean = prop.lean;
+        const node = html => { const wrap=document.createElement('div');wrap.innerHTML=html;return wrap; };
+        S.lines[key]=1;
+        const over=node(propChip(p,prop)), detail=node(catCard(p,prop));
+        S.lines[key]=2.25;
+        const neutral=node(propChip(p,prop));
+        S.lines[key]=0;
+        const zero=node(propChip(p,prop));
+        delete S.lines[key];
+        return {
+          noResearchOverride:selectedPropForecast(p,prop.key)===null,
+          customSide:over.querySelector('.pchip').classList.contains('lean-over') && over.textContent.includes('▲') && !over.textContent.includes('▼'),
+          detailAgrees:detail.querySelector('.lean').textContent.includes('Lean over'),
+          customSource:over.querySelector('.src').textContent==='custom' && !over.querySelector('.src').classList.contains('dk'),
+          neutralHasNoArrow:!neutral.querySelector('.arrow'),
+          zeroLine:zero.querySelector('b').textContent==='0' && zero.textContent.includes('▲'),
+          resetRestoresSerializedChip:propChip(p,prop)===savedChip,
+          sourceUnchanged:prop.line_from===source && prop.line===originalLine && prop.lean===originalLean,
+          savedBoardUnchanged:JSON.stringify(S.data)===savedBoard,
+        };
+      });
+      for (const [name, passed] of Object.entries(customBaseline)) check(passed,true,'baseline custom line '+name+' at '+width);
       check(errors,[],"browser has no errors");
       await context.close();
     }

@@ -1283,17 +1283,17 @@ function propChip(p, raw) {
   const referenceTD = baselineTdProbability(prop);
   const selected = selectedPropForecast(p, prop.key);
   const mae = maeDisplayForecast(p, prop.key);
-  const effectiveGap = selected ? selectedPropGap(p, prop, true) : null;
-  const lean = selected ? effectiveGap?.lean : prop.lean;
   const customLine = S.lines[`${p.id}|${prop.key}`];
   const edited = customLine != null && customLine !== prop.line;
   const line = customLine ?? prop.line;
+  const effectiveGap = selected || edited ? selectedPropGap(p, prop, true) : null;
+  const lean = selected || edited ? effectiveGap?.lean : prop.lean;
   const st = propStatus(p, prop.key, line, lean);
   const arrow = prop.key === "anytime_td"
     ? selected ? "" : `<span class="muted"> ${referenceTD == null ? "Probability unavailable" : `${Math.round(100 * referenceTD)}%`}</span>`
     : lean ? `<span class="arrow">${lean === "over" ? "▲" : "▼"}</span>` : "";
   const cls = [lean ? `lean-${lean}` : "", st && lean && (st.res === "hit" || st.res === "miss") ? st.res : ""].join(" ");
-  const lineText = prop.key === "anytime_td" ? "" : `<b>${line}</b><span class="src ${selected && edited ? "" : prop.line_from || "ours"}">${selected && edited ? "custom" : LINE_TAG[prop.line_from] || "est"}</span>`;
+  const lineText = prop.key === "anytime_td" ? "" : `<b>${line}</b><span class="src ${edited ? "" : prop.line_from || "ours"}">${edited ? "custom" : LINE_TAG[prop.line_from] || "est"}</span>`;
   const cur = st && st.v != null ? `<span class="cur">${fmtStat(prop.key, st.v)}${prop.key === "fpts" ? `<span class="src">provisional</span>` : ""}</span>` : "";
   if (mae) return `<span class="pchip ${cls}" data-stat-point-mae-v2 title="MAE display point; ranking lean and Top Picks retain the existing selection forecast">${SHORT[prop.key]}<b>${mae.text}</b><span class="src">${mae.frozen ? "frozen" : "provisional"} ${esc(mae.label)}</span>${lineText ? `<span class="muted"> · ${edited ? "Your line" : "book/reference line"}</span>${lineText}` : ""}${arrow ? `<span class="muted"> ranking lean</span>${arrow}` : ""}${cur}</span>`;
   if (selected) return `<span class="pchip ${cls}" data-weekly-primary title="Selected forecast assumes participation; lean is a projection gap, not a win probability">${SHORT[prop.key]}<b>${selected.text}</b><span class="src">${selected.frozen ? "frozen" : "provisional"} ${selected.label}</span>${lineText ? `<span class="muted"> · ${edited ? "Your line" : prop.line_from === "ours" || !prop.line_from ? (isClassicBaseline((p.reference_model || S.data.execution_model?.model)) ? "Baseline line" : "R0 line") : "book line"}</span>${lineText}` : ""}${arrow ? `<span class="muted"> selected lean</span>${arrow}` : ""}${cur}</span>`;
