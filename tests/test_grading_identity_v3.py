@@ -13,7 +13,7 @@ sys.path[:0] = [str(ROOT / "pull"), str(ROOT / "tools")]
 import build
 import grade
 
-EXPECTED_VERSION = "statistical-presence-strict-v5-20261106"
+EXPECTED_VERSION = "statistical-presence-verified-int-v6-20261112"
 OLD_VERSION = "statistical-v2"
 
 
@@ -29,6 +29,55 @@ def fixture():
 
 
 class IdentityV3Tests(unittest.TestCase):
+    def test_verified_interception_zero_changes_grade_without_mutating_sparse_stats(self):
+        archive = json.loads((ROOT/'output/data/archive/2026_w05.json').read_bytes())
+        stats = json.loads((ROOT/'data/cache/stat-keys-presence-strict-v3/stats_2026_05.json').read_bytes())
+        before = json.dumps((archive,stats),sort_keys=True)
+        raw = (ROOT/'output/data/archive/2026_w05.json').read_bytes()
+        verified = grade.verified_int_outcomes()[hashlib.sha256(raw).hexdigest()]
+        old = grade.grade_week(archive,stats,None)
+        new = grade.grade_week(archive,stats,None,verified)
+        self.assertEqual(old['leans']['by_category']['pass_int']['unresolved'],14)
+        self.assertEqual((new['leans']['by_category']['pass_int']['hit'],new['leans']['by_category']['pass_int']['miss']), (9,11))
+        self.assertEqual(new['leans']['by_category']['pass_int']['unresolved'],0)
+        self.assertEqual(old['ppr'],new['ppr'])
+        self.assertEqual(old['matchup'],new['matchup'])
+        self.assertEqual({k:v for k,v in old['leans']['by_category'].items()if k!='pass_int'},
+                         {k:v for k,v in new['leans']['by_category'].items()if k!='pass_int'})
+        self.assertEqual(json.dumps((archive,stats),sort_keys=True),before)
+        self.assertNotIn('pass_int',stats['6770']['stats'])
+
+    def test_all_verified_player_games_are_explicit_passing_values(self):
+        registry=grade.verified_int_outcomes()
+        values=[v for rows in registry.values()for v in rows.values()]
+        self.assertEqual(len(values),86)
+        self.assertEqual(sum(v==0 for v in values),46)
+        self.assertTrue(all(type(v)is int and v>=0 for v in values))
+
+    def test_verified_index_tampering_fails_before_source_use(self):
+        raw=(ROOT/'output/data/verified-int-v1/index.json').read_bytes()
+        with tempfile.TemporaryDirectory()as directory:
+            root=Path(directory);target=root/'output/data/verified-int-v1/index.json';target.parent.mkdir(parents=True)
+            target.write_bytes(raw+b' ')
+            with patch.object(grade,'__file__',str(root/'pull/grade.py')):
+                with self.assertRaisesRegex(ValueError,'VERIFIED_INT_INDEX_IDENTITY'):
+                    grade.verified_int_outcomes.__wrapped__()
+
+    def test_verified_outcome_never_substitutes_for_missing_participation(self):
+        prop=dict(key='pass_int',line=.5)
+        self.assertEqual(grade._prop_result(prop,'under',{'stats':{}},0),(None,'unresolved'))
+        self.assertEqual(grade._prop_result(prop,'under',{'stats':{'gp':1,'pass_int':None}}),(None,'unresolved'))
+        self.assertEqual(grade._prop_result(prop,'under',{'stats':{'gp':1,'pass_int':None}},0),(0,'hit'))
+
+    def test_canonical_audited_archive_change_fails_closed(self):
+        archive,stats=fixture();archive.update(season=2026,week=5)
+        with tempfile.TemporaryDirectory()as directory:
+            root=Path(directory);folder=root/'output/data/archive';folder.mkdir(parents=True)
+            (folder/'2026_w05.json').write_text(json.dumps(archive))
+            with patch.object(grade,'__file__',str(root/'pull/grade.py')),patch.object(grade,'verified_int_outcomes',return_value={'known-original-hash':{}}):
+                with self.assertRaisesRegex(ValueError,'VERIFIED_INT_ARCHIVE_CHANGED'):
+                    grade.grade_all(folder,lambda *args:stats,(2026,5),{'fictional-game'})
+
     def test_new_version_is_explicit_on_week_and_issued_report(self):
         self.assertEqual(grade.GRADING_VERSION, EXPECTED_VERSION)
         archive, stats = fixture()

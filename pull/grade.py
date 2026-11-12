@@ -12,12 +12,110 @@ from pathlib import Path
 import math
 import statistics
 from collections import Counter
+from functools import lru_cache
+from datetime import datetime
+import gzip
+import io
+import re
 
 import gamemodel
 import scoring
 
-GRADING_VERSION = "statistical-presence-strict-v5-20261106"
+GRADING_VERSION = "statistical-presence-verified-int-v6-20261112"
+INT_OUTCOME_VERSION = "pass-int-final-passing-boxscore-v1-20261112"
+INT_INDEX_SHA256 = "d9ed1e6005c6947b8b6aac815fbac7b4b3b93b1e3a83532b3d92ebd44fe2a3ce"
 RESULTS = ("hit", "miss", "push", "dnp", "unresolved")
+
+
+@lru_cache(maxsize=1)
+def verified_int_outcomes():
+    """Offline, reviewed final-outcome evidence; never a forecast/history input.
+
+    The immutable source corpus is copied with existing output/data staging.
+    Missing/corrupt evidence fails publication instead of restoring a partial
+    accuracy headline. Unknown sparse-provider fields themselves stay unknown.
+    """
+    root = Path(__file__).resolve().parents[1] / "output/data/verified-int-v1"
+    path = root / "index.json"
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 524288:
+        raise ValueError("VERIFIED_INT_INDEX_REQUIRED")
+    body = path.read_bytes()
+    if hashlib.sha256(body).hexdigest() != INT_INDEX_SHA256:
+        raise ValueError("VERIFIED_INT_INDEX_IDENTITY")
+    index = json.loads(body)
+    if index.get("schema_version") != "verified-passing-interceptions-v1" or index.get("outcome_version") != INT_OUTCOME_VERSION:
+        raise ValueError("VERIFIED_INT_OUTCOME_VERSION")
+
+    def source(ref):
+        name = ref["path"]
+        if not re.fullmatch(r"sources/[a-f0-9]{64}\.json\.gz", name):
+            raise ValueError("VERIFIED_INT_SOURCE_PATH")
+        file = root / name
+        if file.is_symlink() or not file.is_file() or file.stat().st_size > 8 << 20:
+            raise ValueError("VERIFIED_INT_SOURCE_REQUIRED")
+        packed = file.read_bytes()
+        if hashlib.sha256(packed).hexdigest() != ref["gzip_SHA256"]:
+            raise ValueError("VERIFIED_INT_PACKED_SOURCE_IDENTITY")
+        with gzip.GzipFile(fileobj=io.BytesIO(packed)) as stream:
+            raw = stream.read((32 << 20) + 1)
+        if len(raw) != ref["raw_bytes"] or len(raw) > 32 << 20 or hashlib.sha256(raw).hexdigest() != ref["raw_SHA256"]:
+            raise ValueError("VERIFIED_INT_RAW_SOURCE_IDENTITY")
+        return json.loads(raw)
+
+    # The two reviewed composite bridges require more than a name match.
+    identities = index["identity_sources"]
+    roster = source(identities["sleeper"])
+    for pid, aid, bio_key, code, team_id in [("13425", "4596472", "jalon", "TB", "27"), ("11256", "4434153", "tyson", "CHI", "3")]:
+        player, bio = roster[pid], source(identities[bio_key])
+        if not (player["player_id"] == pid and bio["id"] == aid
+                and player["full_name"] == bio["displayName"]
+                and player["birth_date"] == bio["dateOfBirth"][:10]
+                and player["position"] == bio["position"]["abbreviation"] == "QB"
+                and player["team"] == code and f"/teams/{team_id}?" in bio["team"]["$ref"]):
+            raise ValueError("VERIFIED_INT_COMPOSITE_IDENTITY")
+    del roster
+
+    aliases = {"WSH": "WAS", "LA": "LAR"}
+    output = {}
+    for case in index["cases"]:
+        data = source(index["game_sources"][case["game_id"]])
+        header = data["header"]
+        competitions = header["competitions"]
+        if not (header["id"] == case["game_id"] and header["season"]["year"] == case["season"]
+                and header["season"]["type"] == 2 and header["week"] == case["week"] and len(competitions) == 1):
+            raise ValueError("VERIFIED_INT_EVENT_IDENTITY")
+        game = competitions[0]
+        status = game["status"]["type"]
+        teams = {aliases.get(c["team"]["abbreviation"], c["team"]["abbreviation"]) for c in game["competitors"]}
+        instant = lambda x: datetime.fromisoformat(x.replace("Z", "+00:00"))
+        if not (game["id"] == case["game_id"] and status["completed"] is True and status["state"] == "post"
+                and re.fullmatch(r"Final(?:/\d*OT)?", status["detail"])
+                and teams == {case["team"], case["opponent"]}
+                and instant(game["date"]) == instant(case["recorded_kickoff"]) and case["position"] == "QB"):
+            raise ValueError("VERIFIED_INT_FINAL_GAME_CONTRACT")
+        match = re.fullmatch(r"/boxscore/players/(\d+)/statistics/(\d+)/athletes/(\d+)/stats/(\d+)", case["source"]["json_pointer"])
+        if not match:
+            raise ValueError("VERIFIED_INT_FIELD_POINTER")
+        ti, si, ai, column = map(int, match.groups())
+        team_row = data["boxscore"]["players"][ti]
+        group = team_row["statistics"][si]
+        athlete = group["athletes"][ai]
+        value = athlete["stats"][column]
+        if not (aliases.get(team_row["team"]["abbreviation"], team_row["team"]["abbreviation"]) == case["team"]
+                and group["name"] == "passing" and group["labels"].count("INT") == 1
+                and group["labels"][column] == "INT" and len(athlete["stats"]) == len(group["labels"])
+                and str(athlete["athlete"]["id"]) == case["source"]["espn_athlete_id"]
+                and type(value) is str and re.fullmatch(r"0|[1-9]\d*", value)
+                and type(case["verified_value"]) is int and int(value) == case["verified_value"]):
+            raise ValueError("VERIFIED_INT_EXPLICIT_THROWN_OUTCOME")
+        archive = output.setdefault(case["archive_SHA256"], {})
+        key = (case["game_id"], case["player_id"])
+        if key in archive:
+            raise ValueError("VERIFIED_INT_DUPLICATE_PLAYER_GAME")
+        archive[key] = int(value)
+    if sum(map(len, output.values())) != 86 or len(output) != 5:
+        raise ValueError("VERIFIED_INT_FROZEN_POPULATION")
+    return output
 
 
 def _number(value):
@@ -185,23 +283,27 @@ def preserve_issued_record(path):
 
 
 
-def _prop_result(prop, direction, entry):
+def _prop_result(prop, direction, entry, verified_value=None):
     status = participation(entry)
     if status != "played":
         return None, status
     # Participation does not certify absent outcome components as zero.
     raw = scoring.stat_value(prop["key"], entry["stats"])
+    if prop["key"] == "pass_int" and verified_value is not None:
+        raw = verified_value
     if raw is None:
         return None, "unresolved"
     value = round(raw, 2)
     return value, result(direction, value, prop.get("line"))
 
 
-def grade_week(archive, stats, final_games):
+def grade_week(archive, stats, final_games, verified_int=None):
     """None explicitly means all final; a set means only those confirmed final."""
     players = {p["id"]: p for p in archive["players"]}
     done = lambda gid: final_games is None or gid in final_games
     out = {"season": archive["season"], "week": archive["week"], "grading_version": GRADING_VERSION}
+    verified_int = verified_int or {}
+    actual_for = lambda who, prop: verified_int.get((who["game_id"], who["id"])) if prop["key"] == "pass_int" else None
     for side in ("over", "under"):
         graded = []
         for p in archive["picks"].get(side, []):
@@ -210,7 +312,7 @@ def grade_week(archive, stats, final_games):
                 continue
             if p.get("line_from") not in ("dk", "sleeper"):
                 continue
-            value, outcome = _prop_result(p, side, _bound_stats(archive, who, stats.get(p["player_id"]), game_id=p["game_id"]))
+            value, outcome = _prop_result(p, side, _bound_stats(archive, who, stats.get(p["player_id"]), game_id=p["game_id"]), actual_for(who, p))
             graded.append({
                 "player_id": p["player_id"], "game_id": p["game_id"], "name": who.get("name", p["player_id"]),
                 "key": p["key"], "line": p["line"], "line_from": p.get("line_from"),
@@ -232,7 +334,7 @@ def grade_week(archive, stats, final_games):
         for prop in p["props"]:
             venue, side = prop.get("line_from"), prop.get("lean")
             if side and venue in ("dk", "sleeper") and prop["key"] != "anytime_td":
-                _, outcome = _prop_result(prop, side, entry)
+                _, outcome = _prop_result(prop, side, entry, actual_for(p, prop))
                 lean_results.append(outcome)
                 by_cat.setdefault(prop["key"], []).append(outcome)
                 by_venue.setdefault(venue, []).append(outcome)
@@ -300,13 +402,24 @@ def combine(weeks):
 def grade_all(archive_dir, stats_for, current, final_games, scores_for=None):
     weeks = []
     for path in sorted(archive_dir.glob("*.json")):
-        archive = json.loads(path.read_text())
+        raw = path.read_bytes()
+        archive = json.loads(raw)
         key = (archive["season"], archive["week"])
         stats = stats_for(*key) or {}
         scores = scores_for(*key) if scores_for else {}
         # Older week does not imply every game is final (postponements exist).
         finals = final_games if key == current else set(scores)
-        week = grade_week(archive, stats, finals)
+        verified = None
+        canonical_archive = Path(__file__).resolve().parents[1] / "output/data/archive"
+        if archive_dir.resolve() == canonical_archive.resolve() and archive["season"] == 2026 and 5 <= archive["week"] <= 9:
+            digest = hashlib.sha256(raw).hexdigest()
+            registry = verified_int_outcomes()
+            if digest not in registry:
+                raise ValueError("VERIFIED_INT_ARCHIVE_CHANGED")
+            verified = registry[digest]
+        week = grade_week(archive, stats, finals, verified)
+        if verified:
+            week["verified_pass_int"] = {"outcome_version": INT_OUTCOME_VERSION, "player_games": len(verified), "index_sha256": INT_INDEX_SHA256}
         if scores_for:
             week["games"] = grade_games(archive, scores)
         weeks.append(week)
