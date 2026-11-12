@@ -31,7 +31,8 @@ class ActualBuildPairTests(unittest.TestCase):
                  'config/weekly-derived-selected-policy-v7.json':'weekly-derived-selected-policy-v4',
                  'config/weekly-derived-selected-policy-v8.json':'weekly-derived-selected-policy-v4',
                  'config/weekly-derived-selected-policy-v9.json':'weekly-derived-selected-policy-v4',
-                 'config/weekly-derived-selected-policy-v10.json':'weekly-derived-selected-policy-v4'}
+                 'config/weekly-derived-selected-policy-v10.json':'weekly-derived-selected-policy-v4',
+                 'config/weekly-derived-selected-policy-v11.json':'weekly-derived-selected-policy-v4'}
         self.assertIn(path,schemas)
         body=(ROOT/path).read_bytes()if candidate_policy is None else candidate_policy
         self.assertEqual(command[command.index('--feed-policy-sha256')+1],hashlib.sha256(body).hexdigest())
@@ -72,7 +73,9 @@ class ActualBuildPairTests(unittest.TestCase):
                 feed.policy_check(broken,root=historical)
         with self.assertRaisesRegex(ValueError,'V4_CURRENT_EXECUTION_OR_INVENTORY'):
             feed.policy_check(new,root=ROOT)
-        successor=json.loads((ROOT/'config/weekly-derived-selected-policy-v10.json').read_bytes())
+        with self.assertRaisesRegex(ValueError,'V4_CURRENT_EXECUTION_OR_INVENTORY'):
+            feed.policy_check(json.loads((ROOT/'config/weekly-derived-selected-policy-v10.json').read_bytes()),root=ROOT)
+        successor=json.loads((ROOT/'config/weekly-derived-selected-policy-v11.json').read_bytes())
         self.assertEqual({key for key in new if new[key]!=successor[key]},
                          {'current_execution','website_code_sha256','registered_at_utc'})
         feed.policy_check(successor,root=ROOT)
