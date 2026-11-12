@@ -8,7 +8,7 @@ MODEL = "sleeper-matchup-classic-presence-strict-v2"
 CAPTURE = "baseline-capture-classic-presence-v2"
 EXECUTION = "weekly-classic-presence-execution-v2"
 CACHE = "stat-keys-presence-strict-v3"
-GRADING = "statistical-presence-strict-v5-20261106"
+GRADING = "statistical-presence-verified-int-v6-20261112"
 ORIGINAL_MODEL = previous.ORIGINAL_MODEL
 ORIGINAL_SOURCE = previous.ORIGINAL_SOURCE
 SHADOW_PROCEDURE = previous.SHADOW_PROCEDURE
@@ -16,7 +16,7 @@ PREVIOUS_MODEL = previous.MODEL
 ENGINE = dict(previous.ENGINE, **{
     "pull/build.py": "b83126080149f2f0705682d1c0be0a8ee87610ebb0a88cd57b94b8a82b63ad73",
     "pull/scoring.py": "90a9d201581b20c4e757912ce7dbf4941a6a90784d721c80367341511c652a2d",
-    "pull/grade.py": "afd1310d708def4f400e6bf84e981e2edc7635dc946a63571022203c1d3ae735",
+    "pull/grade.py": "486346eec13ffc578b2fc4297b10ce50eb51d1efd64ae386bafccb20d8698d71",
     "pull/matchup.py": "eaf627730041060ad16dd9930accfe54a54cf5fb49bb42d18680b5c572ddd7a5",
 })
 
