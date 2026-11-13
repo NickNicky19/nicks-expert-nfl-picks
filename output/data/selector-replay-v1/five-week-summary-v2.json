@@ -1,0 +1,929 @@
+{
+  "schema_version": "frozen-selector-five-week-summary-v2",
+  "assignment": "NFL-PRODUCTION-CATEGORY-20261112-01",
+  "executed_at_UTC": "2026-11-13T00:08:57.513430+00:00",
+  "protocol": "NFL-WEB-EXACT-SELECTOR-REC-P1-MEAN-WRTE-20261112-v1",
+  "mapping_unchanged": true,
+  "production_ranker_SHA256": "7889c35cefa0df1ba0be53ee749182f243eba35a4f4c63b2c01db023e701e14f",
+  "original_W5_W8_commitment": "c88fc8d3ccf3cab3f1b9919e7da5dafb02fa1cc78de651ee230cee223c9453c2",
+  "new_W4_selected_file_SHA256": "7e96597836b72073b1bf7710a7e6d24ef7f66515d67f8b3e65c9de72dcaaf7c9",
+  "new_combined_full_row_hash": null,
+  "row_access_limit": "Original192selectedbytesnotnewlyrestored; combineimmutableprioraggregate/BcontributionwithV6deltaandnew27W4rows. NewW4rowsremainlocal. No fabricatedcombinedrowcommitment.",
+  "scored_season_weeks": [
+    [
+      2026,
+      4
+    ],
+    [
+      2026,
+      5
+    ],
+    [
+      2026,
+      6
+    ],
+    [
+      2026,
+      7
+    ],
+    [
+      2026,
+      8
+    ]
+  ],
+  "duration_floor_at_conditional_retrospective_tier": "MET_FIVE_DISTINCT_SCORED_BLOCKS;PARTIAL_WITHIN_WEEK_COVERAGE",
+  "primary_admission": "NOT_ADMITTED",
+  "decision": "SHADOW",
+  "weeks": [
+    {
+      "week": 4,
+      "season": 2026,
+      "board_as_of": "2026-10-04T21:14:40Z",
+      "games_future_at_snapshot": 2,
+      "games_started_excluded": 14,
+      "native_future_players": 65,
+      "native_future_props": 292,
+      "DK_tagged_future_lines": 84,
+      "player_eligible_count": 15,
+      "control": {
+        "selected": 13,
+        "wins": 1,
+        "losses": 12,
+        "decided": 13,
+        "unknown": 0,
+        "push": 0,
+        "dnp": 0,
+        "rate": 0.07692307692307693,
+        "own_sides": {
+          "over": {
+            "selected": 1,
+            "wins": 0,
+            "losses": 1,
+            "decided": 1,
+            "unknown": 0,
+            "push": 0,
+            "dnp": 0,
+            "rate": 0.0
+          },
+          "under": {
+            "selected": 12,
+            "wins": 1,
+            "losses": 11,
+            "decided": 12,
+            "unknown": 0,
+            "push": 0,
+            "dnp": 0,
+            "rate": 0.08333333333333333
+          }
+        }
+      },
+      "candidate": {
+        "selected": 14,
+        "wins": 3,
+        "losses": 11,
+        "decided": 14,
+        "unknown": 0,
+        "push": 0,
+        "dnp": 0,
+        "rate": 0.21428571428571427,
+        "own_sides": {
+          "over": {
+            "selected": 2,
+            "wins": 1,
+            "losses": 1,
+            "decided": 2,
+            "unknown": 0,
+            "push": 0,
+            "dnp": 0,
+            "rate": 0.5
+          },
+          "under": {
+            "selected": 12,
+            "wins": 2,
+            "losses": 10,
+            "decided": 12,
+            "unknown": 0,
+            "push": 0,
+            "dnp": 0,
+            "rate": 0.16666666666666666
+          }
+        }
+      },
+      "candidate_generated": {
+        "selected": 2,
+        "wins": 1,
+        "losses": 1,
+        "decided": 2,
+        "unknown": 0,
+        "push": 0,
+        "dnp": 0,
+        "rate": 0.5,
+        "own_sides": {
+          "over": {
+            "selected": 1,
+            "wins": 1,
+            "losses": 0,
+            "decided": 1,
+            "unknown": 0,
+            "push": 0,
+            "dnp": 0,
+            "rate": 1.0
+          },
+          "under": {
+            "selected": 1,
+            "wins": 0,
+            "losses": 1,
+            "decided": 1,
+            "unknown": 0,
+            "push": 0,
+            "dnp": 0,
+            "rate": 0.0
+          }
+        }
+      },
+      "candidate_fallback": {
+        "selected": 12,
+        "wins": 2,
+        "losses": 10,
+        "decided": 12,
+        "unknown": 0,
+        "push": 0,
+        "dnp": 0,
+        "rate": 0.16666666666666666,
+        "own_sides": {
+          "over": {
+            "selected": 1,
+            "wins": 0,
+            "losses": 1,
+            "decided": 1,
+            "unknown": 0,
+            "push": 0,
+            "dnp": 0,
+            "rate": 0.0
+          },
+          "under": {
+            "selected": 11,
+            "wins": 2,
+            "losses": 9,
+            "decided": 11,
+            "unknown": 0,
+            "push": 0,
+            "dnp": 0,
+            "rate": 0.18181818181818182
+          }
+        }
+      },
+      "membership": {
+        "same_side_common": 12,
+        "control_only": 1,
+        "candidate_only": 2
+      },
+      "point_overrides": 4,
+      "rec_opportunity_states": {
+        "UNSUPPORTED_ROLE_REFERENCE": 3,
+        "QUERY_HORIZON_UNQUALIFIED_REFERENCE": 5,
+        "C_P1_MEAN_RECONSTRUCTED_PREFIX_INVARIANT": 4
+      },
+      "source_tier": "PARTIAL_WEEK_CONDITIONAL_RETROSPECTIVE_RECONSTRUCTED_QUERY_PREFIX;NOT_ORIGINAL_ISSUANCE",
+      "initial_attempt_decided": 0,
+      "finality_measurement_repair": true,
+      "two_policy_records_one_explicit_zero_resolution": true
+    },
+    {
+      "week": 5,
+      "season": 2026,
+      "board_as_of": "2026-10-11T15:33:09Z",
+      "control": {
+        "wins": 12,
+        "losses": 12,
+        "unknown": 0,
+        "selected": 24,
+        "decided": 24,
+        "rate": 0.5,
+        "own_sides": {
+          "over": {
+            "wins": 7,
+            "losses": 5,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.5833333333333334
+          },
+          "under": {
+            "wins": 5,
+            "losses": 7,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.4166666666666667
+          }
+        }
+      },
+      "candidate": {
+        "wins": 13,
+        "losses": 11,
+        "unknown": 0,
+        "selected": 24,
+        "decided": 24,
+        "rate": 0.5416666666666666,
+        "own_sides": {
+          "over": {
+            "wins": 7,
+            "losses": 5,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.5833333333333334
+          },
+          "under": {
+            "wins": 6,
+            "losses": 6,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.5
+          }
+        }
+      },
+      "candidate_generated": {
+        "selected": 2,
+        "wins": 2,
+        "losses": 0,
+        "decided": 2,
+        "accuracy": 1.0,
+        "unresolved": 0,
+        "push": 0,
+        "void": 0,
+        "other_states": {},
+        "own_sides": {
+          "over": {
+            "selected": 0,
+            "wins": 0,
+            "losses": 0,
+            "decided": 0,
+            "accuracy": null,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": null
+          },
+          "under": {
+            "selected": 2,
+            "wins": 2,
+            "losses": 0,
+            "decided": 2,
+            "accuracy": 1.0,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": 1.0
+          }
+        },
+        "unknown": 0,
+        "rate": 1.0
+      },
+      "candidate_fallback": {
+        "selected": 22,
+        "wins": 11,
+        "losses": 11,
+        "decided": 22,
+        "accuracy": 0.5,
+        "unresolved": 0,
+        "push": 0,
+        "void": 0,
+        "other_states": {},
+        "own_sides": {
+          "over": {
+            "selected": 12,
+            "wins": 7,
+            "losses": 5,
+            "decided": 12,
+            "accuracy": 0.5833333333333334,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": 0.5833333333333334
+          },
+          "under": {
+            "selected": 10,
+            "wins": 4,
+            "losses": 6,
+            "decided": 10,
+            "accuracy": 0.4,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": 0.4
+          }
+        },
+        "unknown": 0,
+        "rate": 0.5
+      },
+      "membership": {
+        "same_side_common": 22,
+        "control_only": 2,
+        "candidate_only": 2
+      },
+      "point_overrides": 41,
+      "rec_opportunity_states": {
+        "UNSUPPORTED_ROLE_REFERENCE": 20,
+        "QUERY_HORIZON_UNQUALIFIED_REFERENCE": 25,
+        "C_P1_MEAN_RECONSTRUCTED_PREFIX_INVARIANT": 41,
+        "MISSING_OR_CONFLICTING_ID_REFERENCE": 2
+      },
+      "source_tier": "EXISTING_FOUR_WEEK_CONDITIONAL_RETROSPECTIVE_RECORD;V6_GRADE_DELTA_APPLIED",
+      "full_rows_reexecuted": false
+    },
+    {
+      "week": 6,
+      "season": 2026,
+      "board_as_of": "2026-10-18T15:49:10Z",
+      "control": {
+        "wins": 11,
+        "losses": 13,
+        "unknown": 0,
+        "selected": 24,
+        "decided": 24,
+        "rate": 0.4583333333333333,
+        "own_sides": {
+          "over": {
+            "wins": 5,
+            "losses": 7,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.4166666666666667
+          },
+          "under": {
+            "wins": 6,
+            "losses": 6,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.5
+          }
+        }
+      },
+      "candidate": {
+        "wins": 12,
+        "losses": 12,
+        "unknown": 0,
+        "selected": 24,
+        "decided": 24,
+        "rate": 0.5,
+        "own_sides": {
+          "over": {
+            "wins": 4,
+            "losses": 8,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.3333333333333333
+          },
+          "under": {
+            "wins": 8,
+            "losses": 4,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.6666666666666666
+          }
+        }
+      },
+      "candidate_generated": {
+        "selected": 4,
+        "wins": 2,
+        "losses": 2,
+        "decided": 4,
+        "accuracy": 0.5,
+        "unresolved": 0,
+        "push": 0,
+        "void": 0,
+        "other_states": {},
+        "own_sides": {
+          "over": {
+            "selected": 1,
+            "wins": 0,
+            "losses": 1,
+            "decided": 1,
+            "accuracy": 0.0,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": 0.0
+          },
+          "under": {
+            "selected": 3,
+            "wins": 2,
+            "losses": 1,
+            "decided": 3,
+            "accuracy": 0.6666666666666666,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": 0.6666666666666666
+          }
+        },
+        "unknown": 0,
+        "rate": 0.5
+      },
+      "candidate_fallback": {
+        "selected": 20,
+        "wins": 10,
+        "losses": 10,
+        "decided": 20,
+        "accuracy": 0.5,
+        "unresolved": 0,
+        "push": 0,
+        "void": 0,
+        "other_states": {},
+        "own_sides": {
+          "over": {
+            "selected": 11,
+            "wins": 4,
+            "losses": 7,
+            "decided": 11,
+            "accuracy": 0.36363636363636365,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": 0.36363636363636365
+          },
+          "under": {
+            "selected": 9,
+            "wins": 6,
+            "losses": 3,
+            "decided": 9,
+            "accuracy": 0.6666666666666666,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": 0.6666666666666666
+          }
+        },
+        "unknown": 0,
+        "rate": 0.5
+      },
+      "membership": {
+        "same_side_common": 20,
+        "control_only": 4,
+        "candidate_only": 4
+      },
+      "point_overrides": 35,
+      "rec_opportunity_states": {
+        "UNSUPPORTED_ROLE_REFERENCE": 18,
+        "QUERY_HORIZON_UNQUALIFIED_REFERENCE": 28,
+        "C_P1_MEAN_RECONSTRUCTED_PREFIX_INVARIANT": 35,
+        "MISSING_EXACT_PLAYER_GAME_POINT_REFERENCE": 1,
+        "MISSING_OR_CONFLICTING_ID_REFERENCE": 2
+      },
+      "source_tier": "EXISTING_FOUR_WEEK_CONDITIONAL_RETROSPECTIVE_RECORD;V6_GRADE_DELTA_APPLIED",
+      "full_rows_reexecuted": false
+    },
+    {
+      "week": 7,
+      "season": 2026,
+      "board_as_of": "2026-10-25T10:15:15Z",
+      "control": {
+        "wins": 15,
+        "losses": 9,
+        "unknown": 0,
+        "selected": 24,
+        "decided": 24,
+        "rate": 0.625,
+        "own_sides": {
+          "over": {
+            "wins": 6,
+            "losses": 6,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.5
+          },
+          "under": {
+            "wins": 9,
+            "losses": 3,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.75
+          }
+        }
+      },
+      "candidate": {
+        "wins": 15,
+        "losses": 9,
+        "unknown": 0,
+        "selected": 24,
+        "decided": 24,
+        "rate": 0.625,
+        "own_sides": {
+          "over": {
+            "wins": 6,
+            "losses": 6,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.5
+          },
+          "under": {
+            "wins": 9,
+            "losses": 3,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.75
+          }
+        }
+      },
+      "candidate_generated": {
+        "selected": 2,
+        "wins": 1,
+        "losses": 1,
+        "decided": 2,
+        "accuracy": 0.5,
+        "unresolved": 0,
+        "push": 0,
+        "void": 0,
+        "other_states": {},
+        "own_sides": {
+          "over": {
+            "selected": 1,
+            "wins": 0,
+            "losses": 1,
+            "decided": 1,
+            "accuracy": 0.0,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": 0.0
+          },
+          "under": {
+            "selected": 1,
+            "wins": 1,
+            "losses": 0,
+            "decided": 1,
+            "accuracy": 1.0,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": 1.0
+          }
+        },
+        "unknown": 0,
+        "rate": 0.5
+      },
+      "candidate_fallback": {
+        "selected": 22,
+        "wins": 14,
+        "losses": 8,
+        "decided": 22,
+        "accuracy": 0.6363636363636364,
+        "unresolved": 0,
+        "push": 0,
+        "void": 0,
+        "other_states": {},
+        "own_sides": {
+          "over": {
+            "selected": 11,
+            "wins": 6,
+            "losses": 5,
+            "decided": 11,
+            "accuracy": 0.5454545454545454,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": 0.5454545454545454
+          },
+          "under": {
+            "selected": 11,
+            "wins": 8,
+            "losses": 3,
+            "decided": 11,
+            "accuracy": 0.7272727272727273,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": 0.7272727272727273
+          }
+        },
+        "unknown": 0,
+        "rate": 0.6363636363636364
+      },
+      "membership": {
+        "same_side_common": 22,
+        "control_only": 2,
+        "candidate_only": 2
+      },
+      "point_overrides": 7,
+      "rec_opportunity_states": {
+        "UNSUPPORTED_ROLE_REFERENCE": 18,
+        "QUERY_HORIZON_UNQUALIFIED_REFERENCE": 56,
+        "MISSING_OR_CONFLICTING_ID_REFERENCE": 2,
+        "C_P1_MEAN_RECONSTRUCTED_PREFIX_INVARIANT": 7
+      },
+      "source_tier": "EXISTING_FOUR_WEEK_CONDITIONAL_RETROSPECTIVE_RECORD;V6_GRADE_DELTA_APPLIED",
+      "full_rows_reexecuted": false
+    },
+    {
+      "week": 8,
+      "season": 2026,
+      "board_as_of": "2026-10-31T23:42:16Z",
+      "control": {
+        "wins": 10,
+        "losses": 12,
+        "unknown": 2,
+        "selected": 24,
+        "decided": 22,
+        "rate": 0.45454545454545453,
+        "own_sides": {
+          "over": {
+            "wins": 4,
+            "losses": 6,
+            "unknown": 2,
+            "decided": 10,
+            "selected": 12,
+            "rate": 0.4
+          },
+          "under": {
+            "wins": 6,
+            "losses": 6,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.5
+          }
+        }
+      },
+      "candidate": {
+        "wins": 10,
+        "losses": 12,
+        "unknown": 2,
+        "selected": 24,
+        "decided": 22,
+        "rate": 0.45454545454545453,
+        "own_sides": {
+          "over": {
+            "wins": 4,
+            "losses": 6,
+            "unknown": 2,
+            "decided": 10,
+            "selected": 12,
+            "rate": 0.4
+          },
+          "under": {
+            "wins": 6,
+            "losses": 6,
+            "unknown": 0,
+            "decided": 12,
+            "selected": 12,
+            "rate": 0.5
+          }
+        }
+      },
+      "candidate_generated": {
+        "selected": 0,
+        "wins": 0,
+        "losses": 0,
+        "decided": 0,
+        "accuracy": null,
+        "unresolved": 0,
+        "push": 0,
+        "void": 0,
+        "other_states": {},
+        "own_sides": {
+          "over": {
+            "selected": 0,
+            "wins": 0,
+            "losses": 0,
+            "decided": 0,
+            "accuracy": null,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": null
+          },
+          "under": {
+            "selected": 0,
+            "wins": 0,
+            "losses": 0,
+            "decided": 0,
+            "accuracy": null,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": null
+          }
+        },
+        "unknown": 0,
+        "rate": null
+      },
+      "candidate_fallback": {
+        "selected": 24,
+        "wins": 10,
+        "losses": 12,
+        "decided": 22,
+        "accuracy": 0.45454545454545453,
+        "unresolved": 2,
+        "push": 0,
+        "void": 0,
+        "other_states": {},
+        "own_sides": {
+          "over": {
+            "selected": 12,
+            "wins": 4,
+            "losses": 6,
+            "decided": 10,
+            "accuracy": 0.4,
+            "unresolved": 2,
+            "push": 0,
+            "unknown": 2,
+            "rate": 0.4
+          },
+          "under": {
+            "selected": 12,
+            "wins": 6,
+            "losses": 6,
+            "decided": 12,
+            "accuracy": 0.5,
+            "unresolved": 0,
+            "push": 0,
+            "unknown": 0,
+            "rate": 0.5
+          }
+        },
+        "unknown": 2,
+        "rate": 0.45454545454545453
+      },
+      "membership": {
+        "same_side_common": 24,
+        "control_only": 0,
+        "candidate_only": 0
+      },
+      "point_overrides": 0,
+      "rec_opportunity_states": {
+        "QUERY_HORIZON_UNQUALIFIED_REFERENCE": 66,
+        "UNSUPPORTED_ROLE_REFERENCE": 22,
+        "MISSING_OR_CONFLICTING_ID_REFERENCE": 4,
+        "MISSING_EXACT_PLAYER_GAME_POINT_REFERENCE": 2
+      },
+      "source_tier": "EXISTING_FOUR_WEEK_CONDITIONAL_RETROSPECTIVE_RECORD;V6_GRADE_DELTA_APPLIED",
+      "full_rows_reexecuted": false
+    }
+  ],
+  "cumulative": {
+    "control": {
+      "selected": 109,
+      "wins": 49,
+      "losses": 58,
+      "decided": 107,
+      "unknown": 2,
+      "rate": 0.45794392523364486
+    },
+    "candidate": {
+      "selected": 110,
+      "wins": 53,
+      "losses": 55,
+      "decided": 108,
+      "unknown": 2,
+      "rate": 0.49074074074074076
+    },
+    "candidate_generated": {
+      "selected": 10,
+      "wins": 6,
+      "losses": 4,
+      "decided": 10,
+      "unknown": 0,
+      "rate": 0.6
+    },
+    "candidate_fallback": {
+      "selected": 100,
+      "wins": 47,
+      "losses": 51,
+      "decided": 98,
+      "unknown": 2,
+      "rate": 0.47959183673469385
+    }
+  },
+  "membership": {
+    "same_side_common": 100,
+    "control_only": 9,
+    "candidate_only": 10
+  },
+  "whole_policy_not_component_history": true,
+  "confidence_or_probability_product": null,
+  "exact_current_v2_incumbent_historical_reconstruction": false,
+  "uncertainty": "Five exposed weekly blocks, partialW4 two-game batch, differing109/110 selections and107/108 decided; no superiority, untouchedtest or90percentclaim. Source-vintage/quote-time/query-population limitations remain. No new arbitrary significance hurdle.",
+  "current_feed_dependency": "Exact unexpired source-qualified C v1.1 P1 mean current-query board/adapter/role contract and permitted publication; B independently checks newW4, C records aggregate. Missing exactcurrentincumbenthistoryis disclosed, not anewindefiniteveto.",
+  "source_bindings": {
+    "W4_board": {
+      "repository": "NickNicky19/nicks-expert-nfl-picks",
+      "ref": "dbd0a824a30df662ceed31ffca512c9ec2c254a1",
+      "path": "output/data/week.json",
+      "sha256": "1d4615d32f89a15f1b0ed80d09f6d83270d5735c95804e3dc1f3543878518492",
+      "bytes": 1287781,
+      "as_of": "2026-10-04T21:14:40Z",
+      "Git_commit_time": "2026-10-04T21:14:57Z",
+      "repository_created_UTC": "2026-10-09T02:33:08Z",
+      "original_issuance_authenticated": false,
+      "quote_observation_clocks": "UNKNOWN_RETAIN_ORIGINAL_CONDITIONAL_TIER"
+    },
+    "C_inputs": [
+      {
+        "repository": "NickNicky19/NFL-forecasting-NGS-C",
+        "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+        "path": "artifacts/player-context-matchup-01/v1.1/NUMERICAL_ROWS.json.gz",
+        "bytes": 99722,
+        "sha256": "398957af85dbd55444a88725397b91060599ebb6e008771f35a9399d8f4af4c8",
+        "status": "EXISTING_SHA_MATCH"
+      },
+      {
+        "repository": "NickNicky19/NFL-forecasting-NGS-C",
+        "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+        "path": "artifacts/player-context-matchup-01/v1.1/FEATURE_EXPORT.json.gz",
+        "bytes": 314397,
+        "sha256": "63f9853f19042bb3e4af691ce46001920d9df28830d1c6a34abfb5f1eab75ed0",
+        "status": "EXISTING_SHA_MATCH"
+      },
+      {
+        "repository": "NickNicky19/NFL-forecasting-NGS-C",
+        "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+        "path": "reports/player-context-matchup-01/v1.1/RUN.json",
+        "bytes": 13490,
+        "sha256": "d79021031fc188e41e9bdfc6f29bea7fb2006b7d606b3707a5f7e4dad8520a22",
+        "status": "EXISTING_SHA_MATCH"
+      },
+      {
+        "repository": "NickNicky19/NFL-forecasting-NGS-C",
+        "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+        "path": "reports/player-context-matchup-01/v1.1/FOOTBALL_INPUT_BINDINGS.json",
+        "bytes": 413,
+        "sha256": "9f475d22fd48a5e7b1319799d9244c79f1acd98a86e13209faab7730c85ea844",
+        "status": "EXISTING_SHA_MATCH"
+      },
+      {
+        "repository": "NickNicky19/NFL-forecasting-NGS-C",
+        "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+        "path": "sources/propline-v7/historical_identity_crosswalk.json.gz",
+        "bytes": 5440,
+        "sha256": "bc0111ba4c71c6fe4056c0b7ec2e4f6e93d2f28597478d5555ae90282ac78e7e",
+        "status": "VERIFIED"
+      },
+      {
+        "repository": "NickNicky19/NFL-forecasting-NGS-C",
+        "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+        "path": "artifacts/reliability-v8/IDENTITY_CROSSWALK.json.gz",
+        "bytes": 5181,
+        "sha256": "7e7255198bacc371447120c5f117eb64ac4f0c8cca3771f60f01baeea4de630f",
+        "status": "EXISTING_SHA_MATCH"
+      },
+      {
+        "repository": "NickNicky19/NFL-forecasting-NGS-C",
+        "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+        "path": "prospective/runs/C-FWD-v4-20261101-0009-P2-pass_yd/sources/schedule.csv",
+        "bytes": 82161,
+        "sha256": "10d7d2415784adac506963884ef7b2fdcaf265909c6e4c67bf5132c6e4819d2b",
+        "status": "EXISTING_SHA_MATCH"
+      },
+      {
+        "repository": "NickNicky19/NFL-forecasting-NGS-C",
+        "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+        "path": "prospective/runs/C-FWD-v4-20261105-W09-JAXBAL-remainder/sources/schedule.csv",
+        "bytes": 82261,
+        "sha256": "b794d3d88329048b6c558506b1095f5a2308bd77ac4604dc4b3a4660c201e9bf",
+        "status": "EXISTING_SHA_MATCH"
+      },
+      {
+        "repository": "NickNicky19/NFL-forecasting-NGS-C",
+        "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+        "path": "src/context_experiment_c01.py",
+        "bytes": 17449,
+        "sha256": "8bbdc0309fae7882fe9bfd4df7efadcee0bcab9d6ac45b91c2b2c6f692c1650b",
+        "status": "EXISTING_SHA_MATCH"
+      },
+      {
+        "repository": "NickNicky19/NFL-forecasting-NGS-C",
+        "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+        "path": "src/context_features_c01.py",
+        "bytes": 9324,
+        "sha256": "e9c2b76df51ecd18e9f270a93838b5c36bd765fdb2f47306304b3db4dd914725",
+        "status": "EXISTING_SHA_MATCH"
+      },
+      {
+        "repository": "NickNicky19/NFL-forecasting-NGS-C",
+        "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+        "path": "src/data_v2.py",
+        "bytes": 4106,
+        "sha256": "e217c62617ea394a514fbde274e0074274f04a24890522db2af70f3b35ec2b9a",
+        "status": "EXISTING_SHA_MATCH"
+      }
+    ],
+    "B_contribution_SHA256": "bff965845244f098acf17734ce629dd950eaa927b96d267154fc09d34ecd5dd4",
+    "V7_index_SHA256": "89d755d633f6d3e939b997c2ee7cf638c56be8f3f2ad263e0506d3fce58c1164"
+  },
+  "new_fits": 0,
+  "new_forecast_inference": 0,
+  "new_original_issued_selections": 0,
+  "new_NFL_observations": 0,
+  "selector_mapping_or_rule_changes": 0
+}

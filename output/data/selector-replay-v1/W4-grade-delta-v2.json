@@ -1,0 +1,37 @@
+{
+  "schema_version": "fixed-selector-W4-grade-only-delta-v2",
+  "outcome_version": "pass-int-final-passing-boxscore-v2-20261112",
+  "index_v2_SHA256": "89d755d633f6d3e939b997c2ee7cf638c56be8f3f2ad263e0506d3fce58c1164",
+  "changes": [
+    {
+      "week": 4,
+      "policy": "saved_control",
+      "player_id": "12545",
+      "game_id": "401872979",
+      "category": "pass_int",
+      "side": "over",
+      "line": 0.5,
+      "old_grade": "unresolved",
+      "old_actual": null,
+      "new_grade": "miss",
+      "new_actual": 0,
+      "outcome_version": "pass-int-final-passing-boxscore-v2-20261112"
+    },
+    {
+      "week": 4,
+      "policy": "candidate",
+      "player_id": "12545",
+      "game_id": "401872979",
+      "category": "pass_int",
+      "side": "over",
+      "line": 0.5,
+      "old_grade": "unresolved",
+      "old_actual": null,
+      "new_grade": "miss",
+      "new_actual": 0,
+      "outcome_version": "pass-int-final-passing-boxscore-v2-20261112"
+    }
+  ],
+  "selection_changed": false,
+  "initial_pending_and_intermediate_unresolved_results_preserved": true
+}

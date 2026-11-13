@@ -1,0 +1,21 @@
+{
+  "schema": "frozen-selector-W4-execution-registration-v1",
+  "registered_at_UTC": "2026-11-12T23:50:34.284557+00:00",
+  "assignment": "NFL-PRODUCTION-CATEGORY-20261112-01",
+  "original_replay_program_SHA256": "8452d57cffea1395132eeff51079ef041ef43ce7aa660cf2547b1ce486572741",
+  "adapted_harness_SHA256": "c274a2bf7612057e29f6d184017ccc7bb8b53c2e90cf733e9f2e7987cb5a8628",
+  "adaptation": "Paths and single-week output labels only; original select function, overrides, gates and scoring calls unchanged",
+  "original_typed_projection_restored_SHA256": "91bfc912b95a10748699bc4bfc15ded71a98c0a227cb0f6f8050d72143223e40",
+  "projection_header_note": "Exact byte restoration of prior published artifact/header, not backdated new inference or forecast",
+  "production_ranker_SHA256": "7889c35cefa0df1ba0be53ee749182f243eba35a4f4c63b2c01db023e701e14f",
+  "grade_SHA256": "486346eec13ffc578b2fc4297b10ce50eb51d1efd64ae386bafccb20d8698d71",
+  "board_SHA256": "1d4615d32f89a15f1b0ed80d09f6d83270d5735c95804e3dc1f3543878518492",
+  "as_of_board": "2026-10-04T21:14:40Z",
+  "source_manifest_SHA256": "d542de7aca40e47e4afb5e3f820e1aa38d80214f32884df4b44d49338ec9fee0",
+  "stats_W4_SHA256": "4b618df9cd01579a0fd9642213c655e5793024d0297bd3bfeafa789fcee81993",
+  "no_scores_before_registration": true,
+  "full_rows_publication": false,
+  "new_fit": 0,
+  "new_inference": 0,
+  "exposure": "Historical outcomes already exposed. This declaration does not create an untouched holdout."
+}

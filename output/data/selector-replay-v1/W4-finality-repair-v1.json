@@ -1,0 +1,14 @@
+{
+  "id": "W4_FINALITY_MEASUREMENT_REPAIR-v1",
+  "at_UTC": "2026-11-12T23:53:02.793496+00:00",
+  "initial_attempt": "attempt0-pending/RESULT.json",
+  "initial_decided": 0,
+  "initial_hardcoded_completed_scored_weeks_1_invalid": true,
+  "initial_attempt_not_qualification": true,
+  "root_cause": "Legacy retained W4 final games omit completed; original replay harness required explicit true and classified both final games pending. No selector defect established.",
+  "repair": "Separate source-bound ESPN finality supplement; preserve old source/stat values; compute scored-week metadata from actual decided outcomes",
+  "supplement_SHA256": "f8e1a1e0a9c69c5c7920bbfc5828b3c8ed96cf5651328c6c0a969b54a4b0aea6",
+  "adapted_harness_SHA256": "d7978fc4d31f4720e7691026e5a634f9ce676121ed6af5046eacb8c74e4594a5",
+  "forecast_model_side_ranking_changes": 0,
+  "new_labels_or_zero_imputation": 0
+}

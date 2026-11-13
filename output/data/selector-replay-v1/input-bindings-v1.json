@@ -1,0 +1,160 @@
+{
+  "schema": "selector-W4-qualified-input-bindings-v1",
+  "board": {
+    "repository": "NickNicky19/nicks-expert-nfl-picks",
+    "ref": "dbd0a824a30df662ceed31ffca512c9ec2c254a1",
+    "path": "output/data/week.json",
+    "sha256": "1d4615d32f89a15f1b0ed80d09f6d83270d5735c95804e3dc1f3543878518492",
+    "bytes": 1287781,
+    "as_of": "2026-10-04T21:14:40Z",
+    "Git_commit_time": "2026-10-04T21:14:57Z",
+    "repository_created_UTC": "2026-10-09T02:33:08Z",
+    "original_issuance_authenticated": false,
+    "quote_observation_clocks": "UNKNOWN_RETAIN_ORIGINAL_CONDITIONAL_TIER"
+  },
+  "C_exact_inputs": [
+    {
+      "repository": "NickNicky19/NFL-forecasting-NGS-C",
+      "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+      "path": "artifacts/player-context-matchup-01/v1.1/NUMERICAL_ROWS.json.gz",
+      "bytes": 99722,
+      "sha256": "398957af85dbd55444a88725397b91060599ebb6e008771f35a9399d8f4af4c8",
+      "status": "EXISTING_SHA_MATCH"
+    },
+    {
+      "repository": "NickNicky19/NFL-forecasting-NGS-C",
+      "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+      "path": "artifacts/player-context-matchup-01/v1.1/FEATURE_EXPORT.json.gz",
+      "bytes": 314397,
+      "sha256": "63f9853f19042bb3e4af691ce46001920d9df28830d1c6a34abfb5f1eab75ed0",
+      "status": "EXISTING_SHA_MATCH"
+    },
+    {
+      "repository": "NickNicky19/NFL-forecasting-NGS-C",
+      "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+      "path": "reports/player-context-matchup-01/v1.1/RUN.json",
+      "bytes": 13490,
+      "sha256": "d79021031fc188e41e9bdfc6f29bea7fb2006b7d606b3707a5f7e4dad8520a22",
+      "status": "EXISTING_SHA_MATCH"
+    },
+    {
+      "repository": "NickNicky19/NFL-forecasting-NGS-C",
+      "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+      "path": "reports/player-context-matchup-01/v1.1/FOOTBALL_INPUT_BINDINGS.json",
+      "bytes": 413,
+      "sha256": "9f475d22fd48a5e7b1319799d9244c79f1acd98a86e13209faab7730c85ea844",
+      "status": "EXISTING_SHA_MATCH"
+    },
+    {
+      "repository": "NickNicky19/NFL-forecasting-NGS-C",
+      "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+      "path": "sources/propline-v7/historical_identity_crosswalk.json.gz",
+      "bytes": 5440,
+      "sha256": "bc0111ba4c71c6fe4056c0b7ec2e4f6e93d2f28597478d5555ae90282ac78e7e",
+      "status": "VERIFIED"
+    },
+    {
+      "repository": "NickNicky19/NFL-forecasting-NGS-C",
+      "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+      "path": "artifacts/reliability-v8/IDENTITY_CROSSWALK.json.gz",
+      "bytes": 5181,
+      "sha256": "7e7255198bacc371447120c5f117eb64ac4f0c8cca3771f60f01baeea4de630f",
+      "status": "EXISTING_SHA_MATCH"
+    },
+    {
+      "repository": "NickNicky19/NFL-forecasting-NGS-C",
+      "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+      "path": "prospective/runs/C-FWD-v4-20261101-0009-P2-pass_yd/sources/schedule.csv",
+      "bytes": 82161,
+      "sha256": "10d7d2415784adac506963884ef7b2fdcaf265909c6e4c67bf5132c6e4819d2b",
+      "status": "EXISTING_SHA_MATCH"
+    },
+    {
+      "repository": "NickNicky19/NFL-forecasting-NGS-C",
+      "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+      "path": "prospective/runs/C-FWD-v4-20261105-W09-JAXBAL-remainder/sources/schedule.csv",
+      "bytes": 82261,
+      "sha256": "b794d3d88329048b6c558506b1095f5a2308bd77ac4604dc4b3a4660c201e9bf",
+      "status": "EXISTING_SHA_MATCH"
+    },
+    {
+      "repository": "NickNicky19/NFL-forecasting-NGS-C",
+      "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+      "path": "src/context_experiment_c01.py",
+      "bytes": 17449,
+      "sha256": "8bbdc0309fae7882fe9bfd4df7efadcee0bcab9d6ac45b91c2b2c6f692c1650b",
+      "status": "EXISTING_SHA_MATCH"
+    },
+    {
+      "repository": "NickNicky19/NFL-forecasting-NGS-C",
+      "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+      "path": "src/context_features_c01.py",
+      "bytes": 9324,
+      "sha256": "e9c2b76df51ecd18e9f270a93838b5c36bd765fdb2f47306304b3db4dd914725",
+      "status": "EXISTING_SHA_MATCH"
+    },
+    {
+      "repository": "NickNicky19/NFL-forecasting-NGS-C",
+      "ref": "d9309bb8676fcd2102bfdc9b45adb0c504d0a498",
+      "path": "src/data_v2.py",
+      "bytes": 4106,
+      "sha256": "e217c62617ea394a514fbde274e0074274f04a24890522db2af70f3b35ec2b9a",
+      "status": "EXISTING_SHA_MATCH"
+    }
+  ],
+  "conditional_prefix_criterion": "NO global C game kickoff+7days in [savedboard_clock,targetkickoff); same strict available<cutoff law and dependency proof as original four-week replay.",
+  "original_schedule_header_restored": false,
+  "current_finality_sources": [
+    {
+      "event": "401872978",
+      "season": 2026,
+      "week": 4,
+      "url": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=401872978",
+      "observed_at_UTC": "2026-11-12T23:52:20.926248+00:00",
+      "source_path": "finality-source/ead264751a91d473f09d19edaddc8a13c749e4041a7ca0330d80fb7afb628794.json.gz",
+      "raw_bytes": 615832,
+      "raw_SHA256": "ead264751a91d473f09d19edaddc8a13c749e4041a7ca0330d80fb7afb628794",
+      "gzip_SHA256": "e46aa6b4b94c2d78c75bbe624ae2917fd57a44bbe7923f605e675fb119f36035",
+      "gzip_bytes": 52458,
+      "finality_pointer": "/header/competitions/0/status/type",
+      "reported_completed": true,
+      "reported_state": "post",
+      "reported_detail": "Final",
+      "event_date": "2026-10-05T00:20Z",
+      "teams": [
+        "CAR",
+        "DET"
+      ],
+      "qualified_final": true,
+      "public_source_path": "../verified-int-v1/sources/ead264751a91d473f09d19edaddc8a13c749e4041a7ca0330d80fb7afb628794.json.gz"
+    },
+    {
+      "event": "401872979",
+      "season": 2026,
+      "week": 4,
+      "url": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=401872979",
+      "observed_at_UTC": "2026-11-12T23:52:20.877256+00:00",
+      "source_path": "finality-source/6f9cbff1a7a99f6e03b9babfc3e484ab46f6c61a6b870b91b8ce92a480a4b2d5.json.gz",
+      "raw_bytes": 572926,
+      "raw_SHA256": "6f9cbff1a7a99f6e03b9babfc3e484ab46f6c61a6b870b91b8ce92a480a4b2d5",
+      "gzip_SHA256": "d4dba3e7b7f0597e64e571ac16a1943fcbde24ad860f740100b65e7512b61c9c",
+      "gzip_bytes": 49470,
+      "finality_pointer": "/header/competitions/0/status/type",
+      "reported_completed": true,
+      "reported_state": "post",
+      "reported_detail": "Final",
+      "event_date": "2026-10-06T00:15Z",
+      "teams": [
+        "ATL",
+        "NO"
+      ],
+      "qualified_final": true,
+      "public_source_path": "../verified-int-v1/sources/6f9cbff1a7a99f6e03b9babfc3e484ab46f6c61a6b870b91b8ce92a480a4b2d5.json.gz"
+    }
+  ],
+  "V7_outcome_index_SHA256": "89d755d633f6d3e939b997c2ee7cf638c56be8f3f2ad263e0506d3fce58c1164",
+  "P1_typed_projection_SHA256": "91bfc912b95a10748699bc4bfc15ded71a98c0a227cb0f6f8050d72143223e40",
+  "full_joined_rows_publication": false,
+  "historical_fit_cutoff_not_physical_issue_time": true,
+  "original_replay_method": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-6812058949"
+}

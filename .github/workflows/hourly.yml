@@ -135,7 +135,7 @@ jobs:
           PY
       - name: Prepare isolated provisional overlay (default R0)
         id: overlay
-        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v12.json --feed-policy-sha256 3912095a8a2466dc0f6e9160f180f762a39f6788ff35f90d37309b5053bdb8d9
+        run: python tools/weekly_adaptive_overlay.py --root . --website-source-sha "$(git rev-parse HEAD)" --feed-policy config/weekly-derived-selected-policy-v13.json --feed-policy-sha256 addc752494a5c3f973adb3dc2b44bac77eaf35db49bad9682ea9dd172b0eca38
       - name: Prepare independently typed MAE point display
         id: mae-display
         run: python tools/weekly_mae_display_v2.py --root . --website-source-sha "$(git rev-parse HEAD)" --policy config/weekly-mae-display-source-policy-v2.json --policy-sha256 aa5ceb748273e421cf61ad3d9d257df24fd468275344c503b157d1b46c5e616c
