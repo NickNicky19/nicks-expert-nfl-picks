@@ -21,9 +21,9 @@ import re
 import gamemodel
 import scoring
 
-GRADING_VERSION = "statistical-presence-verified-int-v6-20261112"
-INT_OUTCOME_VERSION = "pass-int-final-passing-boxscore-v1-20261112"
-INT_INDEX_SHA256 = "d9ed1e6005c6947b8b6aac815fbac7b4b3b93b1e3a83532b3d92ebd44fe2a3ce"
+GRADING_VERSION = "statistical-presence-verified-int-v7-20261112"
+INT_OUTCOME_VERSION = "pass-int-final-passing-boxscore-v2-20261112"
+INT_INDEX_SHA256 = "89d755d633f6d3e939b997c2ee7cf638c56be8f3f2ad263e0506d3fce58c1164"
 RESULTS = ("hit", "miss", "push", "dnp", "unresolved")
 
 
@@ -36,7 +36,7 @@ def verified_int_outcomes():
     accuracy headline. Unknown sparse-provider fields themselves stay unknown.
     """
     root = Path(__file__).resolve().parents[1] / "output/data/verified-int-v1"
-    path = root / "index.json"
+    path = root / "index-v2.json"
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 524288:
         raise ValueError("VERIFIED_INT_INDEX_REQUIRED")
     body = path.read_bytes()
@@ -62,10 +62,10 @@ def verified_int_outcomes():
             raise ValueError("VERIFIED_INT_RAW_SOURCE_IDENTITY")
         return json.loads(raw)
 
-    # The two reviewed composite bridges require more than a name match.
+    # The reviewed composite bridges require more than a name match.
     identities = index["identity_sources"]
     roster = source(identities["sleeper"])
-    for pid, aid, bio_key, code, team_id in [("13425", "4596472", "jalon", "TB", "27"), ("11256", "4434153", "tyson", "CHI", "3")]:
+    for pid, aid, bio_key, code, team_id in [("13425", "4596472", "jalon", "TB", "27"), ("11256", "4434153", "tyson", "CHI", "3"), ("12545", "4360689", "shough", "NO", "18")]:
         player, bio = roster[pid], source(identities[bio_key])
         if not (player["player_id"] == pid and bio["id"] == aid
                 and player["full_name"] == bio["displayName"]
@@ -73,6 +73,8 @@ def verified_int_outcomes():
                 and player["position"] == bio["position"]["abbreviation"] == "QB"
                 and player["team"] == code and f"/teams/{team_id}?" in bio["team"]["$ref"]):
             raise ValueError("VERIFIED_INT_COMPOSITE_IDENTITY")
+    if str(roster["3163"].get("espn_id")) != "3046779":
+        raise ValueError("VERIFIED_INT_DIRECT_IDENTITY")
     del roster
 
     aliases = {"WSH": "WAS", "LA": "LAR"}
@@ -113,7 +115,7 @@ def verified_int_outcomes():
         if key in archive:
             raise ValueError("VERIFIED_INT_DUPLICATE_PLAYER_GAME")
         archive[key] = int(value)
-    if sum(map(len, output.values())) != 86 or len(output) != 5:
+    if sum(map(len, output.values())) != 88 or len(output) != 6:
         raise ValueError("VERIFIED_INT_FROZEN_POPULATION")
     return output
 
@@ -411,7 +413,7 @@ def grade_all(archive_dir, stats_for, current, final_games, scores_for=None):
         finals = final_games if key == current else set(scores)
         verified = None
         canonical_archive = Path(__file__).resolve().parents[1] / "output/data/archive"
-        if archive_dir.resolve() == canonical_archive.resolve() and archive["season"] == 2026 and 5 <= archive["week"] <= 9:
+        if archive_dir.resolve() == canonical_archive.resolve() and archive["season"] == 2026 and 4 <= archive["week"] <= 9:
             digest = hashlib.sha256(raw).hexdigest()
             registry = verified_int_outcomes()
             if digest not in registry:

@@ -1,0 +1,243 @@
+{
+  "schema_version": "independent-interception-review-addendum-v1",
+  "received_at_UTC": "2026-11-12T23:46:10.767707+00:00",
+  "origin": "B",
+  "repository": "NickNicky19/NFL-forecasting-V2",
+  "head": "10846a2781685f3c1a2cb045d3c887864f32bda7",
+  "original_website_source_bound_by_B": "689bc6ff11c7424d5384324e5a7d25dc6e0fad9a",
+  "current_website_grade_version": "statistical-presence-verified-int-v6-20261112",
+  "current_case_index_SHA256": "d9ed1e6005c6947b8b6aac815fbac7b4b3b93b1e3a83532b3d92ebd44fe2a3ce",
+  "source_bindings": [
+    {
+      "owner": "B",
+      "repository": "NickNicky19/NFL-forecasting-V2",
+      "head": "10846a2781685f3c1a2cb045d3c887864f32bda7",
+      "path": "reports/interception-evidence-closure-01/B/website-audit/WEBSITE_POPULATION_AND_PRESENCE_V1.json",
+      "bytes": 32804,
+      "git_blob": "26bdec8e2fb2bd8bc6fd7b0a6a4100aefda40ff8",
+      "sha256": "489cac9eeb6795c66e18a934cc31cf94b8f603bcd033efc8dac31b3236c9d1e4"
+    },
+    {
+      "owner": "B",
+      "repository": "NickNicky19/NFL-forecasting-V2",
+      "head": "10846a2781685f3c1a2cb045d3c887864f32bda7",
+      "path": "reports/interception-evidence-closure-01/B/official-source/OFFICIAL_INTERCEPTION_EVIDENCE_V1.json",
+      "bytes": 23733,
+      "git_blob": "e4c1df3c1de6111c51322565e60181395779b367",
+      "sha256": "a155b22fe0ab8a29d7259ffa1063c5e9eebd4bed8280c4fb517888874419f71c"
+    },
+    {
+      "owner": "B",
+      "repository": "NickNicky19/NFL-forecasting-V2",
+      "head": "10846a2781685f3c1a2cb045d3c887864f32bda7",
+      "path": "reports/interception-evidence-closure-01/B/official-source/SOURCE_PROJECTION_AND_LIMITS_V1.json",
+      "bytes": 1637,
+      "git_blob": "4525d190f92067c7fcf55eb7895c7c7af4a4ae68",
+      "sha256": "5bafe91440f3a9561c9c3517410532888f6539df147d931f4838ab5318b36876"
+    },
+    {
+      "owner": "B",
+      "repository": "NickNicky19/NFL-forecasting-V2",
+      "head": "10846a2781685f3c1a2cb045d3c887864f32bda7",
+      "path": "reports/interception-evidence-closure-01/B/website-audit/INDEPENDENT_CORRECTED_GRADE_REVIEW_V1.json",
+      "bytes": 37492,
+      "git_blob": "c2b9eb2f546ce6f2963c4ead6f1e63805237d90a",
+      "sha256": "55cccc63055058f533ca9df2585d90b2ebaae38204d61b14171925c2ef161ca7"
+    },
+    {
+      "owner": "B",
+      "repository": "NickNicky19/NFL-forecasting-V2",
+      "head": "10846a2781685f3c1a2cb045d3c887864f32bda7",
+      "path": "reports/interception-evidence-closure-01/B/regrade-v1/PAIRED_CONTROLS.json",
+      "bytes": 2470,
+      "git_blob": "bada3e74f045896c9b614f551244bf44c1579f4f",
+      "sha256": "2bdfdc3121b8b2b974c2bc8b118f25ea660694b89c643820eebc68ae10003fc6"
+    },
+    {
+      "owner": "B",
+      "repository": "NickNicky19/NFL-forecasting-V2",
+      "head": "10846a2781685f3c1a2cb045d3c887864f32bda7",
+      "path": "reports/interception-evidence-closure-01/B/regrade-v1/SCORES.json",
+      "bytes": 393035,
+      "git_blob": "c593eab9e667089ce5f35df30098df4c17789898",
+      "sha256": "9a91fbd7b679ba35af26d77fcc752a444261ba62d7b9cd8b7a53f7a082f18c4a"
+    },
+    {
+      "owner": "B",
+      "repository": "NickNicky19/NFL-forecasting-V2",
+      "head": "10846a2781685f3c1a2cb045d3c887864f32bda7",
+      "path": "reports/interception-evidence-closure-01/B/website-audit/verify_corrected_interception_grades_v1.py",
+      "bytes": 9630,
+      "git_blob": "431ca3c4cdf6a0fe0b173553d10d7a2a9d67b0ed",
+      "sha256": "188e9fc55538dba22d4faac1ff6ba1866cdb1dee6d27c46259e85a35f8525244"
+    }
+  ],
+  "independent_review": {
+    "state": "PASS_INDEPENDENT_DECIMAL_CORRECTED_GRADE_REPRODUCTION",
+    "imports": "Pythonstdlibonly; noauthorgrader/scorerimports",
+    "scope": "Samefrozen144board/86sides/lines; explicitdual-sourcefinal-labelcorrection,8strategies,6windows,3sidegroups. Notrecheckingrawsourceclockauthenticity,bootstraporvenuecontracts.",
+    "aggregate_checks": 144,
+    "identity_checks": 1152,
+    "unchanged_selected_side_line_checks": 688,
+    "transitions": {
+      "WIN -> WIN": 33,
+      "MISSING_ACTUAL -> LOSS": 32,
+      "LOSS -> LOSS": 7,
+      "MISSING_ACTUAL -> WIN": 14
+    },
+    "side_or_line_changes": 0,
+    "new_fits": 0,
+    "new_forecasts": 0,
+    "new_NFL_observations": 0,
+    "production_changes": 0
+  },
+  "own_same_mask_results": [
+    {
+      "strategy": "CORRECTED_CURRENT_FINAL_LABELS",
+      "side": "over",
+      "wins": 33,
+      "losses": 32,
+      "decided": 65,
+      "unknown": 0,
+      "rate": 0.5076923076923077,
+      "outcome_version": "B-OFFICIAL-PASSING-INTERCEPTIONS-20261112-v1",
+      "statistical_settlement_only": true
+    },
+    {
+      "strategy": "CORRECTED_CURRENT_FINAL_LABELS",
+      "side": "under",
+      "wins": 14,
+      "losses": 7,
+      "decided": 21,
+      "unknown": 0,
+      "rate": 0.6666666666666666,
+      "outcome_version": "B-OFFICIAL-PASSING-INTERCEPTIONS-20261112-v1",
+      "statistical_settlement_only": true
+    },
+    {
+      "strategy": "CORRECTED_CURRENT_FINAL_LABELS",
+      "side": "Combined",
+      "wins": 47,
+      "losses": 39,
+      "decided": 86,
+      "unknown": 0,
+      "rate": 0.5465116279069767,
+      "outcome_version": "B-OFFICIAL-PASSING-INTERCEPTIONS-20261112-v1",
+      "statistical_settlement_only": true
+    },
+    {
+      "strategy": "CONSTANT_OVER_ON_SAME86",
+      "side": "over",
+      "wins": 40,
+      "losses": 46,
+      "decided": 86,
+      "unknown": 0,
+      "rate": 0.46511627906976744,
+      "outcome_version": "B-OFFICIAL-PASSING-INTERCEPTIONS-20261112-v1",
+      "statistical_settlement_only": true
+    },
+    {
+      "strategy": "CONSTANT_OVER_ON_SAME86",
+      "side": "under",
+      "wins": 0,
+      "losses": 0,
+      "decided": 0,
+      "unknown": 0,
+      "rate": null,
+      "outcome_version": "B-OFFICIAL-PASSING-INTERCEPTIONS-20261112-v1",
+      "statistical_settlement_only": true
+    },
+    {
+      "strategy": "CONSTANT_OVER_ON_SAME86",
+      "side": "Combined",
+      "wins": 40,
+      "losses": 46,
+      "decided": 86,
+      "unknown": 0,
+      "rate": 0.46511627906976744,
+      "outcome_version": "B-OFFICIAL-PASSING-INTERCEPTIONS-20261112-v1",
+      "statistical_settlement_only": true
+    },
+    {
+      "strategy": "CONSTANT_UNDER_ON_SAME86",
+      "side": "over",
+      "wins": 0,
+      "losses": 0,
+      "decided": 0,
+      "unknown": 0,
+      "rate": null,
+      "outcome_version": "B-OFFICIAL-PASSING-INTERCEPTIONS-20261112-v1",
+      "statistical_settlement_only": true
+    },
+    {
+      "strategy": "CONSTANT_UNDER_ON_SAME86",
+      "side": "under",
+      "wins": 46,
+      "losses": 40,
+      "decided": 86,
+      "unknown": 0,
+      "rate": 0.5348837209302325,
+      "outcome_version": "B-OFFICIAL-PASSING-INTERCEPTIONS-20261112-v1",
+      "statistical_settlement_only": true
+    },
+    {
+      "strategy": "CONSTANT_UNDER_ON_SAME86",
+      "side": "Combined",
+      "wins": 46,
+      "losses": 40,
+      "decided": 86,
+      "unknown": 0,
+      "rate": 0.5348837209302325,
+      "outcome_version": "B-OFFICIAL-PASSING-INTERCEPTIONS-20261112-v1",
+      "statistical_settlement_only": true
+    }
+  ],
+  "qualified_outcome_source_summary": {
+    "state": "PASS_EXACT_IDENTITY_EXPLICIT_CURRENT_FINAL_PASSING_INTERCEPTION_LABELS",
+    "original_cohort_rows": 86,
+    "original_missing_count": 46,
+    "missing_supported_explicit_zero": 46,
+    "missing_supported_nonzero": 0,
+    "unknown_or_conflicting": 0,
+    "existing_reported_count": 40,
+    "existing_reported_all_match": true,
+    "target_definition": "Official QB interceptions thrown, full game; NFLverse passing_interceptions and ESPN passing.interceptions; defensive interceptions excluded.",
+    "qualified_zero": "Each zero explicitly present in both named passing-stat sources. No source-field omission, participation flag, pass attempts or source-zero completeness assumption substituted for observation.",
+    "source_tier": "Current-vintage final-stat correction. Does not prove what historical compacted Sleeper absence originally meant, original pregame forecast/line availability, venue settlement, or prediction improvement.",
+    "current_weekly_source": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2026.csv"
+  },
+  "native_coverage": {
+    "opportunities": 144,
+    "stored_sides": 86,
+    "without_stored_side": 58,
+    "selection_coverage": 0.5972222222222222,
+    "technical_unavailable_adjusted_forecasts": 0,
+    "native_unique_games": 72,
+    "selected_unique_games": 61,
+    "weeks": [
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "season": 2026,
+    "selected_thresholds": {
+      "0.5": 85,
+      "1.5": 1
+    },
+    "ordinary_alternative_market_classification": "Not authenticated by threshold value alone"
+  },
+  "website_verification_scope": [
+    "Read the exact immutable public B aggregate/source-code receipts and verified their hashes",
+    "Matched all five archive/finality hashes and unchanged scoring.py; historical V5 grader/report changes to V6 are explicit",
+    "Independently reproduced144/86/58 from own public archives and matched exactly the original86 case IDs",
+    "Did not receive or republish B private correction maps, source rows, models or raw selected membership"
+  ],
+  "claim_limits": [
+    "These are selected stored-side retrospective results, not144 full-board model decisions or a nine-week result",
+    "Source/offer issue clocks remain unverified; final-label corroboration does not authenticate original pregame issuance",
+    "No90percent, forecasting superiority, calibrated confidence, EV or venue settlement claim",
+    "This addendum does not change forecasts, directions, original grades, grader or Top Picks policy"
+  ]
+}

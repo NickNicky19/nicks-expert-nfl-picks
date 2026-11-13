@@ -13,7 +13,7 @@ sys.path[:0] = [str(ROOT / "pull"), str(ROOT / "tools")]
 import build
 import grade
 
-EXPECTED_VERSION = "statistical-presence-verified-int-v6-20261112"
+EXPECTED_VERSION = "statistical-presence-verified-int-v7-20261112"
 OLD_VERSION = "statistical-v2"
 
 
@@ -47,17 +47,35 @@ class IdentityV3Tests(unittest.TestCase):
         self.assertEqual(json.dumps((archive,stats),sort_keys=True),before)
         self.assertNotIn('pass_int',stats['6770']['stats'])
 
+    def test_new_week4_evidence_preserves_source_absence_and_previous_scope(self):
+        archive=json.loads((ROOT/'output/data/archive/2026_w04.json').read_bytes())
+        stats=json.loads((ROOT/'data/cache/stat-keys-presence-strict-v3/stats_2026_04.json').read_bytes())
+        before=json.dumps((archive,stats),sort_keys=True)
+        digest=hashlib.sha256((ROOT/'output/data/archive/2026_w04.json').read_bytes()).hexdigest()
+        verified=grade.verified_int_outcomes()[digest]
+        self.assertEqual(verified,{('401872978','3163'):0,('401872979','12545'):0})
+        old=grade.grade_week(archive,stats,None)
+        new=grade.grade_week(archive,stats,None,verified)
+        self.assertEqual(old['leans']['by_category']['pass_int']['unresolved'],2)
+        self.assertEqual((new['leans']['by_category']['pass_int']['hit'],new['leans']['by_category']['pass_int']['miss'],new['leans']['by_category']['pass_int']['unresolved']),(0,2,0))
+        self.assertEqual(old['ppr'],new['ppr'])
+        self.assertEqual(old['matchup'],new['matchup'])
+        self.assertEqual({k:v for k,v in old['leans']['by_category'].items()if k!='pass_int'},
+                         {k:v for k,v in new['leans']['by_category'].items()if k!='pass_int'})
+        self.assertEqual(json.dumps((archive,stats),sort_keys=True),before)
+        for pid in ['3163','12545']:self.assertNotIn('pass_int',stats[pid]['stats'])
+
     def test_all_verified_player_games_are_explicit_passing_values(self):
         registry=grade.verified_int_outcomes()
         values=[v for rows in registry.values()for v in rows.values()]
-        self.assertEqual(len(values),86)
-        self.assertEqual(sum(v==0 for v in values),46)
+        self.assertEqual(len(values),88)
+        self.assertEqual(sum(v==0 for v in values),48)
         self.assertTrue(all(type(v)is int and v>=0 for v in values))
 
     def test_verified_index_tampering_fails_before_source_use(self):
-        raw=(ROOT/'output/data/verified-int-v1/index.json').read_bytes()
+        raw=(ROOT/'output/data/verified-int-v1/index-v2.json').read_bytes()
         with tempfile.TemporaryDirectory()as directory:
-            root=Path(directory);target=root/'output/data/verified-int-v1/index.json';target.parent.mkdir(parents=True)
+            root=Path(directory);target=root/'output/data/verified-int-v1/index-v2.json';target.parent.mkdir(parents=True)
             target.write_bytes(raw+b' ')
             with patch.object(grade,'__file__',str(root/'pull/grade.py')):
                 with self.assertRaisesRegex(ValueError,'VERIFIED_INT_INDEX_IDENTITY'):

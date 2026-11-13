@@ -1,0 +1,120 @@
+{
+  "id": "ORIGINAL_WEBSITE_FROZEN_INT_NATIVE_COVERAGE-v1",
+  "observed_at_UTC": "2026-11-12T23:35:41.599242+00:00",
+  "scope": "Existing grader archive finality/late/real-venue gates; expand selected leans to all retained pass_int opportunities without assigning new sides or outcomes",
+  "native_opportunities": 144,
+  "stored_sides": 86,
+  "without_stored_side": 58,
+  "selected_coverage": 0.5972222222222222,
+  "all_adjusted_forecasts_finite": true,
+  "roles": {
+    "QB": 144
+  },
+  "lines": {
+    "0.5": 143,
+    "1.5": 1
+  },
+  "sources": {
+    "dk": 144
+  },
+  "all_selected_exactly_match_prior86_case_ids": true,
+  "weekly": [
+    {
+      "season": 2026,
+      "week": 5,
+      "offered_native_rows": 30,
+      "stored_sides": 20,
+      "without_stored_side": 10,
+      "nonfinite_adjusted_forecast": 0,
+      "games": 15
+    },
+    {
+      "season": 2026,
+      "week": 6,
+      "offered_native_rows": 28,
+      "stored_sides": 17,
+      "without_stored_side": 11,
+      "nonfinite_adjusted_forecast": 0,
+      "games": 14
+    },
+    {
+      "season": 2026,
+      "week": 7,
+      "offered_native_rows": 28,
+      "stored_sides": 15,
+      "without_stored_side": 13,
+      "nonfinite_adjusted_forecast": 0,
+      "games": 14
+    },
+    {
+      "season": 2026,
+      "week": 8,
+      "offered_native_rows": 28,
+      "stored_sides": 16,
+      "without_stored_side": 12,
+      "nonfinite_adjusted_forecast": 0,
+      "games": 14
+    },
+    {
+      "season": 2026,
+      "week": 9,
+      "offered_native_rows": 30,
+      "stored_sides": 18,
+      "without_stored_side": 12,
+      "nonfinite_adjusted_forecast": 0,
+      "games": 15
+    }
+  ],
+  "inputs": [
+    {
+      "path": "output/data/archive/2026_w05.json",
+      "SHA256": "6eaa1900be68bec5b274e7da96d91d6969d7113e5e3c99a50e8efb86ce76e6a7"
+    },
+    {
+      "path": "output/data/weeks/2026_w05.json",
+      "SHA256": "49dc7e3b8ec0dba0d15938159a4b35a0816e5e8aaec8389d9fd5a1649d9bb661"
+    },
+    {
+      "path": "output/data/archive/2026_w06.json",
+      "SHA256": "5cdc487f196801b7f087d8e4dc3a9def18f95d0bec2140dfe37db96c76f5bda1"
+    },
+    {
+      "path": "output/data/weeks/2026_w06.json",
+      "SHA256": "308bf8700430b27f90baba1330fdecc97469f848790070744277d5a6fefa5fc1"
+    },
+    {
+      "path": "output/data/archive/2026_w07.json",
+      "SHA256": "a4c409ebaeca593ad2d63093129109fded281a3c9323358f0e9c87f328be8a2f"
+    },
+    {
+      "path": "output/data/weeks/2026_w07.json",
+      "SHA256": "2b25deff14708af77665835752d1e14d80f0b549edf95fa8f6a88c7828afdb35"
+    },
+    {
+      "path": "output/data/archive/2026_w08.json",
+      "SHA256": "41a46ce4262e5193d534ac155c16d847bf6d7ff017e07be7ea2ee72c2c5623b4"
+    },
+    {
+      "path": "output/data/weeks/2026_w08.json",
+      "SHA256": "7f85ef26a1c2cdca36adeb5820eb730eafdc79c494cc3109372f7cb809bdca30"
+    },
+    {
+      "path": "output/data/archive/2026_w09.json",
+      "SHA256": "e6c2c7a9a7fb215eb7f7c5fbc8213f5bd4e83f1581ee61bae398b0bca6e06a60"
+    },
+    {
+      "path": "output/data/weeks/2026_w09.json",
+      "SHA256": "451e1008ef9a506d96ac9abf19d771b3edd3910f29801e93825093b8be179cfa"
+    }
+  ],
+  "limits": [
+    "Retained line source tags are not original quote-time authentication",
+    "Native archive eligibility is distinct from an independently reconstructed full provider offer board",
+    "No result assigned to unselected rows; this is coverage, not new predictive accuracy or decision policy",
+    "Late/archive timing limitations retained; no historical source requalification"
+  ],
+  "new_fits": 0,
+  "new_selections": 0,
+  "new_grades": 0,
+  "source_edits": 0
+}

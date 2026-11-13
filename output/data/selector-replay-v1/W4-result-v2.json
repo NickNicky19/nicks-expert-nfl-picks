@@ -1,0 +1,154 @@
+{
+  "week": 4,
+  "season": 2026,
+  "board_as_of": "2026-10-04T21:14:40Z",
+  "games_future_at_snapshot": 2,
+  "games_started_excluded": 14,
+  "native_future_players": 65,
+  "native_future_props": 292,
+  "DK_tagged_future_lines": 84,
+  "player_eligible_count": 15,
+  "control": {
+    "selected": 13,
+    "wins": 1,
+    "losses": 12,
+    "decided": 13,
+    "unknown": 0,
+    "push": 0,
+    "dnp": 0,
+    "rate": 0.07692307692307693,
+    "own_sides": {
+      "over": {
+        "selected": 1,
+        "wins": 0,
+        "losses": 1,
+        "decided": 1,
+        "unknown": 0,
+        "push": 0,
+        "dnp": 0,
+        "rate": 0.0
+      },
+      "under": {
+        "selected": 12,
+        "wins": 1,
+        "losses": 11,
+        "decided": 12,
+        "unknown": 0,
+        "push": 0,
+        "dnp": 0,
+        "rate": 0.08333333333333333
+      }
+    }
+  },
+  "candidate": {
+    "selected": 14,
+    "wins": 3,
+    "losses": 11,
+    "decided": 14,
+    "unknown": 0,
+    "push": 0,
+    "dnp": 0,
+    "rate": 0.21428571428571427,
+    "own_sides": {
+      "over": {
+        "selected": 2,
+        "wins": 1,
+        "losses": 1,
+        "decided": 2,
+        "unknown": 0,
+        "push": 0,
+        "dnp": 0,
+        "rate": 0.5
+      },
+      "under": {
+        "selected": 12,
+        "wins": 2,
+        "losses": 10,
+        "decided": 12,
+        "unknown": 0,
+        "push": 0,
+        "dnp": 0,
+        "rate": 0.16666666666666666
+      }
+    }
+  },
+  "candidate_generated": {
+    "selected": 2,
+    "wins": 1,
+    "losses": 1,
+    "decided": 2,
+    "unknown": 0,
+    "push": 0,
+    "dnp": 0,
+    "rate": 0.5,
+    "own_sides": {
+      "over": {
+        "selected": 1,
+        "wins": 1,
+        "losses": 0,
+        "decided": 1,
+        "unknown": 0,
+        "push": 0,
+        "dnp": 0,
+        "rate": 1.0
+      },
+      "under": {
+        "selected": 1,
+        "wins": 0,
+        "losses": 1,
+        "decided": 1,
+        "unknown": 0,
+        "push": 0,
+        "dnp": 0,
+        "rate": 0.0
+      }
+    }
+  },
+  "candidate_fallback": {
+    "selected": 12,
+    "wins": 2,
+    "losses": 10,
+    "decided": 12,
+    "unknown": 0,
+    "push": 0,
+    "dnp": 0,
+    "rate": 0.16666666666666666,
+    "own_sides": {
+      "over": {
+        "selected": 1,
+        "wins": 0,
+        "losses": 1,
+        "decided": 1,
+        "unknown": 0,
+        "push": 0,
+        "dnp": 0,
+        "rate": 0.0
+      },
+      "under": {
+        "selected": 11,
+        "wins": 2,
+        "losses": 9,
+        "decided": 11,
+        "unknown": 0,
+        "push": 0,
+        "dnp": 0,
+        "rate": 0.18181818181818182
+      }
+    }
+  },
+  "membership": {
+    "same_side_common": 12,
+    "control_only": 1,
+    "candidate_only": 2
+  },
+  "point_overrides": 4,
+  "rec_opportunity_states": {
+    "UNSUPPORTED_ROLE_REFERENCE": 3,
+    "QUERY_HORIZON_UNQUALIFIED_REFERENCE": 5,
+    "C_P1_MEAN_RECONSTRUCTED_PREFIX_INVARIANT": 4
+  },
+  "source_tier": "PARTIAL_WEEK_CONDITIONAL_RETROSPECTIVE_RECONSTRUCTED_QUERY_PREFIX;NOT_ORIGINAL_ISSUANCE",
+  "initial_attempt_decided": 0,
+  "finality_measurement_repair": true,
+  "two_policy_records_one_explicit_zero_resolution": true
+}
