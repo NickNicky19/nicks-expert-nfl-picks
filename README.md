@@ -7,6 +7,26 @@ A scheduled daily Python build writes static JSON, and a static page on GitHub P
 
 This is Nick's edition of [Joshua Moy's original project](https://github.com/joshuam0y/joshua-moy-expert-nfl-picks). The projection code, existing archives, and historical track record came from that project. Newly published results are generated in this repository; the historical record should not be presented as picks originally made by Nick.
 
+## Recoverable production-method history
+
+The original-site owner's [category-organized method history](output/data/production-method-history-v1/README.md)
+and [matching complete JSON metadata](output/data/production-method-history-v1/index.json) are the production
+contribution to C's existing consolidated research inventory. They link families, exact products/configurations
+and retained executions, including stopped, superseded and unscored work. Completeness is **PARTIAL** within
+the listed sources; inaccessible chats, protected archives and missing original inputs are explicit gaps.
+Imported research adapters are not website model fits, and implementation, publication, capture, scoring,
+admission and actual served use remain separate. The view does not select models or alter live forecasts.
+
+The frozen JSON is assembled from retained source/configuration/result records. Markdown is rendered from
+that same view without provider calls, fitting, grading or historical recovery. Check the pair with:
+
+```sh
+python tools/production_method_history.py --catalog output/data/production-method-history-v1/index.json --markdown output/data/production-method-history-v1/README.md --check
+```
+
+The existing PR #1 coordination thread supplies immutable publication/readback receipts for C's approved
+intake. This reporting contribution adds no pilot, source-access, budget or deployment waiting condition.
+
 ## What's on the page
 
 - **Real lines**: every prop uses DraftKings' line (via ESPN) when posted, then Sleeper Picks' line, and only then our
