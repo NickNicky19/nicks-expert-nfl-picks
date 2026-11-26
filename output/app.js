@@ -23,7 +23,7 @@ const INJ_SHORT = { Questionable: "Q", Doubtful: "D", Out: "OUT", IR: "IR", PUP:
 
 const S = {
   data: null, track: null, generatedAt: null,
-  maeDisplay: null, maeBodyHash: null, maeRequestBoard: null, maeTargets: new Set(),
+  maeDisplay: null, maeBodyHash: null, maeRequestBoard: null, maeTargets: new Set(), maeExpiryTimer: null,
   byId: {}, byKey: {},
   games: {},           // game id -> schedule merged with the latest ESPN scoreboard
   propEvents: {},      // Exact ESPN event/athlete evidence; separate from fantasy live stats.
@@ -717,7 +717,7 @@ function syncGameFromSummary(id) {
   if (st) Object.assign(g, { state: st.state, detail: st.shortDetail || g.detail });
 }
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && S.data) { liveTick(); checkMeta(); }
+  if (!document.hidden && S.data) { refreshMaeDisplayExpiry(); liveTick(); checkMeta(); }
 });
 
 async function checkMeta() {
@@ -767,13 +767,35 @@ async function startMaeDisplay() {
     for (const row of admitted.rows) {
       if (row.season !== board.season || row.week !== board.week) throw Error("MAE board period");
       const p = board.players.find(p => String(p.id) === row.sleeper_id && String(p.game_id) === row.website_game_id);
-      if (p && !api.forPlayer(admitted, p, row.target, board)) throw Error("MAE board identity");
+      if (p && !api.matchesPlayer(admitted, p, row.target, board)) throw Error("MAE board identity");
     }
     if (S.data !== board || S.maeRequestBoard !== board) return;
     S.maeDisplay = admitted; S.maeBodyHash = saved.hash;
     S.maeTargets = new Set(admitted.rows.map(row => row.target));
+    scheduleMaeDisplayExpiry();
     if (S.gameView) renderGame(); else if (S.tab === "props") renderProps();
   } catch (_) { /* An unavailable new point never invalidates the incumbent. */ }
+}
+
+// A display validity timer, not a producer/capture scheduler. Re-check after
+// suspended tabs resume; an expired point cannot remain painted until polling.
+function scheduleMaeDisplayExpiry() {
+  if (S.maeExpiryTimer != null) globalThis.clearTimeout(S.maeExpiryTimer);
+  S.maeExpiryTimer = null;
+  const api = globalThis.StatPointMaeV2, display = S.maeDisplay, board = S.data;
+  const delay = api?.nextExpiryDelay(display, Date.now());
+  if (delay == null) return;
+  S.maeExpiryTimer = globalThis.setTimeout(() => {
+    S.maeExpiryTimer = null;
+    if (S.maeDisplay !== display || S.data !== board) return;
+    refreshMaeDisplayExpiry();
+  }, delay);
+}
+
+function refreshMaeDisplayExpiry() {
+  if (!S.maeDisplay) return;
+  scheduleMaeDisplayExpiry();
+  if (S.gameView) renderGame(); else if (S.tab === "props") renderProps();
 }
 
 function maeDisplayForecast(p, key, now = Date.now()) {
@@ -790,11 +812,12 @@ function maeDisplayDetails(value) {
     try { return new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(new Date(raw)); }
     catch (_) { return "Unavailable"; }
   };
-  const clocks = [["Information cutoff", row.information_cutoff_utc], ["Issued", row.issued_at], ["Persisted", row.persistence_completed_at], ["Registered deadline", row.issue_deadline_utc], ["Kickoff", row.kickoff_utc]];
+  const clocks = [["Information cutoff", row.information_cutoff_utc], ["Issued", row.issued_at], ["Persisted", row.persistence_completed_at], ["Registered deadline", row.issue_deadline_utc], ...(row.expires_at ? [["Display expires", row.expires_at]] : []), ["Kickoff", row.kickoff_utc]];
   return `<details data-mae-display-details><summary>MAE display identity and original clocks</summary>
     <div class="small">${esc(row.method_id)} · ${esc(row.forecast_product)} · ${esc(row.prediction_functional)}${value.frozen ? " · frozen original forecast" : " · provisional"}</div>
     <div class="small">Model <span title="${esc(row.model_version)}">${esc(row.model_version.slice(0, 12))}</span> · Procedure <span title="${esc(row.procedure_version)}">${esc(row.procedure_version.slice(0, 12))}</span></div>
     ${clocks.map(([label, raw]) => `<div class="small" title="${esc(raw)}">${label}: ${esc(stamp(raw))}</div>`).join("")}
+    ${row.conditional_on === "observed_statistical_appearance_v1" ? `<div class="small">Conditional on the model's observed statistical-appearance proxy and a known reception statistic. This is not a participation probability or a forecast covering every on-field participant.</div>` : ""}
     <div class="small">The separate mean is from this same model's predictive law; it is not an independently selected lowest-MSE model. Top Picks, ranking leans and probabilities retain their identified selection procedure. The input cutoff is the recorded source snapshot cutoff; upstream publication times are not independently authenticated.</div>
     ${value.fallback ? `<div class="small">Fallback: ${esc(row.fallback_reason)}</div>` : ""}
   </details>`;
@@ -806,6 +829,8 @@ async function load() {
   S.data = await getJSON(`data/week.json?t=${Date.now()}`);
   S.weeklyOverlay = null; S.weeklyOverlayReady = false;
   S.selectedRankings = null;
+  if (S.maeExpiryTimer != null) globalThis.clearTimeout(S.maeExpiryTimer);
+  S.maeExpiryTimer = null;
   S.maeDisplay = null; S.maeBodyHash = null; S.maeRequestBoard = null; S.maeTargets = new Set();
   S.weeklyOverlayBoardHash = null;
   S.rosKey = null; S.gradeKey = null;
@@ -4752,7 +4777,13 @@ function toggleMine(pid, key, dir, line, displayPoint = null) {
     S.mine.push({ pid, key, dir, line: +line, season: S.data.season, week: S.data.week, at: Date.now(),
       schema_version: "mypicks-player-game-v1", gid: String(p.game_id), team: p.team, espn_id: p.espn_id ?? null,
       kickoff: g.kickoff, period: "full_game_including_overtime", stat_source: "ESPN_EVENT_BOXSCORE",
-      ...(() => { const point = displayPoint; return point ? { display_forecast_snapshot: { schema_version: "stat-point-mae-display-snapshot-v2", public_feed_sha256: S.maeBodyHash, row: JSON.parse(JSON.stringify(point.row)), meaning: "DISPLAY_ONLY_NOT_SELECTION_OR_PROBABILITY_POLICY" } } : {}; })() });
+      ...(() => {
+        // Revalidate the live point at the save instant, rather than attach a
+        // stale object from a card rendered before its producer expiry.
+        const fresh = displayPoint && maeDisplayForecast(p, key);
+        const point = fresh && fresh.row === displayPoint.row && fresh.value === displayPoint.value ? fresh : null;
+        return point ? { display_forecast_snapshot: { schema_version: "stat-point-mae-display-snapshot-v2", public_feed_sha256: S.maeBodyHash, row: JSON.parse(JSON.stringify(point.row)), meaning: "DISPLAY_ONLY_NOT_SELECTION_OR_PROBABILITY_POLICY" } } : {};
+      })() });
   }
   persistMine();
   updateMineBadge();

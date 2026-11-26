@@ -34,7 +34,8 @@ class ActualBuildPairTests(unittest.TestCase):
                  'config/weekly-derived-selected-policy-v10.json':'weekly-derived-selected-policy-v4',
                  'config/weekly-derived-selected-policy-v11.json':'weekly-derived-selected-policy-v4',
                  'config/weekly-derived-selected-policy-v12.json':'weekly-derived-selected-policy-v4',
-                 'config/weekly-derived-selected-policy-v13.json':'weekly-derived-selected-policy-v4'}
+                 'config/weekly-derived-selected-policy-v13.json':'weekly-derived-selected-policy-v4',
+                 'config/weekly-derived-selected-policy-v14.json':'weekly-derived-selected-policy-v4'}
         self.assertIn(path,schemas)
         body=(ROOT/path).read_bytes()if candidate_policy is None else candidate_policy
         self.assertEqual(command[command.index('--feed-policy-sha256')+1],hashlib.sha256(body).hexdigest())
@@ -77,10 +78,23 @@ class ActualBuildPairTests(unittest.TestCase):
             feed.policy_check(new,root=ROOT)
         with self.assertRaisesRegex(ValueError,'V4_CURRENT_EXECUTION_OR_INVENTORY'):
             feed.policy_check(json.loads((ROOT/'config/weekly-derived-selected-policy-v10.json').read_bytes()),root=ROOT)
-        successor=json.loads((ROOT/'config/weekly-derived-selected-policy-v13.json').read_bytes())
+        successor=json.loads((ROOT/'config/weekly-derived-selected-policy-v14.json').read_bytes())
         self.assertEqual({key for key in new if new[key]!=successor[key]},
                          {'current_execution','website_code_sha256','registered_at_utc'})
         feed.policy_check(successor,root=ROOT)
+
+    def test_expiry_consumer_rebinding_preserves_all_publisher_and_model_contracts(self):
+        import weekly_public_feed_v4 as feed
+        old=json.loads((ROOT/'config/weekly-derived-selected-policy-v13.json').read_bytes())
+        current=json.loads((ROOT/'config/weekly-derived-selected-policy-v14.json').read_bytes())
+        self.assertEqual({key for key in old if old[key]!=current[key]},
+                         {'registered_at_utc','website_code_sha256'})
+        self.assertEqual({name for name in old['website_code_sha256']
+                          if old['website_code_sha256'][name]!=current['website_code_sha256'][name]},
+                         {'output/app.js','output/index.html'})
+        feed.policy_check(current,root=ROOT)
+        with self.assertRaisesRegex(ValueError,'V4_CURRENT_EXECUTION_OR_INVENTORY'):
+            feed.policy_check(old,root=ROOT)
 
     def test_workflow_installs_pair_before_current_policy_and_publishes_both_lanes(self):
         import re
