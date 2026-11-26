@@ -2,9 +2,18 @@
   "B_account": {
     "new_allowance": false,
     "owner": "B registered independent-check owner",
-    "reference": "https://github.com/NickNicky19/NFL-forecasting-V2/blob/e153529a8722cdb95444e4a4f04b070023ce2c94/reports/shared-game-sim-01/B/current-m3-delivery-follow-through-20261125/ADOPTION_AND_SCOPE_V1.json",
-    "remaining_balance": "NOT_ESTABLISHED_BY_PUBLIC_FILES_EXAMINED",
-    "scope": "Existing peer-evidence/reporting safety bounds90CPU/1800controlledwall, no new scientific grant; actual carried charges and full remaining check plan must be bound byB beforeCfit."
+    "reference": "https://github.com/NickNicky19/NFL-forecasting-V2/blob/f2853874a95c4dc50b0d40c9e0ebb3058620d8d8/reports/shared-game-sim-01/B/refreshed-rec-mean-delivery-20261126/B_VERIFICATION_ACCOUNT_V1.json",
+    "remaining_balance": {
+      "CPU": 30,
+      "completion_CPU_reserve": 10,
+      "completion_wall_reserve": 180,
+      "controlled_wall": 600,
+      "packet_metadata_operations": 4,
+      "planned_check_CPU_max": 10,
+      "planned_check_wall_max": 240
+    },
+    "scope": "Existing B account, conservative60CPU/1200controlledwall charged against90/1800;44metadata operations used; no new allowance.",
+    "state": "OWNER_BOUND_RECEIVED;ACTUAL_DELIVERED_PACKET_CHECK_NOT_RUN"
   },
   "C_producer_account_charges_by_website": 0,
   "actual_catalog_sha256": null,
@@ -21,6 +30,26 @@
     "request": "reports/shared-game-sim-01/saved-method-follow-through-v1/REC_MEAN_CURRENT_DELIVERY_REQUEST_V1.json",
     "user_corrections": "One earliest supported genuinely upcoming event; expired GB-LA401873079 prohibited; fixed weekly/query/seven-day and actual-clock equivalence unchanged; noC65merge."
   },
+  "current_C_receipt": {
+    "conservative_package_end_utc": "2026-11-26T20:45:00+00:00",
+    "current_training_rows": 22369,
+    "event": "2026_12_PHI_DAL",
+    "native_event_id": "401873080",
+    "native_status_pending": true,
+    "native_status_url": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=20261126&limit=100",
+    "path": "reports/shared-game-sim-01/saved-method-follow-through-v1/REC_MEAN_CURRENT_EXECUTION_V1.json",
+    "player_query_boundary_utc": "2026-11-26T21:30:00+00:00",
+    "predeclared_issue_deadline_utc": "2026-11-26T20:35:00+00:00",
+    "provisional_supported_queries": 21,
+    "reuse_W9_compatible": false,
+    "revision": "1ad15a58b2d49affe33d6d8c2c6b256468160734",
+    "roster_rows": 37,
+    "scheduled_kickoff_utc": "2026-11-26T21:30:00+00:00",
+    "scheduled_weekly_boundary_utc": "2026-11-26T01:00:00+00:00",
+    "source_qualification": "C owner-reported source-bound prefit inspection; website did not duplicate rawsource acquisition/fit. Actual native/prior/unavailable forecast attribution not yet produced.",
+    "state": "PREFIT_HOLD at20:23:30UTC;no fit/no forecast",
+    "unsupported_roster_rows": 16
+  },
   "exact_product": "C-M3-v1.1::rec::M3-0::base::MEAN_POINT",
   "handoff_sequence": [
     "Beforefit:C source/readiness/controller and B actual existing account bound; website compatibility deployed/verified. No publication or fit merely because this document exists.",
@@ -32,7 +61,7 @@
   ],
   "new_NFL_forecasts_or_grades": 0,
   "prefit_gate": {
-    "B": "Owner binds carried-use and remaining delivered-output check requirements under existing account beforeCfit; no duplicated historical checks.",
+    "B": "Latest B owner account/balance is bound and received. Retain its exact carry, four-packet-operation scope and complete check/reserve plan; do not require another account acknowledgment or historical replay.",
     "C_owner": "Verify complete cumulativeCPU/wall/source/readback/storage path, refresh event once by availability/timing, retain current model/history/source readiness.",
     "website": "This is a consumer compatibility policy, not a fake source/catalog admission. Actual model/query hashes are unknown until provided. No fit by website."
   },
@@ -47,6 +76,7 @@
   "rollback": "Revert consumer-only sourcepatch ifneeded; iflater admitted, removeisolatednumericpointer toretainR0. No forecast/pick/grade overwrite.",
   "schema_version": "m3-rec-mean-consumer-readiness-v1",
   "state": "PREPARED_NO_MODEL_SOURCE_CATALOG_OR_CURRENT_FEED_ADMITTED",
+  "superseding_receipt_utc": "2026-11-26T20:28:18.063516+00:00",
   "target_condition": {
     "canonicalization": "SHA256 of canonical UTF8 sortedkey JSON without trailingnewline",
     "conditional_on": "observed_statistical_appearance_v1",
