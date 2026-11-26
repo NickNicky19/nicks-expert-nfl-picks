@@ -24,6 +24,13 @@ FEED = "stat-point-mae-public-feed-v2-draft2"
 CATALOG = "stat-point-mae-public-catalog-v2-draft2"
 REGISTRY = "stat-point-mae-source-registry-v2-draft2"
 CAPTURE = "stat-point-mae-frozen-capture-v2-draft2"
+EXPIRING_FEED = "stat-point-mae-public-feed-v2-expiring-v1"
+EXPIRING_CATALOG = "stat-point-mae-public-catalog-v2-expiring-v1"
+EXPIRING_REGISTRY = "stat-point-mae-source-registry-v2-expiring-v1"
+EXPIRING_CAPTURE = "stat-point-mae-frozen-capture-v2-expiring-v1"
+EXPIRING_POINT = "stat-point-mae-v2-expiring-v1"
+APPEARANCE_CONDITION = "observed_statistical_appearance_v1"
+APPEARANCE_METHOD = "C-M3-v1.1::rec::M3-0::base::MEAN_POINT"
 PRODUCT, METRIC = "stat_point_mae_v2", "MAE"
 CANDIDATE_SCHEMA = "owned-core-full-law-mae-candidates-v2-draft2"
 MAX_ROWS, MAX_BYTES = 5000, 4 << 20
@@ -37,6 +44,10 @@ REG_KEYS = frozenset("schema_version registered_at owner_admission_receipt_sha25
 ROW_KEYS = frozenset("website_game_id sleeper_id identity_bridge_sha256 identity_binding_sha256 team opponent retained_capture schema_version selection_product selection_metric consumer_contract_version season week game_id player_id target scoring_target position horizon conditional_on method_id base_learner_id model_version artifact_sha256 model_bytes_sha256 procedure_version base_procedure_version point_profile_sha256 selection_sha256 source_policy_sha256 source_contract_sha256 source_registry_sha256 source_receipt_sha256 feature_capture_receipt_sha256 feature_binding_sha256 query_projection_sha256 query_source_sha256 candidate_sha256 capture_receipt_sha256 capture_body_sha256 information_cutoff_utc feature_capture_completed_at feature_max_source_available_utc issued_at persistence_completed_at readback_completed_at issue_deadline_utc kickoff_utc selected_projection projection_label forecast_product prediction_functional expected_mean expected_mean_kind functional_proof mean_eligible trained_prior_only fallback fallback_reason original_contract_version public_roles".split())
 FEED_KEYS = frozenset("season week schema_version selection_product selection_metric created_at catalog catalog_sha256 source_registry source_registry_sha256 rows owner_export_receipt_sha256".split())
 RECEIPT_KEYS = frozenset("website_game_id sleeper_id identity_bridge_sha256 identity_binding_sha256 team opponent schema_version state horizon candidate_sha256 capture_receipt_sha256 capture_body_sha256 selection_sha256 identity model_version procedure_version point_profile_sha256 source_policy_sha256 source_registry_sha256 query_projection_sha256 information_cutoff_utc issued_at persistence_completed_at readback_completed_at issue_deadline_utc kickoff_utc".split())
+EXPIRING_ENTRY_KEYS = ENTRY_KEYS | {"conditional_on", "conditioning_contract_sha256"}
+EXPIRING_SOURCE_KEYS = SOURCE_KEYS | {"conditional_on", "conditioning_contract_sha256", "expires_at"}
+EXPIRING_ROW_KEYS = ROW_KEYS | {"conditioning_contract_sha256", "expires_at"}
+EXPIRING_RECEIPT_KEYS = RECEIPT_KEYS | {"conditional_on", "conditioning_contract_sha256", "expires_at"}
 _CAPABILITY = object()
 
 
@@ -103,21 +114,48 @@ def _entry_key(row):
     return tuple(row[k] for k in ("target", "method_id", "model_version", "procedure_version", "forecast_product", "prediction_functional"))
 
 
+def _format(version, legacy, expiring, code):
+    require(version in (legacy, expiring), code)
+    return version == expiring
+
+
+def _appearance(row, *, product=False):
+    """The named target stays distinct from generic 'played' semantics.
+
+    Its exact predicate is independently admitted by the owner under the
+    hash-bound source/catalog contract; this structural check is not that proof.
+    """
+    require(row["conditional_on"] == APPEARANCE_CONDITION
+        and h(row["conditioning_contract_sha256"])
+        and row["target"] == "rec" and roles(row["public_roles"])
+        and set(row["public_roles"]) <= {"WR", "TE"}, "EXACT_APPEARANCE_TARGET_REQUIRED")
+    if product:
+        require(row["method_id"] == APPEARANCE_METHOD
+            and row["forecast_product"] == "point_mean"
+            and row["prediction_functional"] == "expected_mean", "EXACT_APPEARANCE_MEAN_PRODUCT_REQUIRED")
+
+
 def validate_catalog(catalog):
-    require(type(catalog) is dict and set(catalog) == CAT_KEYS and catalog["schema_version"] == CATALOG
+    require(type(catalog) is dict and set(catalog) == CAT_KEYS
         and catalog["selection_product"] == PRODUCT and catalog["selection_metric"] == METRIC
         and h(catalog["owner_admission_receipt_sha256"]), "CLOSED_MAE_CATALOG_REQUIRED")
+    expiring = _format(catalog["schema_version"], CATALOG, EXPIRING_CATALOG, "CLOSED_MAE_CATALOG_REQUIRED")
+    entry_keys = EXPIRING_ENTRY_KEYS if expiring else ENTRY_KEYS
     clock(catalog["registered_at"])
     entries = catalog["entries"]
     require(type(entries) is list and 0 < len(entries) <= 64, "BOUNDED_CATEGORY_SUBSET_CATALOG_REQUIRED")
     seen = set()
     for row in entries:
-        require(type(row) is dict and set(row) == ENTRY_KEYS and hashes(row)
+        require(type(row) is dict and set(row) == entry_keys and hashes(row)
             and row["target"] in NUMERIC and row["scoring_target"] == row["target"]
             and row["artifact_sha256"] == row["model_version"] and roles(row["public_roles"])
             and all(ident(row[k]) for k in ("method_id", "base_learner_id", "original_contract_version"))
             and (row["forecast_product"], row["prediction_functional"]) in POINT_TYPES,
             "CLOSED_NUMERIC_TYPED_CATALOG_ENTRY_REQUIRED")
+        if expiring:
+            _appearance(row, product=True)
+        else:
+            require(row["method_id"] != APPEARANCE_METHOD, "APPEARANCE_PRODUCT_REQUIRES_EXPIRING_WIRE")
         key = _entry_key(row)
         require(key not in seen, "DUPLICATE_CATALOG_ENTRY")
         seen.add(key)
@@ -125,15 +163,20 @@ def validate_catalog(catalog):
 
 
 def validate_registry(registry):
-    require(type(registry) is dict and set(registry) == REG_KEYS and registry["schema_version"] == REGISTRY
+    require(type(registry) is dict and set(registry) == REG_KEYS
         and h(registry["owner_admission_receipt_sha256"]), "CLOSED_SOURCE_REGISTRY_REQUIRED")
+    expiring = _format(registry["schema_version"], REGISTRY, EXPIRING_REGISTRY, "CLOSED_SOURCE_REGISTRY_REQUIRED")
+    source_keys = EXPIRING_SOURCE_KEYS if expiring else SOURCE_KEYS
     clock(registry["registered_at"])
     require(type(registry["records"]) is list and 0 < len(registry["records"]) <= 128,
         "BOUNDED_SOURCE_REGISTRY_REQUIRED")
     seen = set()
     for row in registry["records"]:
-        require(type(row) is dict and set(row) == SOURCE_KEYS and hashes(row)
+        require(type(row) is dict and set(row) == source_keys and hashes(row)
             and row["target"] in NUMERIC and roles(row["public_roles"]), "CLOSED_SAFE_SOURCE_BINDING_REQUIRED")
+        if expiring:
+            _appearance(row)
+            require(clock(row["feature_capture_completed_at"]) < clock(row["expires_at"]), "SOURCE_EXPIRED_BEFORE_CAPTURE")
         require(clock(row["information_cutoff_utc"]) <= clock(row["feature_capture_completed_at"]),
             "SOURCE_FEATURE_CLOCK_ORDER")
         key = digest(row)
@@ -143,6 +186,8 @@ def validate_registry(registry):
 
 
 def _typed(row):
+    # Reuse only the existing numeric/functional formatter. This internal math
+    # view has no conditioning field and is never a public relabeling of C.
     return dict(schema_version="stat-point-mae-v2", selection_product=PRODUCT, selection_metric=METRIC,
         consumer_contract_version="stat-point-mae-v2", target=row["target"], scoring_target=row["scoring_target"],
         game_id=row["game_id"], player_id=row["player_id"], horizon=row["horizon"],
@@ -157,21 +202,40 @@ def _typed(row):
         fallback=row["fallback"], fallback_reason=row["fallback_reason"], original_contract_version=row["original_contract_version"])
 
 
+def _point_view(row):
+    view = consumer_view(_typed(row))
+    if row["schema_version"] == EXPIRING_POINT:
+        _appearance(row, product=True)
+        view["projection_label"] = "Appearance-conditioned mean" + (" fallback" if row["fallback"] else "")
+    return view
+
+
 def validate_row(row, catalog, registry, *, created_at):
-    require(type(row) is dict and set(row) == ROW_KEYS and hashes(row), "CLOSED_PUBLIC_POINT_ROW_REQUIRED")
-    require(row["schema_version"] == row["consumer_contract_version"] == "stat-point-mae-v2"
+    require(type(row) is dict, "CLOSED_PUBLIC_POINT_ROW_REQUIRED")
+    expiring = _format(row.get("schema_version"), "stat-point-mae-v2", EXPIRING_POINT, "CLOSED_PUBLIC_POINT_ROW_REQUIRED")
+    row_keys, entry_keys, source_keys = ((EXPIRING_ROW_KEYS, EXPIRING_ENTRY_KEYS, EXPIRING_SOURCE_KEYS)
+        if expiring else (ROW_KEYS, ENTRY_KEYS, SOURCE_KEYS))
+    require(set(row) == row_keys and hashes(row), "CLOSED_PUBLIC_POINT_ROW_REQUIRED")
+    require(catalog["schema_version"] == (EXPIRING_CATALOG if expiring else CATALOG)
+        and registry["schema_version"] == (EXPIRING_REGISTRY if expiring else REGISTRY), "MIXED_POINT_WIRE_VERSIONS")
+    require(row["schema_version"] == row["consumer_contract_version"]
         and row["selection_product"] == PRODUCT and row["selection_metric"] == METRIC
         and row["target"] in NUMERIC and row["scoring_target"] == row["target"]
-        and row["horizon"] == "player_game" and row["conditional_on"] == "played"
+        and row["horizon"] == "player_game"
+        and row["conditional_on"] == (APPEARANCE_CONDITION if expiring else "played")
         and row["artifact_sha256"] == row["model_version"]
         and type(row["season"]) is int and 1900 <= row["season"] <= 2200
         and type(row["week"]) is int and 1 <= row["week"] <= 22
         and all(ident(row[k]) for k in ("game_id", "player_id", "position", "website_game_id", "sleeper_id", "team", "opponent"))
         and roles(row["public_roles"]) and row["position"] in row["public_roles"], "TYPED_POINT_IDENTITY_ROLE_REQUIRED")
+    if expiring:
+        _appearance(row, product=True)
+    else:
+        require(row["method_id"] != APPEARANCE_METHOD, "APPEARANCE_PRODUCT_REQUIRES_EXPIRING_WIRE")
     matches = [x for x in catalog["entries"] if _entry_key(x) == _entry_key(row)]
-    require(len(matches) == 1 and all(row[k] == matches[0][k] for k in ENTRY_KEYS), "ROW_OUTSIDE_ADMITTED_CATALOG")
+    require(len(matches) == 1 and all(row[k] == matches[0][k] for k in entry_keys), "ROW_OUTSIDE_ADMITTED_CATALOG")
     require(row["source_registry_sha256"] == digest(registry)
-        and any(all(row[k] == source[k] for k in SOURCE_KEYS) for source in registry["records"]),
+        and any(all(row[k] == source[k] for k in source_keys) for source in registry["records"]),
         "ROW_OUTSIDE_ADMITTED_SOURCE_REGISTRY")
     require(finite(row["selected_projection"]) and finite(row["expected_mean"])
         and row["expected_mean_kind"] == "full_law_expected_mean"
@@ -189,6 +253,10 @@ def validate_row(row, catalog, registry, *, created_at):
     require(clock(catalog["registered_at"]) <= issued and clock(registry["registered_at"]) <= issued
         and info <= captured <= issued <= persisted < deadline < kickoff
         and persisted <= readback <= created and (created < kickoff or row["retained_capture"]), "EXACT_ISSUE_PERSISTENCE_READBACK_CLOCKS_REQUIRED")
+    if expiring:
+        # Expired originals remain structurally valid evidence. The current
+        # consumer enforces liveness separately, even for retained captures.
+        require(issued < clock(row["expires_at"]) <= kickoff, "EXACT_PRODUCER_EXPIRY_REQUIRED")
     if row["feature_max_source_available_utc"] is not None:
         require(clock(row["feature_max_source_available_utc"]) <= info, "FEATURE_AFTER_INFORMATION_CUTOFF")
     if row["forecast_product"] == "point_mean":
@@ -202,7 +270,7 @@ def validate_row(row, catalog, registry, *, created_at):
             and finite(proof["cdf_below"]) and finite(proof["cdf_at"])
             and 0 <= proof["cdf_below"] < .5 <= proof["cdf_at"] <= 1
             and float(row["selected_projection"]).is_integer(), "FULL_LAW_LOWER_MEDIAN_BRACKET_REQUIRED")
-    view = consumer_view(_typed(row))
+    view = _point_view(row)
     require(view["selected_projection"] == row["selected_projection"]
         and view["expected_mean"] == row["expected_mean"] and view["projection_label"] == row["projection_label"],
         "COMMON_CONSUMER_VALUE_OR_LABEL_CHANGED")
@@ -210,11 +278,14 @@ def validate_row(row, catalog, registry, *, created_at):
 
 
 def validate_feed(feed):
-    require(type(feed) is dict and set(feed) == FEED_KEYS and feed["schema_version"] == FEED
+    require(type(feed) is dict and set(feed) == FEED_KEYS
         and feed["selection_product"] == PRODUCT and feed["selection_metric"] == METRIC
         and h(feed["owner_export_receipt_sha256"]) and len(canonical(feed)) <= MAX_BYTES,
         "CLOSED_NEW_MAE_FEED_REQUIRED")
+    expiring = _format(feed["schema_version"], FEED, EXPIRING_FEED, "CLOSED_NEW_MAE_FEED_REQUIRED")
     catalog, registry = validate_catalog(feed["catalog"]), validate_registry(feed["source_registry"])
+    require(catalog["schema_version"] == (EXPIRING_CATALOG if expiring else CATALOG)
+        and registry["schema_version"] == (EXPIRING_REGISTRY if expiring else REGISTRY), "MIXED_POINT_WIRE_VERSIONS")
     require(feed["catalog_sha256"] == digest(catalog) and feed["source_registry_sha256"] == digest(registry),
         "EXACT_CATALOG_SOURCE_REGISTRY_DIGEST_REQUIRED")
     require(type(feed["rows"]) is list and 0 < len(feed["rows"]) <= MAX_ROWS, "BOUNDED_PUBLIC_ROWS_REQUIRED")
@@ -266,8 +337,10 @@ def admit_catalog(document, registry, *, verify_owner_catalog):
     require(type(registry) is OwnerCapability and registry.kind == "SOURCE_REGISTRY"
         and callable(verify_owner_catalog), "OWNER_CATALOG_AND_REGISTRY_REQUIRED")
     registry.verify(); validate_catalog(document)
+    expiring = document["schema_version"] == EXPIRING_CATALOG
+    require(registry.document["schema_version"] == (EXPIRING_REGISTRY if expiring else REGISTRY), "MIXED_POINT_WIRE_VERSIONS")
     for entry in document["entries"]:
-        fields = set(ENTRY_KEYS) & set(SOURCE_KEYS)
+        fields = ((EXPIRING_ENTRY_KEYS & EXPIRING_SOURCE_KEYS) if expiring else (ENTRY_KEYS & SOURCE_KEYS))
         require(any(all(entry[k] == source[k] for k in fields) for source in registry.document["records"]),
             "CATALOG_NOT_IN_OWNER_SOURCE_REGISTRY")
     capability = OwnerCapability("CATALOG", document, verify_owner_catalog, _CAPABILITY)
@@ -280,16 +353,29 @@ def finalize_capture(candidate, receipt, catalog, registry, *, verify_owner_capt
     require(type(catalog) is type(registry) is OwnerCapability and catalog.kind == "CATALOG"
         and registry.kind == "SOURCE_REGISTRY" and callable(verify_owner_capture), "OWNER_CAPTURE_CAPABILITIES_REQUIRED")
     catalog.verify(); registry.verify(); receipt = deepcopy(receipt)
+    expiring = catalog.document["schema_version"] == EXPIRING_CATALOG
+    require(registry.document["schema_version"] == (EXPIRING_REGISTRY if expiring else REGISTRY), "MIXED_POINT_WIRE_VERSIONS")
+    row_keys = EXPIRING_ROW_KEYS if expiring else ROW_KEYS
+    receipt_keys = EXPIRING_RECEIPT_KEYS if expiring else RECEIPT_KEYS
     value = deepcopy(candidate); candidate_sha = value.pop("candidate_sha256", None)
     require(h(candidate_sha) and candidate_digest(value) == candidate_sha, "IMMUTABLE_PRIVATE_CANDIDATE_REQUIRED")
-    require(type(receipt) is dict and set(receipt) == RECEIPT_KEYS and receipt["schema_version"] == CAPTURE
+    require(type(receipt) is dict and set(receipt) == receipt_keys
+        and receipt["schema_version"] == (EXPIRING_CAPTURE if expiring else CAPTURE)
         and receipt["state"] == "FROZEN_AND_READ_BACK" and hashes(receipt), "EXACT_FROZEN_READBACK_RECEIPT_REQUIRED")
-    require(value["schema_version"] == "stat-point-mae-v2" and value["candidate_schema"] == CANDIDATE_SCHEMA
+    require(value["schema_version"] == (EXPIRING_POINT if expiring else "stat-point-mae-v2")
+        and value["candidate_schema"] == CANDIDATE_SCHEMA
         and value["selection_product"] == PRODUCT
         and value["selection_metric"] == METRIC and value["public_export_authorized"] is False
         and value["public_scope_eligible"] is True and value["operational_eligible"] is True
-        and value["evidence_lane"] == "original_pregame" and value["conditional_on"] == "played"
+        and value["evidence_lane"] == "original_pregame"
+        and value["conditional_on"] == (APPEARANCE_CONDITION if expiring else "played")
         and value["participation_state"] == "unknown", "ACTUAL_ELIGIBLE_PRIVATE_POINT_REQUIRED")
+    if expiring:
+        _appearance(value, product=True)
+        require(all(receipt[k] == value[k] for k in ("conditional_on", "conditioning_contract_sha256", "expires_at")),
+            "CAPTURE_DOES_NOT_BIND_PRODUCER_CONDITION_AND_EXPIRY")
+    else:
+        require(value["method_id"] != APPEARANCE_METHOD, "APPEARANCE_PRODUCT_REQUIRES_EXPIRING_WIRE")
     require(receipt["candidate_sha256"] == candidate_sha and receipt["source_registry_sha256"] == registry.sha256
         and receipt["identity"] == {k: value[k] for k in ("season", "week", "game_id", "player_id", "target")}
         and all(receipt[k] == value[k] for k in ("horizon", "model_version", "procedure_version", "point_profile_sha256",
@@ -297,17 +383,21 @@ def finalize_capture(candidate, receipt, catalog, registry, *, verify_owner_capt
         "CAPTURE_DOES_NOT_BIND_THIS_CANDIDATE")
     require(verify_owner_capture(canonical(receipt), candidate_sha, catalog.sha256, registry.sha256) is None,
         "INDEPENDENT_CAPTURE_READBACK_SELECTION_REQUIRED")
-    row = {k: value[k] for k in ROW_KEYS if k in value}
+    row = {k: value[k] for k in row_keys if k in value}
     source = next((s for s in registry.document["records"] if s["target"] == value["target"]
         and s["model_version"] == value["model_version"] and s["procedure_version"] == value["procedure_version"]
         and s["query_projection_sha256"] == value["query_projection_sha256"]), None)
     require(source is not None, "CURRENT_CANDIDATE_SOURCE_NOT_ADMITTED")
+    if expiring:
+        require(all(value[k] == source[k] for k in ("conditional_on", "conditioning_contract_sha256", "expires_at")),
+            "SOURCE_DOES_NOT_BIND_PRODUCER_CONDITION_AND_EXPIRY")
     require(all(receipt[k] == value[k] for k in ("team","opponent"))
         and all(ident(receipt[k]) for k in ("website_game_id","sleeper_id"))
         and receipt["identity_bridge_sha256"] == source["identity_bridge_sha256"],
         "OWNER_VERIFIED_WEBSITE_IDENTITY_REQUIRED")
     row.update({k:receipt[k] for k in ("website_game_id","sleeper_id","identity_bridge_sha256","identity_binding_sha256")})
-    row.update(source, retained_capture=clock(receipt["readback_completed_at"])>=clock(value["kickoff_utc"]), schema_version="stat-point-mae-v2", consumer_contract_version="stat-point-mae-v2",
+    point_version = EXPIRING_POINT if expiring else "stat-point-mae-v2"
+    row.update(source, retained_capture=clock(receipt["readback_completed_at"])>=clock(value["kickoff_utc"]), schema_version=point_version, consumer_contract_version=point_version,
         artifact_sha256=value["model_version"], selected_projection=value["forecast_value"],
         expected_mean=value["separate_expected_mean"], expected_mean_kind="full_law_expected_mean",
         mean_eligible=True, candidate_sha256=candidate_sha,
@@ -320,7 +410,7 @@ def finalize_capture(candidate, receipt, catalog, registry, *, verify_owner_capt
         and row["feature_binding_sha256"] == value["feature_binding"]["sha256"]
         and row["feature_capture_completed_at"] == value["original_forecast"]["source_capture_completed_at"],
         "SOURCE_REGISTRY_MUST_BIND_ACTUAL_PRIVATE_REFERENCES")
-    row["projection_label"] = consumer_view(_typed(row))["projection_label"]
+    row["projection_label"] = _point_view(row)["projection_label"]
     validate_row(row, catalog.document, registry.document, created_at=receipt["readback_completed_at"])
     capture = OwnerCapability("FROZEN_POINT", row,
         lambda _kind, _body: verify_owner_capture(canonical(receipt), candidate_sha, catalog.sha256, registry.sha256), _CAPABILITY)
@@ -332,6 +422,8 @@ def export_feed(captures, catalog, registry, *, created_at, owner_export_receipt
     require(type(catalog) is type(registry) is OwnerCapability and catalog.kind == "CATALOG"
         and registry.kind == "SOURCE_REGISTRY" and callable(verify_owner_export), "OWNER_EXPORT_CAPABILITIES_REQUIRED")
     catalog.verify(); registry.verify()
+    expiring = catalog.document["schema_version"] == EXPIRING_CATALOG
+    require(registry.document["schema_version"] == (EXPIRING_REGISTRY if expiring else REGISTRY), "MIXED_POINT_WIRE_VERSIONS")
     require(type(captures) is list and 0 < len(captures) <= MAX_ROWS
         and all(type(c) is OwnerCapability and c.kind == "FROZEN_POINT" for c in captures), "OWNER_FROZEN_CAPTURES_REQUIRED")
     for capture in captures:
@@ -340,7 +432,7 @@ def export_feed(captures, catalog, registry, *, created_at, owner_export_receipt
     require(len({(r["season"],r["week"]) for r in rows})==1,"ONE_CAPTURE_SEASON_WEEK_REQUIRED")
     for row in rows:
         if clock(created_at)>=clock(row["kickoff_utc"]): row["retained_capture"]=True
-    feed = dict(schema_version=FEED, selection_product=PRODUCT, selection_metric=METRIC,
+    feed = dict(schema_version=EXPIRING_FEED if expiring else FEED, selection_product=PRODUCT, selection_metric=METRIC,
         season=rows[0]["season"],week=rows[0]["week"],
         created_at=created_at, catalog=catalog.document, catalog_sha256=catalog.sha256,
         source_registry=registry.document, source_registry_sha256=registry.sha256,

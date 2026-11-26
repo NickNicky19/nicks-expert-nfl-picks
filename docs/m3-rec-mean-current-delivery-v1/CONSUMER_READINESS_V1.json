@@ -1,0 +1,100 @@
+{
+  "B_account": {
+    "new_allowance": false,
+    "owner": "B registered independent-check owner",
+    "reference": "https://github.com/NickNicky19/NFL-forecasting-V2/blob/e153529a8722cdb95444e4a4f04b070023ce2c94/reports/shared-game-sim-01/B/current-m3-delivery-follow-through-20261125/ADOPTION_AND_SCOPE_V1.json",
+    "remaining_balance": "NOT_ESTABLISHED_BY_PUBLIC_FILES_EXAMINED",
+    "scope": "Existing peer-evidence/reporting safety bounds90CPU/1800controlledwall, no new scientific grant; actual carried charges and full remaining check plan must be bound byB beforeCfit."
+  },
+  "C_producer_account_charges_by_website": 0,
+  "actual_catalog_sha256": null,
+  "actual_feed_sha256": null,
+  "actual_model_sha256": null,
+  "actual_source_registry_sha256": null,
+  "controller": {
+    "CPU_seconds": 300,
+    "commit": "dd1aee1e8ebfbcb7fe8abb756a104d25b0254932",
+    "completion_CPU_included": 75,
+    "completion_wall_included": 600,
+    "elapsed_seconds": 2700,
+    "repository": "NickNicky19/NFL-forecasting-NGS-C",
+    "request": "reports/shared-game-sim-01/saved-method-follow-through-v1/REC_MEAN_CURRENT_DELIVERY_REQUEST_V1.json",
+    "user_corrections": "One earliest supported genuinely upcoming event; expired GB-LA401873079 prohibited; fixed weekly/query/seven-day and actual-clock equivalence unchanged; noC65merge."
+  },
+  "exact_product": "C-M3-v1.1::rec::M3-0::base::MEAN_POINT",
+  "handoff_sequence": [
+    "Beforefit:C source/readiness/controller and B actual existing account bound; website compatibility deployed/verified. No publication or fit merely because this document exists.",
+    "Afterfitorprovedreuse,but BEFOREforecastissuance:C publishes permitted model/recipe and source/query/feature/identity draft commitments through existingprospective/export discovery. Website verifies actual bodies and rights and admits genuine source registry and modelcatalog with real registration clocks.",
+    "Freeze and preserve actual inference values; register catalog/source no later than actual issue time. Draft inference is not an issued pick. If owner admission cannot finish inside source/expiry/Cremaining window, withhold current use rather than backdate.",
+    "C takes final qualified native status observation late enough, freezes exact expiry, completes genuine server persistence proof and actual envelope readback, then advertises exact immutable envelope/receipt in existing export index.",
+    "B and website retrieve via same existing discovery routes without another manual message relay afterissuance. Website binds actual candidate/capture proof and verifies feed on current board; no no-op callbacks or Aidentity.",
+    "A fresh readable envelope remains useful SHADOW ifscientific/source/current consumer admission doesnot qualifyprimary. Current use afterexpiry forbidden; archives remaingradable through existingjobs."
+  ],
+  "new_NFL_forecasts_or_grades": 0,
+  "prefit_gate": {
+    "B": "Owner binds carried-use and remaining delivered-output check requirements under existing account beforeCfit; no duplicated historical checks.",
+    "C_owner": "Verify complete cumulativeCPU/wall/source/readback/storage path, refresh event once by availability/timing, retain current model/history/source readiness.",
+    "website": "This is a consumer compatibility policy, not a fake source/catalog admission. Actual model/query hashes are unknown until provided. No fit by website."
+  },
+  "prepared_utc": "2026-11-26T20:20:44.623504+00:00",
+  "product_disposition": {
+    "TopPicks": "Existing exact complete policy/evidence unchanged; no silent Cpointinjection.",
+    "numerical": "KEEP_INCUMBENT until actual packet and applicable scientific/source admission. Current historical candidate remains SHADOW; source/vintage/conditional-population/strongerW1numerical-control limits retained.",
+    "ordinary_margin": "Existing reference rule unchanged.",
+    "probability_confidence": "None from mean.",
+    "strict_direction": "Not activated by mean delivery; preserve own exact crossing evidence and C6partial/Aearliercompatible5week scope."
+  },
+  "rollback": "Revert consumer-only sourcepatch ifneeded; iflater admitted, removeisolatednumericpointer toretainR0. No forecast/pick/grade overwrite.",
+  "schema_version": "m3-rec-mean-consumer-readiness-v1",
+  "state": "PREPARED_NO_MODEL_SOURCE_CATALOG_OR_CURRENT_FEED_ADMITTED",
+  "target_condition": {
+    "canonicalization": "SHA256 of canonical UTF8 sortedkey JSON without trailingnewline",
+    "conditional_on": "observed_statistical_appearance_v1",
+    "conditioning_contract_sha256": "f8a4e007e7d1ffbbf636ba02f0194a995b14cffccc750d71fad98973da0d313b",
+    "generic_played_equivalence": "NOT_ESTABLISHED; old played numerical wire rejects this exactCmethod",
+    "label": "Appearance-conditioned mean",
+    "path": "docs/m3-rec-mean-current-delivery-v1/CONDITIONING_V1.json"
+  },
+  "website_account": {
+    "id": "NFL-WEB-PRODUCTION-REPORT-INTEGRATION-20261025-122500Z",
+    "new_300_second_grant": false,
+    "prior_website_300_2400_request": "SUPERSEDED_NOT_ADDED",
+    "scope": "Existing website production correctness/admission/release work plus current approved narrowcompatibility; actual local checks measured separately; earlier unmetered intake disclosed.",
+    "writer_lease_revision": 178
+  },
+  "wire": {
+    "browser": "output/stat-point-mae-v2.js",
+    "capture": "stat-point-mae-frozen-capture-v2-expiring-v1",
+    "catalog": "stat-point-mae-public-catalog-v2-expiring-v1",
+    "current_use": "issued_at<=now<expires_at even retained; no expiry extension or stale save; original capture remains unchanged",
+    "feed": "stat-point-mae-public-feed-v2-expiring-v1",
+    "method_id": "C-M3-v1.1::rec::M3-0::base::MEAN_POINT",
+    "new_entry_keys": [
+      "conditional_on",
+      "conditioning_contract_sha256"
+    ],
+    "new_receipt_keys": [
+      "conditional_on",
+      "conditioning_contract_sha256",
+      "expires_at"
+    ],
+    "new_row_keys": [
+      "conditioning_contract_sha256",
+      "expires_at"
+    ],
+    "new_source_keys": [
+      "conditional_on",
+      "conditioning_contract_sha256",
+      "expires_at"
+    ],
+    "point_mean_semantics": "selected_projection=expected_mean=actual unrounded Law.mean(); mean_eligible=true,functional_proof=null; no extra correction",
+    "producer_expiry": "Exact producer min(roster publication+36h,native observation+30min,kickoff-5min), verified from actual qualified clocks; not replaced by kickofffreeze",
+    "python": "tools/stat_point_mae_public_v2.py",
+    "registry": "stat-point-mae-source-registry-v2-expiring-v1",
+    "roles": [
+      "WR",
+      "TE"
+    ],
+    "row": "stat-point-mae-v2-expiring-v1"
+  }
+}
