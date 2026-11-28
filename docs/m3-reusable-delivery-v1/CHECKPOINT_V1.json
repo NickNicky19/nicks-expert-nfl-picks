@@ -1,0 +1,115 @@
+{
+  "checks": {
+    "MAE_consumer_mock_checks": 32,
+    "Node_syntax": "PASS",
+    "Python3.12_full_unittest": {
+      "failed": 0,
+      "passed": 330,
+      "seconds": 7.187
+    },
+    "UI_helpers": "PASS",
+    "classic_model_mock_checks": 5,
+    "compilation": "PASS",
+    "existing_MAE_publisher_pytest": {
+      "deselected": 7,
+      "passed": 52,
+      "seconds": 0.26
+    },
+    "independent_code_review": "Concrete clock, fractional server timestamp, role alignment and actual wire-byte hashing fixes reviewed; no remaining blocker in checked scope.",
+    "new_admission_tests": 30,
+    "new_numeric_tests": 15,
+    "new_shadow_wire_tests": 8,
+    "overlay_mock_checks": 31,
+    "primary_forecast_mock_checks": 193,
+    "selected_rankings_mock_checks": 43,
+    "whitespace": "PASS"
+  },
+  "decisions": {
+    "M3_mean_candidate": "SHADOW",
+    "TopPicks": "KEEP_INCUMBENT;PRESERVE_OLD_P1_REPLAY",
+    "numerical_primary": "KEEP_INCUMBENT",
+    "passing_TD_candidates": "SHADOW_PENDING_EXACT_POLICY_COMPARISON_AND_DELIVERY",
+    "probability": "NO_NEW_ACTIVATION",
+    "reception_law_Over_policy": "SHADOW_PENDING_EXACT_POLICY_COMPARISON_AND_DELIVERY",
+    "recommendations": "KEEP_INCUMBENT"
+  },
+  "files": [
+    {
+      "bytes": 10102,
+      "path": "tools/m3_numeric_inspector_v1.py",
+      "sha256": "b228610a185e50b68aff27e5caf2f44089e5b082b978a990530bc87efacd9bb8"
+    },
+    {
+      "bytes": 44165,
+      "path": "tools/m3_rec_mean_admission_v1.py",
+      "sha256": "8199490190a8473632ab768a5ac25db20d17ff35d14bdc6ce0b241cd5e6acb54"
+    },
+    {
+      "bytes": 10159,
+      "path": "tools/m3_rec_mean_publisher_v1.py",
+      "sha256": "e6b55ea450528b6d3ae42d69de2349ddb2232f2762ae7829157435f5e1bd9102"
+    },
+    {
+      "bytes": 10165,
+      "path": "tests/test_m3_numeric_inspector_v1.py",
+      "sha256": "ee5540e34094c9743a95966b2bc3f0c78d8db2a95b276b6e0725e162fc022636"
+    },
+    {
+      "bytes": 29097,
+      "path": "tests/test_m3_rec_mean_admission_v1.py",
+      "sha256": "f233579651bbb0115370213df49a4097eef35177125db2391bd202ffe816448c"
+    },
+    {
+      "bytes": 7400,
+      "path": "tests/test_m3_rec_mean_publisher_v1.py",
+      "sha256": "fb836a75e2b1aaac3b439887b928ce9171932184170cb2f2d61d85d99a70be5d"
+    },
+    {
+      "bytes": 21030,
+      "path": "docs/exact-policy-admission-v1/POLICY_CONTRACT_V1.json",
+      "sha256": "8322e56b15fbdc8036409087aa238f44276013262bf5617fcc362d22c4592d3c"
+    },
+    {
+      "bytes": 7487,
+      "path": "docs/exact-policy-admission-v1/POLICY_HANDOFF.md",
+      "sha256": "9f549ecf6fbab1480a5d1a868929031ced6e40537b4e861a9659089d7b2777d5"
+    },
+    {
+      "bytes": 10834,
+      "path": "docs/m3-reusable-delivery-v1/README.md",
+      "sha256": "760f6a95d04837ac7f9612f29f1d22107f89017f322e3371133833105b1565a9"
+    },
+    {
+      "bytes": 3836,
+      "path": "docs/m3-reusable-delivery-v1/SERVED_STATE_V1.json",
+      "sha256": "dba7fc825ff8854a72df1a1701137177af3253d28e0f0dc48d31825fee3bbc81"
+    },
+    {
+      "bytes": 5196,
+      "path": "docs/m3-reusable-delivery-v1/C_CONSOLIDATED_REQUIREMENTS_V1.json",
+      "sha256": "4ac2d488f55aa024d5319c3f63c9ba0e3eb0d556e128d4dc14323a5b0fa900cd"
+    }
+  ],
+  "product": "C-M3-v1.1::rec::M3-0::base::MEAN_POINT",
+  "production": {
+    "DEN_PIT": "CLOSED_UNOPENED0FIT0FORECAST",
+    "live_pointer_written": false,
+    "model_changed": false,
+    "new_fits": 0,
+    "new_forecasts": 0,
+    "new_real_games_or_weeks": 0,
+    "workflow_or_schedule_changed": false
+  },
+  "publication_scope": "Only listed new code, fictional tests and permitted metadata/documents. No private source/training/model/query body or actual draft forecast is included.",
+  "rollback": "Inactive tool change can be reverted normally; no original forecast,pick,grade or live data is overwritten.",
+  "schema_version": "website-m3-reusable-implementation-checkpoint-v1",
+  "source_base": "6b9191b85e28bdcc0600b37bd749aa0850420f7f",
+  "status": "IMPLEMENTED_AND_TESTED;NO_PRODUCTION_ACTIVATION",
+  "verification_limits": [
+    "All new model/query/server fixtures are synthetic. No NFL model fit, current forecast, scored week or scientific gain is claimed.",
+    "Served-byte readback verified baseline model and24baseline selections. No new direct browser/mobile run.",
+    "Initial missing test dependencies and shallow historical Git objects were resolved in the isolated test environment; tests were not weakened. The obsolete test-about.cjs command has no file on current main.",
+    "C raw historical case membership and original starterZIP are not available in this runtime; exact policy replay belongs on the permitted retained data route.",
+    "No independently delivered B review or C intake of this new implementation is claimed."
+  ]
+}

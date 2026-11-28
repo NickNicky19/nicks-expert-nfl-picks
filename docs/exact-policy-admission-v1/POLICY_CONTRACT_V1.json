@@ -1,0 +1,542 @@
+{
+  "admission_rule": "At least five distinct compatible scored NFL season-week blocks for the exact new primary product/procedure, plus existing scientific/source/operational rules. Use all compatible weeks including losses; preserve conditional evidence and native/fallback contribution. No universal new future-week, nine-week, all-category or 80/90-percent gate.",
+  "boundary_examples": [
+    {
+      "Top_Picks_expected": "NO_SELECTION_BELOW_MINIMUM_SCORE",
+      "category": "rec",
+      "line": 2.0,
+      "ordinary_expected": "ABSTAIN",
+      "point": 2.3
+    },
+    {
+      "Top_Picks_expected": "NO_SELECTION_BELOW_MINIMUM_SCORE",
+      "category": "pass_td",
+      "line": 1.0,
+      "ordinary_expected": "ABSTAIN",
+      "point": 1.15
+    },
+    {
+      "category": "rec",
+      "line": 3.5,
+      "ordinary_expected": "ABSTAIN",
+      "point": 3.5,
+      "strict_expected": "ABSTAIN"
+    }
+  ],
+  "boundary_note": "Use the original floating-point function and frozen policy. The examples introduce no epsilon, rounding or revised margin rule.",
+  "current_repository_artifact_state": {
+    "baseline": "sleeper-matchup-classic-presence-strict-v2",
+    "overlay_state": "DISABLED_USE_R0",
+    "ranking_pointer": {
+      "bytes": 13741,
+      "display_board_sha256": "a3c75f6bb72d2fee4d4f7ef8244a9b8ce20ca8c166f18fe68c983387d012ef0e",
+      "overlay_sha256": "21932bbf6812a7df0c917389e3332ce3ebfd2f2cf54b40622de1223195502177",
+      "path": "weekly-selected-rankings/89208160f0498e29c36da0b0d7ed27fcd1cfea45b09529b249b71169af9662ad.json",
+      "published_at": "2026-11-27T22:38:11.275481+00:00",
+      "schema_version": "weekly-selected-rankings-pointer-v1",
+      "sha256": "89208160f0498e29c36da0b0d7ed27fcd1cfea45b09529b249b71169af9662ad"
+    },
+    "research_overlay_rows": 0,
+    "scope": "Pinned repository bytes, not a new served-byte/browser check.",
+    "selected_counts": {
+      "over": 12,
+      "under": 12
+    },
+    "sources": {
+      "over": [
+        "CURRENT_BASELINE"
+      ],
+      "under": [
+        "CURRENT_BASELINE"
+      ]
+    }
+  },
+  "owners": {
+    "A": "Saved-output task closed. Reuse permitted delivered results; no recovery, regeneration or fit request.",
+    "B": "Scoped independent checks of the same permitted records and actual delivered output.",
+    "C": "Data-local executor of the finite retained C-output policy projection using the admitted website contract and existing canonical grading framework.",
+    "website": "Accountable for consumer policy, complete selector replay, source/catalog admission, release and served verification."
+  },
+  "per_query_batch_inputs": {
+    "availability": "Keep full admitted board and each arm available/excluded ordinals. Select before checking gradability; retain technical unavailability, abstention, fallback, push/void and selected unknown separately.",
+    "board_fields": [
+      "season",
+      "week",
+      "execution_model.model",
+      "games",
+      "players"
+    ],
+    "case_identity": [
+      "original ordinal",
+      "player",
+      "event",
+      "category",
+      "role",
+      "book/source",
+      "exact line",
+      "batch/horizon",
+      "settlement/participation contract",
+      "outcome version"
+    ],
+    "game_fields": [
+      "id",
+      "kickoff",
+      "state",
+      "home",
+      "away"
+    ],
+    "manifest": [
+      "season/week and batch ID",
+      "actual retained decision/as_of clock or explicit unknown",
+      "board immutable commit/path/bytes/hash",
+      "admitted canonical case/outcome contract version",
+      "candidate exact method/output/policy IDs and saved bytes",
+      "previous frozen selection and persistence receipt, or explicit absence",
+      "outcome version separate from forecast generation",
+      "timing/evidence tier and declared reconstruction assumptions"
+    ],
+    "player_fields": [
+      "id",
+      "game_id",
+      "team",
+      "opp",
+      "pos",
+      "injury",
+      "games_this_season",
+      "snap_share",
+      "proj_ppr",
+      "reference_model",
+      "props"
+    ],
+    "prop_fields": [
+      "key",
+      "line",
+      "line_from",
+      "proj",
+      "adj",
+      "over",
+      "n"
+    ],
+    "selected_rows": "Reuse tools/weekly_adaptive_overlay.py::PUBLIC_FIELDS and PRODUCTS for the recommendation replay. The appearance-conditioned numerical feed uses its separate closed expiring wire and is not inserted here automatically.",
+    "status": "Checklist for existing formats, not a replacement runtime schema or permission to publish protected rows.",
+    "unsupported_fields": "Do not invent eligibility, prior selections, quote timestamps, schedule, law, native attribution, source completeness, outcomes or zeros."
+  },
+  "product_decisions": {
+    "Over_only_law": {
+      "decision": "SHADOW; selective own-Over accuracy is not website-policy superiority.",
+      "rule": "Use exact retained candidate law, threshold, eligibility, abstention and fallback. Do not infer probabilities from a mean or choose a new favorable cutoff."
+    },
+    "Top_Picks": {
+      "callables": [
+        "tools/weekly_selected_rankings.py::prepare",
+        "output/app.js::validateSelectedRankings",
+        "output/app.js::visibleTopPicks"
+      ],
+      "decision": "KEEP_INCUMBENT",
+      "restriction": "This handoff freezes no new M3-law or passing-TD mapping. Changed forecast inputs require the complete mapping/policy comparison."
+    },
+    "numerical_display": {
+      "M3_product": "C-M3-v1.1::rec::M3-0::base::MEAN_POINT",
+      "condition": "observed_statistical_appearance_v1",
+      "decision": "KEEP_INCUMBENT_PRIMARY; M3 SHADOW pending actual qualified feed and numerical admission.",
+      "restriction": "A mean feed supplies no arbitrary-line law and changes no recommendation, probability or Top Picks input.",
+      "route": [
+        "tools/stat_point_mae_public_v2.py",
+        "output/stat-point-mae-v2.js"
+      ]
+    },
+    "ordinary_margin": {
+      "allowed_line_sources": [
+        "dk",
+        "sleeper"
+      ],
+      "callables": [
+        "pull/build.py::apply_book",
+        "output/app.js::effectivePropForecast",
+        "output/app.js::selectedPropGap",
+        "output/app.js::propChip",
+        "output/app.js::catCard"
+      ],
+      "decision": "KEEP_INCUMBENT; exact candidate margin-policy comparison and current delivery remain required.",
+      "pass_td_lean": 0.15,
+      "precedence": "Retained DraftKings close first, then Sleeper Picks; internal estimates do not create book-line leans. Unknown quote clocks stay unknown.",
+      "rec_lean": 0.3,
+      "rule": "Over iff effective_point - line > lean; Under iff difference < -lean; otherwise abstain."
+    },
+    "probability_confidence": {
+      "decision": "NO_NEW_ACTIVATION_FROM_POINT_FEED",
+      "rule": "Require the exact probability product and reliability evidence. A gap or historical hit rate is neither per-pick confidence nor EV."
+    },
+    "strict_direction": {
+      "decision": "KEEP_INCUMBENT_RECOMMENDATION_POLICY; retain saved exact-direction evidence separately.",
+      "point_rule": "Over iff point > line, Under iff point < line; equality abstains. Probability-law decisions retain their separately frozen exact rule."
+    }
+  },
+  "publication_safety": "Permitted source-code metadata and scientific aggregates only; no protected rows, weights, private locators or invented source clocks.",
+  "ranking_execution": {
+    "capacity": "At most 12 per side; one best category per player per side. Do not force capacity; one player can appear once on each side.",
+    "effective_value": "Valid unexpired selected row first; otherwise finite saved baseline adj with CURRENT_BASELINE/R0_FALLBACK attribution; otherwise unavailable.",
+    "expiry": "effective() rejects selected rows at or after valid_until_utc. Exclude frozen selected rows whose expiry precedes kickoff. Consumer validates selected row/expiry; invalid ranking artifacts fall back to saved board.picks.",
+    "gates": "Use eligible(), actual policy_for(board), valid integer over/n counters, minimum line, inclusive effective-value/line ratio, strict category lean and inclusive minimum absolute score.",
+    "legacy_distinction": "pull/build.py::pick_candidates/build_picks tests raw proj/line, rounds score to two decimals and uses stable input-order ties. Do not substitute it for the typed writer or claim parity without the path-specific retained check.",
+    "persistence": "Fresh selections and their durable persistence must precede kickoff. Preserve original row and receipt proofs for frozen started-game choices.",
+    "refresh": "Retain authenticated originally persisted started-game choices and occupied slots, then fill remaining capacity only from unstarted games. Preserve the real batch schedule; no fixed weekly list using later information.",
+    "score": "(effective_value - line) / category scale; unrounded.",
+    "tie_function": "order(item) = (-abs(score), game_id, player_id, category)."
+  },
+  "ranking_policy": {
+    "categories": {
+      "pass_att": {
+        "lean": 1,
+        "minimum_line": 20.5,
+        "scale": 3
+      },
+      "pass_cmp": {
+        "lean": 0.8,
+        "minimum_line": 12.5,
+        "scale": 2.5
+      },
+      "pass_int": {
+        "lean": 0.12,
+        "minimum_line": 0.5,
+        "scale": 0.5
+      },
+      "pass_td": {
+        "lean": 0.15,
+        "minimum_line": 0.5,
+        "scale": 0.6
+      },
+      "pass_yd": {
+        "lean": 8,
+        "minimum_line": 150.5,
+        "scale": 30
+      },
+      "rec": {
+        "lean": 0.3,
+        "minimum_line": 1.5,
+        "scale": 1.2
+      },
+      "rec_yd": {
+        "lean": 4,
+        "minimum_line": 15.5,
+        "scale": 12
+      },
+      "rush_att": {
+        "lean": 0.8,
+        "minimum_line": 6.5,
+        "scale": 3
+      },
+      "rush_rec_yd": {
+        "lean": 5,
+        "minimum_line": 25.5,
+        "scale": 15
+      },
+      "rush_yd": {
+        "lean": 4,
+        "minimum_line": 15.5,
+        "scale": 12
+      }
+    },
+    "fallback": "same-opportunity reference identified by forecast_source and model_version; unavailable is never zero",
+    "meaning": "descriptive scaled forecast gap, not win probability or EV",
+    "minimum_games": 2,
+    "minimum_projected_ppr": {
+      "QB": 10,
+      "RB": 6,
+      "TE": 6,
+      "WR": 6
+    },
+    "minimum_score": 0.35,
+    "minimum_snap_share": 0.5,
+    "projection_line_ratio": [
+      0.4,
+      2.5
+    ],
+    "tie_order": [
+      "absolute_score_desc",
+      "game_id",
+      "player_id",
+      "category"
+    ],
+    "top_n": 12,
+    "unavailable": [
+      "Out",
+      "IR",
+      "PUP",
+      "Suspended",
+      "NA",
+      "Doubtful",
+      "COV",
+      "DNR"
+    ],
+    "version": "selected-projection-gap-classic-presence-v2"
+  },
+  "ranking_policy_sha256": "551ee07861774ba2c90ad0e8097136c359807f92843dde5cd4b96ecffbe958ed",
+  "remaining_dependencies": [
+    {
+      "action": "Reopen retained bytes and perform/admit only the finite compatible saved-output policy projection; mark inaccessible cells precisely.",
+      "item": "Exact retained law/point bodies, ordinals and batch eligibility for reception/pass-TD policies not already covered by completed evidence.",
+      "owner": "C"
+    },
+    {
+      "action": "Reuse exact-compatible replays; otherwise pin the precise mapping/batches before the narrow replay. Verify real preissue registration and immutable delivery, then decide the exact product.",
+      "item": "Full compatible boards for any changed complete mapping and real current typed source/model/query/feed package.",
+      "owner": "Website"
+    },
+    {
+      "action": "Check the same records without repeating completed masks, mean grades or private fits.",
+      "item": "New exact policy/output independent checks within permitted scope.",
+      "owner": "B"
+    }
+  ],
+  "replay_handoff": {
+    "before_new_grades": "Bind exact candidate recipe/output/policy, callable hashes, full batch board, timing tier, identity-mask/exclusion commitments, fallback and earlier frozen selection receipts. A changed mapping is a separate exposed retrospective policy.",
+    "canonical_contract_route": "https://github.com/NickNicky19/nicks-expert-nfl-picks/pull/1#issuecomment-7082149017",
+    "comparisons": "Report full-system board availability, named same-case comparisons, each selector own lists at matched capacity and directions on identical selected cases. Equal denominators are not membership parity.",
+    "complete_selector": "Use full compatible cross-category boards and actual prepare() or its retained parity-verified equivalent with schedule, kept slots, ties and duplicate handling. Category-only or previously selected rows are insufficient.",
+    "data_local": "C may execute on retained restricted bodies and publish permitted aggregate/membership/source commitments through existing handoffs; website admits the precise scope and B checks permitted records independently.",
+    "grader": "Reuse the existing admitted canonical case/outcome framework and qualified outcome version. Production reference: pull/grade.py, statistical-presence-verified-int-v7-20261112. No new scorer or missing-as-zero conversion.",
+    "outputs": "Weekly and cumulative own Over/Under/combined W-L/decided/rate; eligible/available/selected/unknown/unavailable/abstention/push/void/fallback; native contribution, games and unique player-games; paired controls and existing uncertainty. Preserve adverse and zero-selection weeks.",
+    "prohibited": [
+      "new fit",
+      "new source collection",
+      "law inferred from points",
+      "new cutoff/margin/confidence search",
+      "hindsight router",
+      "A task reopening",
+      "duplicate scorer",
+      "simulator restart"
+    ]
+  },
+  "repository": "NickNicky19/nicks-expert-nfl-picks",
+  "retained_evidence": {
+    "A": "New shared-frame comparison is W4-7 only. Preserve separately bound older genuinely compatible five-week qualification without resetting or automatic inheritance. Saved Count A points are not a fresh corrected-mean feed.",
+    "DEN_PIT": "Closed unopened with zero fits and forecasts; no packet available for admission. Completed conditioning, expiry and stale-save compatibility remain reusable.",
+    "M3": "Masks and named independent mean-point checks remain complete. Preserve separate law/median/fit/source-vintage/interval/complete-selector limits. Six partial receiving blocks are not complete slates or original issuance.",
+    "P1_mean_Top_Picks": {
+      "B_fifth_week": "COMPLETE per later adopted user/owner receipts; old README pending status is superseded and is not a new blocker.",
+      "cumulative": {
+        "candidate": {
+          "decided": 108,
+          "losses": 55,
+          "rate": 0.49074074074074076,
+          "selected": 110,
+          "unknown": 2,
+          "wins": 53
+        },
+        "candidate_fallback": {
+          "decided": 98,
+          "losses": 51,
+          "rate": 0.47959183673469385,
+          "selected": 100,
+          "unknown": 2,
+          "wins": 47
+        },
+        "candidate_generated": {
+          "decided": 10,
+          "losses": 4,
+          "rate": 0.6,
+          "selected": 10,
+          "unknown": 0,
+          "wins": 6
+        },
+        "control": {
+          "decided": 107,
+          "losses": 58,
+          "rate": 0.45794392523364486,
+          "selected": 109,
+          "unknown": 2,
+          "wins": 49
+        }
+      },
+      "decision": "SHADOW",
+      "does_not_qualify": [
+        "M3 Leaf reception MEAN_POINT",
+        "M3 reception-law Over-only",
+        "new pass_td mapping"
+      ],
+      "duration": "MET_FIVE_DISTINCT_SCORED_BLOCKS;PARTIAL_WITHIN_WEEK_COVERAGE",
+      "exact_current_incumbent_history": false,
+      "limits": "Five exposed weekly blocks, partialW4 two-game batch, differing109/110 selections and107/108 decided; no superiority, untouchedtest or90percentclaim. Source-vintage/quote-time/query-population limitations remain. No new arbitrary significance hurdle.",
+      "mapping": "C v1.1 P1 mean WR/TE reception overrides; other categories/fallback use saved reference.",
+      "membership": {
+        "candidate_only": 10,
+        "control_only": 9,
+        "same_side_common": 100
+      },
+      "protocol": "NFL-WEB-EXACT-SELECTOR-REC-P1-MEAN-WRTE-20261112-v1",
+      "scored_weeks": [
+        [
+          2026,
+          4
+        ],
+        [
+          2026,
+          5
+        ],
+        [
+          2026,
+          6
+        ],
+        [
+          2026,
+          7
+        ],
+        [
+          2026,
+          8
+        ]
+      ],
+      "weekly": [
+        {
+          "candidate": {
+            "decided": 14,
+            "losses": 11,
+            "selected": 14,
+            "unknown": 0,
+            "wins": 3
+          },
+          "candidate_generated_selected": 2,
+          "control": {
+            "decided": 13,
+            "losses": 12,
+            "selected": 13,
+            "unknown": 0,
+            "wins": 1
+          },
+          "fallback_selected": 12,
+          "week": 4
+        },
+        {
+          "candidate": {
+            "decided": 24,
+            "losses": 11,
+            "selected": 24,
+            "unknown": 0,
+            "wins": 13
+          },
+          "candidate_generated_selected": 2,
+          "control": {
+            "decided": 24,
+            "losses": 12,
+            "selected": 24,
+            "unknown": 0,
+            "wins": 12
+          },
+          "fallback_selected": 22,
+          "week": 5
+        },
+        {
+          "candidate": {
+            "decided": 24,
+            "losses": 12,
+            "selected": 24,
+            "unknown": 0,
+            "wins": 12
+          },
+          "candidate_generated_selected": 4,
+          "control": {
+            "decided": 24,
+            "losses": 13,
+            "selected": 24,
+            "unknown": 0,
+            "wins": 11
+          },
+          "fallback_selected": 20,
+          "week": 6
+        },
+        {
+          "candidate": {
+            "decided": 24,
+            "losses": 9,
+            "selected": 24,
+            "unknown": 0,
+            "wins": 15
+          },
+          "candidate_generated_selected": 2,
+          "control": {
+            "decided": 24,
+            "losses": 9,
+            "selected": 24,
+            "unknown": 0,
+            "wins": 15
+          },
+          "fallback_selected": 22,
+          "week": 7
+        },
+        {
+          "candidate": {
+            "decided": 22,
+            "losses": 12,
+            "selected": 24,
+            "unknown": 2,
+            "wins": 10
+          },
+          "candidate_generated_selected": 0,
+          "control": {
+            "decided": 22,
+            "losses": 12,
+            "selected": 24,
+            "unknown": 2,
+            "wins": 10
+          },
+          "fallback_selected": 24,
+          "week": 8
+        }
+      ]
+    }
+  },
+  "schema_version": "website-exact-policy-admission-handoff-v1",
+  "scope": "Reporting/replay contract for existing reception and passing-TD comparisons. No new grader, candidate mapping, fit, source collection or activation.",
+  "source_bindings": {
+    "config/release-mode.json": {
+      "bytes": 18,
+      "sha256": "02b5954e1b2c5139d683a2872262ad1e274df21120617d13fed3ee06a7605ce9"
+    },
+    "output/app.js": {
+      "bytes": 370772,
+      "sha256": "bbf9c7d001214b693e1ba57d0c80c4f7a0a73fcc476444b9df4da1f3038adfe9"
+    },
+    "output/data/selector-replay-v1/five-week-summary-v2.json": {
+      "bytes": 25557,
+      "sha256": "8c6646b17841229f3e7108de38bd44e8436dbe88e350343ae4899e01c3ba0f17"
+    },
+    "output/data/selector-replay-v1/input-bindings-v1.json": {
+      "bytes": 7022,
+      "sha256": "8a7027946ef8cfcd56f11c57d42a56f137810ff262c8b5ebbbf37b6131c8d46c"
+    },
+    "output/stat-point-mae-v2.js": {
+      "bytes": 19320,
+      "sha256": "dab9899fd9467df40c20837c5df2e31e4649a7f2a11787da5c4b4fe4773387c4"
+    },
+    "pull/build.py": {
+      "bytes": 41910,
+      "sha256": "b83126080149f2f0705682d1c0be0a8ee87610ebb0a88cd57b94b8a82b63ad73"
+    },
+    "pull/grade.py": {
+      "bytes": 21253,
+      "sha256": "59b1c6b0044c8571f5695b178ede5469b34e6db77c46a75eb98b7780cd184d1e"
+    },
+    "pull/scoring.py": {
+      "bytes": 9328,
+      "sha256": "90a9d201581b20c4e757912ce7dbf4941a6a90784d721c80367341511c652a2d"
+    },
+    "tools/stat_point_mae_public_v2.py": {
+      "bytes": 28293,
+      "sha256": "635eff1d6c285b9b02ea707f4d349f5f8dee7a8599e774269c166b5f6d53e755"
+    },
+    "tools/weekly_adaptive_overlay.py": {
+      "bytes": 18882,
+      "sha256": "6835d58efa3ccc88cff57a0cd55abea349387c49902d3bedd4d57b92274918cb"
+    },
+    "tools/weekly_mae_display_v2.py": {
+      "bytes": 26379,
+      "sha256": "52a96494f06705d7ad3b0d61a9705541d47325b85558d29891483b42b8187e08"
+    },
+    "tools/weekly_selected_rankings.py": {
+      "bytes": 23501,
+      "sha256": "7889c35cefa0df1ba0be53ee749182f243eba35a4f4c63b2c01db023e701e14f"
+    }
+  },
+  "source_commit": "6b9191b85e28bdcc0600b37bd749aa0850420f7f"
+}
