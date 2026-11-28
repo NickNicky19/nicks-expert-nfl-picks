@@ -1,0 +1,98 @@
+{
+  "asset_readback": [
+    {
+      "age": "0",
+      "bytes": 370772,
+      "observed_at": "2026-11-28T19:28:31.141660+00:00",
+      "path": "app.js",
+      "server_date": "Sat, 28 Nov 2026 19:28:31 GMT",
+      "sha256": "bbf9c7d001214b693e1ba57d0c80c4f7a0a73fcc476444b9df4da1f3038adfe9",
+      "status": 200
+    },
+    {
+      "age": "0",
+      "bytes": 19320,
+      "observed_at": "2026-11-28T19:28:31.346563+00:00",
+      "path": "stat-point-mae-v2.js",
+      "server_date": "Sat, 28 Nov 2026 19:28:31 GMT",
+      "sha256": "dab9899fd9467df40c20837c5df2e31e4649a7f2a11787da5c4b4fe4773387c4",
+      "status": 200
+    },
+    {
+      "error": "HTTP Error 404: Not Found",
+      "path": "data/weekly-mae-display.json"
+    },
+    {
+      "age": "0",
+      "bytes": 474,
+      "observed_at": "2026-11-28T19:28:31.659694+00:00",
+      "path": "data/weekly-selected-rankings.json",
+      "server_date": "Sat, 28 Nov 2026 19:28:31 GMT",
+      "sha256": "a57f16b68c2549c0511e80eb251108d09cd4ea9c63297404a804da184bd73325",
+      "status": 200
+    }
+  ],
+  "board_as_of": null,
+  "board_matches_ranking_pointer": true,
+  "board_week": 12,
+  "display_model": {
+    "capture_schema": "baseline-capture-classic-presence-v2",
+    "engine_sha256": {
+      "pull/books.py": "0b89744960136a4f2e594b61e6df754d357706d8c66a8ae359d8eb02bbfa53f8",
+      "pull/build.py": "b83126080149f2f0705682d1c0be0a8ee87610ebb0a88cd57b94b8a82b63ad73",
+      "pull/gamemodel.py": "2a2519a12ad4993da02ae6bdcdb6c86f2b5a6554ce93a702b550ecde17fb7d1f",
+      "pull/grade.py": "59b1c6b0044c8571f5695b178ede5469b34e6db77c46a75eb98b7780cd184d1e",
+      "pull/matchup.py": "eaf627730041060ad16dd9930accfe54a54cf5fb49bb42d18680b5c572ddd7a5",
+      "pull/news.py": "17ce1b3b6b72694e6b543bd767e287c26a9d1f6dd5dba2de6c873543036842e9",
+      "pull/scoring.py": "90a9d201581b20c4e757912ce7dbf4941a6a90784d721c80367341511c652a2d",
+      "pull/sources.py": "36555cdbc55d73ba632d5adae1130288f4f532073857c642ac3ebc7e626b0061"
+    },
+    "grading_version": "statistical-presence-verified-int-v7-20261112",
+    "model": "sleeper-matchup-classic-presence-strict-v2",
+    "normalized_stats_cache": "stat-keys-presence-strict-v3",
+    "original_shadow_model": "original_sleeper_matchup_baseline",
+    "original_shadow_procedure": "original-builder-default-refresh-v1",
+    "original_shadow_source": "89512ed952308dacc1f6a930915ddbcdccd460d9",
+    "schema_version": "weekly-classic-presence-execution-v2"
+  },
+  "kind": "Actual public served-byte readback; no direct browser/mobile execution",
+  "new_forecasts_generated": 0,
+  "numerical_pointer": "HTTP404_INCUMBENT_FALLBACK",
+  "observed_at": "2026-11-28T19:29:15.125239+00:00",
+  "ranking_asset_bytes": 13741,
+  "ranking_asset_sha256": "89208160f0498e29c36da0b0d7ed27fcd1cfea45b09529b249b71169af9662ad",
+  "ranking_policy": "selected-projection-gap-classic-presence-v2",
+  "ranking_policy_sha256": "551ee07861774ba2c90ad0e8097136c359807f92843dde5cd4b96ecffbe958ed",
+  "research_activation": false,
+  "selected_sources": {
+    "CURRENT_BASELINE": 24
+  },
+  "served_examples": [
+    {
+      "adj": 73.69,
+      "direction": "over",
+      "forecast_source": "CURRENT_BASELINE",
+      "key": "rec_yd",
+      "kickoff_utc": "2026-11-26T18:00Z",
+      "line": 46.5,
+      "model_version": "sleeper-matchup-classic-presence-strict-v2",
+      "product": "reference_point",
+      "selected_at": "2026-11-25T23:02:24.170328+00:00"
+    },
+    {
+      "adj": 67.73,
+      "direction": "over",
+      "forecast_source": "CURRENT_BASELINE",
+      "key": "rush_yd",
+      "kickoff_utc": "2026-11-29T18:00Z",
+      "line": 42.5,
+      "model_version": "sleeper-matchup-classic-presence-strict-v2",
+      "product": "reference_point",
+      "selected_at": "2026-11-27T22:38:11.260026+00:00"
+    }
+  ],
+  "side_counts": {
+    "over": 12,
+    "under": 12
+  }
+}
